@@ -2,23 +2,29 @@ use embedded_io_async::{Read, ReadExactError, Write};
 use heapless::Vec;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-const HEADER_SIZE: usize = 6;
-pub const MAX_VALUE_SIZE: usize = 512;
-
 pub type Type = u16;
 pub type Length = u32;
 pub type Value = Vec<u8, MAX_VALUE_SIZE>;
+
+pub const HEADER_SIZE: usize = core::mem::size_of::<Type>() + core::mem::size_of::<Length>();
+pub type Header = [u8; HEADER_SIZE];
+
+pub const MAX_VALUE_SIZE: usize = 512;
+pub const MAX_TLV_SIZE: usize = HEADER_SIZE + MAX_VALUE_SIZE;
+pub type TlvVec = Vec<u8, MAX_TLV_SIZE>;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum CtlToMgmt {
     Ping = 0,
+    ToUi = 1,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum MgmtToCtl {
     Pong = 0,
+    FromUi = 1,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -33,15 +39,15 @@ pub enum UiToMgmt {
     Pong = 0,
 }
 
-fn decode_header<T: TryFrom<u16>>(header: &[u8; HEADER_SIZE]) -> Result<(T, usize), T::Error> {
+fn decode_header<T: TryFrom<u16>>(header: &Header) -> Result<(T, usize), T::Error> {
     let raw_type = Type::from_be_bytes([header[0], header[1]]);
     let tlv_type = T::try_from(raw_type)?;
     let length = Length::from_be_bytes([header[2], header[3], header[4], header[5]]);
     Ok((tlv_type, length as usize))
 }
 
-fn encode_header(tlv_type: impl Into<u16>, length: usize) -> [u8; HEADER_SIZE] {
-    let mut header = [0u8; HEADER_SIZE];
+fn encode_header(tlv_type: impl Into<u16>, length: usize) -> Header {
+    let mut header = Header::default();
     let type_val: Type = tlv_type.into();
     let length_val: Length = length as Length;
     header[0..2].copy_from_slice(&type_val.to_be_bytes());
@@ -58,6 +64,16 @@ pub struct Tlv<T> {
 impl<T> Tlv<T> {
     pub const fn new(tlv_type: T, value: Value) -> Self {
         Self { tlv_type, value }
+    }
+
+    pub async fn encode(tlv_type: T, value: &[u8]) -> TlvVec
+    where
+        T: Into<u16>,
+    {
+        let mut enc = TlvVec::new();
+        enc.resize(HEADER_SIZE + value.len(), 0).unwrap();
+        enc.as_mut_slice().write_tlv(tlv_type, value).await.unwrap();
+        enc
     }
 }
 
