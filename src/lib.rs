@@ -4,19 +4,12 @@ pub mod mgmt {
     use std::sync::Arc;
     use std::thread::JoinHandle;
 
-    use heapless::mpmc::Queue;
+    use async_channel::{Receiver, Sender};
 
     // TODO
-    // * Instantiate Environment with an InMemoryEnvironment, probably still generic
-    // * Define a TLV reader / writer
-    //      * Bounded memory
-    //      * Cancellable reader
-    //      * Async?  At least on the read side?
-    // * Define an event type
-    // * Runner should:
-    //      * Make an event queue
-    //      * Make threads that feed the event queue from readers
-    //      * Handle events from the queue
+    // * [ ] Make library no_std
+    // * [X] Define a TLV reader / writer
+    // * [ ] Define an event type
 
     /// The Environment trait just allows a caller to get references to the objects we expect to
     /// have in an environment.  The main function of this trait is just to avoid having to
@@ -56,60 +49,65 @@ pub mod mgmt {
 
     pub struct Runner {
         stop: Arc<AtomicBool>,
-        read_task: JoinHandle<()>,
-        handle_task: JoinHandle<()>,
+        read_task: tokio::task::JoinHandle<()>,
+        handle_task: tokio::task::JoinHandle<()>,
     }
 
     impl Runner {
-        pub fn start<W, R>(to_ctl: W, mut from_ctl: R) -> Self
+        pub async fn start<W, R>(to_ctl: W, mut from_ctl: R) -> Self
         where
             W: Write + Send + 'static,
             R: Read + Send + 'static,
         {
+            println!("Runner::start");
             const MAX_QUEUE_DEPTH: usize = 32;
 
             let stop = Arc::new(AtomicBool::new(false));
 
-            // Queue::new is deprecated, but the usage we have here should be OK.
-            #[expect(deprecated)]
-            let queue: Arc<Queue<Vec<u8>, MAX_QUEUE_DEPTH>> = Arc::new(Queue::new());
+            let (sender, receiver): (Sender<Vec<u8>>, Receiver<Vec<u8>>) =
+                async_channel::bounded(MAX_QUEUE_DEPTH);
 
             let mut app = App::default();
             let mut env = EnvironmentInstance::new(to_ctl);
 
             // Read thread
             let stop_read = stop.clone();
-            let read_queue = queue.clone();
-            let read_task = std::thread::spawn(move || loop {
-                if stop_read.load(Ordering::SeqCst) {
-                    break;
-                }
-
-                let mut len_buffer = [0u8; 1];
-                while from_ctl.read(&mut len_buffer).unwrap() == 0 {
+            let read_task = tokio::spawn(async move {
+                println!("read task start");
+                loop {
                     if stop_read.load(Ordering::SeqCst) {
                         break;
                     }
+
+                    let mut len_buffer = [0u8; 1];
+                    while from_ctl.read(&mut len_buffer).unwrap() == 0 {
+                        if stop_read.load(Ordering::SeqCst) {
+                            break;
+                        }
+                    }
+
+                    let n: usize = len_buffer[0].into();
+                    let mut buffer = vec![0; n];
+                    from_ctl.read_exact(&mut buffer).unwrap();
+
+                    if sender.send_blocking(buffer).is_err() {
+                        break; // Receiver dropped, exit
+                    }
                 }
-
-                let n: usize = len_buffer[0].into();
-                let mut buffer = vec![0; n];
-                from_ctl.read_exact(&mut buffer).unwrap();
-
-                read_queue.enqueue(buffer).expect("Queue overflow");
             });
 
             // Handle thread
             let stop_handle = stop.clone();
-            let handle_queue = queue.clone();
-            let handle_task = std::thread::spawn(move || loop {
-                if stop_handle.load(Ordering::SeqCst) {
-                    break;
-                }
+            let handle_task = tokio::spawn(async move {
+                println!("handle task start");
+                loop {
+                    if stop_handle.load(Ordering::SeqCst) {
+                        break;
+                    }
 
-                match handle_queue.dequeue() {
-                    Some(data) => app.handle(&data, &mut env),
-                    None => {}
+                    if let Ok(data) = receiver.try_recv() {
+                        app.handle(&data, &mut env);
+                    }
                 }
             });
 
@@ -120,10 +118,10 @@ pub mod mgmt {
             }
         }
 
-        pub fn stop(self) {
+        pub async fn stop(self) {
             self.stop.store(true, Ordering::SeqCst);
-            self.read_task.join().unwrap();
-            self.handle_task.join().unwrap();
+            self.read_task.await;
+            self.handle_task.await;
         }
     }
 }
@@ -146,9 +144,11 @@ pub mod ctl {
             W: Write,
             R: Read,
         {
+            println!("CTL write");
             self.to_mgmt.write(&[data.len() as u8]).unwrap();
             self.to_mgmt.write(data).unwrap();
 
+            println!("CTL read");
             let mut len_buffer = [0u8; 1];
             while self.from_mgmt.read(&mut len_buffer).unwrap() == 0 {}
 
@@ -156,7 +156,8 @@ pub mod ctl {
             let mut read_buffer = [0u8; 5];
             self.from_mgmt.read_exact(&mut read_buffer[..n]).unwrap();
 
-            assert_eq!(data, &read_buffer)
+            assert_eq!(data, &read_buffer);
+            println!("CTL ok");
         }
     }
 }
@@ -172,16 +173,20 @@ mod test {
         VirtualPort::pair(SERIAL_BAUD_RATE, SERIAL_BUFFER_CAPACITY).unwrap()
     }
 
-    #[test]
-    fn mgmt_ctl() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn mgmt_ctl() {
+        println!("mgmt_ctl start");
         let (ctl_side, mgmt_side) = virtual_port_pair();
 
         let mut ctl_app = ctl::App::new(ctl_side.clone(), ctl_side);
-        let mgmt_app = mgmt::Runner::start(mgmt_side.clone(), mgmt_side);
+        let mgmt_runner = mgmt::Runner::start(mgmt_side.clone(), mgmt_side).await;
 
-        let write_data = b"hello";
-        ctl_app.send_ping(write_data);
+        let ctl_task = tokio::spawn(async move {
+            let write_data = b"hello";
+            ctl_app.send_ping(write_data);
+        });
 
-        mgmt_app.stop();
+        ctl_task.await;
+        mgmt_runner.stop().await;
     }
 }
