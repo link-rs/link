@@ -39,6 +39,18 @@ pub enum UiToMgmt {
     Pong = 0,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
+#[repr(u16)]
+pub enum MgmtToNet {
+    Ping = 0,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
+#[repr(u16)]
+pub enum NetToMgmt {
+    Pong = 0,
+}
+
 fn decode_header<T: TryFrom<u16>>(header: &Header) -> Result<(T, usize), T::Error> {
     let raw_type = Type::from_be_bytes([header[0], header[1]]);
     let tlv_type = T::try_from(raw_type)?;

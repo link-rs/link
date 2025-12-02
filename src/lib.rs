@@ -222,6 +222,95 @@ pub mod ui {
     }
 }
 
+pub mod net {
+    use crate::tlv::{MgmtToNet, NetToMgmt, ReadTlv, Tlv, WriteTlv};
+    use embedded_io_async::{Read, Write};
+
+    pub trait Environment {
+        fn to_mgmt(&mut self) -> &mut impl Write;
+    }
+
+    pub struct EnvironmentInstance<W> {
+        to_mgmt: W,
+    }
+
+    impl<W> EnvironmentInstance<W> {
+        fn new(to_mgmt: W) -> Self {
+            Self { to_mgmt }
+        }
+    }
+
+    impl<W> Environment for EnvironmentInstance<W>
+    where
+        W: Write,
+    {
+        fn to_mgmt(&mut self) -> &mut impl Write {
+            &mut self.to_mgmt
+        }
+    }
+
+    pub enum Event {
+        MgmtTlv(Tlv<MgmtToNet>),
+    }
+
+    #[derive(Default)]
+    pub struct App;
+
+    impl App {
+        async fn handle(&mut self, event: Event, env: &mut impl Environment) {
+            match event {
+                Event::MgmtTlv(tlv) => self.handle_mgmt_tlv(tlv, env).await,
+            }
+        }
+
+        async fn handle_mgmt_tlv(&mut self, tlv: Tlv<MgmtToNet>, env: &mut impl Environment) {
+            match tlv.tlv_type {
+                MgmtToNet::Ping => env
+                    .to_mgmt()
+                    .write_tlv(NetToMgmt::Pong, &tlv.value)
+                    .await
+                    .unwrap(),
+            }
+        }
+    }
+
+    pub async fn run<W, R>(to_mgmt: W, mut from_mgmt: R)
+    where
+        W: Write + 'static,
+        R: Read + 'static,
+    {
+        const MAX_QUEUE_DEPTH: usize = 32;
+
+        let (sender, receiver) = async_channel::bounded::<Event>(MAX_QUEUE_DEPTH);
+
+        let mut app = App::default();
+        let mut env = EnvironmentInstance::new(to_mgmt);
+
+        // Read thread
+        let read_task = async move {
+            loop {
+                let tlv: Tlv<MgmtToNet> = match from_mgmt.read_tlv().await {
+                    Ok(Some(tlv)) => tlv,
+                    Ok(None) => return,  // Channel closed
+                    Err(_err) => return, // IO error
+                };
+                if sender.send(Event::MgmtTlv(tlv)).await.is_err() {
+                    break; // Receiver dropped, exit
+                }
+            }
+        };
+
+        // Handle thread
+        let handle_task = async move {
+            while let Ok(tlv) = receiver.recv().await {
+                app.handle(tlv, &mut env).await;
+            }
+        };
+
+        futures::join!(read_task, handle_task);
+    }
+}
+
 pub mod ctl {
     use crate::tlv::{CtlToMgmt, MgmtToCtl, MgmtToUi, ReadTlv, Tlv, UiToMgmt, WriteTlv};
     use embedded_io_async::{Read, Write};
