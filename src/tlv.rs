@@ -18,6 +18,7 @@ pub type TlvVec = Vec<u8, MAX_TLV_SIZE>;
 pub enum CtlToMgmt {
     Ping = 0,
     ToUi = 1,
+    ToNet = 2,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -25,6 +26,7 @@ pub enum CtlToMgmt {
 pub enum MgmtToCtl {
     Pong = 0,
     FromUi = 1,
+    FromNet = 2,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

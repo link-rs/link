@@ -5,22 +5,28 @@
 mod tlv;
 
 pub mod mgmt {
-    use crate::tlv::{CtlToMgmt, MgmtToCtl, ReadTlv, Tlv, UiToMgmt, WriteTlv};
+    use crate::tlv::{CtlToMgmt, MgmtToCtl, NetToMgmt, ReadTlv, Tlv, UiToMgmt, WriteTlv};
     use embedded_io_async::{Read, Write};
 
     pub trait Environment {
         fn to_ctl(&mut self) -> &mut impl Write;
         fn to_ui(&mut self) -> &mut impl Write;
+        fn to_net(&mut self) -> &mut impl Write;
     }
 
     pub struct EnvironmentInstance<W> {
         to_ctl: W,
         to_ui: W,
+        to_net: W,
     }
 
     impl<W> EnvironmentInstance<W> {
-        fn new(to_ctl: W, to_ui: W) -> Self {
-            Self { to_ctl, to_ui }
+        fn new(to_ctl: W, to_ui: W, to_net: W) -> Self {
+            Self {
+                to_ctl,
+                to_ui,
+                to_net,
+            }
         }
     }
 
@@ -35,11 +41,16 @@ pub mod mgmt {
         fn to_ui(&mut self) -> &mut impl Write {
             &mut self.to_ui
         }
+
+        fn to_net(&mut self) -> &mut impl Write {
+            &mut self.to_net
+        }
     }
 
     pub enum Event {
         CtlTlv(Tlv<CtlToMgmt>),
         UiTlv(Tlv<UiToMgmt>),
+        NetTlv(Tlv<NetToMgmt>),
     }
 
     #[derive(Default)]
@@ -50,6 +61,7 @@ pub mod mgmt {
             match event {
                 Event::CtlTlv(tlv) => self.handle_ctl_tlv(tlv, env).await,
                 Event::UiTlv(tlv) => self.handle_ui_tlv(tlv, env).await,
+                Event::NetTlv(tlv) => self.handle_net_tlv(tlv, env).await,
             }
         }
 
@@ -63,6 +75,9 @@ pub mod mgmt {
                 }
                 CtlToMgmt::ToUi => {
                     env.to_ui().write(&tlv.value).await.unwrap();
+                }
+                CtlToMgmt::ToNet => {
+                    env.to_net().write(&tlv.value).await.unwrap();
                 }
             }
         }
@@ -78,10 +93,28 @@ pub mod mgmt {
                 }
             }
         }
+
+        async fn handle_net_tlv(&mut self, tlv: Tlv<NetToMgmt>, env: &mut impl Environment) {
+            match tlv.tlv_type {
+                NetToMgmt::Pong => {
+                    let tlv = Tlv::encode(NetToMgmt::Pong, &tlv.value).await;
+                    env.to_ctl()
+                        .write_tlv(MgmtToCtl::FromNet, &tlv)
+                        .await
+                        .unwrap();
+                }
+            }
+        }
     }
 
-    pub async fn run<W, R>(to_ctl: W, mut from_ctl: R, to_ui: W, mut from_ui: R)
-    where
+    pub async fn run<W, R>(
+        to_ctl: W,
+        mut from_ctl: R,
+        to_ui: W,
+        mut from_ui: R,
+        to_net: W,
+        mut from_net: R,
+    ) where
         W: Write + 'static,
         R: Read + 'static,
     {
@@ -90,7 +123,7 @@ pub mod mgmt {
         let (sender, receiver) = async_channel::bounded::<Event>(MAX_QUEUE_DEPTH);
 
         let mut app = App::default();
-        let mut env = EnvironmentInstance::new(to_ctl, to_ui);
+        let mut env = EnvironmentInstance::new(to_ctl, to_ui, to_net);
 
         // Read threads
         // TODO make these loops more brief and intelligible
@@ -122,6 +155,20 @@ pub mod mgmt {
             }
         };
 
+        let net_sender = sender.clone();
+        let net_read_task = async move {
+            loop {
+                let tlv: Tlv<NetToMgmt> = match from_net.read_tlv().await {
+                    Ok(Some(tlv)) => tlv,
+                    Ok(None) => return,  // Channel closed
+                    Err(_err) => return, // IO error
+                };
+                if net_sender.send(Event::NetTlv(tlv)).await.is_err() {
+                    break; // Receiver dropped, exit
+                }
+            }
+        };
+
         // Handle thread
         let handle_task = async move {
             while let Ok(tlv) = receiver.recv().await {
@@ -129,7 +176,7 @@ pub mod mgmt {
             }
         };
 
-        futures::join!(ctl_read_task, ui_read_task, handle_task);
+        futures::join!(ctl_read_task, ui_read_task, net_read_task, handle_task);
     }
 }
 
@@ -265,11 +312,12 @@ pub mod net {
 
         async fn handle_mgmt_tlv(&mut self, tlv: Tlv<MgmtToNet>, env: &mut impl Environment) {
             match tlv.tlv_type {
-                MgmtToNet::Ping => env
-                    .to_mgmt()
-                    .write_tlv(NetToMgmt::Pong, &tlv.value)
-                    .await
-                    .unwrap(),
+                MgmtToNet::Ping => {
+                    env.to_mgmt()
+                        .write_tlv(NetToMgmt::Pong, &tlv.value)
+                        .await
+                        .unwrap();
+                }
             }
         }
     }
@@ -312,7 +360,9 @@ pub mod net {
 }
 
 pub mod ctl {
-    use crate::tlv::{CtlToMgmt, MgmtToCtl, MgmtToUi, ReadTlv, Tlv, UiToMgmt, WriteTlv};
+    use crate::tlv::{
+        CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt, WriteTlv,
+    };
     use embedded_io_async::{Read, Write};
 
     pub struct App<R, W> {
@@ -370,6 +420,35 @@ pub mod ctl {
             assert_eq!(tlv.tlv_type, UiToMgmt::Pong);
             assert_eq!(&tlv.value, data);
         }
+
+        pub async fn send_net_ping(&mut self, data: &[u8])
+        where
+            W: Write,
+            R: Read,
+        {
+            let payload = Tlv::encode(MgmtToNet::Ping, data).await;
+            self.to_mgmt
+                .write_tlv(CtlToMgmt::ToNet, &payload)
+                .await
+                .unwrap();
+
+            let tlv: Tlv<MgmtToCtl> = match self.from_mgmt.read_tlv().await {
+                Ok(Some(tlv)) => tlv,
+                Ok(None) => return,  // Channel closed
+                Err(_err) => return, // IO error
+            };
+
+            assert_eq!(tlv.tlv_type, MgmtToCtl::FromNet);
+
+            let tlv: Tlv<NetToMgmt> = match tlv.value.as_slice().read_tlv().await {
+                Ok(Some(tlv)) => tlv,
+                Ok(None) => return,  // Channel closed
+                Err(_err) => return, // IO error
+            };
+
+            assert_eq!(tlv.tlv_type, NetToMgmt::Pong);
+            assert_eq!(&tlv.value, data);
+        }
     }
 }
 
@@ -397,8 +476,18 @@ mod test {
         let (_ui_to_mgmt, mgmt_from_ui) = channel();
         let (mgmt_to_ui, _ui_from_mgmt) = channel();
 
+        let (_net_to_mgmt, mgmt_from_net) = channel();
+        let (mgmt_to_net, _net_from_mgmt) = channel();
+
         let mut ctl_app = ctl::App::new(ctl_to_mgmt, ctl_from_mgmt);
-        let mgmt_task = mgmt::run(mgmt_to_ctl, mgmt_from_ctl, mgmt_to_ui, mgmt_from_ui);
+        let mgmt_task = mgmt::run(
+            mgmt_to_ctl,
+            mgmt_from_ctl,
+            mgmt_to_ui,
+            mgmt_from_ui,
+            mgmt_to_net,
+            mgmt_from_net,
+        );
 
         let write_data = b"hello mgmt";
         tokio::select!(
@@ -415,8 +504,18 @@ mod test {
         let (ui_to_mgmt, mgmt_from_ui) = channel();
         let (mgmt_to_ui, ui_from_mgmt) = channel();
 
+        let (_net_to_mgmt, mgmt_from_net) = channel();
+        let (mgmt_to_net, _net_from_mgmt) = channel();
+
         let mut ctl_app = ctl::App::new(ctl_to_mgmt, ctl_from_mgmt);
-        let mgmt_task = mgmt::run(mgmt_to_ctl, mgmt_from_ctl, mgmt_to_ui, mgmt_from_ui);
+        let mgmt_task = mgmt::run(
+            mgmt_to_ctl,
+            mgmt_from_ctl,
+            mgmt_to_ui,
+            mgmt_from_ui,
+            mgmt_to_net,
+            mgmt_from_net,
+        );
         let ui_task = ui::run(ui_to_mgmt, ui_from_mgmt);
 
         let write_data = b"hello ui";
@@ -424,6 +523,36 @@ mod test {
             _ = ctl_app.send_ui_ping(write_data) => {},
             _ = mgmt_task => {},
             _ = ui_task => {},
+        );
+    }
+
+    #[tokio::test]
+    async fn ctl_mgmt_net_ping() {
+        let (ctl_to_mgmt, mgmt_from_ctl) = channel();
+        let (mgmt_to_ctl, ctl_from_mgmt) = channel();
+
+        let (_ui_to_mgmt, mgmt_from_ui) = channel();
+        let (mgmt_to_ui, _ui_from_mgmt) = channel();
+
+        let (net_to_mgmt, mgmt_from_net) = channel();
+        let (mgmt_to_net, net_from_mgmt) = channel();
+
+        let mut ctl_app = ctl::App::new(ctl_to_mgmt, ctl_from_mgmt);
+        let mgmt_task = mgmt::run(
+            mgmt_to_ctl,
+            mgmt_from_ctl,
+            mgmt_to_ui,
+            mgmt_from_ui,
+            mgmt_to_net,
+            mgmt_from_net,
+        );
+        let net_task = net::run(net_to_mgmt, net_from_mgmt);
+
+        let write_data = b"hello net";
+        tokio::select!(
+            _ = ctl_app.send_net_ping(write_data) => {},
+            _ = mgmt_task => {},
+            _ = net_task => {},
         );
     }
 }
