@@ -1,15 +1,7 @@
-#![allow(unused_imports)]
-#![allow(dead_code)]
-
 mod tlv;
 
 pub mod mgmt {
-    use core::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    use std::thread::JoinHandle;
-
     use crate::tlv::{self, ReadTlv, Tlv, WriteTlv};
-    use async_channel::{Receiver, Sender};
     use embedded_io_async::{Read, Write};
 
     /// The Environment trait just allows a caller to get references to the objects we expect to
@@ -67,64 +59,47 @@ pub mod mgmt {
         }
     }
 
-    pub struct Runner {
-        stop: Arc<AtomicBool>,
-        read_task: tokio::task::JoinHandle<()>,
-        handle_task: tokio::task::JoinHandle<()>,
-    }
+    pub async fn run<W, R>(to_ctl: W, mut from_ctl: R)
+    where
+        W: Write + 'static,
+        R: Read + 'static,
+    {
+        const MAX_QUEUE_DEPTH: usize = 32;
 
-    impl Runner {
-        pub async fn start<W, R>(to_ctl: W, mut from_ctl: R)
-        where
-            W: Write + Send + 'static,
-            R: Read + Send + 'static,
-        {
-            println!("Runner::start");
-            const MAX_QUEUE_DEPTH: usize = 32;
+        let (sender, receiver) = async_channel::bounded::<Event>(MAX_QUEUE_DEPTH);
 
-            let (sender, receiver) = async_channel::bounded::<Event>(MAX_QUEUE_DEPTH);
+        let mut app = App::default();
+        let mut env = EnvironmentInstance::new(to_ctl);
 
-            let mut app = App::default();
-            let mut env = EnvironmentInstance::new(to_ctl);
-
-            // Read thread
-            let read_task = async move {
-                println!("read task start");
-
-                loop {
-                    let tlv = match from_ctl.read_tlv().await {
-                        Ok(Some(tlv)) => tlv,
-                        Ok(None) => return,  // Channel closed
-                        Err(_err) => return, // IO error
-                    };
-                    if sender.send(Event::Tlv(tlv)).await.is_err() {
-                        break; // Receiver dropped, exit
-                    }
+        // Read thread
+        let read_task = async move {
+            loop {
+                let tlv = match from_ctl.read_tlv().await {
+                    Ok(Some(tlv)) => tlv,
+                    Ok(None) => return,  // Channel closed
+                    Err(_err) => return, // IO error
+                };
+                if sender.send(Event::Tlv(tlv)).await.is_err() {
+                    break; // Receiver dropped, exit
                 }
-            };
+            }
+        };
 
-            // Handle thread
-            let handle_task = async move {
-                println!("handle task start");
-                while let Ok(tlv) = receiver.recv().await {
-                    // TODO convert TLVs to events
-                    app.handle(tlv, &mut env).await;
-                }
-            };
+        // Handle thread
+        let handle_task = async move {
+            while let Ok(tlv) = receiver.recv().await {
+                // TODO convert TLVs to events
+                app.handle(tlv, &mut env).await;
+            }
+        };
 
-            futures::join!(read_task, handle_task);
-        }
-
-        pub async fn stop(self) {
-            self.stop.store(true, Ordering::SeqCst);
-            self.read_task.await.unwrap();
-            self.handle_task.await.unwrap();
-        }
+        futures::join!(read_task, handle_task);
     }
 }
 
 pub mod ctl {
-    use std::io::{Read, Write};
+    use crate::tlv::{self, ReadTlv, WriteTlv};
+    use embedded_io_async::{Read, Write};
 
     pub struct App<R, W> {
         to_mgmt: W,
@@ -136,25 +111,21 @@ pub mod ctl {
             Self { to_mgmt, from_mgmt }
         }
 
-        pub fn send_ping(&mut self, data: &[u8])
+        pub async fn send_ping(&mut self, data: &[u8])
         where
             W: Write,
             R: Read,
         {
-            println!("CTL write");
-            self.to_mgmt.write(&[data.len() as u8]).unwrap();
-            self.to_mgmt.write(data).unwrap();
+            self.to_mgmt.write_tlv(tlv::Type::Ping, data).await.unwrap();
 
-            println!("CTL read");
-            let mut len_buffer = [0u8; 1];
-            while self.from_mgmt.read(&mut len_buffer).unwrap() == 0 {}
+            let tlv = match self.from_mgmt.read_tlv().await {
+                Ok(Some(tlv)) => tlv,
+                Ok(None) => return,  // Channel closed
+                Err(_err) => return, // IO error
+            };
 
-            let n: usize = len_buffer[0].into();
-            let mut read_buffer = [0u8; 5];
-            self.from_mgmt.read_exact(&mut read_buffer[..n]).unwrap();
-
-            assert_eq!(data, &read_buffer);
-            println!("CTL ok");
+            assert_eq!(tlv.tlv_type, tlv::Type::Pong);
+            assert_eq!(&tlv.value, data);
         }
     }
 }
@@ -162,28 +133,29 @@ pub mod ctl {
 #[cfg(test)]
 mod test {
     use super::*;
-    use virtual_serialport::VirtualPort;
+    use embedded_io_adapters::futures_03::FromFutures;
 
-    fn virtual_port_pair() -> (VirtualPort, VirtualPort) {
-        const SERIAL_BAUD_RATE: u32 = 9600;
-        const SERIAL_BUFFER_CAPACITY: u32 = 1024;
-        VirtualPort::pair(SERIAL_BAUD_RATE, SERIAL_BUFFER_CAPACITY).unwrap()
+    type Reader = FromFutures<async_ringbuffer::Reader>;
+    type Writer = FromFutures<async_ringbuffer::Writer>;
+
+    fn channel() -> (Writer, Reader) {
+        const BUFFER_CAPACITY: usize = 1024;
+        let (w, r) = async_ringbuffer::ring_buffer(BUFFER_CAPACITY);
+        (FromFutures::new(w), FromFutures::new(r))
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[tokio::test]
     async fn mgmt_ctl() {
-        println!("mgmt_ctl start");
-        let (ctl_side, mgmt_side) = virtual_port_pair();
+        let (ctl_to_mgmt, mgmt_from_ctl) = channel();
+        let (mgmt_to_ctl, ctl_from_mgmt) = channel();
 
-        let mut ctl_app = ctl::App::new(ctl_side.clone(), ctl_side);
-        let mgmt_runner = mgmt::Runner::start(mgmt_side.clone(), mgmt_side).await;
+        let mut ctl_app = ctl::App::new(ctl_to_mgmt, ctl_from_mgmt);
+        let mgmt_task = mgmt::run(mgmt_to_ctl, mgmt_from_ctl);
 
-        let ctl_task = tokio::spawn(async move {
-            let write_data = b"hello";
-            ctl_app.send_ping(write_data);
-        });
-
-        ctl_task.await;
-        mgmt_runner.stop().await;
+        let write_data = b"hello";
+        tokio::select!(
+            _ = ctl_app.send_ping(write_data) => {},
+            _ = mgmt_task => {},
+        );
     }
 }

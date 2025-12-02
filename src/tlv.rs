@@ -45,8 +45,8 @@ impl Tlv {
 #[derive(Debug)]
 pub enum ReadError<E> {
     Io(E),
-    InvalidType(TryFromPrimitiveError<Type>),
-    TooLong(usize),
+    InvalidType,
+    TooLong,
 }
 
 pub trait ReadTlv {
@@ -68,12 +68,10 @@ where
             Err(ReadExactError::Other(e)) => return Err(ReadError::Io(e)),
         }
 
-        let (tlv_type, length) = decode_header(&header).map_err(ReadError::InvalidType)?;
+        let (tlv_type, length) = decode_header(&header).map_err(|_| ReadError::InvalidType)?;
 
         let mut value = Value::new();
-        value
-            .resize(length, 0)
-            .map_err(|_| ReadError::TooLong(length))?;
+        value.resize(length, 0).map_err(|_| ReadError::TooLong)?;
 
         match self.read_exact(&mut value).await {
             Ok(()) => {}

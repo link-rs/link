@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dev-dependencies]
+async-ringbuffer = "0.5.5"
+embedded-io-adapters = { version = "0.7.0", features = ["futures-03"], default-features = false }
 virtual-serialport = "0.1.3"
 
 [dependencies]
