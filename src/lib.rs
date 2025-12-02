@@ -1,15 +1,16 @@
+#![allow(unused_imports)]
+#![allow(dead_code)]
+
+mod tlv;
+
 pub mod mgmt {
     use core::sync::atomic::{AtomicBool, Ordering};
-    use std::io::{Read, Write};
     use std::sync::Arc;
     use std::thread::JoinHandle;
 
+    use crate::tlv::{self, ReadTlv, Tlv, WriteTlv};
     use async_channel::{Receiver, Sender};
-
-    // TODO
-    // * [ ] Make library no_std
-    // * [X] Define a TLV reader / writer
-    // * [ ] Define an event type
+    use embedded_io_async::{Read, Write};
 
     /// The Environment trait just allows a caller to get references to the objects we expect to
     /// have in an environment.  The main function of this trait is just to avoid having to
@@ -37,13 +38,32 @@ pub mod mgmt {
         }
     }
 
+    pub enum Event {
+        Tlv(Tlv),
+    }
+
     #[derive(Default)]
     pub struct App;
 
     impl App {
-        fn handle(&mut self, data: &[u8], env: &mut impl Environment) {
-            env.to_ctl().write(&[data.len() as u8]).unwrap();
-            env.to_ctl().write(data).unwrap();
+        async fn handle(&mut self, event: Event, env: &mut impl Environment) {
+            match event {
+                Event::Tlv(tlv) => self.handle_tlv(tlv, env).await,
+            }
+        }
+
+        async fn handle_tlv(&mut self, tlv: Tlv, env: &mut impl Environment) {
+            match tlv.tlv_type {
+                tlv::Type::Ping => env
+                    .to_ctl()
+                    .write_tlv(tlv::Type::Pong, &tlv.value)
+                    .await
+                    .unwrap(),
+                _ => {
+                    // Silently ignore invalid types
+                    // TODO log or validate upstream
+                }
+            }
         }
     }
 
@@ -54,7 +74,7 @@ pub mod mgmt {
     }
 
     impl Runner {
-        pub async fn start<W, R>(to_ctl: W, mut from_ctl: R) -> Self
+        pub async fn start<W, R>(to_ctl: W, mut from_ctl: R)
         where
             W: Write + Send + 'static,
             R: Read + Send + 'static,
@@ -62,66 +82,43 @@ pub mod mgmt {
             println!("Runner::start");
             const MAX_QUEUE_DEPTH: usize = 32;
 
-            let stop = Arc::new(AtomicBool::new(false));
-
-            let (sender, receiver): (Sender<Vec<u8>>, Receiver<Vec<u8>>) =
-                async_channel::bounded(MAX_QUEUE_DEPTH);
+            let (sender, receiver) = async_channel::bounded::<Event>(MAX_QUEUE_DEPTH);
 
             let mut app = App::default();
             let mut env = EnvironmentInstance::new(to_ctl);
 
             // Read thread
-            let stop_read = stop.clone();
-            let read_task = tokio::spawn(async move {
+            let read_task = async move {
                 println!("read task start");
+
                 loop {
-                    if stop_read.load(Ordering::SeqCst) {
-                        break;
-                    }
-
-                    let mut len_buffer = [0u8; 1];
-                    while from_ctl.read(&mut len_buffer).unwrap() == 0 {
-                        if stop_read.load(Ordering::SeqCst) {
-                            break;
-                        }
-                    }
-
-                    let n: usize = len_buffer[0].into();
-                    let mut buffer = vec![0; n];
-                    from_ctl.read_exact(&mut buffer).unwrap();
-
-                    if sender.send_blocking(buffer).is_err() {
+                    let tlv = match from_ctl.read_tlv().await {
+                        Ok(Some(tlv)) => tlv,
+                        Ok(None) => return,  // Channel closed
+                        Err(_err) => return, // IO error
+                    };
+                    if sender.send(Event::Tlv(tlv)).await.is_err() {
                         break; // Receiver dropped, exit
                     }
                 }
-            });
+            };
 
             // Handle thread
-            let stop_handle = stop.clone();
-            let handle_task = tokio::spawn(async move {
+            let handle_task = async move {
                 println!("handle task start");
-                loop {
-                    if stop_handle.load(Ordering::SeqCst) {
-                        break;
-                    }
-
-                    if let Ok(data) = receiver.try_recv() {
-                        app.handle(&data, &mut env);
-                    }
+                while let Ok(tlv) = receiver.recv().await {
+                    // TODO convert TLVs to events
+                    app.handle(tlv, &mut env).await;
                 }
-            });
+            };
 
-            Self {
-                stop,
-                read_task,
-                handle_task,
-            }
+            futures::join!(read_task, handle_task);
         }
 
         pub async fn stop(self) {
             self.stop.store(true, Ordering::SeqCst);
-            self.read_task.await;
-            self.handle_task.await;
+            self.read_task.await.unwrap();
+            self.handle_task.await.unwrap();
         }
     }
 }
