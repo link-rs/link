@@ -1,0 +1,9 @@
+[package]
+name = "link"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[dev-dependencies]
+virtual-serialport = "0.1.3"
