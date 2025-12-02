@@ -1,12 +1,13 @@
+// The code in this crate must be no_std clean.  However, the test code uses std, specifically so
+// that tokio can provide an async runtime.
+#![cfg_attr(not(test), no_std)]
+
 mod tlv;
 
 pub mod mgmt {
-    use crate::tlv::{self, ReadTlv, Tlv, WriteTlv};
+    use crate::tlv::{CtlToMgmt, MgmtToCtl, ReadTlv, Tlv, WriteTlv};
     use embedded_io_async::{Read, Write};
 
-    /// The Environment trait just allows a caller to get references to the objects we expect to
-    /// have in an environment.  The main function of this trait is just to avoid having to
-    /// propagate a bunch of generics on the `EnvironmentInstance` struct.
     pub trait Environment {
         fn to_ctl(&mut self) -> &mut impl Write;
     }
@@ -31,7 +32,7 @@ pub mod mgmt {
     }
 
     pub enum Event {
-        Tlv(Tlv),
+        Tlv(Tlv<CtlToMgmt>),
     }
 
     #[derive(Default)]
@@ -44,17 +45,13 @@ pub mod mgmt {
             }
         }
 
-        async fn handle_tlv(&mut self, tlv: Tlv, env: &mut impl Environment) {
+        async fn handle_tlv(&mut self, tlv: Tlv<CtlToMgmt>, env: &mut impl Environment) {
             match tlv.tlv_type {
-                tlv::Type::Ping => env
+                CtlToMgmt::Ping => env
                     .to_ctl()
-                    .write_tlv(tlv::Type::Pong, &tlv.value)
+                    .write_tlv(MgmtToCtl::Pong, &tlv.value)
                     .await
                     .unwrap(),
-                _ => {
-                    // Silently ignore invalid types
-                    // TODO log or validate upstream
-                }
             }
         }
     }
@@ -74,7 +71,7 @@ pub mod mgmt {
         // Read thread
         let read_task = async move {
             loop {
-                let tlv = match from_ctl.read_tlv().await {
+                let tlv: Tlv<CtlToMgmt> = match from_ctl.read_tlv().await {
                     Ok(Some(tlv)) => tlv,
                     Ok(None) => return,  // Channel closed
                     Err(_err) => return, // IO error
@@ -98,7 +95,7 @@ pub mod mgmt {
 }
 
 pub mod ctl {
-    use crate::tlv::{self, ReadTlv, WriteTlv};
+    use crate::tlv::{CtlToMgmt, MgmtToCtl, ReadTlv, Tlv, WriteTlv};
     use embedded_io_async::{Read, Write};
 
     pub struct App<R, W> {
@@ -116,15 +113,15 @@ pub mod ctl {
             W: Write,
             R: Read,
         {
-            self.to_mgmt.write_tlv(tlv::Type::Ping, data).await.unwrap();
+            self.to_mgmt.write_tlv(CtlToMgmt::Ping, data).await.unwrap();
 
-            let tlv = match self.from_mgmt.read_tlv().await {
+            let tlv: Tlv<MgmtToCtl> = match self.from_mgmt.read_tlv().await {
                 Ok(Some(tlv)) => tlv,
                 Ok(None) => return,  // Channel closed
                 Err(_err) => return, // IO error
             };
 
-            assert_eq!(tlv.tlv_type, tlv::Type::Pong);
+            assert_eq!(tlv.tlv_type, MgmtToCtl::Pong);
             assert_eq!(&tlv.value, data);
         }
     }
@@ -132,6 +129,8 @@ pub mod ctl {
 
 #[cfg(test)]
 mod test {
+    extern crate std;
+
     use super::*;
     use embedded_io_adapters::futures_03::FromFutures;
 
