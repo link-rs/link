@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use embedded_io_adapters::tokio_1::FromTokio;
 use serialport::SerialPortType;
+use std::io::Write;
 use tokio_serial::SerialPortBuilderExt;
 
 #[derive(Parser)]
@@ -42,11 +43,31 @@ fn select_port(specified: Option<String>) -> Result<String, String> {
             Ok(ports[0].clone())
         }
         _ => {
-            let list = ports.join(", ");
-            Err(format!(
-                "Multiple USB serial ports found: {}\nSpecify one with --port",
-                list
-            ))
+            println!("Multiple USB serial ports found:");
+            for (i, port) in ports.iter().enumerate() {
+                println!("  {}: {}", i + 1, port);
+            }
+            print!("Select port [1-{}]: ", ports.len());
+            std::io::stdout().flush().unwrap();
+
+            let mut input = String::new();
+            std::io::stdin()
+                .read_line(&mut input)
+                .map_err(|e| format!("Failed to read input: {}", e))?;
+
+            let choice: usize = input
+                .trim()
+                .parse()
+                .map_err(|_| "Invalid number".to_string())?;
+
+            if choice < 1 || choice > ports.len() {
+                return Err(format!(
+                    "Please select a number between 1 and {}",
+                    ports.len()
+                ));
+            }
+
+            Ok(ports[choice - 1].clone())
         }
     }
 }
