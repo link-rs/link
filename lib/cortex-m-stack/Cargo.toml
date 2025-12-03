@@ -1,0 +1,11 @@
+[package]
+edition = "2021"
+name = "cortex-m-stack"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[lib]
+test = false
+
+[dependencies]
+cortex-m = { version = "0.7.6" }

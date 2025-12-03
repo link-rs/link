@@ -253,11 +253,13 @@ pub mod ui {
         async fn handle_mgmt_tlv(&mut self, tlv: Tlv<MgmtToUi>, env: &mut impl Environment) {
             match tlv.tlv_type {
                 MgmtToUi::Ping => {
+                    info!("ui: mgmt ping, sending pong");
                     env.to_mgmt()
                         .must_write_tlv(UiToMgmt::Pong, &tlv.value)
                         .await;
                 }
                 MgmtToUi::CircularPing => {
+                    info!("ui: mgmt circular ping -> net");
                     env.to_net()
                         .must_write_tlv(UiToNet::CircularPing, &tlv.value)
                         .await;
@@ -268,6 +270,7 @@ pub mod ui {
         async fn handle_net_tlv(&mut self, tlv: Tlv<NetToUi>, env: &mut impl Environment) {
             match tlv.tlv_type {
                 NetToUi::CircularPing => {
+                    info!("ui: net circular ping -> mgmt");
                     env.to_mgmt()
                         .must_write_tlv(UiToMgmt::CircularPing, &tlv.value)
                         .await;
@@ -284,6 +287,8 @@ pub mod ui {
     {
         use crate::{Channel, RawMutex};
 
+        info!("ui: starting");
+
         const MAX_QUEUE_DEPTH: usize = 2;
 
         let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
@@ -295,6 +300,7 @@ pub mod ui {
         let net_read_task = read_loop(from_net, channel.sender(), Event::NetTlv);
 
         let handle_task = async {
+            info!("ui: ready to handle events");
             loop {
                 let event = channel.receive().await;
                 app.handle(event, &mut env).await;
