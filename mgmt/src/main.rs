@@ -9,7 +9,7 @@ use embassy_stm32::{
 };
 use {defmt_rtt as _, panic_probe as _};
 
-const DMA_BUF_SIZE: usize = 256;
+const DMA_BUF_SIZE: usize = 64;
 
 bind_interrupts!(struct Irqs {
     USART1 => usart::InterruptHandler<peripherals::USART1>;
