@@ -1,4 +1,4 @@
-.claude
-/target
+target
 Cargo.lock
 *.swp
+.claude

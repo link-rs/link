@@ -119,10 +119,13 @@ pub enum ReadError<E> {
 }
 
 pub trait ReadTlv {
-    type Error;
-    async fn read_tlv<T>(&mut self) -> Result<Option<Tlv<T>>, Self::Error>
-    where
-        T: TryFrom<u16>;
+    type Error: core::fmt::Debug;
+
+    async fn read_tlv<T: TryFrom<u16>>(&mut self) -> Result<Option<Tlv<T>>, Self::Error>;
+
+    async fn must_read_tlv<T: TryFrom<u16>>(&mut self) -> Tlv<T> {
+        self.read_tlv().await.unwrap().unwrap()
+    }
 }
 
 impl<R> ReadTlv for R
@@ -131,10 +134,7 @@ where
 {
     type Error = ReadError<R::Error>;
 
-    async fn read_tlv<T>(&mut self) -> Result<Option<Tlv<T>>, Self::Error>
-    where
-        T: TryFrom<u16>,
-    {
+    async fn read_tlv<T: TryFrom<u16>>(&mut self) -> Result<Option<Tlv<T>>, Self::Error> {
         let mut header = [0u8; HEADER_SIZE];
         match self.read_exact(&mut header).await {
             Ok(()) => {}
@@ -158,12 +158,17 @@ where
 }
 
 pub trait WriteTlv {
-    type Error;
+    type Error: core::fmt::Debug;
+
     async fn write_tlv<T: Into<u16>>(
         &mut self,
         tlv_type: T,
         value: &[u8],
     ) -> Result<(), Self::Error>;
+
+    async fn must_write_tlv<T: Into<u16>>(&mut self, tlv_type: T, value: &[u8]) {
+        self.write_tlv(tlv_type, value).await.unwrap()
+    }
 }
 
 impl<W> WriteTlv for W
