@@ -1,18 +1,54 @@
 use clap::{Parser, Subcommand};
 use embedded_io_adapters::tokio_1::FromTokio;
+use serialport::SerialPortType;
 use tokio_serial::SerialPortBuilderExt;
 
 #[derive(Parser)]
 #[command(name = "ctl")]
 #[command(about = "Control interface for the link device", long_about = None)]
 struct Cli {
+    /// Serial port to use (auto-detected if not specified)
     #[arg(short, long)]
-    port: String,
+    port: Option<String>,
 
     #[arg(short, long, default_value = "115200")]
     baud: u32,
 
+    #[command(subcommand)]
     command: Command,
+}
+
+/// Find USB serial ports that might be the link device
+fn find_usb_serial_ports() -> Vec<String> {
+    serialport::available_ports()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| matches!(p.port_type, SerialPortType::UsbPort(_)))
+        .map(|p| p.port_name)
+        .collect()
+}
+
+fn select_port(specified: Option<String>) -> Result<String, String> {
+    if let Some(port) = specified {
+        return Ok(port);
+    }
+
+    let ports = find_usb_serial_ports();
+
+    match ports.len() {
+        0 => Err("No USB serial ports found".to_string()),
+        1 => {
+            println!("Auto-selected port: {}", ports[0]);
+            Ok(ports[0].clone())
+        }
+        _ => {
+            let list = ports.join(", ");
+            Err(format!(
+                "Multiple USB serial ports found: {}\nSpecify one with --port",
+                list
+            ))
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -69,10 +105,10 @@ enum NetAction {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // Open the serial port
-    let port = tokio_serial::new(&cli.port, cli.baud).open_native_async()?;
+    let port_name = select_port(cli.port)?;
+    let port = tokio_serial::new(&port_name, cli.baud).open_native_async()?;
 
-    println!("Connected to {} at {} baud", cli.port, cli.baud);
+    println!("Connected to {} at {} baud", port_name, cli.baud);
 
     // Split the port into read/write halves and wrap for embedded-io-async
     let (reader, writer) = tokio::io::split(port);

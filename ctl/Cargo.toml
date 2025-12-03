@@ -12,4 +12,5 @@ link = { path = "../core" }
 tokio = { version = "1.48.0", features = ["full"] }
 tokio-serial = "5.4"
 clap = { version = "4", features = ["derive"] }
-embedded-io-adapters = { version = "0.7.0", features = ["tokio-1"] }
+embedded-io-adapters = { version = "0.6", features = ["tokio-1"] }
+serialport = "4.8.1"

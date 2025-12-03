@@ -5,16 +5,22 @@
 mod tlv;
 
 use crate::tlv::{ReadTlv, Tlv};
+use embassy_sync::channel::{Channel, Sender};
 use embedded_io_async::Read;
 
-async fn read_loop<T, R, E, F>(mut reader: R, sender: async_channel::Sender<E>, wrap: F)
-where
+type RawMutex = embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+
+async fn read_loop<'a, T, R, E, F, const N: usize>(
+    mut reader: R,
+    sender: Sender<'a, RawMutex, E, N>,
+    wrap: F,
+) where
     T: TryFrom<u16>,
     R: Read,
     F: Fn(Tlv<T>) -> E,
 {
     while let Ok(Some(tlv)) = reader.read_tlv::<T>().await {
-        sender.send(wrap(tlv)).await.unwrap();
+        sender.send(wrap(tlv)).await;
     }
 }
 
@@ -139,22 +145,25 @@ pub mod mgmt {
 
     pub async fn run<W, R>(to_ctl: W, from_ctl: R, to_ui: W, from_ui: R, to_net: W, from_net: R)
     where
-        W: Write + 'static,
-        R: Read + 'static,
+        W: Write,
+        R: Read,
     {
-        const MAX_QUEUE_DEPTH: usize = 32;
+        use crate::{Channel, RawMutex};
 
-        let (sender, receiver) = async_channel::bounded::<Event>(MAX_QUEUE_DEPTH);
+        const MAX_QUEUE_DEPTH: usize = 4;
+
+        let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
 
         let mut app = App::default();
         let mut env = EnvironmentInstance::new(to_ctl, to_ui, to_net);
 
-        let ctl_read_task = read_loop(from_ctl, sender.clone(), Event::CtlTlv);
-        let ui_read_task = read_loop(from_ui, sender.clone(), Event::UiTlv);
-        let net_read_task = read_loop(from_net, sender.clone(), Event::NetTlv);
+        let ctl_read_task = read_loop(from_ctl, channel.sender(), Event::CtlTlv);
+        let ui_read_task = read_loop(from_ui, channel.sender(), Event::UiTlv);
+        let net_read_task = read_loop(from_net, channel.sender(), Event::NetTlv);
 
-        let handle_task = async move {
-            while let Ok(event) = receiver.recv().await {
+        let handle_task = async {
+            loop {
+                let event = channel.receive().await;
                 app.handle(event, &mut env).await;
             }
         };
@@ -241,21 +250,24 @@ pub mod ui {
 
     pub async fn run<W, R>(to_mgmt: W, from_mgmt: R, to_net: W, from_net: R)
     where
-        W: Write + 'static,
-        R: Read + 'static,
+        W: Write,
+        R: Read,
     {
-        const MAX_QUEUE_DEPTH: usize = 32;
+        use crate::{Channel, RawMutex};
 
-        let (sender, receiver) = async_channel::bounded::<Event>(MAX_QUEUE_DEPTH);
+        const MAX_QUEUE_DEPTH: usize = 4;
+
+        let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
 
         let mut app = App::default();
         let mut env = EnvironmentInstance::new(to_mgmt, to_net);
 
-        let mgmt_read_task = read_loop(from_mgmt, sender.clone(), Event::MgmtTlv);
-        let net_read_task = read_loop(from_net, sender.clone(), Event::NetTlv);
+        let mgmt_read_task = read_loop(from_mgmt, channel.sender(), Event::MgmtTlv);
+        let net_read_task = read_loop(from_net, channel.sender(), Event::NetTlv);
 
-        let handle_task = async move {
-            while let Ok(event) = receiver.recv().await {
+        let handle_task = async {
+            loop {
+                let event = channel.receive().await;
                 app.handle(event, &mut env).await;
             }
         };
@@ -343,21 +355,24 @@ pub mod net {
 
     pub async fn run<W, R>(to_mgmt: W, from_mgmt: R, to_ui: W, from_ui: R)
     where
-        W: Write + 'static,
-        R: Read + 'static,
+        W: Write,
+        R: Read,
     {
-        const MAX_QUEUE_DEPTH: usize = 32;
+        use crate::{Channel, RawMutex};
 
-        let (sender, receiver) = async_channel::bounded::<Event>(MAX_QUEUE_DEPTH);
+        const MAX_QUEUE_DEPTH: usize = 4;
+
+        let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
 
         let mut app = App::default();
         let mut env = EnvironmentInstance::new(to_mgmt, to_ui);
 
-        let mgmt_read_task = read_loop(from_mgmt, sender.clone(), Event::MgmtTlv);
-        let ui_read_task = read_loop(from_ui, sender.clone(), Event::UiTlv);
+        let mgmt_read_task = read_loop(from_mgmt, channel.sender(), Event::MgmtTlv);
+        let ui_read_task = read_loop(from_ui, channel.sender(), Event::UiTlv);
 
-        let handle_task = async move {
-            while let Ok(event) = receiver.recv().await {
+        let handle_task = async {
+            loop {
+                let event = channel.receive().await;
                 app.handle(event, &mut env).await;
             }
         };

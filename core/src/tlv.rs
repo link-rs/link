@@ -9,7 +9,7 @@ pub type Value = Vec<u8, MAX_VALUE_SIZE>;
 pub const HEADER_SIZE: usize = core::mem::size_of::<Type>() + core::mem::size_of::<Length>();
 pub type Header = [u8; HEADER_SIZE];
 
-pub const MAX_VALUE_SIZE: usize = 512;
+pub const MAX_VALUE_SIZE: usize = 64;
 pub const MAX_TLV_SIZE: usize = HEADER_SIZE + MAX_VALUE_SIZE;
 pub type TlvVec = Vec<u8, MAX_TLV_SIZE>;
 
