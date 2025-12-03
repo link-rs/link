@@ -16,41 +16,61 @@ pub type TlvVec = Vec<u8, MAX_TLV_SIZE>;
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum CtlToMgmt {
-    Ping = 0,
-    ToUi = 1,
-    ToNet = 2,
+    Ping = 0x00,
+    ToUi,
+    ToNet,
+    UiFirstCircularPing,
+    NetFirstCircularPing,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum MgmtToCtl {
-    Pong = 0,
-    FromUi = 1,
-    FromNet = 2,
+    Pong = 0x10,
+    FromUi,
+    FromNet,
+    UiFirstCircularPing,
+    NetFirstCircularPing,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum MgmtToUi {
-    Ping = 0,
+    Ping = 0x20,
+    CircularPing,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum UiToMgmt {
-    Pong = 0,
+    Pong = 0x30,
+    CircularPing,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum MgmtToNet {
-    Ping = 0,
+    Ping = 0x40,
+    CircularPing,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum NetToMgmt {
-    Pong = 0,
+    Pong = 0x50,
+    CircularPing,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
+#[repr(u16)]
+pub enum UiToNet {
+    CircularPing = 0x60,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
+#[repr(u16)]
+pub enum NetToUi {
+    CircularPing = 0x70,
 }
 
 fn decode_header<T: TryFrom<u16>>(header: &Header) -> Result<(T, usize), T::Error> {
