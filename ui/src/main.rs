@@ -5,8 +5,6 @@ use cortex_m::singleton;
 use embassy_executor::Spawner;
 use embassy_stm32::{
     bind_interrupts, peripherals,
-    rcc::*,
-    time::Hertz,
     usart::{self, Config, DataBits, Parity, StopBits, Uart},
 };
 use {defmt_rtt as _, panic_probe as _};

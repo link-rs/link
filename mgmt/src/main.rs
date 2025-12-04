@@ -4,7 +4,9 @@
 use cortex_m::singleton;
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    bind_interrupts, peripherals, usart,
+    bind_interrupts,
+    gpio::{Level, Output, Speed},
+    peripherals, usart,
     usart::{Config, DataBits, Parity, StopBits, Uart},
 };
 use {defmt_rtt as _, panic_probe as _};
@@ -26,6 +28,10 @@ async fn main(_spawner: Spawner) {
     config.data_bits = DataBits::DataBits8;
     config.stop_bits = StopBits::STOP1;
     config.parity = Parity::ParityNone;
+
+    // Hold the NET boot and reset pins high
+    let _net_nrst = Output::new(p.PB4, Level::High, Speed::Low);
+    let _net_boot = Output::new(p.PB5, Level::High, Speed::Low);
 
     // DMA buffers for ring-buffered RX
     let ctl_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
