@@ -5,7 +5,8 @@ use cortex_m::singleton;
 use embassy_executor::Spawner;
 use embassy_stm32::{
     bind_interrupts,
-    gpio::{Level, Output, Speed},
+    exti::ExtiInput,
+    gpio::{Level, Output, Pull, Speed},
     peripherals, usart,
     usart::{Config, DataBits, Parity, StopBits, Uart},
 };
@@ -60,5 +61,21 @@ async fn main(_spawner: Spawner) {
     .split();
     let from_net = from_net.into_ring_buffered(net_rx_buf);
 
-    link::mgmt::run(to_ctl, from_ctl, to_ui, from_ui, to_net, from_net).await;
+    // Signal pins for NET synchronization
+    // PB13 = output to NET (signal that we're ready)
+    // PB14 = input from NET (wait for NET to be ready)
+    let signal_to_net = Output::new(p.PB13, Level::Low, Speed::Low);
+    let signal_from_net = ExtiInput::new(p.PB14, p.EXTI14, Pull::Down);
+
+    link::mgmt::run(
+        to_ctl,
+        from_ctl,
+        to_ui,
+        from_ui,
+        to_net,
+        from_net,
+        signal_to_net,
+        signal_from_net,
+    )
+    .await;
 }
