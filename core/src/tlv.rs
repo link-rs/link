@@ -39,6 +39,10 @@ pub const MAX_VALUE_SIZE: usize = 32;
 pub const MAX_TLV_SIZE: usize = HEADER_SIZE + MAX_VALUE_SIZE;
 pub type TlvVec = Vec<u8, MAX_TLV_SIZE>;
 
+/// Sync word prefix for guarded TLV communication.
+/// Used to synchronize after bootloader garbage or other noise.
+pub const SYNC_WORD: [u8; 4] = [0xAA, 0x55, 0xAA, 0x55];
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum CtlToMgmt {
@@ -165,6 +169,22 @@ pub struct LabeledReader<R> {
 impl<R> LabeledReader<R> {
     pub fn new(label: &'static str, reader: R) -> Self {
         Self { label, reader }
+    }
+}
+
+impl<R> embedded_io_async::ErrorType for LabeledReader<R>
+where
+    R: Read,
+{
+    type Error = R::Error;
+}
+
+impl<R> Read for LabeledReader<R>
+where
+    R: Read,
+{
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        self.reader.read(buf).await
     }
 }
 
@@ -342,26 +362,85 @@ impl<S, R> GuardedReadTlv<S, R> {
 
 impl<S, R> ReadTlv for GuardedReadTlv<S, R>
 where
-    S: embedded_hal_async::digital::Wait,
+    S: embedded_hal::digital::InputPin,
     R: Read,
 {
     type Error = ReadError<R::Error>;
 
     async fn read_tlv<T: TryFrom<u16>>(&mut self) -> Result<Option<Tlv<T>>, Self::Error> {
-        trace!("{}: waiting for signal high", self.label);
-        let _ = self.signal.wait_for_high().await;
-        trace!("{}: signal is high, reading", self.label);
+        trace!("{}: scanning for sync word", self.label);
+
+        // Continuously scan for sync word, draining any garbage.
+        // Once sync word is found, check signal - if high, read TLV.
+        // If signal is low, the sync word was in garbage data, keep scanning.
+        let mut matched = 0usize;
+        let mut discarded = 0usize;
+        loop {
+            let mut byte = [0u8; 1];
+            match self.reader.read(&mut byte).await {
+                Ok(0) => {
+                    // No data yet - yield to let other tasks run (important for tests)
+                    // Real embedded UART would block in read() until data available
+                    #[cfg(test)]
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                Ok(_) => {
+                    if byte[0] == SYNC_WORD[matched] {
+                        matched += 1;
+                        if matched == SYNC_WORD.len() {
+                            // Found complete sync word - check if signal is high
+                            if self.signal.is_high().unwrap_or(false) {
+                                if discarded > 0 {
+                                    trace!("{}: sync found (signal high) after discarding {} bytes", self.label, discarded);
+                                } else {
+                                    trace!("{}: sync found (signal high)", self.label);
+                                }
+                                break;
+                            } else {
+                                // Signal is low - this sync word was in garbage, keep scanning
+                                trace!("{}: sync word found but signal low, continuing scan", self.label);
+                                discarded += SYNC_WORD.len();
+                                matched = 0;
+                            }
+                        }
+                    } else {
+                        // Mismatch - count discarded bytes and reset
+                        discarded += matched + 1;
+                        matched = 0;
+                        // Check if current byte starts a new sync sequence
+                        if byte[0] == SYNC_WORD[0] {
+                            matched = 1;
+                            discarded -= 1;
+                        }
+                    }
+                }
+                Err(e) => {
+                    // During sync scan, IO errors like Overrun can happen when
+                    // bootloader garbage fills the buffer. Continue scanning.
+                    trace_io_error!(self.label, "IO error during sync scan (continuing)", e);
+                    discarded += 1;
+                    matched = 0; // Reset sync match state after error
+                    continue;
+                }
+            }
+        }
+
+        // Sync word found with signal high, now read the TLV
         self.reader.read_tlv().await
     }
 }
 
 /// A guarded TLV writer that signals during writes.
 /// Sets signal high for the duration of a write, low otherwise.
+/// Automatically sends sync word prefix at the start of each write sequence.
 pub struct GuardedWriteTlv<S, W> {
     #[allow(dead_code)] // Used by trace! macro when trace-tlv feature is enabled
     label: &'static str,
     signal: S,
     writer: LabeledWriter<W>,
+    /// Track if sync word needs to be sent (true when signal is low)
+    needs_sync: bool,
 }
 
 impl<S, W> GuardedWriteTlv<S, W>
@@ -375,6 +454,7 @@ where
             label,
             signal,
             writer: LabeledWriter::new(label, writer),
+            needs_sync: true,
         }
     }
 }
@@ -392,15 +472,26 @@ where
     W: Write,
 {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        trace!("{}: signal high, writing {} bytes", self.label, buf.len());
-        let _ = self.signal.set_high();
+        // Send sync word at start of write sequence (when signal was low)
+        if self.needs_sync {
+            trace!("{}: signal high, sending sync word", self.label);
+            let _ = self.signal.set_high();
+            self.writer.write_all(&SYNC_WORD).await?;
+            self.needs_sync = false;
+        }
+        trace!("{}: writing {} bytes", self.label, buf.len());
         self.writer.write(buf).await
     }
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
         let result = self.writer.flush().await;
+        // Keep signal high briefly to give receiver time to read sync word and check signal
+        // before we set it low. Without this delay, receiver may find sync word after we've
+        // already set signal low.
+        embassy_futures::yield_now().await;
         trace!("{}: signal low", self.label);
         let _ = self.signal.set_low();
+        self.needs_sync = true; // Next write sequence needs sync word
         result
     }
 }
@@ -413,14 +504,19 @@ where
     type Error = W::Error;
 
     async fn write_tlv<T: Into<u16>>(&mut self, tlv_type: T, value: &[u8]) -> Result<(), W::Error> {
-        // Signal high at start
-        trace!("{}: signal high", self.label);
+        // Signal high at start, send sync word prefix
+        trace!("{}: signal high, sending sync word", self.label);
         let _ = self.signal.set_high();
+        self.writer.write_all(&SYNC_WORD).await?;
+        self.needs_sync = false; // Sync word sent for this sequence
         // Delegate to labeled writer (which logs the TLV details)
         let result = self.writer.write_tlv(tlv_type, value).await;
-        // Signal low after flush
+        // Keep signal high briefly to give receiver time to read sync word and check signal
+        embassy_futures::yield_now().await;
+        // Signal low after delay
         trace!("{}: signal low", self.label);
         let _ = self.signal.set_low();
+        self.needs_sync = true; // Reset for next write sequence
         result
     }
 }

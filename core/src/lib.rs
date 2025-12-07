@@ -44,8 +44,7 @@ pub mod mgmt {
         CtlToMgmt, GuardedReadTlv, GuardedWriteTlv, LabeledReader, LabeledWriter, MgmtToCtl,
         MgmtToNet, MgmtToUi, NetToMgmt, Tlv, UiToMgmt, WriteTlv,
     };
-    use embedded_hal::digital::OutputPin;
-    use embedded_hal_async::digital::Wait;
+    use embedded_hal::digital::{InputPin, OutputPin};
     use embedded_io_async::{Read, Write};
 
     pub trait Environment {
@@ -195,7 +194,7 @@ pub mod mgmt {
         W: Write,
         R: Read,
         SigOut: OutputPin,
-        SigIn: Wait,
+        SigIn: InputPin,
     {
         use crate::{Channel, RawMutex};
 
@@ -219,7 +218,7 @@ pub mod mgmt {
         let ctl_read_task = read_loop(labeled_from_ctl, channel.sender(), Event::CtlTlv);
         let ui_read_task = read_loop(labeled_from_ui, channel.sender(), Event::UiTlv);
 
-        // Use guarded read for NET - wait for signal before reading
+        // Use guarded read for NET - waits for signal, scans for sync word, then reads TLV
         let guarded_from_net = GuardedReadTlv::new("net->mgmt", signal_from_net, from_net);
         let net_read_task = read_loop(guarded_from_net, channel.sender(), Event::NetTlv);
 
@@ -367,8 +366,7 @@ pub mod net {
         GuardedReadTlv, GuardedWriteTlv, LabeledReader, LabeledWriter, MgmtToNet, NetToMgmt,
         NetToUi, Tlv, UiToNet, WriteTlv,
     };
-    use embedded_hal::digital::OutputPin;
-    use embedded_hal_async::digital::Wait;
+    use embedded_hal::digital::{InputPin, OutputPin};
     use embedded_io_async::{Read, Write};
 
     pub trait Environment {
@@ -465,7 +463,7 @@ pub mod net {
         W: Write,
         R: Read,
         SigOut: OutputPin,
-        SigIn: Wait,
+        SigIn: InputPin,
     {
         use crate::{Channel, RawMutex};
 
@@ -662,6 +660,20 @@ mod test {
 
     impl embedded_hal::digital::ErrorType for MockInputPin {
         type Error = core::convert::Infallible;
+    }
+
+    impl embedded_hal::digital::InputPin for MockInputPin {
+        fn is_high(&mut self) -> Result<bool, Self::Error> {
+            // Check for any pending updates (non-blocking)
+            while let Ok(val) = self.rx.try_recv() {
+                self.current = val;
+            }
+            Ok(self.current)
+        }
+
+        fn is_low(&mut self) -> Result<bool, Self::Error> {
+            Ok(!self.is_high()?)
+        }
     }
 
     impl embedded_hal_async::digital::Wait for MockInputPin {
