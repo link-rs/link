@@ -41,7 +41,8 @@ pub type TlvVec = Vec<u8, MAX_TLV_SIZE>;
 
 /// Sync word prefix for guarded TLV communication.
 /// Used to synchronize after bootloader garbage or other noise.
-pub const SYNC_WORD: [u8; 4] = [0xAA, 0x55, 0xAA, 0x55];
+/// Spells "LINK" in ASCII.
+pub const SYNC_WORD: [u8; 4] = [0x4C, 0x49, 0x4E, 0x4B];
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
@@ -346,6 +347,7 @@ where
 pub struct GuardedReadTlv<S, R> {
     #[allow(dead_code)] // Used by trace! macro when trace-tlv feature is enabled
     label: &'static str,
+    #[allow(dead_code)] // Kept for potential future use
     signal: S,
     reader: LabeledReader<R>,
 }
@@ -362,7 +364,6 @@ impl<S, R> GuardedReadTlv<S, R> {
 
 impl<S, R> ReadTlv for GuardedReadTlv<S, R>
 where
-    S: embedded_hal::digital::InputPin,
     R: Read,
 {
     type Error = ReadError<R::Error>;
@@ -371,8 +372,7 @@ where
         trace!("{}: scanning for sync word", self.label);
 
         // Continuously scan for sync word, draining any garbage.
-        // Once sync word is found, check signal - if high, read TLV.
-        // If signal is low, the sync word was in garbage data, keep scanning.
+        // The sync word alone identifies the start of a valid TLV.
         let mut matched = 0usize;
         let mut discarded = 0usize;
         loop {
@@ -389,20 +389,13 @@ where
                     if byte[0] == SYNC_WORD[matched] {
                         matched += 1;
                         if matched == SYNC_WORD.len() {
-                            // Found complete sync word - check if signal is high
-                            if self.signal.is_high().unwrap_or(false) {
-                                if discarded > 0 {
-                                    trace!("{}: sync found (signal high) after discarding {} bytes", self.label, discarded);
-                                } else {
-                                    trace!("{}: sync found (signal high)", self.label);
-                                }
-                                break;
+                            // Found complete sync word
+                            if discarded > 0 {
+                                trace!("{}: sync found after discarding {} bytes", self.label, discarded);
                             } else {
-                                // Signal is low - this sync word was in garbage, keep scanning
-                                trace!("{}: sync word found but signal low, continuing scan", self.label);
-                                discarded += SYNC_WORD.len();
-                                matched = 0;
+                                trace!("{}: sync found", self.label);
                             }
+                            break;
                         }
                     } else {
                         // Mismatch - count discarded bytes and reset
@@ -426,7 +419,7 @@ where
             }
         }
 
-        // Sync word found with signal high, now read the TLV
+        // Sync word found, now read the TLV
         self.reader.read_tlv().await
     }
 }
