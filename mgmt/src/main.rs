@@ -61,21 +61,13 @@ async fn main(_spawner: Spawner) {
     .split();
     let from_net = from_net.into_ring_buffered(net_rx_buf);
 
-    // Signal pins for NET synchronization
-    // PB13 = output to NET (signal that we're ready)
+    // Signal pins for NET synchronization (active low directly after)
+    // PB13 = output to NET (active when we're ready)
     // PB14 = input from NET (wait for NET to be ready)
-    let signal_to_net = Output::new(p.PB13, Level::Low, Speed::Low);
-    let signal_from_net = ExtiInput::new(p.PB14, p.EXTI14, Pull::Down);
+    let _signal_to_net = Output::new(p.PB13, Level::Low, Speed::Low);
+    let _signal_from_net = ExtiInput::new(p.PB14, p.EXTI14, Pull::Down);
 
-    link::mgmt::run(
-        to_ctl,
-        from_ctl,
-        to_ui,
-        from_ui,
-        to_net,
-        from_net,
-        signal_to_net,
-        signal_from_net,
-    )
-    .await;
+    link::mgmt::App::new(to_ctl, from_ctl, to_ui, from_ui, to_net, from_net)
+        .run()
+        .await;
 }

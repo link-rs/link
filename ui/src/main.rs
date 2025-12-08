@@ -60,5 +60,7 @@ async fn main(_spawner: Spawner) {
     .split();
     let from_net = from_net.into_ring_buffered(net_rx_buf);
 
-    link::ui::run(to_mgmt, from_mgmt, to_net, from_net).await;
+    link::ui::App::new(to_mgmt, from_mgmt, to_net, from_net)
+        .run()
+        .await;
 }

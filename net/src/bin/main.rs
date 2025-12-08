@@ -69,19 +69,13 @@ async fn main(_spawner: Spawner) {
         .into_async();
     let (from_ui, to_ui) = ui_uart.split();
 
-    // Signal pins for MGMT synchronization
+    // Signal pins for MGMT synchronization (not yet used)
     // GPIO15 = output to MGMT (signal that we're ready)
     // GPIO16 = input from MGMT (wait for MGMT to be ready)
-    let signal_to_mgmt = Output::new(peripherals.GPIO15, Level::Low, OutputConfig::default());
-    let signal_from_mgmt = Input::new(peripherals.GPIO16, InputConfig::default().with_pull(Pull::Down));
+    let _signal_to_mgmt = Output::new(peripherals.GPIO15, Level::Low, OutputConfig::default());
+    let _signal_from_mgmt = Input::new(peripherals.GPIO16, InputConfig::default().with_pull(Pull::Down));
 
-    link::net::run(
-        to_mgmt,
-        from_mgmt,
-        to_ui,
-        from_ui,
-        signal_to_mgmt,
-        signal_from_mgmt,
-    )
-    .await;
+    link::net::App::new(to_mgmt, from_mgmt, to_ui, from_ui)
+        .run()
+        .await;
 }
