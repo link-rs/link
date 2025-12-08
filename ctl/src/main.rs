@@ -142,21 +142,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Mgmt { action } => match action {
             MgmtAction::Ping { data } => {
                 println!("Sending MGMT ping with data: {}", data);
-                app.send_mgmt_ping(data.as_bytes()).await;
+                app.mgmt_ping(data.as_bytes()).await;
                 println!("Received pong!");
             }
         },
         Command::Ui { action } => match action {
             UiAction::Ping { data } => {
                 println!("Sending UI ping with data: {}", data);
-                app.send_ui_ping(data.as_bytes()).await;
+                app.ui_ping(data.as_bytes()).await;
                 println!("Received pong!");
             }
         },
         Command::Net { action } => match action {
             NetAction::Ping { data } => {
                 println!("Sending NET ping with data: {}", data);
-                app.send_net_ping(data.as_bytes()).await;
+                app.net_ping(data.as_bytes()).await;
                 println!("Received pong!");
             }
         },
