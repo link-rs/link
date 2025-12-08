@@ -16,12 +16,13 @@ macro_rules! info {
     ($($arg:tt)*) => {};
 }
 
-use crate::tlv::{ReadTlv, Tlv};
+use crate::tlv::{ReadTlv, Tlv, Value};
 use embassy_sync::channel::{Channel, Sender};
+use embedded_io_async::Read;
 
 type RawMutex = embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
-async fn read_loop<'a, T, R, E, F, const N: usize>(
+async fn read_tlv_loop<'a, T, R, E, F, const N: usize>(
     mut reader: R,
     sender: Sender<'a, RawMutex, E, N>,
     wrap: F,
@@ -39,18 +40,39 @@ where
     }
 }
 
+async fn read_raw_loop<'a, R, E, F, const N: usize>(
+    mut reader: R,
+    sender: Sender<'a, RawMutex, E, N>,
+    wrap: F,
+) -> !
+where
+    R: Read,
+    F: Fn(Value) -> E,
+{
+    let mut buffer = [0u8; crate::tlv::MAX_VALUE_SIZE];
+    loop {
+        let Ok(n) = reader.read(&mut buffer).await else {
+            // On error or None, continue looping
+            continue;
+        };
+
+        let value = buffer[..n].try_into().unwrap();
+        sender.send(wrap(value)).await;
+    }
+}
+
 pub mod mgmt {
-    use crate::read_loop;
     use crate::tlv::{
-        CtlToMgmt, LabeledReader, LabeledWriter, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, Tlv,
-        UiToMgmt, Value, WriteTlv,
+        CtlToMgmt, LabeledReader, LabeledWriter, MgmtToCtl, MgmtToNet, MgmtToUi, Tlv, Value,
+        WriteTlv,
     };
+    use crate::{read_raw_loop, read_tlv_loop};
     use embedded_io_async::{Read, Write};
 
     enum Event {
         Ctl(Tlv<CtlToMgmt>),
         Ui(Value),
-        Net(Tlv<NetToMgmt>),
+        Net(Value),
     }
 
     pub struct App<W, R> {
@@ -89,33 +111,16 @@ pub mod mgmt {
                 mut to_ui,
                 mut to_net,
                 from_ctl,
-                mut from_ui,
+                from_ui,
                 from_net,
             } = self;
 
             const MAX_QUEUE_DEPTH: usize = 2;
             let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
 
-            let ctl_read_task = read_loop(from_ctl, channel.sender(), Event::Ctl);
-            // let ui_read_task = read_loop(from_ui, channel.sender(), Event::Ui);
-            let net_read_task = read_loop(from_net, channel.sender(), Event::Net);
-
-            let ui_sender_raw = channel.sender();
-            let ui_read_task_raw = async {
-                let mut buffer = [0u8; crate::tlv::MAX_VALUE_SIZE];
-                loop {
-                    let Ok(n) = from_ui.read(&mut buffer).await else {
-                        continue;
-                    };
-
-                    if n == 0 {
-                        continue;
-                    }
-
-                    let value = buffer[..n].try_into().unwrap();
-                    ui_sender_raw.send(Event::Ui(value)).await;
-                }
-            };
+            let ctl_read_task = read_tlv_loop(from_ctl, channel.sender(), Event::Ctl);
+            let ui_read_task = read_raw_loop(from_ui, channel.sender(), Event::Ui);
+            let net_read_task = read_raw_loop(from_net, channel.sender(), Event::Net);
 
             let handle_task = async {
                 info!("mgmt: ready to handle events");
@@ -124,13 +129,13 @@ pub mod mgmt {
                         Event::Ctl(tlv) => {
                             handle_ctl(tlv, &mut to_ctl, &mut to_ui, &mut to_net).await
                         }
-                        Event::Ui(value) => handle_ui(&value, &mut to_ctl).await,
-                        Event::Net(tlv) => handle_net(tlv, &mut to_ctl).await,
+                        Event::Ui(data) => to_ctl.must_write_tlv(MgmtToCtl::FromUi, &data).await,
+                        Event::Net(data) => to_ctl.must_write_tlv(MgmtToCtl::FromNet, &data).await,
                     }
                 }
             };
 
-            futures::join!(ctl_read_task, ui_read_task_raw, net_read_task, handle_task);
+            futures::join!(ctl_read_task, ui_read_task, net_read_task, handle_task);
             unreachable!()
         }
     }
@@ -156,50 +161,12 @@ pub mod mgmt {
                 to_net.write_all(&tlv.value).await.unwrap();
                 to_net.flush().await.unwrap();
             }
-            CtlToMgmt::UiFirstCircularPing => {
-                info!("mgmt: ui-first circular ping -> ui");
-                to_ui
-                    .must_write_tlv(MgmtToUi::CircularPing, &tlv.value)
-                    .await;
-            }
-            CtlToMgmt::NetFirstCircularPing => {
-                info!("mgmt: net-first circular ping -> net");
-                to_net
-                    .must_write_tlv(MgmtToNet::CircularPing, &tlv.value)
-                    .await;
-            }
-        }
-    }
-
-    async fn handle_ui<C>(data: &[u8], to_ctl: &mut C)
-    where
-        C: WriteTlv<MgmtToCtl>,
-    {
-        to_ctl.must_write_tlv(MgmtToCtl::FromUi, &data).await;
-    }
-
-    async fn handle_net<C>(tlv: Tlv<NetToMgmt>, to_ctl: &mut C)
-    where
-        C: WriteTlv<MgmtToCtl>,
-    {
-        match tlv.tlv_type {
-            NetToMgmt::Pong => {
-                info!("mgmt: net pong -> ctl");
-                let encoded = Tlv::encode(NetToMgmt::Pong, &tlv.value).await;
-                to_ctl.must_write_tlv(MgmtToCtl::FromNet, &encoded).await;
-            }
-            NetToMgmt::CircularPing => {
-                info!("mgmt: net circular ping -> ctl");
-                to_ctl
-                    .must_write_tlv(MgmtToCtl::UiFirstCircularPing, &tlv.value)
-                    .await;
-            }
         }
     }
 }
 
 pub mod ui {
-    use crate::read_loop;
+    use crate::read_tlv_loop;
     use crate::tlv::{
         LabeledReader, LabeledWriter, MgmtToUi, NetToUi, Tlv, UiToMgmt, UiToNet, WriteTlv,
     };
@@ -247,8 +214,8 @@ pub mod ui {
             const MAX_QUEUE_DEPTH: usize = 2;
             let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
 
-            let mgmt_read_task = read_loop(from_mgmt, channel.sender(), Event::Mgmt);
-            let net_read_task = read_loop(from_net, channel.sender(), Event::Net);
+            let mgmt_read_task = read_tlv_loop(from_mgmt, channel.sender(), Event::Mgmt);
+            let net_read_task = read_tlv_loop(from_net, channel.sender(), Event::Net);
 
             let handle_task = async {
                 info!("ui: ready to handle events");
@@ -300,7 +267,7 @@ pub mod ui {
 }
 
 pub mod net {
-    use crate::read_loop;
+    use crate::read_tlv_loop;
     use crate::tlv::{
         LabeledReader, LabeledWriter, MgmtToNet, NetToMgmt, NetToUi, Tlv, UiToNet, WriteTlv,
     };
@@ -348,8 +315,8 @@ pub mod net {
             const MAX_QUEUE_DEPTH: usize = 2;
             let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
 
-            let mgmt_read_task = read_loop(from_mgmt, channel.sender(), Event::Mgmt);
-            let ui_read_task = read_loop(from_ui, channel.sender(), Event::Ui);
+            let mgmt_read_task = read_tlv_loop(from_mgmt, channel.sender(), Event::Mgmt);
+            let ui_read_task = read_tlv_loop(from_ui, channel.sender(), Event::Ui);
 
             let handle_task = async {
                 info!("net: ready to handle events");
@@ -405,96 +372,145 @@ pub mod ctl {
         CtlToMgmt, LabeledReader, LabeledWriter, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt,
         ReadTlv, Tlv, UiToMgmt, WriteTlv,
     };
-    use embedded_io_async::{Read, Write};
+    use embedded_io_async::{ErrorType, Read, Write};
+    use heapless::Vec;
+
+    type TunnelBuffer = Vec<u8, 128>;
+
+    struct TunnelReader<'a, R> {
+        tlv_type: MgmtToCtl,
+        reader: &'a mut R,
+        buffer: &'a mut TunnelBuffer,
+    }
+
+    impl<'a, R> TunnelReader<'a, R> {
+        fn new(tlv_type: MgmtToCtl, reader: &'a mut R, buffer: &'a mut TunnelBuffer) -> Self {
+            Self {
+                tlv_type,
+                reader,
+                buffer,
+            }
+        }
+    }
+
+    impl<'a, R> ErrorType for TunnelReader<'a, R>
+    where
+        R: Read,
+    {
+        type Error = <R as ErrorType>::Error;
+    }
+
+    impl<'a, R> Read for TunnelReader<'a, R>
+    where
+        R: ReadTlv<MgmtToCtl> + Read,
+    {
+        async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+            while self.buffer.is_empty() {
+                println!("awaiting tlv");
+                let tlv = self.reader.read_tlv().await.unwrap().unwrap();
+                assert_eq!(tlv.tlv_type, self.tlv_type);
+                println!("adding {} bytes", tlv.value.len());
+                self.buffer.extend_from_slice(&tlv.value).unwrap();
+            }
+
+            let to_copy = core::cmp::min(self.buffer.len(), buf.len());
+            buf[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
+            self.buffer.drain(..to_copy);
+            println!(
+                "returning {} bytes, {} bytes remain",
+                to_copy,
+                self.buffer.len()
+            );
+            return Ok(to_copy);
+        }
+    }
 
     pub struct App<R, W> {
         to_mgmt: LabeledWriter<W>,
         from_mgmt: LabeledReader<R>,
+        ui_buffer: TunnelBuffer,
+        net_buffer: TunnelBuffer,
     }
 
-    impl<R, W> App<R, W> {
+    impl<R, W> App<R, W>
+    where
+        W: Write,
+        R: Read,
+    {
         pub fn new(to_mgmt: W, from_mgmt: R) -> Self {
             Self {
                 to_mgmt: LabeledWriter::new("ctl->mgmt", to_mgmt),
                 from_mgmt: LabeledReader::new("mgmt->ctl", from_mgmt),
+                ui_buffer: TunnelBuffer::default(),
+                net_buffer: TunnelBuffer::default(),
             }
         }
 
-        pub async fn send_mgmt_ping(&mut self, data: &[u8])
-        where
-            W: Write,
-            R: Read,
-        {
+        fn ui_reader(&mut self) -> TunnelReader<'_, LabeledReader<R>> {
+            TunnelReader::new(MgmtToCtl::FromUi, &mut self.from_mgmt, &mut self.ui_buffer)
+        }
+
+        fn ui_tlv_reader(&mut self) -> impl ReadTlv<UiToMgmt> {
+            LabeledReader::new("ui->ctl", self.ui_reader())
+        }
+
+        fn net_reader(&mut self) -> TunnelReader<'_, LabeledReader<R>> {
+            TunnelReader::new(
+                MgmtToCtl::FromNet,
+                &mut self.from_mgmt,
+                &mut self.net_buffer,
+            )
+        }
+
+        fn net_tlv_reader(&mut self) -> impl ReadTlv<NetToMgmt> {
+            LabeledReader::new("net->ctl", self.net_reader())
+        }
+
+        async fn write_tunneled_tlv<T: Into<u16>>(
+            &mut self,
+            tunnel_type: CtlToMgmt,
+            tlv_type: T,
+            value: &[u8],
+        ) {
+            let payload = Tlv::encode(tlv_type, value).await;
+            self.to_mgmt.must_write_tlv(tunnel_type, &payload).await;
+        }
+
+        pub async fn mgmt_ping(&mut self, data: &[u8]) {
             self.to_mgmt.must_write_tlv(CtlToMgmt::Ping, data).await;
-
             let tlv: Tlv<MgmtToCtl> = self.from_mgmt.must_read_tlv().await;
-
             assert_eq!(tlv.tlv_type, MgmtToCtl::Pong);
             assert_eq!(&tlv.value, data);
         }
 
-        pub async fn send_ui_ping(&mut self, data: &[u8])
-        where
-            W: Write,
-            R: Read,
-        {
-            let payload = Tlv::encode(MgmtToUi::Ping, data).await;
-            self.to_mgmt.must_write_tlv(CtlToMgmt::ToUi, &payload).await;
-
-            let tlv: Tlv<MgmtToCtl> = self.from_mgmt.must_read_tlv().await;
-            assert_eq!(tlv.tlv_type, MgmtToCtl::FromUi);
-
-            let mut tlv_reader = LabeledReader::new("ui->ctl", tlv.value.as_slice());
-            let tlv: Tlv<UiToMgmt> = tlv_reader.must_read_tlv().await;
+        pub async fn ui_ping(&mut self, data: &[u8]) {
+            self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::Ping, data)
+                .await;
+            let tlv = self.ui_tlv_reader().must_read_tlv().await;
             assert_eq!(tlv.tlv_type, UiToMgmt::Pong);
             assert_eq!(&tlv.value, data);
         }
 
-        pub async fn send_net_ping(&mut self, data: &[u8])
-        where
-            W: Write,
-            R: Read,
-        {
-            let payload = Tlv::encode(MgmtToNet::Ping, data).await;
-            self.to_mgmt
-                .must_write_tlv(CtlToMgmt::ToNet, &payload)
+        pub async fn net_ping(&mut self, data: &[u8]) {
+            self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::Ping, data)
                 .await;
-
-            let tlv: Tlv<MgmtToCtl> = self.from_mgmt.must_read_tlv().await;
-            assert_eq!(tlv.tlv_type, MgmtToCtl::FromNet);
-
-            let tlv: Tlv<NetToMgmt> = tlv.value.as_slice().must_read_tlv().await;
+            let tlv = self.net_tlv_reader().must_read_tlv().await;
             assert_eq!(tlv.tlv_type, NetToMgmt::Pong);
             assert_eq!(&tlv.value, data);
         }
 
-        pub async fn ui_first_circular_ping(&mut self, data: &[u8])
-        where
-            W: Write,
-            R: Read,
-        {
-            let payload = Tlv::encode(MgmtToUi::CircularPing, data).await;
-            self.to_mgmt.must_write_tlv(CtlToMgmt::ToUi, &payload).await;
-
-            let tlv: Tlv<MgmtToCtl> = self.from_mgmt.must_read_tlv().await;
-            assert_eq!(tlv.tlv_type, MgmtToCtl::UiFirstCircularPing);
+        pub async fn ui_first_circular_ping(&mut self, data: &[u8]) {
+            self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::CircularPing, data)
+                .await;
+            let tlv = self.net_tlv_reader().must_read_tlv().await;
+            assert_eq!(tlv.tlv_type, NetToMgmt::CircularPing);
             assert_eq!(&tlv.value, data);
         }
 
-        pub async fn net_first_circular_ping(&mut self, data: &[u8])
-        where
-            W: Write,
-            R: Read,
-        {
-            self.to_mgmt
-                .must_write_tlv(CtlToMgmt::NetFirstCircularPing, data)
+        pub async fn net_first_circular_ping(&mut self, data: &[u8]) {
+            self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::CircularPing, data)
                 .await;
-
-            let tlv: Tlv<MgmtToCtl> = self.from_mgmt.must_read_tlv().await;
-            assert_eq!(tlv.tlv_type, MgmtToCtl::FromUi);
-
-            let mut tlv_reader = LabeledReader::new("ui->ctl", tlv.value.as_slice());
-            let tlv: Tlv<UiToMgmt> = tlv_reader.must_read_tlv().await;
+            let tlv = self.ui_tlv_reader().must_read_tlv().await;
             assert_eq!(tlv.tlv_type, UiToMgmt::CircularPing);
             assert_eq!(&tlv.value, data);
         }
@@ -556,23 +572,23 @@ mod test {
     #[tokio::test]
     async fn ctl_mgmt_ping() {
         device_test(|mut ctl| async move {
-            ctl.send_mgmt_ping(b"hello mgmt").await;
+            ctl.mgmt_ping(b"hello mgmt").await;
         })
         .await;
     }
 
     #[tokio::test]
-    async fn ctl_mgmt_ui_ping() {
+    async fn ctl_ui_ping() {
         device_test(|mut ctl| async move {
-            ctl.send_ui_ping(b"hello ui").await;
+            ctl.ui_ping(b"hello ui").await;
         })
         .await;
     }
 
     #[tokio::test]
-    async fn ctl_mgmt_net_ping() {
+    async fn ctl_net_ping() {
         device_test(|mut ctl| async move {
-            ctl.send_net_ping(b"hello net").await;
+            ctl.net_ping(b"hello net").await;
         })
         .await;
     }

@@ -50,8 +50,6 @@ pub enum CtlToMgmt {
     Ping = 0x00,
     ToUi,
     ToNet,
-    UiFirstCircularPing,
-    NetFirstCircularPing,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -60,8 +58,6 @@ pub enum MgmtToCtl {
     Pong = 0x10,
     FromUi,
     FromNet,
-    UiFirstCircularPing,
-    NetFirstCircularPing,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
