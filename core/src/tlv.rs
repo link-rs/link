@@ -150,6 +150,7 @@ pub enum ReadError<E> {
     TooLong,
 }
 
+#[allow(async_fn_in_trait)]
 pub trait ReadTlv {
     type Error: core::fmt::Debug;
 
@@ -272,6 +273,7 @@ where
     }
 }
 
+#[allow(async_fn_in_trait)]
 pub trait WriteTlv {
     type Error: core::fmt::Debug;
 
@@ -391,7 +393,11 @@ where
                         if matched == SYNC_WORD.len() {
                             // Found complete sync word
                             if discarded > 0 {
-                                trace!("{}: sync found after discarding {} bytes", self.label, discarded);
+                                trace!(
+                                    "{}: sync found after discarding {} bytes",
+                                    self.label,
+                                    discarded
+                                );
                             } else {
                                 trace!("{}: sync found", self.label);
                             }
@@ -502,7 +508,7 @@ where
         let _ = self.signal.set_high();
         self.writer.write_all(&SYNC_WORD).await?;
         self.needs_sync = false; // Sync word sent for this sequence
-        // Delegate to labeled writer (which logs the TLV details)
+                                 // Delegate to labeled writer (which logs the TLV details)
         let result = self.writer.write_tlv(tlv_type, value).await;
         // Keep signal high briefly to give receiver time to read sync word and check signal
         embassy_futures::yield_now().await;
