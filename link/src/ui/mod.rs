@@ -181,13 +181,17 @@ async fn handle_mgmt<M, N, I, D>(
             info!("ui: set version");
             if tlv.value.len() != 4 {
                 info!("ui: invalid version length: {}", tlv.value.len());
+                to_mgmt.must_write_tlv(UiToMgmt::Error, b"length").await;
                 return;
             }
             let version =
                 u32::from_be_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]);
             if let Err(_) = eeprom.set_version(version) {
                 info!("ui: failed to write version to EEPROM");
+                to_mgmt.must_write_tlv(UiToMgmt::Error, b"eeprom").await;
+                return;
             }
+            to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
         }
         MgmtToUi::GetSFrameKey => {
             info!("ui: get sframe key");
@@ -201,13 +205,17 @@ async fn handle_mgmt<M, N, I, D>(
             info!("ui: set sframe key");
             if tlv.value.len() != 16 {
                 info!("ui: invalid sframe key length: {}", tlv.value.len());
+                to_mgmt.must_write_tlv(UiToMgmt::Error, b"length").await;
                 return;
             }
             let mut key = [0u8; 16];
             key.copy_from_slice(&tlv.value[..16]);
             if let Err(_) = eeprom.set_sframe_key(&key) {
                 info!("ui: failed to write sframe key to EEPROM");
+                to_mgmt.must_write_tlv(UiToMgmt::Error, b"eeprom").await;
+                return;
             }
+            to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
         }
     }
 }
@@ -303,8 +311,9 @@ mod tests {
 
         handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut eeprom).await;
 
-        // Verify version was set (no response TLV for SetVersion)
-        assert_eq!(to_mgmt.written.len(), 0);
+        // Verify version was set and Ack was sent
+        assert_eq!(to_mgmt.written.len(), 1);
+        assert_eq!(to_mgmt.written[0].0, UiToMgmt::Ack);
         assert_eq!(eeprom.get_version().unwrap(), 0x11223344);
     }
 
@@ -351,8 +360,9 @@ mod tests {
 
         handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut eeprom).await;
 
-        // Verify key was set (no response TLV for SetSFrameKey)
-        assert_eq!(to_mgmt.written.len(), 0);
+        // Verify key was set and Ack was sent
+        assert_eq!(to_mgmt.written.len(), 1);
+        assert_eq!(to_mgmt.written[0].0, UiToMgmt::Ack);
         assert_eq!(eeprom.get_sframe_key().unwrap(), key);
     }
 
@@ -372,7 +382,9 @@ mod tests {
 
         handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut eeprom).await;
 
-        // Version should remain default (0xffffffff)
+        // Version should remain default (0xffffffff) and Error should be sent
+        assert_eq!(to_mgmt.written.len(), 1);
+        assert_eq!(to_mgmt.written[0].0, UiToMgmt::Error);
         assert_eq!(eeprom.get_version().unwrap(), 0xffffffff);
     }
 
@@ -392,7 +404,9 @@ mod tests {
 
         handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut eeprom).await;
 
-        // Key should remain default (0xff)
+        // Key should remain default (0xff) and Error should be sent
+        assert_eq!(to_mgmt.written.len(), 1);
+        assert_eq!(to_mgmt.written[0].0, UiToMgmt::Error);
         assert_eq!(eeprom.get_sframe_key().unwrap(), [0xff; 16]);
     }
 }

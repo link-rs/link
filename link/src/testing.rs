@@ -1,6 +1,6 @@
 //! Integration tests for the multi-chip system.
 
-use crate::mocks::{mock_i2c_with_eeprom, mock_led_pins, MockButton, MockDelay};
+use crate::mocks::{mock_i2c_with_eeprom, mock_led_pins, MockButton, MockDelay, MockFlash};
 use crate::{ctl, mgmt, net, ui};
 use core::future::Future;
 use embedded_io_adapters::futures_03::FromFutures;
@@ -59,6 +59,8 @@ where
         net_to_ui,
         net_from_ui,
         mock_led_pins(),
+        MockFlash::new(),
+        0,
     );
 
     tokio::select! {
@@ -147,6 +149,58 @@ async fn set_and_get_sframe_key() {
         ctl.set_sframe_key(&key).await;
         let result = ctl.get_sframe_key().await;
         assert_eq!(result, key);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn get_wifi_ssids_default() {
+    device_test(|mut ctl| async move {
+        let ssids = ctl.get_wifi_ssids().await;
+        assert!(ssids.is_empty());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn add_and_get_wifi_ssid() {
+    device_test(|mut ctl| async move {
+        ctl.add_wifi_ssid("MyNetwork", "MyPassword").await;
+        let ssids = ctl.get_wifi_ssids().await;
+        assert_eq!(ssids.len(), 1);
+        assert_eq!(ssids[0].ssid.as_str(), "MyNetwork");
+        assert_eq!(ssids[0].password.as_str(), "MyPassword");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn clear_wifi_ssids() {
+    device_test(|mut ctl| async move {
+        ctl.add_wifi_ssid("Network1", "Pass1").await;
+        ctl.add_wifi_ssid("Network2", "Pass2").await;
+        ctl.clear_wifi_ssids().await;
+        let ssids = ctl.get_wifi_ssids().await;
+        assert!(ssids.is_empty());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn get_moq_url_default() {
+    device_test(|mut ctl| async move {
+        let url = ctl.get_moq_url().await;
+        assert_eq!(url.as_str(), "");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn set_and_get_moq_url() {
+    device_test(|mut ctl| async move {
+        ctl.set_moq_url("https://moq.example.com/stream").await;
+        let url = ctl.get_moq_url().await;
+        assert_eq!(url.as_str(), "https://moq.example.com/stream");
     })
     .await;
 }

@@ -198,3 +198,43 @@ pub fn mock_i2c_with_eeprom() -> MockI2c {
     i2c.attach(MockEeprom::I2C_ADDR, MockEeprom::new());
     i2c
 }
+
+/// Mock flash storage for testing (4KB).
+pub struct MockFlash {
+    pub data: [u8; 4096],
+}
+
+impl MockFlash {
+    pub fn new() -> Self {
+        Self { data: [0xff; 4096] }
+    }
+}
+
+impl Default for MockFlash {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl embedded_storage::ReadStorage for MockFlash {
+    type Error = Infallible;
+
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), Self::Error> {
+        let start = offset as usize;
+        let end = start + bytes.len();
+        bytes.copy_from_slice(&self.data[start..end]);
+        Ok(())
+    }
+
+    fn capacity(&self) -> usize {
+        self.data.len()
+    }
+}
+
+impl embedded_storage::Storage for MockFlash {
+    fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Self::Error> {
+        let start = offset as usize;
+        self.data[start..start + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+}

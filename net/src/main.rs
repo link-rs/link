@@ -3,6 +3,7 @@
 
 use defmt::info;
 use embassy_executor::Spawner;
+use esp_bootloader_esp_idf::partitions;
 use esp_hal::{
     clock::CpuClock,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
@@ -12,6 +13,7 @@ use esp_hal::{
         Uart,
     },
 };
+use esp_storage::FlashStorage;
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
@@ -82,7 +84,22 @@ async fn main(_spawner: Spawner) {
         Output::new(peripherals.GPIO36, Level::Low, OutputConfig::default()),
     );
 
-    link::net::App::new(to_mgmt, from_mgmt, to_ui, from_ui, led)
+    // Flash storage for NET settings (WiFi credentials, MOQ URL)
+    // Read partition table to find the NVS partition
+    let mut flash = FlashStorage::new();
+    let mut pt_buf = [0u8; partitions::PARTITION_TABLE_MAX_LEN];
+    let pt = partitions::read_partition_table(&mut flash, &mut pt_buf)
+        .expect("Failed to read partition table");
+    let nvs = pt
+        .find_partition(partitions::PartitionType::Data(
+            partitions::DataPartitionSubType::Nvs,
+        ))
+        .expect("Failed to find NVS partition")
+        .expect("NVS partition not found");
+    let flash_offset = nvs.offset();
+    info!("net: NVS partition at offset {:#x}", flash_offset);
+
+    link::net::App::new(to_mgmt, from_mgmt, to_ui, from_ui, led, flash, flash_offset)
         .run()
         .await;
 }

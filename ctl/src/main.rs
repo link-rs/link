@@ -132,6 +132,24 @@ enum NetAction {
         #[arg(default_value = "hello")]
         data: String,
     },
+    #[command(name = "add-wifi")]
+    AddWifi {
+        /// WiFi network SSID
+        ssid: String,
+        /// WiFi network password
+        password: String,
+    },
+    #[command(name = "get-wifi")]
+    GetWifi,
+    #[command(name = "clear-wifi")]
+    ClearWifi,
+    #[command(name = "get-moq-url")]
+    GetMoqUrl,
+    #[command(name = "set-moq-url")]
+    SetMoqUrl {
+        /// MOQ server URL
+        url: String,
+    },
 }
 
 #[tokio::main]
@@ -193,6 +211,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Sending NET ping with data: {}", data);
                 app.net_ping(data.as_bytes()).await;
                 println!("Received pong!");
+            }
+            NetAction::AddWifi { ssid, password } => {
+                app.add_wifi_ssid(&ssid, &password).await;
+                println!("Added WiFi network: {}", ssid);
+            }
+            NetAction::GetWifi => {
+                let ssids = app.get_wifi_ssids().await;
+                if ssids.is_empty() {
+                    println!("No WiFi networks configured");
+                } else {
+                    for wifi in ssids {
+                        println!("{}\t{}", wifi.ssid, wifi.password);
+                    }
+                }
+            }
+            NetAction::ClearWifi => {
+                app.clear_wifi_ssids().await;
+                println!("Cleared all WiFi networks");
+            }
+            NetAction::GetMoqUrl => {
+                let url = app.get_moq_url().await;
+                println!("{}", url);
+            }
+            NetAction::SetMoqUrl { url } => {
+                app.set_moq_url(&url).await;
+                println!("MOQ URL set to {}", url);
             }
         },
         Command::CircularPing { reverse, data } => {

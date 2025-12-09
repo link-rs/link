@@ -4,10 +4,6 @@ name = "net"
 rust-version = "1.86"
 version = "0.1.0"
 
-[[bin]]
-name = "net"
-path = "./src/bin/main.rs"
-
 [dependencies]
 defmt = "1"
 esp-bootloader-esp-idf = { version = "0.2", features = ["esp32s3", "defmt"] }
@@ -21,6 +17,9 @@ embassy-sync = { version = "0.7", features = ["defmt"] }
 
 embedded-io = { version = "0.6", features = ["defmt-03"] }
 embedded-io-async = { version = "0.6", features = ["defmt-03"] }
+embedded-storage = "0.3"
+
+esp-storage = { version = "0.4", features = ["esp32s3"] }
 
 rtt-target = { version = "0.6", features = ["defmt"] }
 critical-section = "1.2"

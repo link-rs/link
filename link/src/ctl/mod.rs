@@ -1,5 +1,6 @@
 //! CTL (Controller) chip - the host computer interface.
 
+use crate::net::WifiSsid;
 use crate::shared::{
     CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt, WriteTlv,
 };
@@ -90,7 +91,7 @@ where
         self.net_reader()
     }
 
-    async fn write_tunneled_tlv<T: Into<u16>>(
+    async fn write_tunneled_tlv<T: Into<u16> + core::fmt::Debug>(
         &mut self,
         tunnel_type: CtlToMgmt,
         tlv_type: T,
@@ -151,8 +152,14 @@ where
 
     /// Set the version stored in UI chip EEPROM.
     pub async fn set_version(&mut self, version: u32) {
-        self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::SetVersion, &version.to_be_bytes())
-            .await;
+        self.write_tunneled_tlv(
+            CtlToMgmt::ToUi,
+            MgmtToUi::SetVersion,
+            &version.to_be_bytes(),
+        )
+        .await;
+        let tlv: Tlv<UiToMgmt> = self.ui_tlv_reader().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, UiToMgmt::Ack);
     }
 
     /// Get the SFrame key stored in UI chip EEPROM.
@@ -171,5 +178,56 @@ where
     pub async fn set_sframe_key(&mut self, key: &[u8; 16]) {
         self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::SetSFrameKey, key)
             .await;
+        let tlv: Tlv<UiToMgmt> = self.ui_tlv_reader().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, UiToMgmt::Ack);
+    }
+
+    /// Add a WiFi SSID and password pair to NET chip storage.
+    pub async fn add_wifi_ssid(&mut self, ssid: &str, password: &str) {
+        let wifi = WifiSsid {
+            ssid: ssid.try_into().expect("SSID too long"),
+            password: password.try_into().expect("Password too long"),
+        };
+        let mut buf = [0u8; 128];
+        let serialized = postcard::to_slice(&wifi, &mut buf).expect("Serialization failed");
+        self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::AddWifiSsid, serialized)
+            .await;
+        let tlv: Tlv<NetToMgmt> = self.net_tlv_reader().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+    }
+
+    /// Get all WiFi SSIDs from NET chip storage.
+    pub async fn get_wifi_ssids(&mut self) -> Vec<WifiSsid, 8> {
+        self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::GetWifiSsids, &[])
+            .await;
+        let tlv: Tlv<NetToMgmt> = self.net_tlv_reader().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, NetToMgmt::WifiSsids);
+        postcard::from_bytes(&tlv.value).expect("Deserialization failed")
+    }
+
+    /// Clear all WiFi SSIDs from NET chip storage.
+    pub async fn clear_wifi_ssids(&mut self) {
+        self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::ClearWifiSsids, &[])
+            .await;
+        let tlv: Tlv<NetToMgmt> = self.net_tlv_reader().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+    }
+
+    /// Get the MOQ URL from NET chip storage.
+    pub async fn get_moq_url(&mut self) -> heapless::String<128> {
+        self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::GetMoqUrl, &[])
+            .await;
+        let tlv: Tlv<NetToMgmt> = self.net_tlv_reader().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, NetToMgmt::MoqUrl);
+        let url_str = core::str::from_utf8(&tlv.value).expect("Invalid UTF-8");
+        url_str.try_into().expect("URL too long")
+    }
+
+    /// Set the MOQ URL in NET chip storage.
+    pub async fn set_moq_url(&mut self, url: &str) {
+        self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::SetMoqUrl, url.as_bytes())
+            .await;
+        let tlv: Tlv<NetToMgmt> = self.net_tlv_reader().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
     }
 }

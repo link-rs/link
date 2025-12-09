@@ -36,6 +36,8 @@ pub enum UiToMgmt {
     CircularPing,
     Version,
     SFrameKey,
+    Ack,
+    Error,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -43,6 +45,11 @@ pub enum UiToMgmt {
 pub enum MgmtToNet {
     Ping = 0x40,
     CircularPing,
+    AddWifiSsid,
+    GetWifiSsids,
+    ClearWifiSsids,
+    GetMoqUrl,
+    SetMoqUrl,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -50,6 +57,10 @@ pub enum MgmtToNet {
 pub enum NetToMgmt {
     Pong = 0x50,
     CircularPing,
+    WifiSsids,
+    MoqUrl,
+    Ack,
+    Error,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

@@ -90,9 +90,7 @@ where
             info!("mgmt: ready to handle events");
             loop {
                 match channel.receive().await {
-                    Event::Ctl(tlv) => {
-                        handle_ctl(tlv, &mut to_ctl, &mut to_ui, &mut to_net).await
-                    }
+                    Event::Ctl(tlv) => handle_ctl(tlv, &mut to_ctl, &mut to_ui, &mut to_net).await,
                     Event::Ui(data) => to_ctl.must_write_tlv(MgmtToCtl::FromUi, &data).await,
                     Event::Net(data) => to_ctl.must_write_tlv(MgmtToCtl::FromNet, &data).await,
                 }
