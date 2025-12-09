@@ -17,6 +17,8 @@ pub mod ui;
 
 // Test utilities
 #[cfg(test)]
+pub(crate) mod mocks;
+#[cfg(test)]
 mod testing;
 
 // Re-export commonly used types at the crate root for convenience

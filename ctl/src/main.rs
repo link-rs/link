@@ -112,6 +112,18 @@ enum UiAction {
         #[arg(default_value = "hello")]
         data: String,
     },
+    GetVersion,
+    SetVersion {
+        /// Version number (base 10)
+        version: u32,
+    },
+    #[command(name = "get-sframe-key")]
+    GetSFrameKey,
+    #[command(name = "set-sframe-key")]
+    SetSFrameKey {
+        /// SFrame key as 32-character hex string (e.g., "5b9f37b1546b61f914da9f557a8fe215")
+        key: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -151,6 +163,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Sending UI ping with data: {}", data);
                 app.ui_ping(data.as_bytes()).await;
                 println!("Received pong!");
+            }
+            UiAction::GetVersion => {
+                let version = app.get_version().await;
+                println!("{}", version);
+            }
+            UiAction::SetVersion { version } => {
+                app.set_version(version).await;
+                println!("Version set to {}", version);
+            }
+            UiAction::GetSFrameKey => {
+                let key = app.get_sframe_key().await;
+                println!("{}", hex::encode(key));
+            }
+            UiAction::SetSFrameKey { key } => {
+                let key_bytes = hex::decode(&key).expect("Invalid hex string");
+                if key_bytes.len() != 16 {
+                    eprintln!("Error: SFrame key must be exactly 32 hex characters (16 bytes)");
+                    std::process::exit(1);
+                }
+                let mut key_array = [0u8; 16];
+                key_array.copy_from_slice(&key_bytes);
+                app.set_sframe_key(&key_array).await;
+                println!("SFrame key set to {}", key);
             }
         },
         Command::Net { action } => match action {

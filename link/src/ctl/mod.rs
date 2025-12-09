@@ -138,4 +138,38 @@ where
         assert_eq!(tlv.tlv_type, UiToMgmt::CircularPing);
         assert_eq!(&tlv.value, data);
     }
+
+    /// Get the version stored in UI chip EEPROM.
+    pub async fn get_version(&mut self) -> u32 {
+        self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::GetVersion, &[])
+            .await;
+        let tlv: Tlv<UiToMgmt> = self.ui_tlv_reader().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, UiToMgmt::Version);
+        assert_eq!(tlv.value.len(), 4);
+        u32::from_be_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]])
+    }
+
+    /// Set the version stored in UI chip EEPROM.
+    pub async fn set_version(&mut self, version: u32) {
+        self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::SetVersion, &version.to_be_bytes())
+            .await;
+    }
+
+    /// Get the SFrame key stored in UI chip EEPROM.
+    pub async fn get_sframe_key(&mut self) -> [u8; 16] {
+        self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::GetSFrameKey, &[])
+            .await;
+        let tlv: Tlv<UiToMgmt> = self.ui_tlv_reader().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, UiToMgmt::SFrameKey);
+        assert_eq!(tlv.value.len(), 16);
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&tlv.value);
+        key
+    }
+
+    /// Set the SFrame key stored in UI chip EEPROM.
+    pub async fn set_sframe_key(&mut self, key: &[u8; 16]) {
+        self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::SetSFrameKey, key)
+            .await;
+    }
 }

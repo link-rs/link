@@ -23,6 +23,10 @@ pub enum MgmtToCtl {
 pub enum MgmtToUi {
     Ping = 0x20,
     CircularPing,
+    GetVersion,
+    SetVersion,
+    GetSFrameKey,
+    SetSFrameKey,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -30,6 +34,8 @@ pub enum MgmtToUi {
 pub enum UiToMgmt {
     Pong = 0x30,
     CircularPing,
+    Version,
+    SFrameKey,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

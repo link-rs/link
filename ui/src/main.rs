@@ -7,9 +7,11 @@ use embassy_stm32::{
     bind_interrupts,
     exti::ExtiInput,
     gpio::{Level, Output, Pull, Speed},
+    i2c::I2c,
     peripherals,
     usart::{self, Config, DataBits, Parity, StopBits, Uart},
 };
+use embassy_time::Delay;
 use {defmt_rtt as _, panic_probe as _};
 
 const DMA_BUF_SIZE: usize = 64;
@@ -74,8 +76,12 @@ async fn main(_spawner: Spawner) {
     let button_a = ExtiInput::new(p.PC0, p.EXTI0, Pull::Up);
     let button_b = ExtiInput::new(p.PC1, p.EXTI1, Pull::Up);
 
+    // I2C for EEPROM (I2C1: PB6 SCL, PB7 SDA)
+    let i2c = I2c::new_blocking(p.I2C1, p.PB6, p.PB7, Default::default());
+    let delay = Delay;
+
     link::ui::App::new(
-        to_mgmt, from_mgmt, to_net, from_net, led, button_a, button_b,
+        to_mgmt, from_mgmt, to_net, from_net, led, button_a, button_b, i2c, delay,
     )
     .run()
     .await;

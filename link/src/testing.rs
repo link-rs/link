@@ -1,10 +1,8 @@
-//! Test utilities and integration tests.
+//! Integration tests for the multi-chip system.
 
+use crate::mocks::{mock_i2c_with_eeprom, mock_led_pins, MockButton, MockDelay};
 use crate::{ctl, mgmt, net, ui};
-use core::convert::Infallible;
 use core::future::Future;
-use embedded_hal::digital::{ErrorType, OutputPin, StatefulOutputPin};
-use embedded_hal_async::digital::Wait;
 use embedded_io_adapters::futures_03::FromFutures;
 
 type Reader = FromFutures<async_ringbuffer::Reader>;
@@ -14,83 +12,6 @@ fn channel() -> (Writer, Reader) {
     const BUFFER_CAPACITY: usize = 1024;
     let (w, r) = async_ringbuffer::ring_buffer(BUFFER_CAPACITY);
     (FromFutures::new(w), FromFutures::new(r))
-}
-
-/// Mock pin for testing LED functionality
-pub struct MockPin {
-    state: bool,
-}
-
-impl MockPin {
-    pub fn new() -> Self {
-        Self { state: false }
-    }
-}
-
-impl Default for MockPin {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ErrorType for MockPin {
-    type Error = Infallible;
-}
-
-impl OutputPin for MockPin {
-    fn set_low(&mut self) -> Result<(), Self::Error> {
-        self.state = false;
-        Ok(())
-    }
-
-    fn set_high(&mut self) -> Result<(), Self::Error> {
-        self.state = true;
-        Ok(())
-    }
-}
-
-impl StatefulOutputPin for MockPin {
-    fn is_set_high(&mut self) -> Result<bool, Self::Error> {
-        Ok(self.state)
-    }
-
-    fn is_set_low(&mut self) -> Result<bool, Self::Error> {
-        Ok(!self.state)
-    }
-}
-
-/// Mock button for testing button functionality (never triggers)
-pub struct MockButton;
-
-impl ErrorType for MockButton {
-    type Error = Infallible;
-}
-
-impl Wait for MockButton {
-    async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
-        core::future::pending().await
-    }
-
-    async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
-        core::future::pending().await
-    }
-
-    async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
-        core::future::pending().await
-    }
-
-    async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
-        core::future::pending().await
-    }
-
-    async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
-        core::future::pending().await
-    }
-}
-
-/// Create a tuple of mock LED pins
-pub fn mock_led_pins() -> (MockPin, MockPin, MockPin) {
-    (MockPin::new(), MockPin::new(), MockPin::new())
 }
 
 async fn device_test<F, Fut>(test_fn: F)
@@ -129,6 +50,8 @@ where
         mock_led_pins(),
         MockButton,
         MockButton,
+        mock_i2c_with_eeprom(),
+        MockDelay,
     );
     let net_app = net::App::new(
         net_to_mgmt,
@@ -182,6 +105,48 @@ async fn ui_first_circular_ping() {
 async fn net_first_circular_ping() {
     device_test(|mut ctl| async move {
         ctl.net_first_circular_ping(b"hello net circular").await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn get_version_default() {
+    device_test(|mut ctl| async move {
+        let version = ctl.get_version().await;
+        assert_eq!(version, 0xffffffff);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn set_and_get_version() {
+    device_test(|mut ctl| async move {
+        ctl.set_version(0x12345678).await;
+        let version = ctl.get_version().await;
+        assert_eq!(version, 0x12345678);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn get_sframe_key_default() {
+    device_test(|mut ctl| async move {
+        let key = ctl.get_sframe_key().await;
+        assert_eq!(key, [0xff; 16]);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn set_and_get_sframe_key() {
+    device_test(|mut ctl| async move {
+        let key = [
+            0x5b, 0x9f, 0x37, 0xb1, 0x54, 0x6b, 0x61, 0xf9, 0x14, 0xda, 0x9f, 0x55, 0x7a, 0x8f,
+            0xe2, 0x15,
+        ];
+        ctl.set_sframe_key(&key).await;
+        let result = ctl.get_sframe_key().await;
+        assert_eq!(result, key);
     })
     .await;
 }
