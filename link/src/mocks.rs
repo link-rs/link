@@ -254,3 +254,32 @@ impl embedded_storage::Storage for MockFlash {
         Ok(())
     }
 }
+
+/// Mock audio codec for testing.
+pub struct MockAudioCodec;
+
+impl crate::ui::AudioCodec for MockAudioCodec {
+    fn start(&mut self) {}
+    fn enable_input(&mut self, _enabled: bool) {}
+    fn enable_output(&mut self, _enabled: bool) {}
+}
+
+/// Mock audio stream for testing.
+pub struct MockAudioStream;
+
+impl crate::ui::AudioStream for MockAudioStream {
+    async fn start(&mut self) {}
+    async fn stop(&mut self) {}
+    async fn read(&mut self) -> crate::ui::Frame {
+        crate::ui::Frame::default()
+    }
+    async fn write(&mut self, _frame: &crate::ui::Frame) {}
+    async fn read_write(
+        &mut self,
+        _tx: &crate::ui::Frame,
+        rx: &mut crate::ui::Frame,
+    ) -> Result<(), crate::ui::AudioError> {
+        *rx = crate::ui::Frame::default();
+        Ok(())
+    }
+}

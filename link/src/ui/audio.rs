@@ -6,6 +6,87 @@
 
 use embedded_hal::i2c::I2c;
 
+/// Size of an audio frame in 16-bit samples.
+pub const FRAME_SIZE: usize = 320;
+
+/// An audio frame containing PCM samples.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Frame(pub [u16; FRAME_SIZE]);
+
+impl Default for Frame {
+    fn default() -> Self {
+        Self([0; FRAME_SIZE])
+    }
+}
+
+/// I2S audio error types.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum AudioError {
+    /// Audio overrun - data was lost.
+    Overrun,
+    /// DMA became unsynchronized with the ring buffer.
+    DmaUnsynced,
+}
+
+/// Trait for controlling the audio codec hardware.
+///
+/// This provides control over the WM8960 audio codec configuration,
+/// including power management and enabling audio paths.
+pub trait AudioCodec {
+    /// Initialize and start the audio codec with default settings.
+    fn start(&mut self);
+
+    /// Enable or disable the audio input (microphone) path.
+    fn enable_input(&mut self, enabled: bool);
+
+    /// Enable or disable the audio output (headphone/speaker) path.
+    fn enable_output(&mut self, enabled: bool);
+}
+
+/// Trait for I2S audio data streaming.
+///
+/// This trait provides async methods for streaming audio data through the I2S interface.
+#[allow(async_fn_in_trait)]
+pub trait AudioStream {
+    /// Start the I2S audio stream.
+    async fn start(&mut self);
+
+    /// Stop the I2S audio stream.
+    async fn stop(&mut self);
+
+    /// Read an audio frame from the I2S input.
+    async fn read(&mut self) -> Frame;
+
+    /// Write an audio frame to the I2S output.
+    async fn write(&mut self, frame: &Frame);
+
+    /// Simultaneously read and write audio frames (full duplex).
+    async fn read_write(&mut self, tx: &Frame, rx: &mut Frame) -> Result<(), AudioError>;
+
+    /// Write samples from an iterator to the I2S output.
+    async fn write_iter(&mut self, samples: impl Iterator<Item = u16>) {
+        let mut send = Frame::default();
+
+        let mut i_mod = 0;
+        for (i, sample) in samples.enumerate() {
+            i_mod = i % FRAME_SIZE;
+            send.0[i_mod] = sample;
+
+            if i_mod == FRAME_SIZE - 1 {
+                self.write(&send).await;
+            }
+        }
+
+        i_mod += 1;
+        if i_mod < FRAME_SIZE {
+            send.0[i_mod..].fill(0);
+            self.write(&send).await;
+        }
+    }
+}
+
 const I2C_ADDR: u8 = 0x1a;
 
 pub struct AudioControl<I> {
@@ -215,6 +296,24 @@ impl<I: I2c> AudioControl<I> {
             // Mute DAC outputs
             r.set(DacSoftMuteEnable(mute));
         })
+    }
+}
+
+impl<I: I2c> AudioCodec for AudioControl<I> {
+    fn start(&mut self) {
+        self.init();
+    }
+
+    fn enable_input(&mut self, enabled: bool) {
+        self.left_input_path(enabled);
+        self.left_adc(enabled);
+    }
+
+    fn enable_output(&mut self, enabled: bool) {
+        self.left_output_path(enabled);
+        self.right_output_path(enabled);
+        self.left_dac(enabled);
+        self.right_dac(enabled);
     }
 }
 

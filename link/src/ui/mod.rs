@@ -4,7 +4,7 @@ mod audio;
 mod eeprom;
 mod sframe;
 
-pub use audio::AudioControl;
+pub use audio::{AudioCodec, AudioControl, AudioError, AudioStream, Frame, FRAME_SIZE};
 pub use eeprom::Eeprom;
 
 use crate::info;
@@ -32,7 +32,7 @@ enum Event {
     ButtonUp(Button),
 }
 
-pub struct App<W, R, LR, LG, LB, BA, BB, I, D> {
+pub struct App<W, R, LR, LG, LB, BA, BB, I, D, AC, AS> {
     to_mgmt: W,
     to_net: W,
     from_mgmt: R,
@@ -41,9 +41,11 @@ pub struct App<W, R, LR, LG, LB, BA, BB, I, D> {
     button_a: BA,
     button_b: BB,
     eeprom: Eeprom<I, D>,
+    audio_codec: AC,
+    audio_stream: AS,
 }
 
-impl<W, R, LR, LG, LB, BA, BB, I, D> App<W, R, LR, LG, LB, BA, BB, I, D>
+impl<W, R, LR, LG, LB, BA, BB, I, D, AC, AS> App<W, R, LR, LG, LB, BA, BB, I, D, AC, AS>
 where
     W: Write,
     R: Read,
@@ -54,6 +56,8 @@ where
     BB: Wait,
     I: I2c,
     D: DelayNs,
+    AC: AudioCodec,
+    AS: AudioStream,
 {
     pub fn new(
         to_mgmt: W,
@@ -65,6 +69,8 @@ where
         button_b: BB,
         i2c: I,
         delay: D,
+        audio_codec: AC,
+        audio_stream: AS,
     ) -> Self {
         Self {
             to_mgmt,
@@ -75,6 +81,8 @@ where
             button_a,
             button_b,
             eeprom: Eeprom::new(i2c, delay),
+            audio_codec,
+            audio_stream,
         }
     }
 
@@ -91,6 +99,8 @@ where
             button_a,
             button_b,
             mut eeprom,
+            audio_codec: _audio_codec,
+            audio_stream: _audio_stream,
         } = self;
 
         // Initialize LED
