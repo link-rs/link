@@ -8,7 +8,7 @@ name = "ctl"
 path = "src/main.rs"
 
 [dependencies]
-link = { path = "../core" }
+link = { path = "../link" }
 tokio = { version = "1.48.0", features = ["full"] }
 tokio-serial = "5.4"
 clap = { version = "4", features = ["derive"] }

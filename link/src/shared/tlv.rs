@@ -1,6 +1,7 @@
+//! TLV (Type-Length-Value) encoding and decoding.
+
 use embedded_io_async::{Read, ReadExactError, Write};
 use heapless::Vec;
-use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 // Verbose TLV tracing - enable with `trace-tlv` feature, easy to disable
 #[cfg(feature = "trace-tlv")]
@@ -28,62 +29,6 @@ pub type TlvVec = Vec<u8, MAX_TLV_SIZE>;
 /// Used to synchronize after bootloader garbage or other noise.
 /// Spells "LINK" in ASCII.
 pub const SYNC_WORD: [u8; 4] = [0x4C, 0x49, 0x4E, 0x4B];
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
-#[repr(u16)]
-pub enum CtlToMgmt {
-    Ping = 0x00,
-    ToUi,
-    ToNet,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
-#[repr(u16)]
-pub enum MgmtToCtl {
-    Pong = 0x10,
-    FromUi,
-    FromNet,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
-#[repr(u16)]
-pub enum MgmtToUi {
-    Ping = 0x20,
-    CircularPing,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
-#[repr(u16)]
-pub enum UiToMgmt {
-    Pong = 0x30,
-    CircularPing,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
-#[repr(u16)]
-pub enum MgmtToNet {
-    Ping = 0x40,
-    CircularPing,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
-#[repr(u16)]
-pub enum NetToMgmt {
-    Pong = 0x50,
-    CircularPing,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
-#[repr(u16)]
-pub enum UiToNet {
-    CircularPing = 0x60,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
-#[repr(u16)]
-pub enum NetToUi {
-    CircularPing = 0x70,
-}
 
 fn decode_header<T: TryFrom<u16>>(header: &Header) -> Result<(T, usize), T::Error> {
     let raw_type = Type::from_be_bytes([header[0], header[1]]);
@@ -261,6 +206,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::shared::protocol::*;
     use embedded_io_adapters::futures_03::FromFutures;
 
     #[tokio::test]

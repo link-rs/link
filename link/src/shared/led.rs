@@ -1,3 +1,5 @@
+//! LED abstraction for RGB LEDs.
+
 use embedded_hal::digital::{ErrorType, OutputPin, StatefulOutputPin};
 
 /// Wrapper that inverts pin logic (for pins wired with opposite polarity)
