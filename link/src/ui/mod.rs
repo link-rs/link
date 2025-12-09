@@ -1,7 +1,12 @@
 //! UI (User Interface) chip - handles buttons and user interaction.
 
+mod audio;
 mod eeprom;
+pub mod sframe;
+
+pub use audio::AudioControl;
 pub use eeprom::Eeprom;
+pub use sframe::KeyMaterial;
 
 use crate::info;
 use crate::shared::{

@@ -15,6 +15,12 @@ pub trait I2cDevice {
     fn transaction(&mut self, operations: &mut [Operation<'_>]) -> Result<(), Infallible>;
 }
 
+impl<T: I2cDevice> I2cDevice for std::rc::Rc<std::cell::RefCell<T>> {
+    fn transaction(&mut self, operations: &mut [Operation<'_>]) -> Result<(), Infallible> {
+        self.borrow_mut().transaction(operations)
+    }
+}
+
 /// A mock I2C bus that routes transactions to registered device handlers.
 pub struct MockI2c {
     devices: std::collections::HashMap<u8, Box<dyn I2cDevice>>,
@@ -29,6 +35,16 @@ impl MockI2c {
 
     /// Attach a device handler at the given I2C address.
     pub fn attach<D: I2cDevice + 'static>(&mut self, address: u8, device: D) {
+        self.devices.insert(address, Box::new(device));
+    }
+
+    /// Attach a shared device handler at the given I2C address.
+    /// This allows tests to retain a reference to the mock device to inspect its state.
+    pub fn attach_shared<D: I2cDevice + 'static>(
+        &mut self,
+        address: u8,
+        device: std::rc::Rc<std::cell::RefCell<D>>,
+    ) {
         self.devices.insert(address, Box::new(device));
     }
 }
