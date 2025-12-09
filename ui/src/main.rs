@@ -5,7 +5,8 @@ use cortex_m::singleton;
 use embassy_executor::Spawner;
 use embassy_stm32::{
     bind_interrupts,
-    gpio::{Level, Output, Speed},
+    exti::ExtiInput,
+    gpio::{Level, Output, Pull, Speed},
     peripherals,
     usart::{self, Config, DataBits, Parity, StopBits, Uart},
 };
@@ -69,7 +70,13 @@ async fn main(_spawner: Spawner) {
         Output::new(p.PB3, Level::Low, Speed::Low),
     );
 
-    link::ui::App::new(to_mgmt, from_mgmt, to_net, from_net, led)
-        .run()
-        .await;
+    // Buttons (active low with pull-up)
+    let button_a = ExtiInput::new(p.PC0, p.EXTI0, Pull::Up);
+    let button_b = ExtiInput::new(p.PC1, p.EXTI1, Pull::Up);
+
+    link::ui::App::new(
+        to_mgmt, from_mgmt, to_net, from_net, led, button_a, button_b,
+    )
+    .run()
+    .await;
 }

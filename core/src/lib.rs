@@ -64,9 +64,8 @@ where
 }
 
 pub mod mgmt {
-    use crate::led::Led;
     use crate::tlv::{CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, Tlv, Value, WriteTlv};
-    use crate::{read_raw_loop, read_tlv_loop, Color};
+    use crate::{read_raw_loop, read_tlv_loop, Color, Led};
     use embedded_hal::digital::StatefulOutputPin;
     use embedded_io_async::{Read, Write};
 
@@ -76,27 +75,27 @@ pub mod mgmt {
         Net(Value),
     }
 
-    pub struct App<W, R, LAR, LAG, LAB, LBR, LBG, LBB> {
+    pub struct App<W, R, RA, GA, BA, RB, GB, BB> {
         to_ctl: W,
         to_ui: W,
         to_net: W,
         from_ctl: R,
         from_ui: R,
         from_net: R,
-        led_a: Led<LAR, LAG, LAB>,
-        led_b: Led<LBR, LBG, LBB>,
+        led_a: (RA, GA, BA),
+        led_b: (RB, GB, BB),
     }
 
-    impl<W, R, LAR, LAG, LAB, LBR, LBG, LBB> App<W, R, LAR, LAG, LAB, LBR, LBG, LBB>
+    impl<W, R, RA, GA, BA, RB, GB, BB> App<W, R, RA, GA, BA, RB, GB, BB>
     where
         W: Write,
         R: Read,
-        LAR: StatefulOutputPin,
-        LAG: StatefulOutputPin,
-        LAB: StatefulOutputPin,
-        LBR: StatefulOutputPin,
-        LBG: StatefulOutputPin,
-        LBB: StatefulOutputPin,
+        RA: StatefulOutputPin,
+        GA: StatefulOutputPin,
+        BA: StatefulOutputPin,
+        RB: StatefulOutputPin,
+        GB: StatefulOutputPin,
+        BB: StatefulOutputPin,
     {
         pub fn new(
             to_ctl: W,
@@ -105,8 +104,8 @@ pub mod mgmt {
             from_ui: R,
             to_net: W,
             from_net: R,
-            led_a: (LAR, LAG, LAB),
-            led_b: (LBR, LBG, LBB),
+            led_a: (RA, GA, BA),
+            led_b: (RB, GB, BB),
         ) -> Self {
             Self {
                 to_ctl,
@@ -115,20 +114,16 @@ pub mod mgmt {
                 from_ctl,
                 from_ui,
                 from_net,
-                led_a: Led::new(led_a.0, led_a.1, led_a.2),
-                led_b: Led::new(led_b.0, led_b.1, led_b.2),
+                led_a,
+                led_b,
             }
         }
 
         #[allow(unreachable_code)]
-        pub async fn run(mut self) -> ! {
+        pub async fn run(self) -> ! {
             use crate::{Channel, RawMutex};
 
             info!("mgmt: starting");
-
-            // Set LEDs to startup colors
-            self.led_a.set(Color::Red);
-            self.led_b.set(Color::Green);
 
             let Self {
                 mut to_ctl,
@@ -137,9 +132,15 @@ pub mod mgmt {
                 from_ctl,
                 from_ui,
                 from_net,
-                led_a: _,
-                led_b: _,
+                led_a,
+                led_b,
             } = self;
+
+            // Initialize LEDs
+            let mut led_a = Led::new(led_a.0, led_a.1, led_a.2);
+            let mut led_b = Led::new(led_b.0, led_b.1, led_b.2);
+            led_a.set(Color::Red);
+            led_b.set(Color::Green);
 
             const MAX_QUEUE_DEPTH: usize = 2;
             let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
@@ -196,66 +197,92 @@ pub mod mgmt {
 }
 
 pub mod ui {
-    use crate::led::Led;
     use crate::read_tlv_loop;
     use crate::tlv::{MgmtToUi, NetToUi, Tlv, UiToMgmt, UiToNet, WriteTlv};
-    use crate::Color;
+    use crate::{Channel, Color, Led, RawMutex, Sender};
     use embedded_hal::digital::StatefulOutputPin;
+    use embedded_hal_async::digital::Wait;
     use embedded_io_async::{Read, Write};
+
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    pub enum Button {
+        A,
+        B,
+    }
 
     enum Event {
         Mgmt(Tlv<MgmtToUi>),
         Net(Tlv<NetToUi>),
+        ButtonDown(Button),
+        ButtonUp(Button),
     }
 
-    pub struct App<W, R, LR, LG, LB> {
+    pub struct App<W, R, LR, LG, LB, BA, BB> {
         to_mgmt: W,
         to_net: W,
         from_mgmt: R,
         from_net: R,
-        led: Led<LR, LG, LB>,
+        led: (LR, LG, LB),
+        button_a: BA,
+        button_b: BB,
     }
 
-    impl<W, R, LR, LG, LB> App<W, R, LR, LG, LB>
+    impl<W, R, LR, LG, LB, BA, BB> App<W, R, LR, LG, LB, BA, BB>
     where
         W: Write,
         R: Read,
         LR: StatefulOutputPin,
         LG: StatefulOutputPin,
         LB: StatefulOutputPin,
+        BA: Wait,
+        BB: Wait,
     {
-        pub fn new(to_mgmt: W, from_mgmt: R, to_net: W, from_net: R, led: (LR, LG, LB)) -> Self {
+        pub fn new(
+            to_mgmt: W,
+            from_mgmt: R,
+            to_net: W,
+            from_net: R,
+            led: (LR, LG, LB),
+            button_a: BA,
+            button_b: BB,
+        ) -> Self {
             Self {
                 to_mgmt,
                 to_net,
                 from_mgmt,
                 from_net,
-                led: Led::new(led.0, led.1, led.2),
+                led,
+                button_a,
+                button_b,
             }
         }
 
         #[allow(unreachable_code)]
-        pub async fn run(mut self) -> ! {
-            use crate::{Channel, RawMutex};
-
+        pub async fn run(self) -> ! {
             info!("ui: starting");
-
-            // Set LED to startup color
-            self.led.set(Color::Blue);
 
             let Self {
                 mut to_mgmt,
                 mut to_net,
                 from_mgmt,
                 from_net,
-                led: _,
+                led,
+                button_a,
+                button_b,
             } = self;
 
-            const MAX_QUEUE_DEPTH: usize = 2;
+            // Initialize LED
+            let mut led = Led::new(led.0, led.1, led.2);
+            led.set(Color::Blue);
+
+            const MAX_QUEUE_DEPTH: usize = 4;
             let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
 
             let mgmt_read_task = read_tlv_loop(from_mgmt, channel.sender(), Event::Mgmt);
             let net_read_task = read_tlv_loop(from_net, channel.sender(), Event::Net);
+            let button_a_task = button_monitor(button_a, Button::A, channel.sender());
+            let button_b_task = button_monitor(button_b, Button::B, channel.sender());
 
             let handle_task = async {
                 info!("ui: ready to handle events");
@@ -263,12 +290,40 @@ pub mod ui {
                     match channel.receive().await {
                         Event::Mgmt(tlv) => handle_mgmt(tlv, &mut to_mgmt, &mut to_net).await,
                         Event::Net(tlv) => handle_net(tlv, &mut to_mgmt).await,
+                        Event::ButtonDown(button) => {
+                            info!("ui: button {:?} down", button);
+                        }
+                        Event::ButtonUp(button) => {
+                            info!("ui: button {:?} up", button);
+                        }
                     }
                 }
             };
 
-            futures::join!(mgmt_read_task, net_read_task, handle_task);
+            futures::join!(
+                mgmt_read_task,
+                net_read_task,
+                button_a_task,
+                button_b_task,
+                handle_task
+            );
             unreachable!()
+        }
+    }
+
+    async fn button_monitor<'a, B: Wait, const N: usize>(
+        mut button: B,
+        which: Button,
+        sender: Sender<'a, RawMutex, Event, N>,
+    ) -> ! {
+        loop {
+            // Wait for button press (falling edge for active-low)
+            let _ = button.wait_for_falling_edge().await;
+            sender.send(Event::ButtonDown(which)).await;
+
+            // Wait for button release (rising edge)
+            let _ = button.wait_for_rising_edge().await;
+            sender.send(Event::ButtonUp(which)).await;
         }
     }
 
@@ -307,10 +362,9 @@ pub mod ui {
 }
 
 pub mod net {
-    use crate::led::Led;
     use crate::read_tlv_loop;
     use crate::tlv::{MgmtToNet, NetToMgmt, NetToUi, Tlv, UiToNet, WriteTlv};
-    use crate::Color;
+    use crate::{Color, Led};
     use embedded_hal::digital::StatefulOutputPin;
     use embedded_io_async::{Read, Write};
 
@@ -324,7 +378,7 @@ pub mod net {
         to_ui: W,
         from_mgmt: R,
         from_ui: R,
-        led: Led<LR, LG, LB>,
+        led: (LR, LG, LB),
     }
 
     impl<W, R, LR, LG, LB> App<W, R, LR, LG, LB>
@@ -341,26 +395,27 @@ pub mod net {
                 to_ui,
                 from_mgmt,
                 from_ui,
-                led: Led::new(led.0, led.1, led.2),
+                led,
             }
         }
 
         #[allow(unreachable_code)]
-        pub async fn run(mut self) -> ! {
+        pub async fn run(self) -> ! {
             use crate::{Channel, RawMutex};
 
             info!("net: starting");
-
-            // Set LED to startup color
-            self.led.set(Color::Yellow);
 
             let Self {
                 mut to_mgmt,
                 mut to_ui,
                 from_mgmt,
                 from_ui,
-                led: _,
+                led,
             } = self;
+
+            // Initialize LED
+            let mut led = Led::new(led.0, led.1, led.2);
+            led.set(Color::Yellow);
 
             const MAX_QUEUE_DEPTH: usize = 2;
             let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
@@ -562,23 +617,37 @@ pub mod ctl {
 #[cfg(test)]
 mod test {
     use super::*;
+    use core::convert::Infallible;
     use core::future::Future;
+    use embedded_hal::digital::{ErrorType, OutputPin, StatefulOutputPin};
+    use embedded_hal_async::digital::Wait;
     use embedded_io_adapters::futures_03::FromFutures;
 
     type Reader = FromFutures<async_ringbuffer::Reader>;
     type Writer = FromFutures<async_ringbuffer::Writer>;
 
-    /// Mock output pin for testing
-    #[derive(Default)]
+    fn channel() -> (Writer, Reader) {
+        const BUFFER_CAPACITY: usize = 1024;
+        let (w, r) = async_ringbuffer::ring_buffer(BUFFER_CAPACITY);
+        (FromFutures::new(w), FromFutures::new(r))
+    }
+
+    /// Mock pin for testing LED functionality
     struct MockPin {
         state: bool,
     }
 
-    impl embedded_hal::digital::ErrorType for MockPin {
-        type Error = core::convert::Infallible;
+    impl MockPin {
+        fn new() -> Self {
+            Self { state: false }
+        }
     }
 
-    impl embedded_hal::digital::OutputPin for MockPin {
+    impl ErrorType for MockPin {
+        type Error = Infallible;
+    }
+
+    impl OutputPin for MockPin {
         fn set_low(&mut self) -> Result<(), Self::Error> {
             self.state = false;
             Ok(())
@@ -590,7 +659,7 @@ mod test {
         }
     }
 
-    impl embedded_hal::digital::StatefulOutputPin for MockPin {
+    impl StatefulOutputPin for MockPin {
         fn is_set_high(&mut self) -> Result<bool, Self::Error> {
             Ok(self.state)
         }
@@ -600,14 +669,37 @@ mod test {
         }
     }
 
-    fn mock_led_pins() -> (MockPin, MockPin, MockPin) {
-        (MockPin::default(), MockPin::default(), MockPin::default())
+    /// Mock button for testing button functionality (never triggers)
+    struct MockButton;
+
+    impl ErrorType for MockButton {
+        type Error = Infallible;
     }
 
-    fn channel() -> (Writer, Reader) {
-        const BUFFER_CAPACITY: usize = 1024;
-        let (w, r) = async_ringbuffer::ring_buffer(BUFFER_CAPACITY);
-        (FromFutures::new(w), FromFutures::new(r))
+    impl Wait for MockButton {
+        async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
+            core::future::pending().await
+        }
+
+        async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
+            core::future::pending().await
+        }
+
+        async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
+            core::future::pending().await
+        }
+
+        async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
+            core::future::pending().await
+        }
+
+        async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
+            core::future::pending().await
+        }
+    }
+
+    fn mock_led_pins() -> (MockPin, MockPin, MockPin) {
+        (MockPin::new(), MockPin::new(), MockPin::new())
     }
 
     async fn device_test<F, Fut>(test_fn: F)
@@ -638,10 +730,22 @@ mod test {
             mock_led_pins(),
             mock_led_pins(),
         );
-        let ui_app =
-            ui::App::new(ui_to_mgmt, ui_from_mgmt, ui_to_net, ui_from_net, mock_led_pins());
-        let net_app =
-            net::App::new(net_to_mgmt, net_from_mgmt, net_to_ui, net_from_ui, mock_led_pins());
+        let ui_app = ui::App::new(
+            ui_to_mgmt,
+            ui_from_mgmt,
+            ui_to_net,
+            ui_from_net,
+            mock_led_pins(),
+            MockButton,
+            MockButton,
+        );
+        let net_app = net::App::new(
+            net_to_mgmt,
+            net_from_mgmt,
+            net_to_ui,
+            net_from_ui,
+            mock_led_pins(),
+        );
 
         tokio::select! {
             _ = test_fn(ctl_app) => {},
