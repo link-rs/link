@@ -75,7 +75,14 @@ async fn main(_spawner: Spawner) {
     let _signal_to_mgmt = Output::new(peripherals.GPIO15, Level::Low, OutputConfig::default());
     let _signal_from_mgmt = Input::new(peripherals.GPIO16, InputConfig::default().with_pull(Pull::Down));
 
-    link::net::App::new(to_mgmt, from_mgmt, to_ui, from_ui)
+    // RGB LED (R, G, B pin tuple): R=GPIO38, G=GPIO37, B=GPIO36
+    let led = (
+        Output::new(peripherals.GPIO38, Level::Low, OutputConfig::default()),
+        Output::new(peripherals.GPIO37, Level::Low, OutputConfig::default()),
+        Output::new(peripherals.GPIO36, Level::Low, OutputConfig::default()),
+    );
+
+    link::net::App::new(to_mgmt, from_mgmt, to_ui, from_ui, led)
         .run()
         .await;
 }

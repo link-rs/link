@@ -4,7 +4,9 @@
 use cortex_m::singleton;
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    bind_interrupts, peripherals,
+    bind_interrupts,
+    gpio::{Level, Output, Speed},
+    peripherals,
     usart::{self, Config, DataBits, Parity, StopBits, Uart},
 };
 use {defmt_rtt as _, panic_probe as _};
@@ -60,7 +62,14 @@ async fn main(_spawner: Spawner) {
     .split();
     let from_net = from_net.into_ring_buffered(net_rx_buf);
 
-    link::ui::App::new(to_mgmt, from_mgmt, to_net, from_net)
+    // RGB LED (R, G, B pin tuple): R=PA6, G=PC5, B=PB3
+    let led = (
+        Output::new(p.PA6, Level::Low, Speed::Low),
+        Output::new(p.PC5, Level::Low, Speed::Low),
+        Output::new(p.PB3, Level::Low, Speed::Low),
+    );
+
+    link::ui::App::new(to_mgmt, from_mgmt, to_net, from_net, led)
         .run()
         .await;
 }

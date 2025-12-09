@@ -67,7 +67,21 @@ async fn main(_spawner: Spawner) {
     let _signal_to_net = Output::new(p.PB13, Level::Low, Speed::Low);
     let _signal_from_net = ExtiInput::new(p.PB14, p.EXTI14, Pull::Down);
 
-    link::mgmt::App::new(to_ctl, from_ctl, to_ui, from_ui, to_net, from_net)
+    // RGB LEDs (R, G, B pin tuples)
+    // LED A: R=PA4 (inverted), G=PA6, B=PA7
+    let led_a = (
+        link::InvertedPin(Output::new(p.PA4, Level::Low, Speed::Low)),
+        Output::new(p.PA6, Level::Low, Speed::Low),
+        Output::new(p.PA7, Level::Low, Speed::Low),
+    );
+    // LED B: R=PB0, G=PB6, B=PB15
+    let led_b = (
+        Output::new(p.PB0, Level::Low, Speed::Low),
+        Output::new(p.PB6, Level::Low, Speed::Low),
+        Output::new(p.PB15, Level::Low, Speed::Low),
+    );
+
+    link::mgmt::App::new(to_ctl, from_ctl, to_ui, from_ui, to_net, from_net, led_a, led_b)
         .run()
         .await;
 }
