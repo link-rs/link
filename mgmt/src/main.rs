@@ -74,6 +74,7 @@ async fn main(_spawner: Spawner) {
         Output::new(p.PA6, Level::Low, Speed::Low),
         Output::new(p.PA7, Level::Low, Speed::Low),
     );
+
     // LED B: R=PB0, G=PB6, B=PB15
     let led_b = (
         Output::new(p.PB0, Level::Low, Speed::Low),
@@ -81,7 +82,16 @@ async fn main(_spawner: Spawner) {
         Output::new(p.PB15, Level::Low, Speed::Low),
     );
 
-    link::mgmt::App::new(to_ctl, from_ctl, to_ui, from_ui, to_net, from_net, led_a, led_b)
-        .run()
-        .await;
+    // Make sure these pins are held low for now
+    // TODO(RLB) Actually use these, e.g., in response to commands
+    let _ui_boot = Output::new(p.PA15, Level::Low, Speed::Low);
+    let _ui_nrst = Output::new(p.PB3, Level::Low, Speed::Low);
+    let _net_boot = Output::new(p.PB5, Level::Low, Speed::Low);
+    let _net_nrst = Output::new(p.PB4, Level::Low, Speed::Low);
+
+    link::mgmt::App::new(
+        to_ctl, from_ctl, to_ui, from_ui, to_net, from_net, led_a, led_b,
+    )
+    .run()
+    .await;
 }

@@ -317,12 +317,12 @@ pub mod ui {
         sender: Sender<'a, RawMutex, Event, N>,
     ) -> ! {
         loop {
-            // Wait for button press (falling edge for active-low)
-            let _ = button.wait_for_falling_edge().await;
+            // Wait for button press (rising edge - active high with pull-down)
+            let _ = button.wait_for_rising_edge().await;
             sender.send(Event::ButtonDown(which)).await;
 
-            // Wait for button release (rising edge)
-            let _ = button.wait_for_rising_edge().await;
+            // Wait for button release (falling edge)
+            let _ = button.wait_for_falling_edge().await;
             sender.send(Event::ButtonUp(which)).await;
         }
     }
