@@ -82,11 +82,6 @@ async fn main(_spawner: Spawner) {
         Output::new(p.PB15, Level::Low, Speed::Low),
     );
 
-    // Make sure these pins are held low for now
-    // TODO(RLB) Actually use these, e.g., in response to commands
-    let _ui_boot = Output::new(p.PA15, Level::Low, Speed::Low);
-    let _ui_nrst = Output::new(p.PB3, Level::Low, Speed::Low);
-
     link::mgmt::App::new(
         to_ctl, from_ctl, to_ui, from_ui, to_net, from_net, led_a, led_b,
     )
