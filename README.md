@@ -36,7 +36,7 @@ espup install
 cd link
 cargo test
 
-# Build the mgmt firmware and flash it
+# Build the MGMT firmware and flash it
 # Connect ST-LINK to the MGMT header
 cd ../mgmt
 cargo run
