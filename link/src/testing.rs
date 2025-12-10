@@ -53,6 +53,7 @@ where
         mock_led_pins(),
         MockButton,
         MockButton,
+        MockButton,
         mock_i2c_with_eeprom(),
         MockDelay,
         MockAudioCodec,

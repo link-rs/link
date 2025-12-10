@@ -34,7 +34,7 @@ enum Event {
     AudioFrame(Frame),
 }
 
-pub struct App<W, R, LR, LG, LB, BA, BB, I, D, AC, AS> {
+pub struct App<W, R, LR, LG, LB, BA, BB, BM, I, D, AC, AS> {
     to_mgmt: W,
     to_net: W,
     from_mgmt: R,
@@ -42,12 +42,13 @@ pub struct App<W, R, LR, LG, LB, BA, BB, I, D, AC, AS> {
     led: (LR, LG, LB),
     button_a: BA,
     button_b: BB,
+    button_mic: BM,
     eeprom: Eeprom<I, D>,
     audio_codec: AC,
     audio_stream: AS,
 }
 
-impl<W, R, LR, LG, LB, BA, BB, I, D, AC, AS> App<W, R, LR, LG, LB, BA, BB, I, D, AC, AS>
+impl<W, R, LR, LG, LB, BA, BB, BM, I, D, AC, AS> App<W, R, LR, LG, LB, BA, BB, BM, I, D, AC, AS>
 where
     W: Write,
     R: Read,
@@ -56,6 +57,7 @@ where
     LB: StatefulOutputPin,
     BA: Wait,
     BB: Wait,
+    BM: Wait,
     I: I2c,
     D: DelayNs,
     AC: AudioCodec,
@@ -69,6 +71,7 @@ where
         led: (LR, LG, LB),
         button_a: BA,
         button_b: BB,
+        button_mic: BM,
         i2c: I,
         delay: D,
         audio_codec: AC,
@@ -82,6 +85,7 @@ where
             led,
             button_a,
             button_b,
+            button_mic,
             eeprom: Eeprom::new(i2c, delay),
             audio_codec,
             audio_stream,
@@ -100,6 +104,7 @@ where
             led,
             button_a,
             button_b,
+            button_mic,
             mut eeprom,
             audio_codec: _audio_codec,
             mut audio_stream,
@@ -114,8 +119,9 @@ where
 
         let mgmt_read_task = read_tlv_loop(from_mgmt, channel.sender(), Event::Mgmt);
         let net_read_task = read_tlv_loop(from_net, channel.sender(), Event::Net);
-        let button_a_task = button_monitor(button_a, Button::A, channel.sender());
-        let button_b_task = button_monitor(button_b, Button::B, channel.sender());
+        let button_a_task = button_monitor(button_a, Button::A, false, channel.sender());
+        let button_b_task = button_monitor(button_b, Button::B, false, channel.sender());
+        let button_mic_task = button_monitor(button_mic, Button::A, true, channel.sender());
         let audio_read_task = audio_stream_task(&mut audio_stream, channel.sender());
 
         let handle_task = async {
@@ -170,6 +176,7 @@ where
             net_read_task,
             button_a_task,
             button_b_task,
+            button_mic_task,
             audio_read_task,
             handle_task
         );
@@ -192,16 +199,23 @@ async fn audio_stream_task<'a, AS: AudioStream, const N: usize>(
 async fn button_monitor<'a, B: Wait, const N: usize>(
     mut button: B,
     which: Button,
+    active_low: bool,
     sender: Sender<'a, RawMutex, Event, N>,
 ) -> ! {
     loop {
-        // Wait for button press (rising edge - active high with pull-down)
-        let _ = button.wait_for_rising_edge().await;
-        sender.send(Event::ButtonDown(which)).await;
-
-        // Wait for button release (falling edge)
-        let _ = button.wait_for_falling_edge().await;
-        sender.send(Event::ButtonUp(which)).await;
+        if active_low {
+            // Active low: falling edge = press, rising edge = release
+            let _ = button.wait_for_falling_edge().await;
+            sender.send(Event::ButtonDown(which)).await;
+            let _ = button.wait_for_rising_edge().await;
+            sender.send(Event::ButtonUp(which)).await;
+        } else {
+            // Active high: rising edge = press, falling edge = release
+            let _ = button.wait_for_rising_edge().await;
+            sender.send(Event::ButtonDown(which)).await;
+            let _ = button.wait_for_falling_edge().await;
+            sender.send(Event::ButtonUp(which)).await;
+        }
     }
 }
 
@@ -549,6 +563,7 @@ mod audio_streaming_tests {
             mock_led_pins(),
             button_a,
             MockButton,
+            MockButton,
             mock_i2c_with_eeprom(),
             MockDelay,
             MockAudioCodec,
@@ -594,6 +609,71 @@ mod audio_streaming_tests {
     }
 
     #[tokio::test]
+    async fn mic_button_sends_audio_frame_a() {
+        let (ui_to_mgmt, _mgmt_from_ui) = channel();
+        let (_mgmt_to_ui, ui_from_mgmt) = channel();
+        let (ui_to_net, net_from_ui) = channel();
+        let (_net_to_ui, ui_from_net) = channel();
+
+        let (button_mic, button_mic_ctrl) = ControllableButton::new();
+
+        let ui_app = App::new(
+            ui_to_mgmt,
+            ui_from_mgmt,
+            ui_to_net,
+            ui_from_net,
+            mock_led_pins(),
+            MockButton,
+            MockButton,
+            button_mic,
+            mock_i2c_with_eeprom(),
+            MockDelay,
+            MockAudioCodec,
+            MockAudioStream::new(),
+        );
+
+        let collector = TlvCollector::new();
+        let frames_a = collector.frames_a();
+        let frames_b = collector.frames_b();
+
+        tokio::select! {
+            _ = ui_app.run() => unreachable!(),
+            _ = collector.collect_from(net_from_ui) => unreachable!(),
+            _ = async {
+                // Wait a bit for the app to start
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Press mic button (active-low)
+                button_mic_ctrl.press_active_low().await;
+
+                // Wait for at least 2 audio frames
+                tokio::time::sleep(Duration::from_millis(60)).await;
+
+                // Release mic button (active-low)
+                button_mic_ctrl.release_active_low().await;
+
+                // Wait a bit
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            } => {}
+        }
+
+        // Mic button should send AudioFrameA (same as button A)
+        let frames = frames_a.lock().unwrap();
+        assert!(
+            frames.len() >= 2,
+            "Expected at least 2 AudioFrameA frames from mic button, got {}",
+            frames.len()
+        );
+
+        // Should have no AudioFrameB
+        assert_eq!(
+            frames_b.lock().unwrap().len(),
+            0,
+            "Mic button should not send AudioFrameB"
+        );
+    }
+
+    #[tokio::test]
     async fn button_b_sends_audio_frame_b() {
         let (ui_to_mgmt, _mgmt_from_ui) = channel();
         let (_mgmt_to_ui, ui_from_mgmt) = channel();
@@ -610,6 +690,7 @@ mod audio_streaming_tests {
             mock_led_pins(),
             MockButton,
             button_b,
+            MockButton,
             mock_i2c_with_eeprom(),
             MockDelay,
             MockAudioCodec,
@@ -669,6 +750,7 @@ mod audio_streaming_tests {
             mock_led_pins(),
             MockButton,
             MockButton,
+            MockButton,
             mock_i2c_with_eeprom(),
             MockDelay,
             MockAudioCodec,
@@ -709,6 +791,7 @@ mod audio_streaming_tests {
             ui_from_net,
             mock_led_pins(),
             button_a,
+            MockButton,
             MockButton,
             mock_i2c_with_eeprom(),
             MockDelay,
@@ -765,6 +848,7 @@ mod audio_streaming_tests {
             mock_led_pins(),
             button_a,
             button_b,
+            MockButton,
             mock_i2c_with_eeprom(),
             MockDelay,
             MockAudioCodec,

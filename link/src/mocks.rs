@@ -234,14 +234,24 @@ impl ControllableButton {
 }
 
 impl ButtonController {
-    /// Simulate pressing the button (rising edge).
+    /// Simulate pressing the button (rising edge for active-high buttons).
     pub async fn press(&self) {
         self.rising_tx.send(()).await.ok();
     }
 
-    /// Simulate releasing the button (falling edge).
+    /// Simulate releasing the button (falling edge for active-high buttons).
     pub async fn release(&self) {
         self.falling_tx.send(()).await.ok();
+    }
+
+    /// Simulate pressing the button (falling edge for active-low buttons).
+    pub async fn press_active_low(&self) {
+        self.falling_tx.send(()).await.ok();
+    }
+
+    /// Simulate releasing the button (rising edge for active-low buttons).
+    pub async fn release_active_low(&self) {
+        self.rising_tx.send(()).await.ok();
     }
 }
 

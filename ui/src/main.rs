@@ -148,6 +148,7 @@ async fn main(_spawner: Spawner) {
     // Buttons (active low with pull-up)
     let button_a = ExtiInput::new(p.PC0, p.EXTI0, Pull::Up);
     let button_b = ExtiInput::new(p.PC1, p.EXTI1, Pull::Up);
+    let button_mic = ExtiInput::new(p.PA4, p.EXTI4, Pull::Up);
 
     // I2C for EEPROM (I2C1: PB6 SCL, PB7 SDA)
     let i2c_eeprom = I2c::new_blocking(p.I2C1, p.PB6, p.PB7, Default::default());
@@ -169,6 +170,7 @@ async fn main(_spawner: Spawner) {
         led,
         button_a,
         button_b,
+        button_mic,
         i2c_eeprom,
         delay,
         audio_codec,
