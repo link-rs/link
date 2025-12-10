@@ -203,6 +203,76 @@ impl Wait for MockButton {
     }
 }
 
+/// Controllable mock button for testing button press/release behavior.
+/// Uses tokio channels to trigger edge events.
+pub struct ControllableButton {
+    rising_rx: tokio::sync::mpsc::Receiver<()>,
+    falling_rx: tokio::sync::mpsc::Receiver<()>,
+}
+
+/// Handle to control a ControllableButton.
+pub struct ButtonController {
+    rising_tx: tokio::sync::mpsc::Sender<()>,
+    falling_tx: tokio::sync::mpsc::Sender<()>,
+}
+
+impl ControllableButton {
+    pub fn new() -> (Self, ButtonController) {
+        let (rising_tx, rising_rx) = tokio::sync::mpsc::channel(1);
+        let (falling_tx, falling_rx) = tokio::sync::mpsc::channel(1);
+        (
+            Self {
+                rising_rx,
+                falling_rx,
+            },
+            ButtonController {
+                rising_tx,
+                falling_tx,
+            },
+        )
+    }
+}
+
+impl ButtonController {
+    /// Simulate pressing the button (rising edge).
+    pub async fn press(&self) {
+        self.rising_tx.send(()).await.ok();
+    }
+
+    /// Simulate releasing the button (falling edge).
+    pub async fn release(&self) {
+        self.falling_tx.send(()).await.ok();
+    }
+}
+
+impl DigitalErrorType for ControllableButton {
+    type Error = Infallible;
+}
+
+impl Wait for ControllableButton {
+    async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
+        core::future::pending().await
+    }
+
+    async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
+        core::future::pending().await
+    }
+
+    async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
+        self.rising_rx.recv().await;
+        Ok(())
+    }
+
+    async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
+        self.falling_rx.recv().await;
+        Ok(())
+    }
+
+    async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
+        core::future::pending().await
+    }
+}
+
 /// Create a tuple of mock LED pins.
 pub fn mock_led_pins() -> (MockPin, MockPin, MockPin) {
     (MockPin::new(), MockPin::new(), MockPin::new())
@@ -264,14 +334,38 @@ impl crate::ui::AudioCodec for MockAudioCodec {
     fn enable_output(&mut self, _enabled: bool) {}
 }
 
-/// Mock audio stream for testing.
-pub struct MockAudioStream;
+/// Mock audio stream for testing that emits frames every 20ms.
+///
+/// Each frame contains a counter value in the first sample to identify it.
+pub struct MockAudioStream {
+    frame_counter: u16,
+}
+
+impl MockAudioStream {
+    pub fn new() -> Self {
+        Self { frame_counter: 0 }
+    }
+}
+
+impl Default for MockAudioStream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl crate::ui::AudioStream for MockAudioStream {
     async fn start(&mut self) {}
     async fn stop(&mut self) {}
     async fn read(&mut self) -> crate::ui::Frame {
-        crate::ui::Frame::default()
+        // Wait 20ms between frames (8kHz sample rate, 320 samples = 40ms per frame,
+        // but we use 20ms for faster test execution)
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // Create a frame with a unique identifier in the first sample
+        let mut frame = crate::ui::Frame::default();
+        frame.0[0] = self.frame_counter;
+        self.frame_counter = self.frame_counter.wrapping_add(1);
+        frame
     }
     async fn write(&mut self, _frame: &crate::ui::Frame) {}
     async fn read_write(
@@ -279,7 +373,7 @@ impl crate::ui::AudioStream for MockAudioStream {
         _tx: &crate::ui::Frame,
         rx: &mut crate::ui::Frame,
     ) -> Result<(), crate::ui::AudioError> {
-        *rx = crate::ui::Frame::default();
+        *rx = self.read().await;
         Ok(())
     }
 }

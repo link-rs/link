@@ -56,7 +56,7 @@ where
         mock_i2c_with_eeprom(),
         MockDelay,
         MockAudioCodec,
-        MockAudioStream,
+        MockAudioStream::new(),
     );
     let net_app = net::App::new(
         net_to_mgmt,

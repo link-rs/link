@@ -21,7 +21,7 @@ pub type Value = Vec<u8, MAX_VALUE_SIZE>;
 pub const HEADER_SIZE: usize = core::mem::size_of::<Type>() + core::mem::size_of::<Length>();
 pub type Header = [u8; HEADER_SIZE];
 
-pub const MAX_VALUE_SIZE: usize = 64;
+pub const MAX_VALUE_SIZE: usize = 640;
 pub const MAX_TLV_SIZE: usize = HEADER_SIZE + MAX_VALUE_SIZE;
 pub type TlvVec = Vec<u8, MAX_TLV_SIZE>;
 
@@ -306,7 +306,7 @@ mod test {
         writer
             .write_all(&[
                 0x00, 0x00, // type: CtlToMgmt::Ping
-                0x00, 0x00, 0x01, 0x00, // length: 256 (exceeds MAX_VALUE_SIZE=32)
+                0x00, 0x00, 0x10, 0x00, // length: 4096 (exceeds MAX_VALUE_SIZE=640)
             ])
             .await
             .unwrap();

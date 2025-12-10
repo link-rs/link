@@ -67,6 +67,10 @@ pub enum NetToMgmt {
 #[repr(u16)]
 pub enum UiToNet {
     CircularPing = 0x60,
+    /// Audio frame from button A press
+    AudioFrameA,
+    /// Audio frame from button B press
+    AudioFrameB,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

@@ -30,6 +30,8 @@ enum Event {
     Net(Tlv<NetToUi>),
     ButtonDown(Button),
     ButtonUp(Button),
+    /// An audio frame is ready to be sent
+    AudioFrame(Frame),
 }
 
 pub struct App<W, R, LR, LG, LB, BA, BB, I, D, AC, AS> {
@@ -100,7 +102,7 @@ where
             button_b,
             mut eeprom,
             audio_codec: _audio_codec,
-            audio_stream: _audio_stream,
+            mut audio_stream,
         } = self;
 
         // Initialize LED
@@ -114,9 +116,15 @@ where
         let net_read_task = read_tlv_loop(from_net, channel.sender(), Event::Net);
         let button_a_task = button_monitor(button_a, Button::A, channel.sender());
         let button_b_task = button_monitor(button_b, Button::B, channel.sender());
+        let audio_read_task = audio_stream_task(&mut audio_stream, channel.sender());
 
         let handle_task = async {
             info!("ui: ready to handle events");
+
+            // Track which button is currently held (if any)
+            let mut active_button: Option<Button> = None;
+            let mut audio_frame_count: u32 = 0;
+
             loop {
                 match channel.receive().await {
                     Event::Mgmt(tlv) => {
@@ -125,9 +133,33 @@ where
                     Event::Net(tlv) => handle_net(tlv, &mut to_mgmt).await,
                     Event::ButtonDown(button) => {
                         info!("ui: button {:?} down", button);
+                        // Only set active button if no button is currently held
+                        if active_button.is_none() {
+                            active_button = Some(button);
+                            audio_frame_count = 0;
+                        }
                     }
                     Event::ButtonUp(button) => {
                         info!("ui: button {:?} up", button);
+                        if active_button == Some(button) {
+                            active_button = None;
+                        }
+                    }
+                    Event::AudioFrame(frame) => {
+                        // Only send audio frames if a button is held
+                        if let Some(button) = active_button {
+                            let tlv_type = match button {
+                                Button::A => UiToNet::AudioFrameA,
+                                Button::B => UiToNet::AudioFrameB,
+                            };
+                            let bytes = frame.as_bytes();
+                            to_net.must_write_tlv(tlv_type, &bytes).await;
+
+                            audio_frame_count += 1;
+                            if audio_frame_count % 50 == 0 {
+                                info!("ui: sent {} audio frames", audio_frame_count);
+                            }
+                        }
                     }
                 }
             }
@@ -138,9 +170,22 @@ where
             net_read_task,
             button_a_task,
             button_b_task,
+            audio_read_task,
             handle_task
         );
         unreachable!()
+    }
+}
+
+/// Continuously read audio frames and send them to the event channel.
+async fn audio_stream_task<'a, AS: AudioStream, const N: usize>(
+    audio_stream: &mut AS,
+    sender: Sender<'a, RawMutex, Event, N>,
+) -> ! {
+    audio_stream.start().await;
+    loop {
+        let frame = audio_stream.read().await;
+        sender.send(Event::AudioFrame(frame)).await;
     }
 }
 
@@ -422,5 +467,352 @@ mod tests {
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, UiToMgmt::Error);
         assert_eq!(eeprom.get_sframe_key().unwrap(), [0xff; 16]);
+    }
+}
+
+#[cfg(test)]
+mod audio_streaming_tests {
+    use super::*;
+    use crate::mocks::{
+        mock_i2c_with_eeprom, mock_led_pins, ControllableButton, MockAudioCodec, MockAudioStream,
+        MockButton, MockDelay,
+    };
+    use crate::shared::ReadTlv;
+    use embedded_io_adapters::futures_03::FromFutures;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    type Reader = FromFutures<async_ringbuffer::Reader>;
+    type Writer = FromFutures<async_ringbuffer::Writer>;
+
+    fn channel() -> (Writer, Reader) {
+        const BUFFER_CAPACITY: usize = 4096;
+        let (w, r) = async_ringbuffer::ring_buffer(BUFFER_CAPACITY);
+        (FromFutures::new(w), FromFutures::new(r))
+    }
+
+    /// Collector for TLVs received from the UI chip.
+    struct TlvCollector {
+        frames_a: Arc<Mutex<Vec<Vec<u8>>>>,
+        frames_b: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl TlvCollector {
+        fn new() -> Self {
+            Self {
+                frames_a: Arc::new(Mutex::new(Vec::new())),
+                frames_b: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn frames_a(&self) -> Arc<Mutex<Vec<Vec<u8>>>> {
+            self.frames_a.clone()
+        }
+
+        fn frames_b(&self) -> Arc<Mutex<Vec<Vec<u8>>>> {
+            self.frames_b.clone()
+        }
+
+        async fn collect_from(&self, mut reader: Reader) {
+            use crate::shared::Tlv;
+            loop {
+                let result: Result<Option<Tlv<UiToNet>>, _> = reader.read_tlv().await;
+                if let Ok(Some(tlv)) = result {
+                    match tlv.tlv_type {
+                        UiToNet::AudioFrameA => {
+                            self.frames_a.lock().unwrap().push(tlv.value.to_vec());
+                        }
+                        UiToNet::AudioFrameB => {
+                            self.frames_b.lock().unwrap().push(tlv.value.to_vec());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn button_a_sends_audio_frame_a() {
+        let (ui_to_mgmt, _mgmt_from_ui) = channel();
+        let (_mgmt_to_ui, ui_from_mgmt) = channel();
+        let (ui_to_net, net_from_ui) = channel();
+        let (_net_to_ui, ui_from_net) = channel();
+
+        let (button_a, button_a_ctrl) = ControllableButton::new();
+
+        let ui_app = App::new(
+            ui_to_mgmt,
+            ui_from_mgmt,
+            ui_to_net,
+            ui_from_net,
+            mock_led_pins(),
+            button_a,
+            MockButton,
+            mock_i2c_with_eeprom(),
+            MockDelay,
+            MockAudioCodec,
+            MockAudioStream::new(),
+        );
+
+        let collector = TlvCollector::new();
+        let frames_a = collector.frames_a();
+
+        tokio::select! {
+            _ = ui_app.run() => unreachable!(),
+            _ = collector.collect_from(net_from_ui) => unreachable!(),
+            _ = async {
+                // Wait a bit for the app to start
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Press button A
+                button_a_ctrl.press().await;
+
+                // Wait for at least 2 audio frames (20ms each + some margin)
+                tokio::time::sleep(Duration::from_millis(60)).await;
+
+                // Release button A
+                button_a_ctrl.release().await;
+
+                // Wait a bit to ensure no more frames after release
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            } => {}
+        }
+
+        // Should have received at least 2 AudioFrameA TLVs while button was held
+        let frames = frames_a.lock().unwrap();
+        assert!(
+            frames.len() >= 2,
+            "Expected at least 2 frames, got {}",
+            frames.len()
+        );
+
+        // Each frame should be 640 bytes (320 u16 samples)
+        for frame in frames.iter() {
+            assert_eq!(frame.len(), 640, "Frame should be 640 bytes");
+        }
+    }
+
+    #[tokio::test]
+    async fn button_b_sends_audio_frame_b() {
+        let (ui_to_mgmt, _mgmt_from_ui) = channel();
+        let (_mgmt_to_ui, ui_from_mgmt) = channel();
+        let (ui_to_net, net_from_ui) = channel();
+        let (_net_to_ui, ui_from_net) = channel();
+
+        let (button_b, button_b_ctrl) = ControllableButton::new();
+
+        let ui_app = App::new(
+            ui_to_mgmt,
+            ui_from_mgmt,
+            ui_to_net,
+            ui_from_net,
+            mock_led_pins(),
+            MockButton,
+            button_b,
+            mock_i2c_with_eeprom(),
+            MockDelay,
+            MockAudioCodec,
+            MockAudioStream::new(),
+        );
+
+        let collector = TlvCollector::new();
+        let frames_b = collector.frames_b();
+
+        tokio::select! {
+            _ = ui_app.run() => unreachable!(),
+            _ = collector.collect_from(net_from_ui) => unreachable!(),
+            _ = async {
+                // Wait a bit for the app to start
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Press button B
+                button_b_ctrl.press().await;
+
+                // Wait for at least 2 audio frames
+                tokio::time::sleep(Duration::from_millis(60)).await;
+
+                // Release button B
+                button_b_ctrl.release().await;
+
+                // Wait a bit
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            } => {}
+        }
+
+        // Should have received AudioFrameB TLVs
+        let frames = frames_b.lock().unwrap();
+        assert!(
+            frames.len() >= 2,
+            "Expected at least 2 frames, got {}",
+            frames.len()
+        );
+
+        // Each frame should be 640 bytes
+        for frame in frames.iter() {
+            assert_eq!(frame.len(), 640, "Frame should be 640 bytes");
+        }
+    }
+
+    #[tokio::test]
+    async fn no_audio_when_button_not_pressed() {
+        let (ui_to_mgmt, _mgmt_from_ui) = channel();
+        let (_mgmt_to_ui, ui_from_mgmt) = channel();
+        let (ui_to_net, net_from_ui) = channel();
+        let (_net_to_ui, ui_from_net) = channel();
+
+        let ui_app = App::new(
+            ui_to_mgmt,
+            ui_from_mgmt,
+            ui_to_net,
+            ui_from_net,
+            mock_led_pins(),
+            MockButton,
+            MockButton,
+            mock_i2c_with_eeprom(),
+            MockDelay,
+            MockAudioCodec,
+            MockAudioStream::new(),
+        );
+
+        let collector = TlvCollector::new();
+        let frames_a = collector.frames_a();
+        let frames_b = collector.frames_b();
+
+        tokio::select! {
+            _ = ui_app.run() => unreachable!(),
+            _ = collector.collect_from(net_from_ui) => unreachable!(),
+            _ = async {
+                // Wait for several audio frame periods without pressing any button
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            } => {}
+        }
+
+        // Should have received no audio frames
+        assert_eq!(frames_a.lock().unwrap().len(), 0, "Should have no A frames");
+        assert_eq!(frames_b.lock().unwrap().len(), 0, "Should have no B frames");
+    }
+
+    #[tokio::test]
+    async fn audio_stops_after_button_release() {
+        let (ui_to_mgmt, _mgmt_from_ui) = channel();
+        let (_mgmt_to_ui, ui_from_mgmt) = channel();
+        let (ui_to_net, net_from_ui) = channel();
+        let (_net_to_ui, ui_from_net) = channel();
+
+        let (button_a, button_a_ctrl) = ControllableButton::new();
+
+        let ui_app = App::new(
+            ui_to_mgmt,
+            ui_from_mgmt,
+            ui_to_net,
+            ui_from_net,
+            mock_led_pins(),
+            button_a,
+            MockButton,
+            mock_i2c_with_eeprom(),
+            MockDelay,
+            MockAudioCodec,
+            MockAudioStream::new(),
+        );
+
+        let collector = TlvCollector::new();
+        let frames_a = collector.frames_a();
+
+        tokio::select! {
+            _ = ui_app.run() => unreachable!(),
+            _ = collector.collect_from(net_from_ui) => unreachable!(),
+            _ = async {
+                // Wait for app to start
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Press button A briefly
+                button_a_ctrl.press().await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                button_a_ctrl.release().await;
+
+                // Record frame count after release
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let count_after_release = frames_a.lock().unwrap().len();
+
+                // Wait more and verify no new frames
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let count_later = frames_a.lock().unwrap().len();
+
+                assert_eq!(
+                    count_after_release, count_later,
+                    "No new frames should arrive after button release"
+                );
+            } => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn first_button_controls_when_both_pressed() {
+        let (ui_to_mgmt, _mgmt_from_ui) = channel();
+        let (_mgmt_to_ui, ui_from_mgmt) = channel();
+        let (ui_to_net, net_from_ui) = channel();
+        let (_net_to_ui, ui_from_net) = channel();
+
+        let (button_a, button_a_ctrl) = ControllableButton::new();
+        let (button_b, button_b_ctrl) = ControllableButton::new();
+
+        let ui_app = App::new(
+            ui_to_mgmt,
+            ui_from_mgmt,
+            ui_to_net,
+            ui_from_net,
+            mock_led_pins(),
+            button_a,
+            button_b,
+            mock_i2c_with_eeprom(),
+            MockDelay,
+            MockAudioCodec,
+            MockAudioStream::new(),
+        );
+
+        let collector = TlvCollector::new();
+        let frames_a = collector.frames_a();
+        let frames_b = collector.frames_b();
+
+        tokio::select! {
+            _ = ui_app.run() => unreachable!(),
+            _ = collector.collect_from(net_from_ui) => unreachable!(),
+            _ = async {
+                // Wait for app to start
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Press button A first
+                button_a_ctrl.press().await;
+                tokio::time::sleep(Duration::from_millis(30)).await;
+
+                // Now press button B while A is still held
+                button_b_ctrl.press().await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                // Release button B (should have no effect since A was first)
+                button_b_ctrl.release().await;
+                tokio::time::sleep(Duration::from_millis(30)).await;
+
+                // Release button A
+                button_a_ctrl.release().await;
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            } => {}
+        }
+
+        // Should have received only AudioFrameA TLVs (first button controls)
+        let a_frames = frames_a.lock().unwrap();
+        let b_frames = frames_b.lock().unwrap();
+
+        assert!(
+            a_frames.len() >= 2,
+            "Expected AudioFrameA frames, got {}",
+            a_frames.len()
+        );
+        assert_eq!(
+            b_frames.len(),
+            0,
+            "Should have no AudioFrameB frames when A was pressed first"
+        );
     }
 }

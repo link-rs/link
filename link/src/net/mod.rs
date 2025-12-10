@@ -200,5 +200,9 @@ where
                 .must_write_tlv(NetToMgmt::CircularPing, &tlv.value)
                 .await;
         }
+        UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
+            // Drop audio frames on the floor for now
+            // TODO: Process audio frames (e.g., encode and send over network)
+        }
     }
 }

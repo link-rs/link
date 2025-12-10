@@ -20,6 +20,19 @@ impl Default for Frame {
     }
 }
 
+impl Frame {
+    /// Convert frame samples to bytes (little-endian).
+    pub fn as_bytes(&self) -> [u8; FRAME_SIZE * 2] {
+        let mut bytes = [0u8; FRAME_SIZE * 2];
+        for (i, sample) in self.0.iter().enumerate() {
+            let le = sample.to_le_bytes();
+            bytes[i * 2] = le[0];
+            bytes[i * 2 + 1] = le[1];
+        }
+        bytes
+    }
+}
+
 /// I2S audio error types.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
