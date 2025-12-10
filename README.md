@@ -61,3 +61,18 @@ cargo run
 cd ../ctl
 ./all-ping.sh
 ```
+
+## PTT Demo
+
+```
+# In one window
+cd ui
+cargo run
+
+# In another window
+cd net
+cargo run
+
+# Push buttons A or B, or the mic button
+# Behold that audio frames are collected at UI and sent UI->NET
+```
