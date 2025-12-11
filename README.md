@@ -20,8 +20,9 @@ curl - proto '=https' - tlsv1.2 -sSf https://sh.rustup.rs | sh
 # Install probe-rs for connecting to devices
 brew install probe-rs
 
-# Install the STM toolchain
+# Install the STM toolchains
 rustup target add thumbv7em-none-eabihf
+rustup target add thumbv6m-none-eabi
 
 # Install the ESP toolchain
 cargo install espup --locked
