@@ -1,8 +1,7 @@
 //! Integration tests for the multi-chip system.
 
 use crate::mocks::{
-    mock_i2c_with_eeprom, mock_led_pins, MockAudioCodec, MockAudioStream, MockButton, MockDelay,
-    MockFlash,
+    mock_i2c_with_eeprom, mock_led_pins, MockAudioStream, MockButton, MockDelay, MockFlash,
 };
 use crate::{ctl, mgmt, net, ui};
 use core::future::Future;
@@ -56,7 +55,6 @@ where
         MockButton,
         mock_i2c_with_eeprom(),
         MockDelay,
-        MockAudioCodec,
         MockAudioStream::new(),
     );
     let net_app = net::App::new(

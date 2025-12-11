@@ -335,15 +335,6 @@ impl embedded_storage::Storage for MockFlash {
     }
 }
 
-/// Mock audio codec for testing.
-pub struct MockAudioCodec;
-
-impl crate::ui::AudioCodec for MockAudioCodec {
-    fn start(&mut self) {}
-    fn enable_input(&mut self, _enabled: bool) {}
-    fn enable_output(&mut self, _enabled: bool) {}
-}
-
 /// Mock audio stream for testing that emits frames every 20ms.
 ///
 /// Each frame contains a counter value in the first sample to identify it.
@@ -383,6 +374,52 @@ impl crate::ui::AudioStream for MockAudioStream {
         _tx: &crate::ui::Frame,
         rx: &mut crate::ui::Frame,
     ) -> Result<(), crate::ui::AudioError> {
+        *rx = self.read().await;
+        Ok(())
+    }
+}
+
+/// Mock audio stream that captures written frames for verification.
+pub struct CapturingAudioStream {
+    frame_counter: u16,
+    written_frames: std::sync::Arc<std::sync::Mutex<Vec<crate::ui::Frame>>>,
+}
+
+impl CapturingAudioStream {
+    pub fn new() -> (Self, std::sync::Arc<std::sync::Mutex<Vec<crate::ui::Frame>>>) {
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            Self {
+                frame_counter: 0,
+                written_frames: written.clone(),
+            },
+            written,
+        )
+    }
+}
+
+impl crate::ui::AudioStream for CapturingAudioStream {
+    async fn start(&mut self) {}
+    async fn stop(&mut self) {}
+    async fn read(&mut self) -> crate::ui::Frame {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let mut frame = crate::ui::Frame::default();
+        frame.0[0] = self.frame_counter;
+        self.frame_counter = self.frame_counter.wrapping_add(1);
+        frame
+    }
+    async fn write(&mut self, frame: &crate::ui::Frame) {
+        self.written_frames.lock().unwrap().push(frame.clone());
+    }
+    async fn read_write(
+        &mut self,
+        tx: &crate::ui::Frame,
+        rx: &mut crate::ui::Frame,
+    ) -> Result<(), crate::ui::AudioError> {
+        // Capture non-silent frames
+        if tx.0.iter().any(|&s| s != 0) {
+            self.written_frames.lock().unwrap().push(tx.clone());
+        }
         *rx = self.read().await;
         Ok(())
     }

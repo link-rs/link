@@ -18,7 +18,7 @@ embassy-time = { version = "0.5", features = ["defmt"] }
 panic-probe = { version = "1", features = ["print-defmt"] }
 
 embedded-io-async = "0.6"
-link = { path = "../link", features = ["defmt", "trace-tlv"] }
+link = { path = "../link", features = ["defmt"] }
 
 [profile.dev]
 opt-level = "s"

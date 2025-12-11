@@ -10,6 +10,7 @@ use embassy_stm32::{
     i2c::I2c,
     i2s::{self, I2S},
     peripherals,
+    time::Hertz,
     usart::{self, Config, DataBits, Parity, StopBits, Uart},
 };
 use embassy_time::Delay;
@@ -17,12 +18,10 @@ use link::ui::{AudioError, AudioStream, Frame, FRAME_SIZE};
 use {defmt_rtt as _, panic_probe as _};
 
 /// Audio stream wrapper around the Embassy I2S driver.
-#[allow(dead_code)]
 pub struct I2sAudioStream<'d> {
     i2s: I2S<'d, u16>,
 }
 
-#[allow(dead_code)]
 impl<'d> I2sAudioStream<'d> {
     pub fn new(i2s: I2S<'d, u16>) -> Self {
         Self { i2s }
@@ -70,24 +69,8 @@ impl<'d> AudioStream for I2sAudioStream<'d> {
     }
 }
 
-/// Stub audio stream for use when I2S hardware is not yet configured.
-/// This is a placeholder that does nothing - useful for testing other functionality.
-pub struct StubAudioStream;
-
-impl AudioStream for StubAudioStream {
-    async fn start(&mut self) {}
-    async fn stop(&mut self) {}
-    async fn read(&mut self) -> Frame {
-        Frame::default()
-    }
-    async fn write(&mut self, _frame: &Frame) {}
-    async fn read_write(&mut self, _tx: &Frame, rx: &mut Frame) -> Result<(), AudioError> {
-        *rx = Frame::default();
-        Ok(())
-    }
-}
-
 const DMA_BUF_SIZE: usize = 64;
+const I2S_BUF_SIZE: usize = FRAME_SIZE * 2;
 
 bind_interrupts!(struct Irqs {
     USART1 => usart::InterruptHandler<peripherals::USART1>;
@@ -96,7 +79,48 @@ bind_interrupts!(struct Irqs {
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    let p = embassy_stm32::init(Default::default());
+    // Clock configuration for I2S support
+    let config = {
+        use embassy_stm32::{rcc::*, time::Hertz};
+
+        let mut config = embassy_stm32::Config::default();
+
+        config.rcc.hse = Some(Hse {
+            freq: Hertz(6_000_000),
+            mode: HseMode::Bypass,
+        });
+        config.rcc.sys = Sysclk::PLL1_P;
+        config.rcc.pll_src = PllSource::HSE;
+        config.rcc.pll = Some(Pll {
+            prediv: PllPreDiv::DIV3,
+            mul: PllMul::MUL168,
+            divp: Some(PllPDiv::DIV2),
+            divq: Some(PllQDiv::DIV7),
+            divr: None,
+        });
+
+        config.rcc.ahb_pre = AHBPrescaler::DIV1;
+        config.rcc.apb1_pre = APBPrescaler::DIV4;
+        config.rcc.apb2_pre = APBPrescaler::DIV2;
+        config.rcc.ls = LsConfig {
+            rtc: RtcClockSource::LSI,
+            lsi: true,
+            lse: None,
+        };
+
+        // XXX(RLB) The prediv = M value here must be the same as the PLL config above.  The
+        // CubeMX clock tree shows one M value for both PLLs.
+        config.rcc.plli2s = Some(Pll {
+            prediv: PllPreDiv::DIV3,
+            mul: PllMul::MUL50,
+            divp: None,
+            divq: None,
+            divr: Some(PllRDiv::DIV2),
+        });
+
+        config
+    };
+    let p = embassy_stm32::init(config);
 
     // UART config for MGMT
     let mut mgmt_config = Config::default();
@@ -115,6 +139,10 @@ async fn main(_spawner: Spawner) {
     // DMA buffers for ring-buffered RX
     let mgmt_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
     let net_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
+
+    // I2S DMA buffers
+    let i2s_tx_buf = singleton!(: [u16; I2S_BUF_SIZE] = [0; I2S_BUF_SIZE]).unwrap();
+    let i2s_rx_buf = singleton!(: [u16; I2S_BUF_SIZE] = [0; I2S_BUF_SIZE]).unwrap();
 
     // UART to MGMT (USART1: PA10 RX, PA9 TX)
     let (to_mgmt, from_mgmt) = Uart::new(
@@ -150,17 +178,40 @@ async fn main(_spawner: Spawner) {
     let button_b = ExtiInput::new(p.PC1, p.EXTI1, Pull::Up);
     let button_mic = ExtiInput::new(p.PA4, p.EXTI4, Pull::Up);
 
-    // I2C for EEPROM (I2C1: PB6 SCL, PB7 SDA)
-    let i2c_eeprom = I2c::new_blocking(p.I2C1, p.PB6, p.PB7, Default::default());
+    // Shared I2C bus for EEPROM and audio codec (I2C1: PB6 SCL, PB7 SDA)
+    let i2c = {
+        use embassy_stm32::{gpio::Speed, i2c::Config, time::Hertz};
+
+        let mut config = Config::default();
+        config.frequency = Hertz(100_000);
+        config.gpio_speed = Speed::VeryHigh;
+        config.sda_pullup = false;
+        config.scl_pullup = false;
+        config.timeout = embassy_time::Duration::from_millis(1000);
+
+        I2c::new_blocking(p.I2C1, p.PB6, p.PB7, config)
+    };
     let delay = Delay;
 
-    // I2C for audio codec (I2C2: PB10 SCL, PB11 SDA)
-    let i2c_audio = I2c::new_blocking(p.I2C2, p.PB10, p.PB11, Default::default());
-    let audio_codec = link::ui::AudioControl::new(i2c_audio);
+    // I2S audio stream (SPI3: WS=PA15, CK=PC10, SD_TX=PB5, SD_RX=PB4)
+    let i2s = {
+        let mut config = i2s::Config::default();
+        config.mode = i2s::Mode::Slave;
+        config.standard = i2s::Standard::Philips;
+        config.format = i2s::Format::Data16Channel32;
+        config.master_clock = false;
+        config.frequency = Hertz(8_000);
+        config.clock_polarity = i2s::ClockPolarity::IdleLow;
 
-    // Audio stream (stub for now - I2S requires additional setup)
-    // TODO: Initialize I2S with proper pins and DMA buffers
-    let audio_stream = StubAudioStream;
+        I2S::new_full_duplex(
+            p.SPI3, p.PA15, // WS
+            p.PC10, // CK
+            p.PB5,  // SD (TX/MOSI)
+            p.PB4,  // SD (RX/MISO - ext_sd for full duplex)
+            p.DMA1_CH7, i2s_tx_buf, p.DMA1_CH0, i2s_rx_buf, config,
+        )
+    };
+    let audio_stream = I2sAudioStream::new(i2s);
 
     link::ui::App::new(
         to_mgmt,
@@ -171,9 +222,8 @@ async fn main(_spawner: Spawner) {
         button_a,
         button_b,
         button_mic,
-        i2c_eeprom,
+        i2c,
         delay,
-        audio_codec,
         audio_stream,
     )
     .run()

@@ -77,4 +77,6 @@ pub enum UiToNet {
 #[repr(u16)]
 pub enum NetToUi {
     CircularPing = 0x70,
+    /// Audio frame to play out
+    AudioFrame,
 }

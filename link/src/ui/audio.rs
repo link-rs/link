@@ -31,6 +31,28 @@ impl Frame {
         }
         bytes
     }
+
+    /// Create a frame from bytes (little-endian).
+    /// Returns None if the slice is not exactly FRAME_SIZE * 2 bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != FRAME_SIZE * 2 {
+            return None;
+        }
+        let mut frame = Self::default();
+        for (i, sample) in frame.0.iter_mut().enumerate() {
+            *sample = u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
+        }
+        Some(frame)
+    }
+
+    /// Calculate the energy of this frame.
+    /// Energy is the sum of absolute values of samples (treated as signed i16).
+    pub fn energy(&self) -> u32 {
+        self.0
+            .iter()
+            .map(|&s| (s as i16).unsigned_abs() as u32)
+            .sum()
+    }
 }
 
 /// I2S audio error types.
@@ -102,15 +124,15 @@ pub trait AudioStream {
 
 const I2C_ADDR: u8 = 0x1a;
 
-pub struct AudioControl<I> {
-    i2c: I,
+pub struct AudioControl<'a, I> {
+    i2c: &'a mut I,
     regs: Registers,
 }
 
-impl<I: I2c> AudioControl<I> {
+impl<'a, I: I2c> AudioControl<'a, I> {
     const VALUE_MASK: u16 = 0x1ff;
 
-    pub fn new(i2c: I) -> Self {
+    pub fn new(i2c: &'a mut I) -> Self {
         Self {
             i2c,
             regs: Registers::default(),
@@ -312,7 +334,7 @@ impl<I: I2c> AudioControl<I> {
     }
 }
 
-impl<I: I2c> AudioCodec for AudioControl<I> {
+impl<'a, I: I2c> AudioCodec for AudioControl<'a, I> {
     fn start(&mut self) {
         self.init();
     }
@@ -343,7 +365,11 @@ impl ToFromU16 for bool {
     }
 
     fn into_u16(self) -> u16 {
-        if self { 1 } else { 0 }
+        if self {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -799,14 +825,14 @@ mod tests {
 
     #[test]
     fn audio_control_new() {
-        let (i2c, _mock) = mock_i2c_with_audio();
-        let _audio = AudioControl::new(i2c);
+        let (mut i2c, _mock) = mock_i2c_with_audio();
+        let _audio = AudioControl::new(&mut i2c);
     }
 
     #[test]
     fn audio_control_power_on() {
-        let (i2c, mock) = mock_i2c_with_audio();
-        let mut audio = AudioControl::new(i2c);
+        let (mut i2c, mock) = mock_i2c_with_audio();
+        let mut audio = AudioControl::new(&mut i2c);
         audio.init();
 
         let mock = mock.borrow();
@@ -819,8 +845,8 @@ mod tests {
 
     #[test]
     fn audio_control_enable_i2s() {
-        let (i2c, mock) = mock_i2c_with_audio();
-        let mut audio = AudioControl::new(i2c);
+        let (mut i2c, mock) = mock_i2c_with_audio();
+        let mut audio = AudioControl::new(&mut i2c);
         audio.enable_i2s();
 
         let mock = mock.borrow();
@@ -836,8 +862,8 @@ mod tests {
 
     #[test]
     fn audio_control_digital_loopback() {
-        let (i2c, mock) = mock_i2c_with_audio();
-        let mut audio = AudioControl::new(i2c);
+        let (mut i2c, mock) = mock_i2c_with_audio();
+        let mut audio = AudioControl::new(&mut i2c);
 
         audio.digital_loopback(true);
         {
@@ -857,8 +883,8 @@ mod tests {
 
     #[test]
     fn audio_control_left_dac() {
-        let (i2c, mock) = mock_i2c_with_audio();
-        let mut audio = AudioControl::new(i2c);
+        let (mut i2c, mock) = mock_i2c_with_audio();
+        let mut audio = AudioControl::new(&mut i2c);
         audio.left_dac(true);
 
         let mock = mock.borrow();
@@ -868,7 +894,10 @@ mod tests {
 
         // R34 (0x22) Left Out Mix: left DAC to output mixer bit 8
         let r34 = mock.get_reg(0x22);
-        assert!(r34 & (1 << 8) != 0, "Left DAC to output mixer should be enabled");
+        assert!(
+            r34 & (1 << 8) != 0,
+            "Left DAC to output mixer should be enabled"
+        );
 
         // R10 (0x0A) Left DAC volume: should be 0xFF (0dB)
         let r10 = mock.get_reg(0x0A);
@@ -877,8 +906,8 @@ mod tests {
 
     #[test]
     fn audio_control_right_dac() {
-        let (i2c, mock) = mock_i2c_with_audio();
-        let mut audio = AudioControl::new(i2c);
+        let (mut i2c, mock) = mock_i2c_with_audio();
+        let mut audio = AudioControl::new(&mut i2c);
         audio.right_dac(true);
 
         let mock = mock.borrow();
@@ -888,13 +917,16 @@ mod tests {
 
         // R37 (0x25) Right Out Mix: right DAC to output mixer bit 8
         let r37 = mock.get_reg(0x25);
-        assert!(r37 & (1 << 8) != 0, "Right DAC to output mixer should be enabled");
+        assert!(
+            r37 & (1 << 8) != 0,
+            "Right DAC to output mixer should be enabled"
+        );
     }
 
     #[test]
     fn audio_control_left_output_path() {
-        let (i2c, mock) = mock_i2c_with_audio();
-        let mut audio = AudioControl::new(i2c);
+        let (mut i2c, mock) = mock_i2c_with_audio();
+        let mut audio = AudioControl::new(&mut i2c);
         audio.left_output_path(true);
 
         let mock = mock.borrow();
@@ -913,8 +945,8 @@ mod tests {
 
     #[test]
     fn audio_control_right_output_path() {
-        let (i2c, mock) = mock_i2c_with_audio();
-        let mut audio = AudioControl::new(i2c);
+        let (mut i2c, mock) = mock_i2c_with_audio();
+        let mut audio = AudioControl::new(&mut i2c);
         audio.right_output_path(true);
 
         let mock = mock.borrow();
@@ -933,8 +965,8 @@ mod tests {
 
     #[test]
     fn audio_control_configure_dac() {
-        let (i2c, mock) = mock_i2c_with_audio();
-        let mut audio = AudioControl::new(i2c);
+        let (mut i2c, mock) = mock_i2c_with_audio();
+        let mut audio = AudioControl::new(&mut i2c);
         audio.configure_dac(true, true, false);
 
         let mock = mock.borrow();

@@ -30,11 +30,11 @@ enum Event {
     Net(Tlv<NetToUi>),
     ButtonDown(Button),
     ButtonUp(Button),
-    /// An audio frame is ready to be sent
+    /// An audio frame was read from the microphone
     AudioFrame(Frame),
 }
 
-pub struct App<W, R, LR, LG, LB, BA, BB, BM, I, D, AC, AS> {
+pub struct App<W, R, LR, LG, LB, BA, BB, BM, I, D, AS> {
     to_mgmt: W,
     to_net: W,
     from_mgmt: R,
@@ -43,12 +43,12 @@ pub struct App<W, R, LR, LG, LB, BA, BB, BM, I, D, AC, AS> {
     button_a: BA,
     button_b: BB,
     button_mic: BM,
-    eeprom: Eeprom<I, D>,
-    audio_codec: AC,
+    i2c: I,
+    delay: D,
     audio_stream: AS,
 }
 
-impl<W, R, LR, LG, LB, BA, BB, BM, I, D, AC, AS> App<W, R, LR, LG, LB, BA, BB, BM, I, D, AC, AS>
+impl<W, R, LR, LG, LB, BA, BB, BM, I, D, AS> App<W, R, LR, LG, LB, BA, BB, BM, I, D, AS>
 where
     W: Write,
     R: Read,
@@ -60,7 +60,6 @@ where
     BM: Wait,
     I: I2c,
     D: DelayNs,
-    AC: AudioCodec,
     AS: AudioStream,
 {
     pub fn new(
@@ -74,7 +73,6 @@ where
         button_mic: BM,
         i2c: I,
         delay: D,
-        audio_codec: AC,
         audio_stream: AS,
     ) -> Self {
         Self {
@@ -86,15 +84,26 @@ where
             button_a,
             button_b,
             button_mic,
-            eeprom: Eeprom::new(i2c, delay),
-            audio_codec,
+            i2c,
+            delay,
             audio_stream,
         }
     }
 
+    /// Initialize the audio codec using the shared I2C bus.
+    pub fn init_audio(&mut self) {
+        let mut audio = AudioControl::new(&mut self.i2c);
+        audio.init();
+        audio.enable_input(true);
+        audio.enable_output(true);
+    }
+
     #[allow(unreachable_code)]
-    pub async fn run(self) -> ! {
+    pub async fn run(mut self) -> ! {
         info!("ui: starting");
+
+        // Initialize audio codec before starting
+        self.init_audio();
 
         let Self {
             mut to_mgmt,
@@ -105,8 +114,8 @@ where
             button_a,
             button_b,
             button_mic,
-            mut eeprom,
-            audio_codec: _audio_codec,
+            mut i2c,
+            mut delay,
             mut audio_stream,
         } = self;
 
@@ -122,27 +131,54 @@ where
         let button_a_task = button_monitor(button_a, Button::A, false, channel.sender());
         let button_b_task = button_monitor(button_b, Button::B, false, channel.sender());
         let button_mic_task = button_monitor(button_mic, Button::A, true, channel.sender());
-        let audio_read_task = audio_stream_task(&mut audio_stream, channel.sender());
+
+        // Queue for playback frames (from NET)
+        const PLAYBACK_QUEUE_SIZE: usize = 4;
+        let playback_channel: Channel<RawMutex, Frame, PLAYBACK_QUEUE_SIZE> = Channel::new();
 
         let handle_task = async {
             info!("ui: ready to handle events");
 
             // Track which button is currently held (if any)
             let mut active_button: Option<Button> = None;
-            let mut audio_frame_count: u32 = 0;
+
+            // TX (microphone) frame statistics
+            let mut tx_frame_count: u32 = 0;
+            let mut tx_energy_sum: u64 = 0;
+
+            // RX (playback) frame statistics
+            let mut rx_frame_count: u32 = 0;
+            let mut rx_energy_sum: u64 = 0;
 
             loop {
                 match channel.receive().await {
                     Event::Mgmt(tlv) => {
-                        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut eeprom).await
+                        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await
                     }
-                    Event::Net(tlv) => handle_net(tlv, &mut to_mgmt).await,
+                    Event::Net(tlv) => {
+                        if let Some(frame) = handle_net(tlv, &mut to_mgmt).await {
+                            // Track playback frame energy
+                            rx_energy_sum += frame.energy() as u64;
+                            rx_frame_count += 1;
+                            if rx_frame_count % 50 == 0 {
+                                let avg_energy = rx_energy_sum / 50;
+                                info!(
+                                    "ui: received {} playback frames, avg energy={}",
+                                    rx_frame_count, avg_energy
+                                );
+                                rx_energy_sum = 0;
+                            }
+
+                            // Queue the playback frame
+                            playback_channel.send(frame).await;
+                        }
+                    }
                     Event::ButtonDown(button) => {
                         info!("ui: button {:?} down", button);
-                        // Only set active button if no button is currently held
                         if active_button.is_none() {
                             active_button = Some(button);
-                            audio_frame_count = 0;
+                            tx_frame_count = 0;
+                            tx_energy_sum = 0;
                         }
                     }
                     Event::ButtonUp(button) => {
@@ -152,21 +188,50 @@ where
                         }
                     }
                     Event::AudioFrame(frame) => {
-                        // Only send audio frames if a button is held
+                        // Log the energy of every received frame
+                        info!("ui: audio frame energy={}", frame.energy());
+
+                        // Audio frame read from microphone - send if button is held
                         if let Some(button) = active_button {
                             let tlv_type = match button {
                                 Button::A => UiToNet::AudioFrameA,
                                 Button::B => UiToNet::AudioFrameB,
                             };
+
+                            // Track energy
+                            tx_energy_sum += frame.energy() as u64;
+
                             let bytes = frame.as_bytes();
                             to_net.must_write_tlv(tlv_type, &bytes).await;
 
-                            audio_frame_count += 1;
-                            if audio_frame_count % 50 == 0 {
-                                info!("ui: sent {} audio frames", audio_frame_count);
+                            tx_frame_count += 1;
+                            if tx_frame_count % 50 == 0 {
+                                let avg_energy = tx_energy_sum / 50;
+                                info!(
+                                    "ui: sent {} audio frames, avg energy={}",
+                                    tx_frame_count, avg_energy
+                                );
+                                tx_energy_sum = 0;
                             }
                         }
                     }
+                }
+            }
+        };
+
+        // Audio I/O task: reads from microphone, writes queued playback frames
+        let audio_task = async {
+            audio_stream.start().await;
+            loop {
+                // Get a frame to play (or silence if queue is empty)
+                let tx_frame = playback_channel.try_receive().unwrap_or_default();
+                let mut rx_frame = Frame::default();
+
+                // Do the I2S read/write cycle
+                if audio_stream.read_write(&tx_frame, &mut rx_frame).await.is_ok() {
+                    // Try to send the recorded frame - drop if channel is full
+                    // This prevents blocking the audio task if event handler is slow
+                    let _ = channel.try_send(Event::AudioFrame(rx_frame));
                 }
             }
         };
@@ -177,8 +242,8 @@ where
             button_a_task,
             button_b_task,
             button_mic_task,
-            audio_read_task,
-            handle_task
+            handle_task,
+            audio_task
         );
         unreachable!()
     }
@@ -223,7 +288,8 @@ async fn handle_mgmt<M, N, I, D>(
     tlv: Tlv<MgmtToUi>,
     to_mgmt: &mut M,
     to_net: &mut N,
-    eeprom: &mut Eeprom<I, D>,
+    i2c: &mut I,
+    delay: &mut D,
 ) where
     M: WriteTlv<UiToMgmt>,
     N: WriteTlv<UiToNet>,
@@ -243,6 +309,7 @@ async fn handle_mgmt<M, N, I, D>(
         }
         MgmtToUi::GetVersion => {
             info!("ui: get version");
+            let mut eeprom = Eeprom::new(i2c, delay);
             let Ok(version) = eeprom.get_version() else {
                 info!("ui: failed to read version from EEPROM");
                 return;
@@ -259,7 +326,8 @@ async fn handle_mgmt<M, N, I, D>(
             }
             let version =
                 u32::from_be_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]);
-            if let Err(_) = eeprom.set_version(version) {
+            let mut eeprom = Eeprom::new(i2c, delay);
+            if eeprom.set_version(version).is_err() {
                 info!("ui: failed to write version to EEPROM");
                 to_mgmt.must_write_tlv(UiToMgmt::Error, b"eeprom").await;
                 return;
@@ -268,6 +336,7 @@ async fn handle_mgmt<M, N, I, D>(
         }
         MgmtToUi::GetSFrameKey => {
             info!("ui: get sframe key");
+            let mut eeprom = Eeprom::new(i2c, delay);
             let Ok(key) = eeprom.get_sframe_key() else {
                 info!("ui: failed to read sframe key from EEPROM");
                 return;
@@ -283,7 +352,8 @@ async fn handle_mgmt<M, N, I, D>(
             }
             let mut key = [0u8; 16];
             key.copy_from_slice(&tlv.value[..16]);
-            if let Err(_) = eeprom.set_sframe_key(&key) {
+            let mut eeprom = Eeprom::new(i2c, delay);
+            if eeprom.set_sframe_key(&key).is_err() {
                 info!("ui: failed to write sframe key to EEPROM");
                 to_mgmt.must_write_tlv(UiToMgmt::Error, b"eeprom").await;
                 return;
@@ -293,7 +363,7 @@ async fn handle_mgmt<M, N, I, D>(
     }
 }
 
-async fn handle_net<M>(tlv: Tlv<NetToUi>, to_mgmt: &mut M)
+async fn handle_net<M>(tlv: Tlv<NetToUi>, to_mgmt: &mut M) -> Option<Frame>
 where
     M: WriteTlv<UiToMgmt>,
 {
@@ -303,6 +373,15 @@ where
             to_mgmt
                 .must_write_tlv(UiToMgmt::CircularPing, &tlv.value)
                 .await;
+            None
+        }
+        NetToUi::AudioFrame => {
+            if let Some(frame) = Frame::from_bytes(&tlv.value) {
+                Some(frame)
+            } else {
+                info!("ui: invalid audio frame size: {}", tlv.value.len());
+                None
+            }
         }
     }
 }
@@ -350,10 +429,14 @@ mod tests {
     async fn tlv_get_version() {
         let mut to_mgmt = MockTlvWriter::new();
         let mut to_net = DummyNetWriter;
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
 
         // Set a known version
-        eeprom.set_version(0xaabbccdd).unwrap();
+        {
+            let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
+            eeprom.set_version(0xaabbccdd).unwrap();
+        }
 
         // Create GetVersion TLV
         let tlv = Tlv {
@@ -361,7 +444,7 @@ mod tests {
             value: Value::new(),
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut eeprom).await;
+        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, UiToMgmt::Version);
@@ -372,7 +455,8 @@ mod tests {
     async fn tlv_set_version() {
         let mut to_mgmt = MockTlvWriter::new();
         let mut to_net = DummyNetWriter;
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
 
         // Create SetVersion TLV with version 0x11223344
         let mut value: Value = Value::new();
@@ -382,11 +466,12 @@ mod tests {
             value,
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut eeprom).await;
+        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await;
 
         // Verify version was set and Ack was sent
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, UiToMgmt::Ack);
+        let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         assert_eq!(eeprom.get_version().unwrap(), 0x11223344);
     }
 
@@ -394,11 +479,15 @@ mod tests {
     async fn tlv_get_sframe_key() {
         let mut to_mgmt = MockTlvWriter::new();
         let mut to_net = DummyNetWriter;
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
 
         // Set a known key
         let key = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-        eeprom.set_sframe_key(&key).unwrap();
+        {
+            let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
+            eeprom.set_sframe_key(&key).unwrap();
+        }
 
         // Create GetSFrameKey TLV
         let tlv = Tlv {
@@ -406,7 +495,7 @@ mod tests {
             value: Value::new(),
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut eeprom).await;
+        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, UiToMgmt::SFrameKey);
@@ -417,7 +506,8 @@ mod tests {
     async fn tlv_set_sframe_key() {
         let mut to_mgmt = MockTlvWriter::new();
         let mut to_net = DummyNetWriter;
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
 
         // Create SetSFrameKey TLV
         let key = [
@@ -431,11 +521,12 @@ mod tests {
             value,
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut eeprom).await;
+        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await;
 
         // Verify key was set and Ack was sent
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, UiToMgmt::Ack);
+        let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         assert_eq!(eeprom.get_sframe_key().unwrap(), key);
     }
 
@@ -443,7 +534,8 @@ mod tests {
     async fn tlv_set_version_invalid_length() {
         let mut to_mgmt = MockTlvWriter::new();
         let mut to_net = DummyNetWriter;
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
 
         // Create SetVersion TLV with only 2 bytes (invalid)
         let mut value: Value = Value::new();
@@ -453,11 +545,12 @@ mod tests {
             value,
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut eeprom).await;
+        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await;
 
         // Version should remain default (0xffffffff) and Error should be sent
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, UiToMgmt::Error);
+        let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         assert_eq!(eeprom.get_version().unwrap(), 0xffffffff);
     }
 
@@ -465,7 +558,8 @@ mod tests {
     async fn tlv_set_sframe_key_invalid_length() {
         let mut to_mgmt = MockTlvWriter::new();
         let mut to_net = DummyNetWriter;
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
 
         // Create SetSFrameKey TLV with only 8 bytes (invalid)
         let mut value: Value = Value::new();
@@ -475,11 +569,12 @@ mod tests {
             value,
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut eeprom).await;
+        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await;
 
         // Key should remain default (0xff) and Error should be sent
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, UiToMgmt::Error);
+        let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         assert_eq!(eeprom.get_sframe_key().unwrap(), [0xff; 16]);
     }
 }
@@ -488,8 +583,8 @@ mod tests {
 mod audio_streaming_tests {
     use super::*;
     use crate::mocks::{
-        mock_i2c_with_eeprom, mock_led_pins, ControllableButton, MockAudioCodec, MockAudioStream,
-        MockButton, MockDelay,
+        mock_i2c_with_eeprom, mock_led_pins, ControllableButton, MockAudioStream, MockButton,
+        MockDelay,
     };
     use crate::shared::ReadTlv;
     use embedded_io_adapters::futures_03::FromFutures;
@@ -566,7 +661,6 @@ mod audio_streaming_tests {
             MockButton,
             mock_i2c_with_eeprom(),
             MockDelay,
-            MockAudioCodec,
             MockAudioStream::new(),
         );
 
@@ -628,7 +722,6 @@ mod audio_streaming_tests {
             button_mic,
             mock_i2c_with_eeprom(),
             MockDelay,
-            MockAudioCodec,
             MockAudioStream::new(),
         );
 
@@ -693,7 +786,6 @@ mod audio_streaming_tests {
             MockButton,
             mock_i2c_with_eeprom(),
             MockDelay,
-            MockAudioCodec,
             MockAudioStream::new(),
         );
 
@@ -753,7 +845,6 @@ mod audio_streaming_tests {
             MockButton,
             mock_i2c_with_eeprom(),
             MockDelay,
-            MockAudioCodec,
             MockAudioStream::new(),
         );
 
@@ -795,7 +886,6 @@ mod audio_streaming_tests {
             MockButton,
             mock_i2c_with_eeprom(),
             MockDelay,
-            MockAudioCodec,
             MockAudioStream::new(),
         );
 
@@ -851,7 +941,6 @@ mod audio_streaming_tests {
             MockButton,
             mock_i2c_with_eeprom(),
             MockDelay,
-            MockAudioCodec,
             MockAudioStream::new(),
         );
 
@@ -898,5 +987,146 @@ mod audio_streaming_tests {
             0,
             "Should have no AudioFrameB frames when A was pressed first"
         );
+    }
+
+    #[tokio::test]
+    async fn net_audio_frame_plays_out() {
+        use crate::mocks::CapturingAudioStream;
+        use crate::shared::WriteTlv;
+
+        let (ui_to_mgmt, _mgmt_from_ui) = channel();
+        let (_mgmt_to_ui, ui_from_mgmt) = channel();
+        let (ui_to_net, _net_from_ui) = channel();
+        let (mut net_to_ui, ui_from_net) = channel();
+
+        let (audio_stream, written_frames) = CapturingAudioStream::new();
+
+        let ui_app = App::new(
+            ui_to_mgmt,
+            ui_from_mgmt,
+            ui_to_net,
+            ui_from_net,
+            mock_led_pins(),
+            MockButton,
+            MockButton,
+            MockButton,
+            mock_i2c_with_eeprom(),
+            MockDelay,
+            audio_stream,
+        );
+
+        tokio::select! {
+            _ = ui_app.run() => unreachable!(),
+            _ = async {
+                // Wait for app to start
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Create a test frame with known data
+                let mut test_frame = crate::ui::Frame::default();
+                test_frame.0[0] = 0x1234;
+                test_frame.0[1] = 0x5678;
+                test_frame.0[319] = 0xABCD;
+
+                // Send the audio frame from NET to UI
+                net_to_ui
+                    .write_tlv(crate::shared::NetToUi::AudioFrame, &test_frame.as_bytes())
+                    .await
+                    .unwrap();
+
+                // Wait for the frame to be processed and played
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            } => {}
+        }
+
+        // Verify the frame was played out
+        let frames = written_frames.lock().unwrap();
+        assert!(
+            frames.len() >= 1,
+            "Expected at least 1 playback frame, got {}",
+            frames.len()
+        );
+
+        // Find our test frame
+        let found = frames.iter().any(|f| {
+            f.0[0] == 0x1234 && f.0[1] == 0x5678 && f.0[319] == 0xABCD
+        });
+        assert!(found, "Test frame should have been played out");
+    }
+
+    #[tokio::test]
+    async fn multiple_net_audio_frames_play_in_order() {
+        use crate::mocks::CapturingAudioStream;
+        use crate::shared::WriteTlv;
+
+        let (ui_to_mgmt, _mgmt_from_ui) = channel();
+        let (_mgmt_to_ui, ui_from_mgmt) = channel();
+        let (ui_to_net, _net_from_ui) = channel();
+        let (mut net_to_ui, ui_from_net) = channel();
+
+        let (audio_stream, written_frames) = CapturingAudioStream::new();
+
+        let ui_app = App::new(
+            ui_to_mgmt,
+            ui_from_mgmt,
+            ui_to_net,
+            ui_from_net,
+            mock_led_pins(),
+            MockButton,
+            MockButton,
+            MockButton,
+            mock_i2c_with_eeprom(),
+            MockDelay,
+            audio_stream,
+        );
+
+        tokio::select! {
+            _ = ui_app.run() => unreachable!(),
+            _ = async {
+                // Wait for app to start
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Send multiple frames with sequence numbers
+                for i in 0u16..3 {
+                    let mut frame = crate::ui::Frame::default();
+                    frame.0[0] = i + 100; // Use 100, 101, 102 as markers
+                    net_to_ui
+                        .write_tlv(crate::shared::NetToUi::AudioFrame, &frame.as_bytes())
+                        .await
+                        .unwrap();
+                    // Small delay between sends
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+
+                // Wait for all frames to be processed
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            } => {}
+        }
+
+        // Verify frames were played
+        let frames = written_frames.lock().unwrap();
+
+        // Find our test frames (filter out zeros)
+        let test_frames: Vec<_> = frames
+            .iter()
+            .filter(|f| f.0[0] >= 100 && f.0[0] <= 102)
+            .collect();
+
+        assert!(
+            test_frames.len() >= 3,
+            "Expected at least 3 playback frames, got {}",
+            test_frames.len()
+        );
+
+        // Verify order (frames should arrive in sequence)
+        for (i, frame) in test_frames.iter().enumerate() {
+            assert_eq!(
+                frame.0[0],
+                100 + i as u16,
+                "Frame {} should have marker {}, got {}",
+                i,
+                100 + i,
+                frame.0[0]
+            );
+        }
     }
 }

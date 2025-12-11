@@ -6,12 +6,13 @@ use embedded_hal::i2c::I2c;
 /// EEPROM storage for persistent data.
 ///
 /// Provides access to version and SFrame key fields stored in I2C EEPROM.
-pub struct Eeprom<I, D> {
-    i2c: I,
-    delay: D,
+/// Holds mutable references to shared I2C bus and delay.
+pub struct Eeprom<'a, I, D> {
+    i2c: &'a mut I,
+    delay: &'a mut D,
 }
 
-impl<I, D> Eeprom<I, D>
+impl<'a, I, D> Eeprom<'a, I, D>
 where
     I: I2c,
     D: DelayNs,
@@ -21,8 +22,8 @@ where
     const SFRAME_KEY_OFFSET: u8 = 16;
     const WRITE_DELAY_NS: u32 = 10_000_000;
 
-    /// Create a new EEPROM interface.
-    pub fn new(i2c: I, delay: D) -> Self {
+    /// Create a new EEPROM interface from shared I2C and delay references.
+    pub fn new(i2c: &'a mut I, delay: &'a mut D) -> Self {
         Self { i2c, delay }
     }
 
@@ -70,33 +71,43 @@ mod tests {
 
     #[test]
     fn get_version_default() {
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
+        let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         assert_eq!(eeprom.get_version().unwrap(), 0xffffffff);
     }
 
     #[test]
     fn set_and_get_version() {
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
+        let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         eeprom.set_version(0x12345678).unwrap();
         assert_eq!(eeprom.get_version().unwrap(), 0x12345678);
     }
 
     #[test]
     fn set_and_get_version_zero() {
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
+        let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         eeprom.set_version(0).unwrap();
         assert_eq!(eeprom.get_version().unwrap(), 0);
     }
 
     #[test]
     fn get_sframe_key_default() {
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
+        let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         assert_eq!(eeprom.get_sframe_key().unwrap(), [0xff; 16]);
     }
 
     #[test]
     fn set_and_get_sframe_key() {
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
+        let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         let key = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
         eeprom.set_sframe_key(&key).unwrap();
         assert_eq!(eeprom.get_sframe_key().unwrap(), key);
@@ -104,7 +115,9 @@ mod tests {
 
     #[test]
     fn set_and_get_sframe_key_zeros() {
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
+        let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         let key = [0u8; 16];
         eeprom.set_sframe_key(&key).unwrap();
         assert_eq!(eeprom.get_sframe_key().unwrap(), key);
@@ -112,7 +125,9 @@ mod tests {
 
     #[test]
     fn version_and_sframe_key_independent() {
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
+        let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         eeprom.set_version(0xdeadbeef).unwrap();
         let key = [0xaa; 16];
         eeprom.set_sframe_key(&key).unwrap();
@@ -122,7 +137,9 @@ mod tests {
 
     #[test]
     fn version_big_endian() {
-        let mut eeprom = Eeprom::new(mock_i2c_with_eeprom(), MockDelay);
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
+        let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         eeprom.set_version(0x01020304).unwrap();
         assert_eq!(eeprom.get_version().unwrap(), 0x01020304);
     }
