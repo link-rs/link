@@ -134,7 +134,8 @@ where
 
         // Queue for playback frames (from NET)
         const PLAYBACK_QUEUE_SIZE: usize = 4;
-        let playback_channel: Channel<RawMutex, Frame, PLAYBACK_QUEUE_SIZE> = Channel::new();
+        let playback_channel: Channel<CriticalSectionRawMutex, Frame, PLAYBACK_QUEUE_SIZE> =
+            Channel::new();
 
         let handle_task = async {
             info!("ui: ready to handle events");
@@ -228,7 +229,11 @@ where
                 let mut rx_frame = Frame::default();
 
                 // Do the I2S read/write cycle
-                if audio_stream.read_write(&tx_frame, &mut rx_frame).await.is_ok() {
+                if audio_stream
+                    .read_write(&tx_frame, &mut rx_frame)
+                    .await
+                    .is_ok()
+                {
                     // Try to send the recorded frame - drop if channel is full
                     // This prevents blocking the audio task if event handler is slow
                     let _ = channel.try_send(Event::AudioFrame(rx_frame));
@@ -246,18 +251,6 @@ where
             audio_task
         );
         unreachable!()
-    }
-}
-
-/// Continuously read audio frames and send them to the event channel.
-async fn audio_stream_task<'a, AS: AudioStream, const N: usize>(
-    audio_stream: &mut AS,
-    sender: Sender<'a, CriticalSectionRawMutex, Event, N>,
-) -> ! {
-    audio_stream.start().await;
-    loop {
-        let frame = audio_stream.read().await;
-        sender.send(Event::AudioFrame(frame)).await;
     }
 }
 
@@ -1047,9 +1040,9 @@ mod audio_streaming_tests {
         );
 
         // Find our test frame
-        let found = frames.iter().any(|f| {
-            f.0[0] == 0x1234 && f.0[1] == 0x5678 && f.0[319] == 0xABCD
-        });
+        let found = frames
+            .iter()
+            .any(|f| f.0[0] == 0x1234 && f.0[1] == 0x5678 && f.0[319] == 0xABCD);
         assert!(found, "Test frame should have been played out");
     }
 
