@@ -7,22 +7,74 @@ use embassy_stm32::{
     bind_interrupts,
     exti::ExtiInput,
     gpio::{Level, Output, Pull, Speed},
-    peripherals, usart,
+    peripherals,
+    rcc::{
+        AHBPrescaler, APBPrescaler, Hse, HseMode, LsConfig, Mco, McoConfig, McoPrescaler,
+        McoSource, Pll, PllMul, PllPreDiv, PllSource, Sysclk,
+    },
+    time::Hertz,
+    usart,
     usart::{Config, DataBits, Parity, StopBits, Uart},
 };
 use {defmt_rtt as _, panic_probe as _};
 
 const DMA_BUF_SIZE: usize = 64;
 
-bind_interrupts!(struct Irqs {
-    USART1 => usart::InterruptHandler<peripherals::USART1>;
-    USART2 => usart::InterruptHandler<peripherals::USART2>;
-    USART3_4 => usart::InterruptHandler<peripherals::USART3>;
-});
+bind_interrupts!(
+    struct Irqs {
+        USART1 => usart::InterruptHandler<peripherals::USART1>;
+        USART2 => usart::InterruptHandler<peripherals::USART2>;
+        USART3_4 => usart::InterruptHandler<peripherals::USART3>;
+    }
+);
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    let p = embassy_stm32::init(Default::default());
+    // Clock configuration matching the C firmware:
+    // HSE (16 MHz) -> PLL (×3) -> SYSCLK (48 MHz) -> AHB (÷2) -> HCLK (24 MHz)
+    let rcc_config = {
+        use embassy_stm32::rcc::*;
+        let mut config = embassy_stm32::Config::default();
+
+        config.rcc.hsi = true;
+
+        config.rcc.hse = Some(Hse {
+            freq: Hertz(16_000_000),
+            mode: HseMode::Oscillator,
+        });
+
+        config.rcc.pll = Some(Pll {
+            src: PllSource::HSE,
+            prediv: PllPreDiv::DIV1,
+            mul: PllMul::MUL3,
+        });
+
+        config.rcc.sys = Sysclk::PLL1_P;
+
+        // XXX(RLB) This configuration is specified in the clock tree and the C code, but crashes
+        // the Rust code.  When this line is enabled with LsConfig::default_lsi(), there is a crash
+        // inside of Embassy trying to read LSI config.  When this line is enabled with
+        // LsConfig::off(), there is a crash in defmt.
+        //
+        // Disabling this for now, which I think just has the effect of running the peripherals at
+        // the full 48MHz instead of 24MHz.
+        //
+        // config.rcc.ahb_pre = AHBPrescaler::DIV2;
+
+        config.rcc.apb1_pre = APBPrescaler::DIV1;
+        config.rcc.ls = LsConfig::default_lsi();
+
+        config
+    };
+    let p = embassy_stm32::init(rcc_config);
+
+    // MCO on PA8: Output 6 MHz clock for UI chip
+    // PLL (48 MHz) with prescaler to get 6 MHz
+    // Using DIV8 since McoSource::PLL may or may not include internal ÷2
+    let mut mco_config = McoConfig::default();
+    mco_config.prescaler = McoPrescaler::DIV4;
+    mco_config.speed = Speed::Low;
+    let _mco = Mco::new(p.MCO, p.PA8, McoSource::PLL, mco_config);
 
     let mut config = Config::default();
     config.baudrate = 115200;

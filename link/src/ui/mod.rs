@@ -189,15 +189,15 @@ where
                         }
                     }
                     Event::AudioFrame(frame) => {
-                        // Log the energy of every received frame
-                        info!("ui: audio frame energy={}", frame.energy());
-
                         // Audio frame read from microphone - send if button is held
                         if let Some(button) = active_button {
                             let tlv_type = match button {
                                 Button::A => UiToNet::AudioFrameA,
                                 Button::B => UiToNet::AudioFrameB,
                             };
+
+                            // Log the energy of every transmitted frame
+                            info!("ui: audio frame energy={}", frame.energy());
 
                             // Track energy
                             tx_energy_sum += frame.energy() as u64;
