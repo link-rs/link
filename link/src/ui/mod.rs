@@ -9,8 +9,8 @@ pub use eeprom::Eeprom;
 
 use crate::info;
 use crate::shared::{
-    read_tlv_loop, Channel, Color, Led, MgmtToUi, NetToUi, RawMutex, Sender, Tlv, UiToMgmt,
-    UiToNet, WriteTlv,
+    read_tlv_loop, Channel, Color, CriticalSectionRawMutex, Led, MgmtToUi, NetToUi, Sender, Tlv,
+    UiToMgmt, UiToNet, WriteTlv,
 };
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::StatefulOutputPin;
@@ -115,7 +115,7 @@ where
         led.set(Color::Blue);
 
         const MAX_QUEUE_DEPTH: usize = 4;
-        let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
+        let channel: Channel<CriticalSectionRawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
 
         let mgmt_read_task = read_tlv_loop(from_mgmt, channel.sender(), Event::Mgmt);
         let net_read_task = read_tlv_loop(from_net, channel.sender(), Event::Net);
@@ -187,7 +187,7 @@ where
 /// Continuously read audio frames and send them to the event channel.
 async fn audio_stream_task<'a, AS: AudioStream, const N: usize>(
     audio_stream: &mut AS,
-    sender: Sender<'a, RawMutex, Event, N>,
+    sender: Sender<'a, CriticalSectionRawMutex, Event, N>,
 ) -> ! {
     audio_stream.start().await;
     loop {
@@ -200,7 +200,7 @@ async fn button_monitor<'a, B: Wait, const N: usize>(
     mut button: B,
     which: Button,
     active_low: bool,
-    sender: Sender<'a, RawMutex, Event, N>,
+    sender: Sender<'a, CriticalSectionRawMutex, Event, N>,
 ) -> ! {
     loop {
         if active_low {

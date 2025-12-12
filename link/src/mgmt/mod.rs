@@ -2,17 +2,10 @@
 
 use crate::info;
 use crate::shared::{
-    read_raw_loop, read_tlv_loop, Channel, Color, CtlToMgmt, Led, MgmtToCtl, MgmtToNet, MgmtToUi,
-    RawMutex, Tlv, Value, WriteTlv, SYNC_WORD,
+    Color, CtlToMgmt, Led, MgmtToCtl, MgmtToNet, MgmtToUi, ReadTlv, Tlv, Value, WriteTlv, SYNC_WORD,
 };
 use embedded_hal::digital::StatefulOutputPin;
 use embedded_io_async::{Read, Write};
-
-enum Event {
-    Ctl(Tlv<CtlToMgmt>),
-    Ui(Value),
-    Net(Value),
-}
 
 pub struct App<W, R, RA, GA, BA, RB, GB, BB> {
     to_ctl: W,
@@ -60,15 +53,17 @@ where
 
     #[allow(unreachable_code)]
     pub async fn run(self) -> ! {
+        use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+
         info!("mgmt: starting");
 
         let Self {
-            mut to_ctl,
+            to_ctl,
             mut to_ui,
             mut to_net,
-            from_ctl,
-            from_ui,
-            from_net,
+            mut from_ctl,
+            mut from_ui,
+            mut from_net,
             led_a,
             led_b,
         } = self;
@@ -79,25 +74,49 @@ where
         led_a.set(Color::Red);
         led_b.set(Color::Green);
 
-        const MAX_QUEUE_DEPTH: usize = 2;
-        let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
+        let to_ctl: Mutex<NoopRawMutex, _> = Mutex::new(to_ctl);
 
-        let ctl_read_task = read_tlv_loop(from_ctl, channel.sender(), Event::Ctl);
-        let ui_read_task = read_raw_loop(from_ui, channel.sender(), Event::Ui);
-        let net_read_task = read_raw_loop(from_net, channel.sender(), Event::Net);
-
-        let handle_task = async {
-            info!("mgmt: ready to handle events");
+        let ui_task = async {
+            let mut buffer = Value::default();
             loop {
-                match channel.receive().await {
-                    Event::Ctl(tlv) => handle_ctl(tlv, &mut to_ctl, &mut to_ui, &mut to_net).await,
-                    Event::Ui(data) => to_ctl.must_write_tlv(MgmtToCtl::FromUi, &data).await,
-                    Event::Net(data) => to_ctl.must_write_tlv(MgmtToCtl::FromNet, &data).await,
-                }
+                buffer.resize(buffer.capacity(), 0).unwrap();
+                let Ok(n) = from_ui.read(&mut buffer).await else {
+                    continue;
+                };
+                buffer.truncate(n);
+
+                let mut to_ctl = to_ctl.lock().await;
+                let _ = to_ctl.write_tlv(MgmtToCtl::FromUi, &buffer).await;
             }
         };
 
-        futures::join!(ctl_read_task, ui_read_task, net_read_task, handle_task);
+        let net_task = async {
+            let mut buffer = Value::default();
+            loop {
+                buffer.resize(buffer.capacity(), 0).unwrap();
+                let Ok(n) = from_net.read(&mut buffer).await else {
+                    continue;
+                };
+                buffer.truncate(n);
+
+                let mut to_ctl = to_ctl.lock().await;
+                let _ = to_ctl.write_tlv(MgmtToCtl::FromNet, &buffer).await;
+            }
+        };
+
+        let ctl_task = async {
+            use core::ops::DerefMut;
+            loop {
+                let Ok(Some(tlv)) = from_ctl.read_tlv().await else {
+                    continue;
+                };
+
+                let mut to_ctl = to_ctl.lock().await;
+                handle_ctl(tlv, to_ctl.deref_mut(), &mut to_ui, &mut to_net).await;
+            }
+        };
+
+        embassy_futures::join::join3(ctl_task, ui_task, net_task).await;
         unreachable!()
     }
 }

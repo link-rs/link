@@ -18,7 +18,7 @@
 curl - proto '=https' - tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Install probe-rs for connecting to devices
-brew install probe-rs
+brew install probe-rs-tools
 
 # Install the STM toolchains
 rustup target add thumbv7em-none-eabihf

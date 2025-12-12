@@ -9,22 +9,22 @@ pub use protocol::*;
 pub use tlv::{ReadTlv, Tlv, Value, WriteTlv, MAX_VALUE_SIZE, SYNC_WORD};
 
 // Re-export embassy_sync types for use by chip modules
-pub use embassy_sync::channel::{Channel, Sender};
-
-/// Raw mutex type used for embassy channels
-pub type RawMutex = embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-
-use embedded_io_async::Read;
+pub use embassy_sync::{
+    blocking_mutex::raw::{CriticalSectionRawMutex, RawMutex},
+    channel::{Channel, Sender},
+    mutex::Mutex,
+};
 
 /// Read TLV messages from a reader and send them to a channel.
-pub async fn read_tlv_loop<'a, T, R, E, F, const N: usize>(
+pub async fn read_tlv_loop<'a, T, R, RM, E, F, const N: usize>(
     mut reader: R,
-    sender: Sender<'a, RawMutex, E, N>,
+    sender: Sender<'a, RM, E, N>,
     wrap: F,
 ) -> !
 where
     T: TryFrom<u16>,
     R: ReadTlv<T>,
+    RM: RawMutex,
     F: Fn(Tlv<T>) -> E,
 {
     loop {
@@ -32,27 +32,5 @@ where
             sender.send(wrap(tlv)).await;
         }
         // On error or None, continue looping
-    }
-}
-
-/// Read raw bytes from a reader and send them to a channel.
-pub async fn read_raw_loop<'a, R, E, F, const N: usize>(
-    mut reader: R,
-    sender: Sender<'a, RawMutex, E, N>,
-    wrap: F,
-) -> !
-where
-    R: Read,
-    F: Fn(Value) -> E,
-{
-    let mut buffer = [0u8; MAX_VALUE_SIZE];
-    loop {
-        let Ok(n) = reader.read(&mut buffer).await else {
-            // On error, continue looping
-            continue;
-        };
-
-        let value = buffer[..n].try_into().unwrap();
-        sender.send(wrap(value)).await;
     }
 }

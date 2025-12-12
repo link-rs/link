@@ -7,7 +7,7 @@ use crate::shared::{
 use embedded_io_async::{ErrorType, Read, Write};
 use heapless::Vec;
 
-type TunnelBuffer = Vec<u8, 128>;
+type TunnelBuffer = Vec<u8, { 2 * crate::shared::tlv::MAX_TLV_SIZE }>;
 
 struct TunnelReader<'a, R> {
     tlv_type: MgmtToCtl,

@@ -7,8 +7,8 @@ pub use storage::{
 
 use crate::info;
 use crate::shared::{
-    read_tlv_loop, Channel, Color, Led, MgmtToNet, NetToMgmt, NetToUi, RawMutex, Tlv, UiToNet,
-    WriteTlv,
+    read_tlv_loop, Channel, Color, CriticalSectionRawMutex, Led, MgmtToNet, NetToMgmt, NetToUi,
+    Tlv, UiToNet, WriteTlv,
 };
 use embedded_hal::digital::StatefulOutputPin;
 use embedded_io_async::{Read, Write};
@@ -74,7 +74,7 @@ where
         led.set(Color::Yellow);
 
         const MAX_QUEUE_DEPTH: usize = 2;
-        let channel: Channel<RawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
+        let channel: Channel<CriticalSectionRawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
 
         let mgmt_read_task = read_tlv_loop(from_mgmt, channel.sender(), Event::Mgmt);
         let ui_read_task = read_tlv_loop(from_ui, channel.sender(), Event::Ui);
