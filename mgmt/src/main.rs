@@ -31,7 +31,6 @@ bind_interrupts!(
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     // Clock configuration matching the C firmware:
-    // HSE (16 MHz) -> PLL (×3) -> SYSCLK (48 MHz) -> AHB (÷2) -> HCLK (24 MHz)
     let rcc_config = {
         use embassy_stm32::rcc::*;
         let mut config = embassy_stm32::Config::default();
@@ -55,10 +54,6 @@ async fn main(_spawner: Spawner) {
         // the Rust code.  When this line is enabled with LsConfig::default_lsi(), there is a crash
         // inside of Embassy trying to read LSI config.  When this line is enabled with
         // LsConfig::off(), there is a crash in defmt.
-        //
-        // Disabling this for now, which I think just has the effect of running the peripherals at
-        // the full 48MHz instead of 24MHz.
-        //
         // config.rcc.ahb_pre = AHBPrescaler::DIV2;
 
         config.rcc.apb1_pre = APBPrescaler::DIV1;
@@ -69,8 +64,6 @@ async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(rcc_config);
 
     // MCO on PA8: Output 6 MHz clock for UI chip
-    // PLL (48 MHz) with prescaler to get 6 MHz
-    // Using DIV8 since McoSource::PLL may or may not include internal ÷2
     let mut mco_config = McoConfig::default();
     mco_config.prescaler = McoPrescaler::DIV4;
     mco_config.speed = Speed::Low;
@@ -81,10 +74,6 @@ async fn main(_spawner: Spawner) {
     config.data_bits = DataBits::DataBits8;
     config.stop_bits = StopBits::STOP1;
     config.parity = Parity::ParityNone;
-
-    // Hold the NET boot and reset pins high
-    let _net_nrst = Output::new(p.PB4, Level::High, Speed::Low);
-    let _net_boot = Output::new(p.PB5, Level::High, Speed::Low);
 
     // DMA buffers for ring-buffered RX
     let ctl_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
@@ -113,12 +102,6 @@ async fn main(_spawner: Spawner) {
     .split();
     let from_net = from_net.into_ring_buffered(net_rx_buf);
 
-    // Signal pins for NET synchronization (active low directly after)
-    // PB13 = output to NET (active when we're ready)
-    // PB14 = input from NET (wait for NET to be ready)
-    let _signal_to_net = Output::new(p.PB13, Level::Low, Speed::Low);
-    let _signal_from_net = ExtiInput::new(p.PB14, p.EXTI14, Pull::Down);
-
     // RGB LEDs (R, G, B pin tuples)
     // LED A: R=PA4 (inverted), G=PA6, B=PA7
     let led_a = (
@@ -134,9 +117,8 @@ async fn main(_spawner: Spawner) {
         Output::new(p.PB15, Level::Low, Speed::Low),
     );
 
-    link::mgmt::App::new(
+    link::mgmt::run(
         to_ctl, from_ctl, to_ui, from_ui, to_net, from_net, led_a, led_b,
     )
-    .run()
     .await;
 }

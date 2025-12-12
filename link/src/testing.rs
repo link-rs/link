@@ -34,7 +34,7 @@ where
     let (ui_to_net, net_from_ui) = channel();
 
     let ctl_app = ctl::App::new(ctl_to_mgmt, ctl_from_mgmt);
-    let mgmt_app = mgmt::App::new(
+    let mgmt_task = mgmt::run(
         mgmt_to_ctl,
         mgmt_from_ctl,
         mgmt_to_ui,
@@ -69,7 +69,7 @@ where
 
     tokio::select! {
         _ = test_fn(ctl_app) => {},
-        _ = mgmt_app.run() => {},
+        _ = mgmt_task => {},
         _ = ui_app.run() => {},
         _ = net_app.run() => {},
     }
