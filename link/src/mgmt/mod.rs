@@ -58,7 +58,7 @@ where
         let mut buffer = Value::default();
         loop {
             buffer.resize(buffer.capacity(), 0).unwrap();
-            let Ok:n) = from_net.read(&mut buffer).await else {
+            let Ok(n) = from_net.read(&mut buffer).await else {
                 continue;
             };
             buffer.truncate(n);

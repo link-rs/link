@@ -9,6 +9,10 @@ use heapless::Vec;
 
 type TunnelBuffer = Vec<u8, { 2 * crate::shared::tlv::MAX_TLV_SIZE }>;
 
+/// A reader that extracts data from TLV packets received through MGMT.
+///
+/// Buffers incoming TLV values and exposes them as a continuous byte stream
+/// via the `Read` trait. Also implements `ReadTlv` via the blanket impl.
 struct TunnelReader<'a, R> {
     tlv_type: MgmtToCtl,
     reader: &'a mut R,
@@ -46,15 +50,139 @@ where
         let to_copy = core::cmp::min(self.buffer.len(), buf.len());
         buf[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
         self.buffer.drain(..to_copy);
-        return Ok(to_copy);
+        Ok(to_copy)
+    }
+}
+
+/// A writer that wraps TLV packets for tunneling through MGMT.
+///
+/// Encodes the inner TLV first, then sends it as the value of an outer
+/// tunnel TLV. Implements `WriteTlv` directly (not via the blanket impl).
+struct TunnelWriter<'a, W> {
+    tlv_type: CtlToMgmt,
+    writer: &'a mut W,
+}
+
+impl<'a, W> TunnelWriter<'a, W> {
+    fn new(tlv_type: CtlToMgmt, writer: &'a mut W) -> Self {
+        Self { tlv_type, writer }
+    }
+}
+
+impl<'a, T, W> WriteTlv<T> for TunnelWriter<'a, W>
+where
+    T: Into<u16>,
+    W: Write,
+{
+    type Error = <W as ErrorType>::Error;
+
+    async fn write_tlv(&mut self, tlv_type: T, value: &[u8]) -> Result<(), Self::Error> {
+        // Encode the inner TLV first
+        let encoded = Tlv::encode(tlv_type, value);
+        // Send it as the value of the outer tunnel TLV
+        self.writer.write_tlv(self.tlv_type, &encoded).await
+    }
+}
+
+/// Encapsulates the read side of MGMT communication.
+///
+/// Provides typed readers for UI and NET tunnels that can be borrowed
+/// independently from the write side.
+struct MgmtReader<R> {
+    from_mgmt: R,
+    ui_buffer: TunnelBuffer,
+    net_buffer: TunnelBuffer,
+}
+
+impl<R> ErrorType for MgmtReader<R>
+where
+    R: Read,
+{
+    type Error = <R as ErrorType>::Error;
+}
+
+impl<R> Read for MgmtReader<R>
+where
+    R: Read,
+{
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        self.from_mgmt.read(buf).await
+    }
+}
+
+impl<R> MgmtReader<R>
+where
+    R: Read,
+{
+    fn new(from_mgmt: R) -> Self {
+        Self {
+            from_mgmt,
+            ui_buffer: TunnelBuffer::default(),
+            net_buffer: TunnelBuffer::default(),
+        }
+    }
+
+    /// Get a reader for the UI tunnel.
+    fn ui(&mut self) -> TunnelReader<'_, R> {
+        TunnelReader::new(MgmtToCtl::FromUi, &mut self.from_mgmt, &mut self.ui_buffer)
+    }
+
+    /// Get a reader for the NET tunnel.
+    fn net(&mut self) -> TunnelReader<'_, R> {
+        TunnelReader::new(MgmtToCtl::FromNet, &mut self.from_mgmt, &mut self.net_buffer)
+    }
+}
+
+/// Encapsulates the write side of MGMT communication.
+///
+/// Provides typed writers for UI and NET tunnels that can be borrowed
+/// independently from the read side.
+struct MgmtWriter<W> {
+    to_mgmt: W,
+}
+
+impl<W> ErrorType for MgmtWriter<W>
+where
+    W: Write,
+{
+    type Error = <W as ErrorType>::Error;
+}
+
+impl<W> Write for MgmtWriter<W>
+where
+    W: Write,
+{
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        self.to_mgmt.write(buf).await
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        self.to_mgmt.flush().await
+    }
+}
+
+impl<W> MgmtWriter<W>
+where
+    W: Write,
+{
+    fn new(to_mgmt: W) -> Self {
+        Self { to_mgmt }
+    }
+
+    /// Get a writer for the UI tunnel.
+    fn ui(&mut self) -> TunnelWriter<'_, W> {
+        TunnelWriter::new(CtlToMgmt::ToUi, &mut self.to_mgmt)
+    }
+
+    /// Get a writer for the NET tunnel.
+    fn net(&mut self) -> TunnelWriter<'_, W> {
+        TunnelWriter::new(CtlToMgmt::ToNet, &mut self.to_mgmt)
     }
 }
 
 pub struct App<R, W> {
-    to_mgmt: W,
-    from_mgmt: R,
-    ui_buffer: TunnelBuffer,
-    net_buffer: TunnelBuffer,
+    reader: MgmtReader<R>,
+    writer: MgmtWriter<W>,
 }
 
 impl<R, W> App<R, W>
@@ -64,87 +192,62 @@ where
 {
     pub fn new(to_mgmt: W, from_mgmt: R) -> Self {
         Self {
-            to_mgmt,
-            from_mgmt,
-            ui_buffer: TunnelBuffer::default(),
-            net_buffer: TunnelBuffer::default(),
+            reader: MgmtReader::new(from_mgmt),
+            writer: MgmtWriter::new(to_mgmt),
         }
     }
 
-    fn ui_reader(&mut self) -> TunnelReader<'_, R> {
-        TunnelReader::new(MgmtToCtl::FromUi, &mut self.from_mgmt, &mut self.ui_buffer)
-    }
-
-    fn ui_tlv_reader(&mut self) -> TunnelReader<'_, R> {
-        self.ui_reader()
-    }
-
-    fn net_reader(&mut self) -> TunnelReader<'_, R> {
-        TunnelReader::new(
-            MgmtToCtl::FromNet,
-            &mut self.from_mgmt,
-            &mut self.net_buffer,
-        )
-    }
-
-    fn net_tlv_reader(&mut self) -> TunnelReader<'_, R> {
-        self.net_reader()
-    }
-
-    async fn write_tunneled_tlv<T: Into<u16> + core::fmt::Debug>(
-        &mut self,
-        tunnel_type: CtlToMgmt,
-        tlv_type: T,
-        value: &[u8],
-    ) {
-        let payload = Tlv::encode(tlv_type, value);
-        self.to_mgmt.must_write_tlv(tunnel_type, &payload).await;
-    }
-
     pub async fn mgmt_ping(&mut self, data: &[u8]) {
-        self.to_mgmt.must_write_tlv(CtlToMgmt::Ping, data).await;
-        let tlv: Tlv<MgmtToCtl> = self.from_mgmt.must_read_tlv().await;
+        self.writer.must_write_tlv(CtlToMgmt::Ping, data).await;
+        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
         assert_eq!(tlv.tlv_type, MgmtToCtl::Pong);
         assert_eq!(&tlv.value, data);
     }
 
     pub async fn ui_ping(&mut self, data: &[u8]) {
-        self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::Ping, data)
-            .await;
-        let tlv: Tlv<UiToMgmt> = self.ui_tlv_reader().must_read_tlv().await;
+        self.writer.ui().must_write_tlv(MgmtToUi::Ping, data).await;
+        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, UiToMgmt::Pong);
         assert_eq!(&tlv.value, data);
     }
 
     pub async fn net_ping(&mut self, data: &[u8]) {
-        self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::Ping, data)
+        self.writer
+            .net()
+            .must_write_tlv(MgmtToNet::Ping, data)
             .await;
-        let tlv: Tlv<NetToMgmt> = self.net_tlv_reader().must_read_tlv().await;
+        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, NetToMgmt::Pong);
         assert_eq!(&tlv.value, data);
     }
 
     pub async fn ui_first_circular_ping(&mut self, data: &[u8]) {
-        self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::CircularPing, data)
+        self.writer
+            .ui()
+            .must_write_tlv(MgmtToUi::CircularPing, data)
             .await;
-        let tlv: Tlv<NetToMgmt> = self.net_tlv_reader().must_read_tlv().await;
+        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, NetToMgmt::CircularPing);
         assert_eq!(&tlv.value, data);
     }
 
     pub async fn net_first_circular_ping(&mut self, data: &[u8]) {
-        self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::CircularPing, data)
+        self.writer
+            .net()
+            .must_write_tlv(MgmtToNet::CircularPing, data)
             .await;
-        let tlv: Tlv<UiToMgmt> = self.ui_tlv_reader().must_read_tlv().await;
+        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, UiToMgmt::CircularPing);
         assert_eq!(&tlv.value, data);
     }
 
     /// Get the version stored in UI chip EEPROM.
     pub async fn get_version(&mut self) -> u32 {
-        self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::GetVersion, &[])
+        self.writer
+            .ui()
+            .must_write_tlv(MgmtToUi::GetVersion, &[])
             .await;
-        let tlv: Tlv<UiToMgmt> = self.ui_tlv_reader().must_read_tlv().await;
+        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, UiToMgmt::Version);
         assert_eq!(tlv.value.len(), 4);
         u32::from_be_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]])
@@ -152,21 +255,21 @@ where
 
     /// Set the version stored in UI chip EEPROM.
     pub async fn set_version(&mut self, version: u32) {
-        self.write_tunneled_tlv(
-            CtlToMgmt::ToUi,
-            MgmtToUi::SetVersion,
-            &version.to_be_bytes(),
-        )
-        .await;
-        let tlv: Tlv<UiToMgmt> = self.ui_tlv_reader().must_read_tlv().await;
+        self.writer
+            .ui()
+            .must_write_tlv(MgmtToUi::SetVersion, &version.to_be_bytes())
+            .await;
+        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, UiToMgmt::Ack);
     }
 
     /// Get the SFrame key stored in UI chip EEPROM.
     pub async fn get_sframe_key(&mut self) -> [u8; 16] {
-        self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::GetSFrameKey, &[])
+        self.writer
+            .ui()
+            .must_write_tlv(MgmtToUi::GetSFrameKey, &[])
             .await;
-        let tlv: Tlv<UiToMgmt> = self.ui_tlv_reader().must_read_tlv().await;
+        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, UiToMgmt::SFrameKey);
         assert_eq!(tlv.value.len(), 16);
         let mut key = [0u8; 16];
@@ -176,9 +279,11 @@ where
 
     /// Set the SFrame key stored in UI chip EEPROM.
     pub async fn set_sframe_key(&mut self, key: &[u8; 16]) {
-        self.write_tunneled_tlv(CtlToMgmt::ToUi, MgmtToUi::SetSFrameKey, key)
+        self.writer
+            .ui()
+            .must_write_tlv(MgmtToUi::SetSFrameKey, key)
             .await;
-        let tlv: Tlv<UiToMgmt> = self.ui_tlv_reader().must_read_tlv().await;
+        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, UiToMgmt::Ack);
     }
 
@@ -190,34 +295,42 @@ where
         };
         let mut buf = [0u8; 128];
         let serialized = postcard::to_slice(&wifi, &mut buf).expect("Serialization failed");
-        self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::AddWifiSsid, serialized)
+        self.writer
+            .net()
+            .must_write_tlv(MgmtToNet::AddWifiSsid, serialized)
             .await;
-        let tlv: Tlv<NetToMgmt> = self.net_tlv_reader().must_read_tlv().await;
+        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
     }
 
     /// Get all WiFi SSIDs from NET chip storage.
     pub async fn get_wifi_ssids(&mut self) -> Vec<WifiSsid, 8> {
-        self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::GetWifiSsids, &[])
+        self.writer
+            .net()
+            .must_write_tlv(MgmtToNet::GetWifiSsids, &[])
             .await;
-        let tlv: Tlv<NetToMgmt> = self.net_tlv_reader().must_read_tlv().await;
+        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, NetToMgmt::WifiSsids);
         postcard::from_bytes(&tlv.value).expect("Deserialization failed")
     }
 
     /// Clear all WiFi SSIDs from NET chip storage.
     pub async fn clear_wifi_ssids(&mut self) {
-        self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::ClearWifiSsids, &[])
+        self.writer
+            .net()
+            .must_write_tlv(MgmtToNet::ClearWifiSsids, &[])
             .await;
-        let tlv: Tlv<NetToMgmt> = self.net_tlv_reader().must_read_tlv().await;
+        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
     }
 
     /// Get the MOQ URL from NET chip storage.
     pub async fn get_moq_url(&mut self) -> heapless::String<128> {
-        self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::GetMoqUrl, &[])
+        self.writer
+            .net()
+            .must_write_tlv(MgmtToNet::GetMoqUrl, &[])
             .await;
-        let tlv: Tlv<NetToMgmt> = self.net_tlv_reader().must_read_tlv().await;
+        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, NetToMgmt::MoqUrl);
         let url_str = core::str::from_utf8(&tlv.value).expect("Invalid UTF-8");
         url_str.try_into().expect("URL too long")
@@ -225,9 +338,11 @@ where
 
     /// Set the MOQ URL in NET chip storage.
     pub async fn set_moq_url(&mut self, url: &str) {
-        self.write_tunneled_tlv(CtlToMgmt::ToNet, MgmtToNet::SetMoqUrl, url.as_bytes())
+        self.writer
+            .net()
+            .must_write_tlv(MgmtToNet::SetMoqUrl, url.as_bytes())
             .await;
-        let tlv: Tlv<NetToMgmt> = self.net_tlv_reader().must_read_tlv().await;
+        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
     }
 }
