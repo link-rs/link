@@ -295,6 +295,70 @@ pub fn mock_i2c_with_eeprom() -> MockI2c {
     i2c
 }
 
+/// Mock async delay that does nothing (instant).
+pub struct MockAsyncDelay;
+
+impl crate::mgmt::AsyncDelay for MockAsyncDelay {
+    async fn delay_ms(&mut self, _ms: u32) {
+        // No-op for testing
+    }
+}
+
+/// GPIO operation for tracking pin state changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpioOp {
+    SetHigh,
+    SetLow,
+}
+
+/// A mock pin that tracks all operations for verification in tests.
+pub struct TrackingPin {
+    name: &'static str,
+    state: bool,
+    ops: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, GpioOp)>>>,
+}
+
+impl TrackingPin {
+    pub fn new(
+        name: &'static str,
+        ops: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, GpioOp)>>>,
+    ) -> Self {
+        Self {
+            name,
+            state: false,
+            ops,
+        }
+    }
+}
+
+impl DigitalErrorType for TrackingPin {
+    type Error = Infallible;
+}
+
+impl OutputPin for TrackingPin {
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        self.state = false;
+        self.ops.lock().unwrap().push((self.name, GpioOp::SetLow));
+        Ok(())
+    }
+
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        self.state = true;
+        self.ops.lock().unwrap().push((self.name, GpioOp::SetHigh));
+        Ok(())
+    }
+}
+
+impl StatefulOutputPin for TrackingPin {
+    fn is_set_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(self.state)
+    }
+
+    fn is_set_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(!self.state)
+    }
+}
+
 /// Mock flash storage for testing (4KB).
 pub struct MockFlash {
     pub data: [u8; 4096],

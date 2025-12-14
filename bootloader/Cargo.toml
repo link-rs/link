@@ -1,0 +1,20 @@
+[package]
+name = "bootloader"
+version = "0.1.0"
+edition = "2021"
+description = "Bootloader protocol implementations for STM32 (AN3155) and ESP32"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+embedded-io-async = "0.6"
+serial-line-ip = "0.5"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-serial = "5.4"
+serialport = "4.8"
+embedded-io-adapters = { version = "0.6", features = ["tokio-1"] }
+
+[[example]]
+name = "stm32_info"
+path = "examples/stm32_info.rs"

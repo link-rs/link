@@ -4,8 +4,24 @@ use crate::net::WifiSsid;
 use crate::shared::{
     CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt, WriteTlv,
 };
+use bootloader::stm::{self, Bootloader};
 use embedded_io_async::{ErrorType, Read, Write};
 use heapless::Vec;
+
+/// Information retrieved from the MGMT chip when it's in bootloader mode.
+#[derive(Debug, Clone)]
+pub struct MgmtBootloaderInfo {
+    /// Bootloader protocol version (e.g., 0x31 = v3.1).
+    pub bootloader_version: u8,
+    /// Chip product ID.
+    pub chip_id: u16,
+    /// Supported command codes.
+    pub commands: [u8; 16],
+    /// Number of valid commands in the `commands` array.
+    pub command_count: usize,
+    /// First 32 bytes of flash memory (vector table).
+    pub flash_sample: Option<[u8; 32]>,
+}
 
 type TunnelBuffer = Vec<u8, { 2 * crate::shared::tlv::MAX_TLV_SIZE }>;
 
@@ -81,6 +97,53 @@ where
         let encoded = Tlv::encode(tlv_type, value);
         // Send it as the value of the outer tunnel TLV
         self.writer.write_tlv(self.tlv_type, &encoded).await
+    }
+}
+
+/// A buffered writer for tunneling raw bytes (e.g., bootloader protocol) through MGMT.
+///
+/// Unlike TunnelWriter which is designed for TLV protocols, this type buffers
+/// writes and sends them as a single tunnel TLV on flush.
+struct BufferedTunnelWriter<'a, W> {
+    tlv_type: CtlToMgmt,
+    writer: &'a mut W,
+    buffer: TunnelBuffer,
+}
+
+impl<'a, W> BufferedTunnelWriter<'a, W> {
+    fn new(tlv_type: CtlToMgmt, writer: &'a mut W) -> Self {
+        Self {
+            tlv_type,
+            writer,
+            buffer: TunnelBuffer::default(),
+        }
+    }
+}
+
+impl<'a, W> ErrorType for BufferedTunnelWriter<'a, W>
+where
+    W: Write,
+{
+    type Error = <W as ErrorType>::Error;
+}
+
+impl<'a, W> Write for BufferedTunnelWriter<'a, W>
+where
+    W: Write,
+{
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        // Buffer the data
+        self.buffer.extend_from_slice(buf).unwrap();
+        Ok(buf.len())
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        if !self.buffer.is_empty() {
+            // Send all buffered data as a single tunnel TLV
+            self.writer.write_tlv(self.tlv_type, &self.buffer).await?;
+            self.buffer.clear();
+        }
+        self.writer.flush().await
     }
 }
 
@@ -172,6 +235,11 @@ where
     /// Get a writer for the UI tunnel.
     fn ui(&mut self) -> TunnelWriter<'_, W> {
         TunnelWriter::new(CtlToMgmt::ToUi, &mut self.to_mgmt)
+    }
+
+    /// Get a buffered writer for the UI tunnel (for raw byte protocols like bootloader).
+    fn ui_buffered(&mut self) -> BufferedTunnelWriter<'_, W> {
+        BufferedTunnelWriter::new(CtlToMgmt::ToUi, &mut self.to_mgmt)
     }
 
     /// Get a writer for the NET tunnel.
@@ -344,5 +412,181 @@ where
             .await;
         let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+    }
+
+    /// Get bootloader information from the MGMT chip.
+    ///
+    /// This assumes the MGMT chip is already in bootloader mode and the serial
+    /// connection is configured correctly (even parity, 115200 baud).
+    ///
+    /// Returns bootloader version, chip ID, supported commands, and optionally
+    /// a sample of flash memory if read protection is not enabled.
+    pub async fn get_mgmt_bootloader_info(
+        &mut self,
+    ) -> Result<MgmtBootloaderInfo, stm::Error<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+    {
+        let mut bl = Bootloader::new(&mut self.reader, &mut self.writer);
+
+        // Initialize communication (sends 0x7F for auto-baud detection)
+        bl.init().await?;
+
+        // Get bootloader info
+        let info = bl.get().await?;
+
+        // Get chip ID
+        let chip_id = bl.get_id().await?;
+
+        // Try to read a small amount of memory from the start of flash
+        let mut flash_sample = [0u8; 32];
+        let flash_result = bl.read_memory(0x0800_0000, &mut flash_sample).await;
+        let flash_sample = if flash_result.is_ok() {
+            Some(flash_sample)
+        } else {
+            None // Read protection may be enabled
+        };
+
+        // Reset MGMT chip back to normal operation by jumping to user firmware
+        bl.go(0x0800_0000).await?;
+
+        Ok(MgmtBootloaderInfo {
+            bootloader_version: info.version,
+            chip_id,
+            commands: info.commands,
+            command_count: info.command_count,
+            flash_sample,
+        })
+    }
+
+    /// Reset the UI chip into bootloader mode.
+    ///
+    /// Sends a command to MGMT which toggles the BOOT0 and RST pins
+    /// to put the UI chip into bootloader mode.
+    pub async fn reset_ui_to_bootloader(&mut self) {
+        self.writer
+            .must_write_tlv(CtlToMgmt::ResetUiToBootloader, &[])
+            .await;
+        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+    }
+
+    /// Reset the UI chip into user mode (normal operation).
+    ///
+    /// Sends a command to MGMT which toggles the BOOT0 and RST pins
+    /// to put the UI chip back into normal user mode.
+    pub async fn reset_ui_to_user(&mut self) {
+        self.writer
+            .must_write_tlv(CtlToMgmt::ResetUiToUser, &[])
+            .await;
+        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+    }
+
+    /// Reset the NET chip into bootloader mode.
+    ///
+    /// Sends a command to MGMT which toggles the BOOT0 and RST pins
+    /// to put the NET chip into bootloader mode.
+    pub async fn reset_net_to_bootloader(&mut self) {
+        self.writer
+            .must_write_tlv(CtlToMgmt::ResetNetToBootloader, &[])
+            .await;
+        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+    }
+
+    /// Reset the NET chip into user mode (normal operation).
+    ///
+    /// Sends a command to MGMT which toggles the BOOT0 and RST pins
+    /// to put the NET chip back into normal user mode.
+    pub async fn reset_net_to_user(&mut self) {
+        self.writer
+            .must_write_tlv(CtlToMgmt::ResetNetToUser, &[])
+            .await;
+        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+    }
+
+    /// Get bootloader information from the UI chip.
+    ///
+    /// This method:
+    /// 1. Resets the UI chip into bootloader mode
+    /// 2. Queries bootloader information via the tunneled UI connection
+    /// 3. Resets the UI chip back to user mode
+    ///
+    /// Returns bootloader version, chip ID, supported commands, and optionally
+    /// a sample of flash memory if read protection is not enabled.
+    pub async fn get_ui_bootloader_info(&mut self) -> Result<MgmtBootloaderInfo, stm::Error<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+    {
+        // Reset UI chip into bootloader mode
+        self.reset_ui_to_bootloader().await;
+
+        // Create a bootloader client using the buffered tunneled UI connection
+        // (bootloader protocol uses raw bytes, not our TLV format)
+        let mut ui_reader = self.reader.ui();
+        let mut ui_writer = self.writer.ui_buffered();
+        let mut bl = Bootloader::new(&mut ui_reader, &mut ui_writer);
+
+        // Initialize communication (sends 0x7F for auto-baud detection)
+        let init_result = bl.init().await;
+        if let Err(e) = init_result {
+            // Reset back to user mode even on error
+            drop(bl);
+            drop(ui_reader);
+            drop(ui_writer);
+            self.reset_ui_to_user().await;
+            return Err(e);
+        }
+
+        // Get bootloader info
+        let info = match bl.get().await {
+            Ok(info) => info,
+            Err(e) => {
+                drop(bl);
+                drop(ui_reader);
+                drop(ui_writer);
+                self.reset_ui_to_user().await;
+                return Err(e);
+            }
+        };
+
+        // Get chip ID
+        let chip_id = match bl.get_id().await {
+            Ok(id) => id,
+            Err(e) => {
+                drop(bl);
+                drop(ui_reader);
+                drop(ui_writer);
+                self.reset_ui_to_user().await;
+                return Err(e);
+            }
+        };
+
+        // Try to read a small amount of memory from the start of flash
+        let mut flash_sample = [0u8; 32];
+        let flash_result = bl.read_memory(0x0800_0000, &mut flash_sample).await;
+        let flash_sample = if flash_result.is_ok() {
+            Some(flash_sample)
+        } else {
+            None // Read protection may be enabled
+        };
+
+        // Clean up borrows before resetting
+        drop(bl);
+        drop(ui_reader);
+        drop(ui_writer);
+
+        // Reset UI chip back to user mode
+        self.reset_ui_to_user().await;
+
+        Ok(MgmtBootloaderInfo {
+            bootloader_version: info.version,
+            chip_id,
+            commands: info.commands,
+            command_count: info.command_count,
+            flash_sample,
+        })
     }
 }

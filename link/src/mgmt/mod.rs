@@ -4,11 +4,102 @@ use crate::info;
 use crate::shared::{
     Color, CtlToMgmt, Led, MgmtToCtl, MgmtToNet, MgmtToUi, ReadTlv, Tlv, Value, WriteTlv, SYNC_WORD,
 };
-use embedded_hal::digital::StatefulOutputPin;
+use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use embedded_io_async::{Read, Write};
 
+/// Trait for async delay functionality.
+/// This allows the delay to be mocked in tests.
+#[allow(async_fn_in_trait)]
+pub trait AsyncDelay {
+    async fn delay_ms(&mut self, ms: u32);
+}
+
+/// Holds the GPIO pins used to control the UI chip's reset behavior.
+///
+/// UI chip boot mode:
+/// - BOOT high = Enter bootloader
+/// - BOOT low = Normal operation (boot from flash)
+pub struct UiResetPins<Boot, Rst> {
+    pub boot: Boot,
+    pub rst: Rst,
+}
+
+impl<Boot, Rst> UiResetPins<Boot, Rst>
+where
+    Boot: OutputPin,
+    Rst: OutputPin,
+{
+    pub fn new(boot: Boot, rst: Rst) -> Self {
+        Self { boot, rst }
+    }
+
+    /// Reset UI chip into bootloader mode.
+    /// Sequence: BOOT high -> RST low -> delay -> RST high -> BOOT low
+    pub async fn reset_to_bootloader<D: AsyncDelay>(&mut self, delay: &mut D) {
+        let _ = self.boot.set_high();
+        let _ = self.rst.set_low();
+        delay.delay_ms(10).await;
+        let _ = self.rst.set_high();
+        let _ = self.boot.set_low();
+    }
+
+    /// Reset UI chip into user mode.
+    /// Sequence: BOOT low -> RST low -> delay -> RST high
+    pub async fn reset_to_user<D: AsyncDelay>(&mut self, delay: &mut D) {
+        let _ = self.boot.set_low();
+        let _ = self.rst.set_low();
+        delay.delay_ms(10).await;
+        let _ = self.rst.set_high();
+    }
+}
+
+/// Holds the GPIO pins used to control the NET chip's reset behavior.
+///
+/// NET chip boot mode is inverted from UI chip:
+/// - BOOT low = Enter bootloader
+/// - BOOT high = Normal operation (boot from flash)
+pub struct NetResetPins<Boot, Rst> {
+    pub boot: Boot,
+    pub rst: Rst,
+}
+
+impl<Boot, Rst> NetResetPins<Boot, Rst>
+where
+    Boot: OutputPin,
+    Rst: OutputPin,
+{
+    pub fn new(boot: Boot, rst: Rst) -> Self {
+        Self { boot, rst }
+    }
+
+    /// Reset NET chip into bootloader mode.
+    /// Sequence: BOOT low -> RST low -> delay -> RST high -> BOOT high
+    pub async fn reset_to_bootloader<D: AsyncDelay>(&mut self, delay: &mut D) {
+        let _ = self.boot.set_low();
+        let _ = self.rst.set_low();
+        delay.delay_ms(10).await;
+        let _ = self.rst.set_high();
+        let _ = self.boot.set_high();
+    }
+
+    /// Reset NET chip into user mode.
+    /// Sequence: BOOT high -> RST low -> delay -> RST high
+    pub async fn reset_to_user<D: AsyncDelay>(&mut self, delay: &mut D) {
+        let _ = self.boot.set_high();
+        let _ = self.rst.set_low();
+        delay.delay_ms(10).await;
+        let _ = self.rst.set_high();
+    }
+}
+
+/// Type alias for backwards compatibility.
+pub type ResetPins<Boot, Rst> = UiResetPins<Boot, Rst>;
+
+/// Type alias for backwards compatibility.
+pub type Esp32ResetPins<Boot, Rst> = NetResetPins<Boot, Rst>;
+
 #[allow(unreachable_code)]
-pub async fn run<W, R, RA, GA, BA, RB, GB, BB>(
+pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot, UiRst, NetBoot, NetRst, D>(
     to_ctl: W,
     mut from_ctl: R,
     mut to_ui: W,
@@ -17,6 +108,9 @@ pub async fn run<W, R, RA, GA, BA, RB, GB, BB>(
     mut from_net: R,
     led_a: (RA, GA, BA),
     led_b: (RB, GB, BB),
+    ui_reset_pins: UiResetPins<UiBoot, UiRst>,
+    net_reset_pins: NetResetPins<NetBoot, NetRst>,
+    delay: D,
 ) -> !
 where
     W: Write,
@@ -27,6 +121,11 @@ where
     RB: StatefulOutputPin,
     GB: StatefulOutputPin,
     BB: StatefulOutputPin,
+    UiBoot: OutputPin,
+    UiRst: OutputPin,
+    NetBoot: OutputPin,
+    NetRst: OutputPin,
+    D: AsyncDelay,
 {
     use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 
@@ -39,6 +138,7 @@ where
     led_b.set(Color::Green);
 
     let to_ctl: Mutex<NoopRawMutex, _> = Mutex::new(to_ctl);
+    let reset_state: Mutex<NoopRawMutex, _> = Mutex::new((ui_reset_pins, net_reset_pins, delay));
 
     let ui_task = async {
         let mut buffer = Value::default();
@@ -76,7 +176,9 @@ where
             };
 
             let mut to_ctl = to_ctl.lock().await;
-            handle_ctl(tlv, to_ctl.deref_mut(), &mut to_ui, &mut to_net).await;
+            let mut reset_state = reset_state.lock().await;
+            let (ui_pins, net_pins, delay) = reset_state.deref_mut();
+            handle_ctl(tlv, to_ctl.deref_mut(), &mut to_ui, &mut to_net, ui_pins, net_pins, delay).await;
         }
     };
 
@@ -84,11 +186,23 @@ where
     unreachable!()
 }
 
-async fn handle_ctl<C, U, N>(tlv: Tlv<CtlToMgmt>, to_ctl: &mut C, to_ui: &mut U, to_net: &mut N)
-where
+async fn handle_ctl<C, U, N, UiBoot, UiRst, NetBoot, NetRst, D>(
+    tlv: Tlv<CtlToMgmt>,
+    to_ctl: &mut C,
+    to_ui: &mut U,
+    to_net: &mut N,
+    ui_reset_pins: &mut UiResetPins<UiBoot, UiRst>,
+    net_reset_pins: &mut NetResetPins<NetBoot, NetRst>,
+    delay: &mut D,
+) where
     C: WriteTlv<MgmtToCtl>,
     U: WriteTlv<MgmtToUi> + Write,
     N: WriteTlv<MgmtToNet> + Write,
+    UiBoot: OutputPin,
+    UiRst: OutputPin,
+    NetBoot: OutputPin,
+    NetRst: OutputPin,
+    D: AsyncDelay,
 {
     match tlv.tlv_type {
         CtlToMgmt::Ping => {
@@ -106,6 +220,26 @@ where
             to_net.write_all(&SYNC_WORD).await.unwrap();
             to_net.write_all(&tlv.value).await.unwrap();
             to_net.flush().await.unwrap();
+        }
+        CtlToMgmt::ResetUiToBootloader => {
+            info!("mgmt: resetting UI to bootloader mode");
+            ui_reset_pins.reset_to_bootloader(delay).await;
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
+        }
+        CtlToMgmt::ResetUiToUser => {
+            info!("mgmt: resetting UI to user mode");
+            ui_reset_pins.reset_to_user(delay).await;
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
+        }
+        CtlToMgmt::ResetNetToBootloader => {
+            info!("mgmt: resetting NET to bootloader mode");
+            net_reset_pins.reset_to_bootloader(delay).await;
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
+        }
+        CtlToMgmt::ResetNetToUser => {
+            info!("mgmt: resetting NET to user mode");
+            net_reset_pins.reset_to_user(delay).await;
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
         }
     }
 }

@@ -8,6 +8,14 @@ pub enum CtlToMgmt {
     Ping = 0x00,
     ToUi,
     ToNet,
+    /// Reset UI chip into bootloader mode (BOOT0 high, then reset)
+    ResetUiToBootloader,
+    /// Reset UI chip into user mode (BOOT0 low, then reset)
+    ResetUiToUser,
+    /// Reset NET chip into bootloader mode (BOOT0 high, then reset)
+    ResetNetToBootloader,
+    /// Reset NET chip into user mode (BOOT0 low, then reset)
+    ResetNetToUser,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -16,6 +24,7 @@ pub enum MgmtToCtl {
     Pong = 0x10,
     FromUi,
     FromNet,
+    Ack,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

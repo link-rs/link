@@ -72,6 +72,102 @@ fn select_port(specified: Option<String>) -> Result<String, String> {
     }
 }
 
+/// Handle the `mgmt info` command which requires bootloader mode
+async fn handle_mgmt_info(port: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    println!("MGMT Bootloader Info");
+    println!("====================\n");
+
+    let port_name = select_port(port)?;
+
+    println!("\nTo read bootloader information, the MGMT chip must be in bootloader mode.");
+    println!("Please follow these steps:");
+    println!("  1. Set the BOOT0 pin high on the MGMT chip");
+    println!("  2. Reset the MGMT chip");
+    println!();
+    print!("Press Enter when ready (or Ctrl+C to cancel)... ");
+    std::io::stdout().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+
+    // Open serial port at 115200 baud with even parity (required for STM32 bootloader)
+    println!("Opening {} at 115200 baud with even parity...", port_name);
+    let port = tokio_serial::new(&port_name, 115200)
+        .parity(tokio_serial::Parity::Even)
+        .open_native_async()?;
+
+    // Split into read/write halves and wrap for embedded-io-async
+    let (reader, writer) = tokio::io::split(port);
+    let reader = FromTokio::new(reader);
+    let writer = FromTokio::new(writer);
+
+    let mut app = link::ctl::App::new(writer, reader);
+
+    println!("Querying bootloader information...\n");
+
+    match app.get_mgmt_bootloader_info().await {
+        Ok(info) => {
+            let major = info.bootloader_version >> 4;
+            let minor = info.bootloader_version & 0x0F;
+            println!(
+                "Bootloader Version: {}.{} (0x{:02X})",
+                major, minor, info.bootloader_version
+            );
+            println!(
+                "Chip ID: 0x{:04X} ({})",
+                info.chip_id,
+                chip_name(info.chip_id)
+            );
+
+            println!("\nSupported Commands ({}):", info.command_count);
+            for i in 0..info.command_count {
+                let cmd = info.commands[i];
+                println!("  0x{:02X} - {}", cmd, command_name(cmd));
+            }
+
+            if let Some(flash) = info.flash_sample {
+                println!("\nFlash Memory Sample (0x08000000):");
+                print!("  ");
+                for (i, byte) in flash.iter().enumerate() {
+                    print!("{:02X} ", byte);
+                    if (i + 1) % 16 == 0 && i + 1 < flash.len() {
+                        print!("\n  ");
+                    }
+                }
+                println!();
+
+                // Analyze vector table
+                let sp = u32::from_le_bytes([flash[0], flash[1], flash[2], flash[3]]);
+                let reset = u32::from_le_bytes([flash[4], flash[5], flash[6], flash[7]]);
+
+                println!("\nVector Table Analysis:");
+                println!("  Initial SP:      0x{:08X}", sp);
+                println!("  Reset Handler:   0x{:08X}", reset);
+
+                if (0x2000_0000..0x2002_0000).contains(&sp) {
+                    println!("  (SP appears valid - points to SRAM)");
+                }
+                if (0x0800_0000..0x0810_0000).contains(&reset) && (reset & 1) == 1 {
+                    println!("  (Reset handler appears valid - points to Flash, Thumb mode)");
+                }
+            } else {
+                println!("\nFlash Memory: Could not read (read protection may be enabled)");
+            }
+
+            println!("\nDone!");
+        }
+        Err(e) => {
+            eprintln!("Failed to get bootloader info: {:?}", e);
+            eprintln!("\nMake sure the MGMT chip is in bootloader mode:");
+            eprintln!("  1. Set BOOT0 pin high");
+            eprintln!("  2. Reset the device");
+            return Err("Bootloader communication failed".into());
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Subcommand)]
 enum Command {
     Mgmt {
@@ -104,6 +200,8 @@ enum MgmtAction {
         #[arg(default_value = "hello")]
         data: String,
     },
+    /// Get bootloader information from MGMT chip (requires bootloader mode)
+    Info,
 }
 
 #[derive(Subcommand)]
@@ -112,6 +210,8 @@ enum UiAction {
         #[arg(default_value = "hello")]
         data: String,
     },
+    /// Get bootloader information from UI chip (auto-resets chip)
+    Info,
     GetVersion,
     SetVersion {
         /// Version number (base 10)
@@ -152,9 +252,64 @@ enum NetAction {
     },
 }
 
+/// Known STM32 product IDs
+fn chip_name(product_id: u16) -> &'static str {
+    match product_id {
+        0x410 => "STM32F1 Medium-density",
+        0x411 => "STM32F2",
+        0x412 => "STM32F1 Low-density",
+        0x413 => "STM32F4 (405/407/415/417)",
+        0x414 => "STM32F1 High-density",
+        0x415 => "STM32L4 (75/76)",
+        0x416 => "STM32L1 Medium-density",
+        0x417 => "STM32L0 (51/52/53/62/63)",
+        0x418 => "STM32F1 Connectivity line",
+        0x419 => "STM32F4 (27/29/37/39/69/79)",
+        0x420 => "STM32F1 Medium-density VL",
+        0x421 => "STM32F446",
+        0x440 => "STM32F0 (30/51/71)",
+        0x442 => "STM32F0 (30/91/98)",
+        0x443 => "STM32F0 (3/4/5)",
+        0x444 => "STM32F0 (3/4) small",
+        0x445 => "STM32F0 (4/7)",
+        0x448 => "STM32F0 (70/71/72)",
+        0x460 => "STM32G0 (70/71/B1)",
+        0x466 => "STM32G0 (30/31/41)",
+        0x467 => "STM32G0 (B0/C1)",
+        _ => "Unknown",
+    }
+}
+
+/// Command name lookup
+fn command_name(code: u8) -> &'static str {
+    match code {
+        0x00 => "Get",
+        0x01 => "Get Version",
+        0x02 => "Get ID",
+        0x11 => "Read Memory",
+        0x21 => "Go",
+        0x31 => "Write Memory",
+        0x43 => "Erase",
+        0x44 => "Extended Erase",
+        0x63 => "Write Protect",
+        0x73 => "Write Unprotect",
+        0x82 => "Readout Protect",
+        0x92 => "Readout Unprotect",
+        _ => "Unknown",
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+
+    // Handle mgmt info specially - it requires bootloader mode and even parity
+    if let Command::Mgmt {
+        action: MgmtAction::Info,
+    } = &cli.command
+    {
+        return handle_mgmt_info(cli.port).await;
+    }
 
     let port_name = select_port(cli.port)?;
     let port = tokio_serial::new(&port_name, cli.baud).open_native_async()?;
@@ -175,12 +330,82 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.mgmt_ping(data.as_bytes()).await;
                 println!("Received pong!");
             }
+            MgmtAction::Info => unreachable!(), // Handled above
         },
         Command::Ui { action } => match action {
             UiAction::Ping { data } => {
                 println!("Sending UI ping with data: {}", data);
                 app.ui_ping(data.as_bytes()).await;
                 println!("Received pong!");
+            }
+            UiAction::Info => {
+                println!("UI Bootloader Info");
+                println!("==================\n");
+
+                println!("Resetting UI chip to bootloader mode...");
+                match app.get_ui_bootloader_info().await {
+                    Ok(info) => {
+                        let major = info.bootloader_version >> 4;
+                        let minor = info.bootloader_version & 0x0F;
+                        println!(
+                            "Bootloader Version: {}.{} (0x{:02X})",
+                            major, minor, info.bootloader_version
+                        );
+                        println!(
+                            "Chip ID: 0x{:04X} ({})",
+                            info.chip_id,
+                            chip_name(info.chip_id)
+                        );
+
+                        println!("\nSupported Commands ({}):", info.command_count);
+                        for i in 0..info.command_count {
+                            let cmd = info.commands[i];
+                            println!("  0x{:02X} - {}", cmd, command_name(cmd));
+                        }
+
+                        if let Some(flash) = info.flash_sample {
+                            println!("\nFlash Memory Sample (0x08000000):");
+                            print!("  ");
+                            for (i, byte) in flash.iter().enumerate() {
+                                print!("{:02X} ", byte);
+                                if (i + 1) % 16 == 0 && i + 1 < flash.len() {
+                                    print!("\n  ");
+                                }
+                            }
+                            println!();
+
+                            // Analyze vector table
+                            let sp = u32::from_le_bytes([flash[0], flash[1], flash[2], flash[3]]);
+                            let reset =
+                                u32::from_le_bytes([flash[4], flash[5], flash[6], flash[7]]);
+
+                            println!("\nVector Table Analysis:");
+                            println!("  Initial SP:      0x{:08X}", sp);
+                            println!("  Reset Handler:   0x{:08X}", reset);
+
+                            if (0x2000_0000..0x2002_0000).contains(&sp) {
+                                println!("  (SP appears valid - points to SRAM)");
+                            }
+                            if (0x0800_0000..0x0810_0000).contains(&reset) && (reset & 1) == 1 {
+                                println!(
+                                    "  (Reset handler appears valid - points to Flash, Thumb mode)"
+                                );
+                            }
+                        } else {
+                            println!(
+                                "\nFlash Memory: Could not read (read protection may be enabled)"
+                            );
+                        }
+
+                        println!("\nUI chip reset back to user mode.");
+                        println!("Done!");
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to get bootloader info: {:?}", e);
+                        eprintln!("\nThe UI chip may not be responding correctly.");
+                        std::process::exit(1);
+                    }
+                }
             }
             UiAction::GetVersion => {
                 let version = app.get_version().await;

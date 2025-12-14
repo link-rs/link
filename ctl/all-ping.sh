@@ -4,31 +4,38 @@
 # exercises certain functions of the device.
 
 CTL=./target/debug/ctl
+PORT=/dev/cu.usbserial-110
+CTL=${BIN} --port ${PORT}
 
 # Make a fresh build
 cargo build
 
-# All the pings
-${CTL} --port /dev/cu.usbserial-110 mgmt ping
-${CTL} --port /dev/cu.usbserial-110 net ping
-${CTL} --port /dev/cu.usbserial-110 ui ping
-${CTL} --port /dev/cu.usbserial-110 circular-ping
-${CTL} --port /dev/cu.usbserial-110 circular-ping --reverse
+# Get info from all of the chips
+#${CTL} mgmt info
+#${CTL} ui info
+#${CTL} net info
+
+# Pings to verify all of the UART connections
+${CTL} mgmt ping
+${CTL} net ping
+${CTL} ui ping
+${CTL} circular-ping
+${CTL} circular-ping --reverse
 
 # Verify UI storage functionality
-${CTL} --port /dev/cu.usbserial-110 ui get-version
-${CTL} --port /dev/cu.usbserial-110 ui set-version $(openssl rand -hex 4 | sed -e "s/[^0-9]//g")
-${CTL} --port /dev/cu.usbserial-110 ui get-version
-${CTL} --port /dev/cu.usbserial-110 ui get-sframe-key
-${CTL} --port /dev/cu.usbserial-110 ui set-sframe-key $(openssl rand -hex 16)
-${CTL} --port /dev/cu.usbserial-110 ui get-sframe-key
+${CTL} ui get-version
+${CTL} ui set-version $(openssl rand -hex 4 | sed -e "s/[^0-9]//g")
+${CTL} ui get-version
+${CTL} ui get-sframe-key
+${CTL} ui set-sframe-key $(openssl rand -hex 16)
+${CTL} ui get-sframe-key
 
 # Verify NET storage functionality
-${CTL} --port /dev/cu.usbserial-110 net add-wifi $(openssl rand -hex 4) $(openssl rand -hex 4)
-${CTL} --port /dev/cu.usbserial-110 net add-wifi $(openssl rand -hex 4) $(openssl rand -hex 4)
-${CTL} --port /dev/cu.usbserial-110 net get-wifi
-${CTL} --port /dev/cu.usbserial-110 net clear-wifi
-${CTL} --port /dev/cu.usbserial-110 net get-wifi
-${CTL} --port /dev/cu.usbserial-110 net set-moq-url "https://moq.arpa/$(openssl rand -hex 4)" 
-${CTL} --port /dev/cu.usbserial-110 net get-moq-url
+${CTL} net add-wifi $(openssl rand -hex 4) $(openssl rand -hex 4)
+${CTL} net add-wifi $(openssl rand -hex 4) $(openssl rand -hex 4)
+${CTL} net get-wifi
+${CTL} net clear-wifi
+${CTL} net get-wifi
+${CTL} net set-moq-url "https://moq.arpa/$(openssl rand -hex 4)" 
+${CTL} net get-moq-url
 

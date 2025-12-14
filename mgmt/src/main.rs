@@ -5,18 +5,24 @@ use cortex_m::singleton;
 use embassy_executor::Spawner;
 use embassy_stm32::{
     bind_interrupts,
-    exti::ExtiInput,
-    gpio::{Level, Output, Pull, Speed},
+    gpio::{Level, Output, Speed},
     peripherals,
-    rcc::{
-        AHBPrescaler, APBPrescaler, Hse, HseMode, LsConfig, Mco, McoConfig, McoPrescaler,
-        McoSource, Pll, PllMul, PllPreDiv, PllSource, Sysclk,
-    },
+    rcc::{Mco, McoConfig, McoPrescaler, McoSource},
     time::Hertz,
     usart,
     usart::{Config, DataBits, Parity, StopBits, Uart},
 };
+use embassy_time::{Duration, Timer};
 use {defmt_rtt as _, panic_probe as _};
+
+/// Async delay implementation using embassy_time::Timer.
+struct EmbassyDelay;
+
+impl link::mgmt::AsyncDelay for EmbassyDelay {
+    async fn delay_ms(&mut self, ms: u32) {
+        Timer::after(Duration::from_millis(ms as u64)).await;
+    }
+}
 
 const DMA_BUF_SIZE: usize = 64;
 
@@ -117,8 +123,25 @@ async fn main(_spawner: Spawner) {
         Output::new(p.PB15, Level::Low, Speed::Low),
     );
 
+    // UI chip reset control pins
+    // PA15 -> UI BOOT, PB3 -> UI RST
+    // Normal state: BOOT low, RST high
+    let ui_boot = Output::new(p.PA15, Level::Low, Speed::Low);
+    let ui_rst = Output::new(p.PB3, Level::High, Speed::Low);
+    let ui_reset_pins = link::mgmt::UiResetPins::new(ui_boot, ui_rst);
+
+    // NET chip reset control pins
+    // PB5 -> NET BOOT, PB4 -> NET RST
+    // NET chip boot mode is inverted from UI chip:
+    //   BOOT high = boot from flash (normal)
+    //   BOOT low = boot from bootloader
+    // Normal state: BOOT high, RST high
+    let net_boot = Output::new(p.PB5, Level::High, Speed::Low);
+    let net_rst = Output::new(p.PB4, Level::High, Speed::Low);
+    let net_reset_pins = link::mgmt::NetResetPins::new(net_boot, net_rst);
+
     link::mgmt::run(
-        to_ctl, from_ctl, to_ui, from_ui, to_net, from_net, led_a, led_b,
+        to_ctl, from_ctl, to_ui, from_ui, to_net, from_net, led_a, led_b, ui_reset_pins, net_reset_pins, EmbassyDelay,
     )
     .await;
 }
