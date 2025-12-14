@@ -105,66 +105,62 @@ async fn handle_mgmt_info(port: Option<String>) -> Result<(), Box<dyn std::error
 
     println!("Querying bootloader information...\n");
 
-    match app.get_mgmt_bootloader_info().await {
-        Ok(info) => {
-            let major = info.bootloader_version >> 4;
-            let minor = info.bootloader_version & 0x0F;
-            println!(
-                "Bootloader Version: {}.{} (0x{:02X})",
-                major, minor, info.bootloader_version
-            );
-            println!(
-                "Chip ID: 0x{:04X} ({})",
-                info.chip_id,
-                chip_name(info.chip_id)
-            );
+    let Ok(info) = app.get_mgmt_bootloader_info().await else {
+        eprintln!("Failed to get bootloader info");
+        eprintln!("\nMake sure the MGMT chip is in bootloader mode:");
+        eprintln!("  1. Set BOOT0 pin high");
+        eprintln!("  2. Reset the device");
+        return Err("Bootloader communication failed".into());
+    };
 
-            println!("\nSupported Commands ({}):", info.command_count);
-            for i in 0..info.command_count {
-                let cmd = info.commands[i];
-                println!("  0x{:02X} - {}", cmd, command_name(cmd));
-            }
+    let major = info.bootloader_version >> 4;
+    let minor = info.bootloader_version & 0x0F;
+    println!(
+        "Bootloader Version: {}.{} (0x{:02X})",
+        major, minor, info.bootloader_version
+    );
+    println!(
+        "Chip ID: 0x{:04X} ({})",
+        info.chip_id,
+        chip_name(info.chip_id)
+    );
 
-            if let Some(flash) = info.flash_sample {
-                println!("\nFlash Memory Sample (0x08000000):");
-                print!("  ");
-                for (i, byte) in flash.iter().enumerate() {
-                    print!("{:02X} ", byte);
-                    if (i + 1) % 16 == 0 && i + 1 < flash.len() {
-                        print!("\n  ");
-                    }
-                }
-                println!();
-
-                // Analyze vector table
-                let sp = u32::from_le_bytes([flash[0], flash[1], flash[2], flash[3]]);
-                let reset = u32::from_le_bytes([flash[4], flash[5], flash[6], flash[7]]);
-
-                println!("\nVector Table Analysis:");
-                println!("  Initial SP:      0x{:08X}", sp);
-                println!("  Reset Handler:   0x{:08X}", reset);
-
-                if (0x2000_0000..0x2002_0000).contains(&sp) {
-                    println!("  (SP appears valid - points to SRAM)");
-                }
-                if (0x0800_0000..0x0810_0000).contains(&reset) && (reset & 1) == 1 {
-                    println!("  (Reset handler appears valid - points to Flash, Thumb mode)");
-                }
-            } else {
-                println!("\nFlash Memory: Could not read (read protection may be enabled)");
-            }
-
-            println!("\nDone!");
-        }
-        Err(e) => {
-            eprintln!("Failed to get bootloader info: {:?}", e);
-            eprintln!("\nMake sure the MGMT chip is in bootloader mode:");
-            eprintln!("  1. Set BOOT0 pin high");
-            eprintln!("  2. Reset the device");
-            return Err("Bootloader communication failed".into());
-        }
+    println!("\nSupported Commands ({}):", info.command_count);
+    for i in 0..info.command_count {
+        let cmd = info.commands[i];
+        println!("  0x{:02X} - {}", cmd, command_name(cmd));
     }
 
+    if let Some(flash) = info.flash_sample {
+        println!("\nFlash Memory Sample (0x08000000):");
+        print!("  ");
+        for (i, byte) in flash.iter().enumerate() {
+            print!("{:02X} ", byte);
+            if (i + 1) % 16 == 0 && i + 1 < flash.len() {
+                print!("\n  ");
+            }
+        }
+        println!();
+
+        // Analyze vector table
+        let sp = u32::from_le_bytes([flash[0], flash[1], flash[2], flash[3]]);
+        let reset = u32::from_le_bytes([flash[4], flash[5], flash[6], flash[7]]);
+
+        println!("\nVector Table Analysis:");
+        println!("  Initial SP:      0x{:08X}", sp);
+        println!("  Reset Handler:   0x{:08X}", reset);
+
+        if (0x2000_0000..0x2002_0000).contains(&sp) {
+            println!("  (SP appears valid - points to SRAM)");
+        }
+        if (0x0800_0000..0x0810_0000).contains(&reset) && (reset & 1) == 1 {
+            println!("  (Reset handler appears valid - points to Flash, Thumb mode)");
+        }
+    } else {
+        println!("\nFlash Memory: Could not read (read protection may be enabled)");
+    }
+
+    println!("\nDone!");
     Ok(())
 }
 
@@ -345,69 +341,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("==================\n");
 
                 println!("Resetting UI chip to bootloader mode...");
-                match app.get_ui_bootloader_info().await {
-                    Ok(info) => {
-                        let major = info.bootloader_version >> 4;
-                        let minor = info.bootloader_version & 0x0F;
-                        println!(
-                            "Bootloader Version: {}.{} (0x{:02X})",
-                            major, minor, info.bootloader_version
-                        );
-                        println!(
-                            "Chip ID: 0x{:04X} ({})",
-                            info.chip_id,
-                            chip_name(info.chip_id)
-                        );
+                let Ok(info) = app.get_ui_bootloader_info().await else {
+                    eprintln!("Failed to get bootloader info");
+                    eprintln!("\nThe UI chip may not be responding correctly.");
+                    std::process::exit(1);
+                };
 
-                        println!("\nSupported Commands ({}):", info.command_count);
-                        for i in 0..info.command_count {
-                            let cmd = info.commands[i];
-                            println!("  0x{:02X} - {}", cmd, command_name(cmd));
-                        }
+                let major = info.bootloader_version >> 4;
+                let minor = info.bootloader_version & 0x0F;
+                println!(
+                    "Bootloader Version: {}.{} (0x{:02X})",
+                    major, minor, info.bootloader_version
+                );
+                println!(
+                    "Chip ID: 0x{:04X} ({})",
+                    info.chip_id,
+                    chip_name(info.chip_id)
+                );
 
-                        if let Some(flash) = info.flash_sample {
-                            println!("\nFlash Memory Sample (0x08000000):");
-                            print!("  ");
-                            for (i, byte) in flash.iter().enumerate() {
-                                print!("{:02X} ", byte);
-                                if (i + 1) % 16 == 0 && i + 1 < flash.len() {
-                                    print!("\n  ");
-                                }
-                            }
-                            println!();
-
-                            // Analyze vector table
-                            let sp = u32::from_le_bytes([flash[0], flash[1], flash[2], flash[3]]);
-                            let reset =
-                                u32::from_le_bytes([flash[4], flash[5], flash[6], flash[7]]);
-
-                            println!("\nVector Table Analysis:");
-                            println!("  Initial SP:      0x{:08X}", sp);
-                            println!("  Reset Handler:   0x{:08X}", reset);
-
-                            if (0x2000_0000..0x2002_0000).contains(&sp) {
-                                println!("  (SP appears valid - points to SRAM)");
-                            }
-                            if (0x0800_0000..0x0810_0000).contains(&reset) && (reset & 1) == 1 {
-                                println!(
-                                    "  (Reset handler appears valid - points to Flash, Thumb mode)"
-                                );
-                            }
-                        } else {
-                            println!(
-                                "\nFlash Memory: Could not read (read protection may be enabled)"
-                            );
-                        }
-
-                        println!("\nUI chip reset back to user mode.");
-                        println!("Done!");
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to get bootloader info: {:?}", e);
-                        eprintln!("\nThe UI chip may not be responding correctly.");
-                        std::process::exit(1);
-                    }
+                println!("\nSupported Commands ({}):", info.command_count);
+                for i in 0..info.command_count {
+                    let cmd = info.commands[i];
+                    println!("  0x{:02X} - {}", cmd, command_name(cmd));
                 }
+
+                if let Some(flash) = info.flash_sample {
+                    println!("\nFlash Memory Sample (0x08000000):");
+                    print!("  ");
+                    for (i, byte) in flash.iter().enumerate() {
+                        print!("{:02X} ", byte);
+                        if (i + 1) % 16 == 0 && i + 1 < flash.len() {
+                            print!("\n  ");
+                        }
+                    }
+                    println!();
+
+                    // Analyze vector table
+                    let sp = u32::from_le_bytes([flash[0], flash[1], flash[2], flash[3]]);
+                    let reset = u32::from_le_bytes([flash[4], flash[5], flash[6], flash[7]]);
+
+                    println!("\nVector Table Analysis:");
+                    println!("  Initial SP:      0x{:08X}", sp);
+                    println!("  Reset Handler:   0x{:08X}", reset);
+
+                    if (0x2000_0000..0x2002_0000).contains(&sp) {
+                        println!("  (SP appears valid - points to SRAM)");
+                    }
+                    if (0x0800_0000..0x0810_0000).contains(&reset) && (reset & 1) == 1 {
+                        println!(
+                            "  (Reset handler appears valid - points to Flash, Thumb mode)"
+                        );
+                    }
+                } else {
+                    println!(
+                        "\nFlash Memory: Could not read (read protection may be enabled)"
+                    );
+                }
+
+                println!("\nUI chip reset back to user mode.");
+                println!("Done!");
             }
             UiAction::GetVersion => {
                 let version = app.get_version().await;

@@ -1,4 +1,6 @@
 //! CTL (Controller) chip - the host computer interface.
+//!
+//! This module requires the `std` feature or test mode.
 
 use crate::net::WifiSsid;
 use crate::shared::{
@@ -6,7 +8,6 @@ use crate::shared::{
 };
 use bootloader::stm::{self, Bootloader};
 use embedded_io_async::{ErrorType, Read, Write};
-use heapless::Vec;
 
 /// Information retrieved from the MGMT chip when it's in bootloader mode.
 #[derive(Debug, Clone)]
@@ -23,8 +24,6 @@ pub struct MgmtBootloaderInfo {
     pub flash_sample: Option<[u8; 32]>,
 }
 
-type TunnelBuffer = Vec<u8, { 2 * crate::shared::tlv::MAX_TLV_SIZE }>;
-
 /// A reader that extracts data from TLV packets received through MGMT.
 ///
 /// Buffers incoming TLV values and exposes them as a continuous byte stream
@@ -32,11 +31,11 @@ type TunnelBuffer = Vec<u8, { 2 * crate::shared::tlv::MAX_TLV_SIZE }>;
 struct TunnelReader<'a, R> {
     tlv_type: MgmtToCtl,
     reader: &'a mut R,
-    buffer: &'a mut TunnelBuffer,
+    buffer: &'a mut Vec<u8>,
 }
 
 impl<'a, R> TunnelReader<'a, R> {
-    fn new(tlv_type: MgmtToCtl, reader: &'a mut R, buffer: &'a mut TunnelBuffer) -> Self {
+    fn new(tlv_type: MgmtToCtl, reader: &'a mut R, buffer: &'a mut Vec<u8>) -> Self {
         Self {
             tlv_type,
             reader,
@@ -60,7 +59,7 @@ where
         while self.buffer.is_empty() {
             let tlv = self.reader.read_tlv().await.unwrap().unwrap();
             assert_eq!(tlv.tlv_type, self.tlv_type);
-            self.buffer.extend_from_slice(&tlv.value).unwrap();
+            self.buffer.extend_from_slice(&tlv.value);
         }
 
         let to_copy = core::cmp::min(self.buffer.len(), buf.len());
@@ -107,7 +106,7 @@ where
 struct BufferedTunnelWriter<'a, W> {
     tlv_type: CtlToMgmt,
     writer: &'a mut W,
-    buffer: TunnelBuffer,
+    buffer: Vec<u8>,
 }
 
 impl<'a, W> BufferedTunnelWriter<'a, W> {
@@ -115,7 +114,7 @@ impl<'a, W> BufferedTunnelWriter<'a, W> {
         Self {
             tlv_type,
             writer,
-            buffer: TunnelBuffer::default(),
+            buffer: Vec::new(),
         }
     }
 }
@@ -133,7 +132,7 @@ where
 {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         // Buffer the data
-        self.buffer.extend_from_slice(buf).unwrap();
+        self.buffer.extend_from_slice(buf);
         Ok(buf.len())
     }
 
@@ -153,8 +152,8 @@ where
 /// independently from the write side.
 struct MgmtReader<R> {
     from_mgmt: R,
-    ui_buffer: TunnelBuffer,
-    net_buffer: TunnelBuffer,
+    ui_buffer: Vec<u8>,
+    net_buffer: Vec<u8>,
 }
 
 impl<R> ErrorType for MgmtReader<R>
@@ -180,8 +179,8 @@ where
     fn new(from_mgmt: R) -> Self {
         Self {
             from_mgmt,
-            ui_buffer: TunnelBuffer::default(),
-            net_buffer: TunnelBuffer::default(),
+            ui_buffer: Vec::new(),
+            net_buffer: Vec::new(),
         }
     }
 
@@ -372,7 +371,7 @@ where
     }
 
     /// Get all WiFi SSIDs from NET chip storage.
-    pub async fn get_wifi_ssids(&mut self) -> Vec<WifiSsid, 8> {
+    pub async fn get_wifi_ssids(&mut self) -> heapless::Vec<WifiSsid, 8> {
         self.writer
             .net()
             .must_write_tlv(MgmtToNet::GetWifiSsids, &[])
@@ -523,6 +522,20 @@ where
         // Reset UI chip into bootloader mode
         self.reset_ui_to_bootloader().await;
 
+        // Query bootloader info, capturing any error
+        let result = self.query_ui_bootloader().await;
+
+        // Always reset UI chip back to user mode
+        self.reset_ui_to_user().await;
+
+        result
+    }
+
+    /// Helper to query the UI bootloader. Separated so borrows are released before reset.
+    async fn query_ui_bootloader(&mut self) -> Result<MgmtBootloaderInfo, stm::Error<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+    {
         // Create a bootloader client using the buffered tunneled UI connection
         // (bootloader protocol uses raw bytes, not our TLV format)
         let mut ui_reader = self.reader.ui();
@@ -530,56 +543,20 @@ where
         let mut bl = Bootloader::new(&mut ui_reader, &mut ui_writer);
 
         // Initialize communication (sends 0x7F for auto-baud detection)
-        let init_result = bl.init().await;
-        if let Err(e) = init_result {
-            // Reset back to user mode even on error
-            drop(bl);
-            drop(ui_reader);
-            drop(ui_writer);
-            self.reset_ui_to_user().await;
-            return Err(e);
-        }
+        bl.init().await?;
 
         // Get bootloader info
-        let info = match bl.get().await {
-            Ok(info) => info,
-            Err(e) => {
-                drop(bl);
-                drop(ui_reader);
-                drop(ui_writer);
-                self.reset_ui_to_user().await;
-                return Err(e);
-            }
-        };
+        let info = bl.get().await?;
 
         // Get chip ID
-        let chip_id = match bl.get_id().await {
-            Ok(id) => id,
-            Err(e) => {
-                drop(bl);
-                drop(ui_reader);
-                drop(ui_writer);
-                self.reset_ui_to_user().await;
-                return Err(e);
-            }
-        };
+        let chip_id = bl.get_id().await?;
 
         // Try to read a small amount of memory from the start of flash
         let mut flash_sample = [0u8; 32];
-        let flash_result = bl.read_memory(0x0800_0000, &mut flash_sample).await;
-        let flash_sample = if flash_result.is_ok() {
-            Some(flash_sample)
-        } else {
-            None // Read protection may be enabled
+        let flash_sample = match bl.read_memory(0x0800_0000, &mut flash_sample).await {
+            Ok(_) => Some(flash_sample),
+            Err(_) => None, // Read protection may be enabled
         };
-
-        // Clean up borrows before resetting
-        drop(bl);
-        drop(ui_reader);
-        drop(ui_writer);
-
-        // Reset UI chip back to user mode
-        self.reset_ui_to_user().await;
 
         Ok(MgmtBootloaderInfo {
             bootloader_version: info.version,

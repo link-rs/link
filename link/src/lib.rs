@@ -1,19 +1,22 @@
 //! Link - Multi-chip communication framework.
 //!
 //! This crate provides the core application logic for the Link multi-chip system.
-//! The code is `no_std` compatible for embedded use, but tests use `std` for the
-//! tokio async runtime.
+//! The code is `no_std` compatible for embedded use. The `std` feature enables
+//! the `ctl` module for host-side communication.
 
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
 
 // Shared types and utilities
 pub mod shared;
 
-// Chip-specific modules
-pub mod ctl;
+// Chip-specific modules (embedded)
 pub mod mgmt;
 pub mod net;
 pub mod ui;
+
+// Host-side modules (requires std)
+#[cfg(any(test, feature = "std"))]
+pub mod ctl;
 
 // Test utilities
 #[cfg(test)]
