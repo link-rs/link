@@ -90,7 +90,7 @@ async fn handle_mgmt_info(port: Option<String>) -> Result<(), Box<dyn std::error
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
 
-    // Open serial port at 115200 baud with even parity (required for STM32 bootloader)
+    // Open serial port at 115200 baud with even parity
     println!("Opening {} at 115200 baud with even parity...", port_name);
     let port = tokio_serial::new(&port_name, 115200)
         .parity(tokio_serial::Parity::Even)
@@ -303,7 +303,7 @@ fn command_name(code: u8) -> &'static str {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // Handle mgmt info specially - it requires bootloader mode and even parity
+    // Handle mgmt info specially - it requires bootloader mode
     if let Command::Mgmt {
         action: MgmtAction::Info,
     } = &cli.command
@@ -312,7 +312,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let port_name = select_port(cli.port)?;
-    let port = tokio_serial::new(&port_name, cli.baud).open_native_async()?;
+    let port = tokio_serial::new(&port_name, cli.baud)
+        .parity(tokio_serial::Parity::Even)
+        .open_native_async()?;
 
     println!("Connected to {} at {} baud", port_name, cli.baud);
 

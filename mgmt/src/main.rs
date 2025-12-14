@@ -75,34 +75,42 @@ async fn main(_spawner: Spawner) {
     mco_config.speed = Speed::Low;
     let _mco = Mco::new(p.MCO, p.PA8, McoSource::PLL, mco_config);
 
-    let mut config = Config::default();
-    config.baudrate = 115200;
-    config.data_bits = DataBits::DataBits8;
-    config.stop_bits = StopBits::STOP1;
-    config.parity = Parity::ParityNone;
+    // UART config for CTL and UI (even parity for STM32 bootloader compatibility)
+    let mut stm_config = Config::default();
+    stm_config.baudrate = 115200;
+    stm_config.data_bits = DataBits::DataBits8;
+    stm_config.stop_bits = StopBits::STOP1;
+    stm_config.parity = Parity::ParityEven;
+
+    // UART config for NET (no parity)
+    let mut net_config = Config::default();
+    net_config.baudrate = 115200;
+    net_config.data_bits = DataBits::DataBits8;
+    net_config.stop_bits = StopBits::STOP1;
+    net_config.parity = Parity::ParityNone;
 
     // DMA buffers for ring-buffered RX
     let ctl_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
     let ui_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
     let net_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
 
-    // UART to CTL
+    // UART to CTL (uses even parity for bootloader compatibility)
     let (to_ctl, from_ctl) = Uart::new(
-        p.USART1, p.PA10, p.PA9, Irqs, p.DMA1_CH2, p.DMA1_CH3, config,
+        p.USART1, p.PA10, p.PA9, Irqs, p.DMA1_CH2, p.DMA1_CH3, stm_config,
     )
     .unwrap()
     .split();
     let from_ctl = from_ctl.into_ring_buffered(ctl_rx_buf);
 
-    // UART to UI
-    let (to_ui, from_ui) = Uart::new(p.USART2, p.PA3, p.PA2, Irqs, p.DMA1_CH4, p.DMA1_CH5, config)
+    // UART to UI (uses even parity for bootloader compatibility)
+    let (to_ui, from_ui) = Uart::new(p.USART2, p.PA3, p.PA2, Irqs, p.DMA1_CH4, p.DMA1_CH5, stm_config)
         .unwrap()
         .split();
     let from_ui = from_ui.into_ring_buffered(ui_rx_buf);
 
-    // UART to NET
+    // UART to NET (no parity)
     let (to_net, from_net) = Uart::new(
-        p.USART3, p.PB11, p.PB10, Irqs, p.DMA1_CH7, p.DMA1_CH6, config,
+        p.USART3, p.PB11, p.PB10, Irqs, p.DMA1_CH7, p.DMA1_CH6, net_config,
     )
     .unwrap()
     .split();

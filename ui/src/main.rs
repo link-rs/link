@@ -122,12 +122,12 @@ async fn main(_spawner: Spawner) {
     };
     let p = embassy_stm32::init(config);
 
-    // UART config for MGMT
+    // UART config for MGMT (even parity for STM32 bootloader compatibility)
     let mut mgmt_config = Config::default();
     mgmt_config.baudrate = 115200;
     mgmt_config.data_bits = DataBits::DataBits8;
     mgmt_config.stop_bits = StopBits::STOP1;
-    mgmt_config.parity = Parity::ParityNone;
+    mgmt_config.parity = Parity::ParityEven;
 
     // UART config for NET
     let mut net_config = Config::default();
