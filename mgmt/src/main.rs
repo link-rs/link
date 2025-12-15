@@ -132,11 +132,12 @@ async fn main(_spawner: Spawner) {
     );
 
     // UI chip reset control pins
-    // PA15 -> UI BOOT, PB3 -> UI RST
-    // Normal state: BOOT low, RST high
-    let ui_boot = Output::new(p.PA15, Level::Low, Speed::Low);
+    // PA15 -> UI BOOT0, PB8 -> UI BOOT1, PB3 -> UI RST
+    // Normal state: BOOT0=0, BOOT1=1, RST high
+    let ui_boot0 = Output::new(p.PA15, Level::Low, Speed::Low);
+    let ui_boot1 = Output::new(p.PB8, Level::High, Speed::Low);
     let ui_rst = Output::new(p.PB3, Level::High, Speed::Low);
-    let ui_reset_pins = link::mgmt::UiResetPins::new(ui_boot, ui_rst);
+    let ui_reset_pins = link::mgmt::UiResetPins::new(ui_boot0, ui_boot1, ui_rst);
 
     // NET chip reset control pins
     // PB5 -> NET BOOT, PB4 -> NET RST

@@ -5,12 +5,13 @@
 use crate::net::WifiSsid;
 use crate::shared::{
     CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt, WriteTlv,
+    MAX_VALUE_SIZE,
 };
 use bootloader::stm::{self, Bootloader};
 use embedded_io_async::{ErrorType, Read, Write};
 
 /// Information retrieved from the MGMT chip when it's in bootloader mode.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MgmtBootloaderInfo {
     /// Bootloader protocol version (e.g., 0x31 = v3.1).
     pub bootloader_version: u8,
@@ -60,11 +61,13 @@ where
             let tlv = self.reader.read_tlv().await.unwrap().unwrap();
             assert_eq!(tlv.tlv_type, self.tlv_type);
             self.buffer.extend_from_slice(&tlv.value);
+            println!("rfill: {:02x?}", &self.buffer);
         }
 
         let to_copy = core::cmp::min(self.buffer.len(), buf.len());
         buf[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
         self.buffer.drain(..to_copy);
+        println!("rcopy: {:02x?}", &buf[..to_copy]);
         Ok(to_copy)
     }
 }
@@ -84,64 +87,27 @@ impl<'a, W> TunnelWriter<'a, W> {
     }
 }
 
-impl<'a, T, W> WriteTlv<T> for TunnelWriter<'a, W>
-where
-    T: Into<u16>,
-    W: Write,
-{
-    type Error = <W as ErrorType>::Error;
-
-    async fn write_tlv(&mut self, tlv_type: T, value: &[u8]) -> Result<(), Self::Error> {
-        // Encode the inner TLV first
-        let encoded = Tlv::encode(tlv_type, value);
-        // Send it as the value of the outer tunnel TLV
-        self.writer.write_tlv(self.tlv_type, &encoded).await
-    }
-}
-
-/// A buffered writer for tunneling raw bytes (e.g., bootloader protocol) through MGMT.
-///
-/// Unlike TunnelWriter which is designed for TLV protocols, this type buffers
-/// writes and sends them as a single tunnel TLV on flush.
-struct BufferedTunnelWriter<'a, W> {
-    tlv_type: CtlToMgmt,
-    writer: &'a mut W,
-    buffer: Vec<u8>,
-}
-
-impl<'a, W> BufferedTunnelWriter<'a, W> {
-    fn new(tlv_type: CtlToMgmt, writer: &'a mut W) -> Self {
-        Self {
-            tlv_type,
-            writer,
-            buffer: Vec::new(),
-        }
-    }
-}
-
-impl<'a, W> ErrorType for BufferedTunnelWriter<'a, W>
+impl<'a, W> ErrorType for TunnelWriter<'a, W>
 where
     W: Write,
 {
     type Error = <W as ErrorType>::Error;
 }
 
-impl<'a, W> Write for BufferedTunnelWriter<'a, W>
+impl<'a, W> Write for TunnelWriter<'a, W>
 where
     W: Write,
 {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        // Buffer the data
-        self.buffer.extend_from_slice(buf);
-        Ok(buf.len())
+        let to_write = core::cmp::min(MAX_VALUE_SIZE, buf.len());
+        self.writer
+            .write_tlv(self.tlv_type, &buf[..to_write])
+            .await?;
+        println!("write: {:02x?}", &buf[..to_write]);
+        Ok(to_write)
     }
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
-        if !self.buffer.is_empty() {
-            // Send all buffered data as a single tunnel TLV
-            self.writer.write_tlv(self.tlv_type, &self.buffer).await?;
-            self.buffer.clear();
-        }
         self.writer.flush().await
     }
 }
@@ -191,7 +157,11 @@ where
 
     /// Get a reader for the NET tunnel.
     fn net(&mut self) -> TunnelReader<'_, R> {
-        TunnelReader::new(MgmtToCtl::FromNet, &mut self.from_mgmt, &mut self.net_buffer)
+        TunnelReader::new(
+            MgmtToCtl::FromNet,
+            &mut self.from_mgmt,
+            &mut self.net_buffer,
+        )
     }
 }
 
@@ -231,14 +201,9 @@ where
         Self { to_mgmt }
     }
 
-    /// Get a writer for the UI tunnel.
+    /// Get a writer for the UI tunnel (TLV protocol).
     fn ui(&mut self) -> TunnelWriter<'_, W> {
         TunnelWriter::new(CtlToMgmt::ToUi, &mut self.to_mgmt)
-    }
-
-    /// Get a buffered writer for the UI tunnel (for raw byte protocols like bootloader).
-    fn ui_buffered(&mut self) -> BufferedTunnelWriter<'_, W> {
-        BufferedTunnelWriter::new(CtlToMgmt::ToUi, &mut self.to_mgmt)
     }
 
     /// Get a writer for the NET tunnel.
@@ -515,17 +480,25 @@ where
     ///
     /// Returns bootloader version, chip ID, supported commands, and optionally
     /// a sample of flash memory if read protection is not enabled.
-    pub async fn get_ui_bootloader_info(&mut self) -> Result<MgmtBootloaderInfo, stm::Error<R::Error>>
+    pub async fn get_ui_bootloader_info(
+        &mut self,
+    ) -> Result<MgmtBootloaderInfo, stm::Error<R::Error>>
     where
         W::Error: Into<R::Error>,
     {
         // Reset UI chip into bootloader mode
+        println!("reset -> bl");
         self.reset_ui_to_bootloader().await;
 
+        // Wait for bootloader to be ready
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+
         // Query bootloader info, capturing any error
+        println!("query");
         let result = self.query_ui_bootloader().await;
 
         // Always reset UI chip back to user mode
+        println!("reset -> user");
         self.reset_ui_to_user().await;
 
         result
@@ -536,22 +509,25 @@ where
     where
         W::Error: Into<R::Error>,
     {
-        // Create a bootloader client using the buffered tunneled UI connection
-        // (bootloader protocol uses raw bytes, not our TLV format)
+        // Create a bootloader client using the tunneled UI connection
         let mut ui_reader = self.reader.ui();
-        let mut ui_writer = self.writer.ui_buffered();
+        let mut ui_writer = self.writer.ui();
         let mut bl = Bootloader::new(&mut ui_reader, &mut ui_writer);
 
         // Initialize communication (sends 0x7F for auto-baud detection)
+        println!("init");
         bl.init().await?;
 
         // Get bootloader info
+        println!("get");
         let info = bl.get().await?;
 
         // Get chip ID
+        println!("get_id");
         let chip_id = bl.get_id().await?;
 
         // Try to read a small amount of memory from the start of flash
+        println!("flash_sample");
         let mut flash_sample = [0u8; 32];
         let flash_sample = match bl.read_memory(0x0800_0000, &mut flash_sample).await {
             Ok(_) => Some(flash_sample),

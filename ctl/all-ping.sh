@@ -3,9 +3,9 @@
 # XXX(RLB) This should ultimately be deleted.  It's just a test script that
 # exercises certain functions of the device.
 
-CTL=./target/debug/ctl
+BIN=./target/debug/ctl
 PORT=/dev/cu.usbserial-110
-CTL=${BIN} --port ${PORT}
+CTL="${BIN} --port ${PORT}"
 
 # Make a fresh build
 cargo build

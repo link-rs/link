@@ -36,7 +36,7 @@ where
     let (ui_to_net, net_from_ui) = channel();
 
     let ctl_app = ctl::App::new(ctl_to_mgmt, ctl_from_mgmt);
-    let ui_reset_pins = mgmt::UiResetPins::new(MockPin::new(), MockPin::new());
+    let ui_reset_pins = mgmt::UiResetPins::new(MockPin::new(), MockPin::new(), MockPin::new());
     let net_reset_pins = mgmt::NetResetPins::new(MockPin::new(), MockPin::new());
     let mgmt_task = mgmt::run(
         mgmt_to_ctl,
@@ -104,9 +104,10 @@ where
 
     // Create tracking pins for UI and NET reset
     let gpio_ops: Arc<Mutex<Vec<(&'static str, GpioOp)>>> = Arc::new(Mutex::new(Vec::new()));
-    let ui_boot_pin = TrackingPin::new("UI_BOOT", gpio_ops.clone());
+    let ui_boot0_pin = TrackingPin::new("UI_BOOT0", gpio_ops.clone());
+    let ui_boot1_pin = TrackingPin::new("UI_BOOT1", gpio_ops.clone());
     let ui_rst_pin = TrackingPin::new("UI_RST", gpio_ops.clone());
-    let ui_reset_pins = mgmt::UiResetPins::new(ui_boot_pin, ui_rst_pin);
+    let ui_reset_pins = mgmt::UiResetPins::new(ui_boot0_pin, ui_boot1_pin, ui_rst_pin);
 
     let net_boot_pin = TrackingPin::new("NET_BOOT", gpio_ops.clone());
     let net_rst_pin = TrackingPin::new("NET_RST", gpio_ops.clone());
@@ -296,12 +297,12 @@ async fn reset_ui_to_bootloader_gpio_sequence() {
         ctl.reset_ui_to_bootloader().await;
 
         let ops = gpio_ops.lock().unwrap();
-        // UI bootloader sequence: BOOT high -> RST low -> (delay) -> RST high -> BOOT low
+        // UI bootloader sequence: BOOT0=1, BOOT1=0, then RST low -> (delay) -> RST high
         assert_eq!(ops.len(), 4);
-        assert_eq!(ops[0], ("UI_BOOT", GpioOp::SetHigh));
-        assert_eq!(ops[1], ("UI_RST", GpioOp::SetLow));
-        assert_eq!(ops[2], ("UI_RST", GpioOp::SetHigh));
-        assert_eq!(ops[3], ("UI_BOOT", GpioOp::SetLow));
+        assert_eq!(ops[0], ("UI_BOOT0", GpioOp::SetHigh));
+        assert_eq!(ops[1], ("UI_BOOT1", GpioOp::SetLow));
+        assert_eq!(ops[2], ("UI_RST", GpioOp::SetLow));
+        assert_eq!(ops[3], ("UI_RST", GpioOp::SetHigh));
     })
     .await;
 }
@@ -312,11 +313,12 @@ async fn reset_ui_to_user_gpio_sequence() {
         ctl.reset_ui_to_user().await;
 
         let ops = gpio_ops.lock().unwrap();
-        // UI user mode sequence: BOOT low -> RST low -> (delay) -> RST high
-        assert_eq!(ops.len(), 3);
-        assert_eq!(ops[0], ("UI_BOOT", GpioOp::SetLow));
-        assert_eq!(ops[1], ("UI_RST", GpioOp::SetLow));
-        assert_eq!(ops[2], ("UI_RST", GpioOp::SetHigh));
+        // UI user mode sequence: BOOT0=0, BOOT1=1, then RST low -> (delay) -> RST high
+        assert_eq!(ops.len(), 4);
+        assert_eq!(ops[0], ("UI_BOOT0", GpioOp::SetLow));
+        assert_eq!(ops[1], ("UI_BOOT1", GpioOp::SetHigh));
+        assert_eq!(ops[2], ("UI_RST", GpioOp::SetLow));
+        assert_eq!(ops[3], ("UI_RST", GpioOp::SetHigh));
     })
     .await;
 }

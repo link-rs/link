@@ -2,7 +2,7 @@
 
 use crate::info;
 use crate::shared::{
-    Color, CtlToMgmt, Led, MgmtToCtl, MgmtToNet, MgmtToUi, ReadTlv, Tlv, Value, WriteTlv, SYNC_WORD,
+    Color, CtlToMgmt, Led, MgmtToCtl, MgmtToNet, MgmtToUi, ReadTlv, Tlv, Value, WriteTlv,
 };
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use embedded_io_async::{Read, Write};
@@ -17,36 +17,45 @@ pub trait AsyncDelay {
 /// Holds the GPIO pins used to control the UI chip's reset behavior.
 ///
 /// UI chip boot mode:
-/// - BOOT high = Enter bootloader
-/// - BOOT low = Normal operation (boot from flash)
-pub struct UiResetPins<Boot, Rst> {
-    pub boot: Boot,
+/// - BOOT0=1, BOOT1=0 = Enter bootloader (system memory)
+/// - BOOT0=0, BOOT1=1 = Normal operation (boot from flash)
+pub struct UiResetPins<Boot0, Boot1, Rst> {
+    pub boot0: Boot0,
+    pub boot1: Boot1,
     pub rst: Rst,
 }
 
-impl<Boot, Rst> UiResetPins<Boot, Rst>
+impl<Boot0, Boot1, Rst> UiResetPins<Boot0, Boot1, Rst>
 where
-    Boot: OutputPin,
-    Rst: OutputPin,
+    Boot0: StatefulOutputPin,
+    Boot1: StatefulOutputPin,
+    Rst: StatefulOutputPin,
 {
-    pub fn new(boot: Boot, rst: Rst) -> Self {
-        Self { boot, rst }
+    pub fn new(boot0: Boot0, boot1: Boot1, rst: Rst) -> Self {
+        Self { boot0, boot1, rst }
     }
 
     /// Reset UI chip into bootloader mode.
-    /// Sequence: BOOT high -> RST low -> delay -> RST high -> BOOT low
+    /// Sets BOOT0=1, BOOT1=0, then power cycles.
     pub async fn reset_to_bootloader<D: AsyncDelay>(&mut self, delay: &mut D) {
-        let _ = self.boot.set_high();
+        // Set boot pins for bootloader mode (BOOT0=1, BOOT1=0)
+        let _ = self.boot0.set_high();
+        let _ = self.boot1.set_low();
+
+        // Power cycle: RST low -> delay -> RST high
         let _ = self.rst.set_low();
         delay.delay_ms(10).await;
         let _ = self.rst.set_high();
-        let _ = self.boot.set_low();
     }
 
     /// Reset UI chip into user mode.
-    /// Sequence: BOOT low -> RST low -> delay -> RST high
+    /// Sets BOOT0=0, BOOT1=1, then power cycles.
     pub async fn reset_to_user<D: AsyncDelay>(&mut self, delay: &mut D) {
-        let _ = self.boot.set_low();
+        // Set boot pins for normal mode (BOOT0=0, BOOT1=1)
+        let _ = self.boot0.set_low();
+        let _ = self.boot1.set_high();
+
+        // Power cycle: RST low -> delay -> RST high
         let _ = self.rst.set_low();
         delay.delay_ms(10).await;
         let _ = self.rst.set_high();
@@ -93,13 +102,10 @@ where
 }
 
 /// Type alias for backwards compatibility.
-pub type ResetPins<Boot, Rst> = UiResetPins<Boot, Rst>;
-
-/// Type alias for backwards compatibility.
 pub type Esp32ResetPins<Boot, Rst> = NetResetPins<Boot, Rst>;
 
 #[allow(unreachable_code)]
-pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot, UiRst, NetBoot, NetRst, D>(
+pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
     to_ctl: W,
     mut from_ctl: R,
     mut to_ui: W,
@@ -108,7 +114,7 @@ pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot, UiRst, NetBoot, NetRst, D
     mut from_net: R,
     led_a: (RA, GA, BA),
     led_b: (RB, GB, BB),
-    ui_reset_pins: UiResetPins<UiBoot, UiRst>,
+    ui_reset_pins: UiResetPins<UiBoot0, UiBoot1, UiRst>,
     net_reset_pins: NetResetPins<NetBoot, NetRst>,
     delay: D,
 ) -> !
@@ -121,8 +127,9 @@ where
     RB: StatefulOutputPin,
     GB: StatefulOutputPin,
     BB: StatefulOutputPin,
-    UiBoot: OutputPin,
-    UiRst: OutputPin,
+    UiBoot0: StatefulOutputPin,
+    UiBoot1: StatefulOutputPin,
+    UiRst: StatefulOutputPin,
     NetBoot: OutputPin,
     NetRst: OutputPin,
     D: AsyncDelay,
@@ -148,6 +155,7 @@ where
                 continue;
             };
             buffer.truncate(n);
+            info!("ui->ctl: {=[u8]:x}", buffer.as_slice());
 
             let mut to_ctl = to_ctl.lock().await;
             let _ = to_ctl.write_tlv(MgmtToCtl::FromUi, &buffer).await;
@@ -178,7 +186,16 @@ where
             let mut to_ctl = to_ctl.lock().await;
             let mut reset_state = reset_state.lock().await;
             let (ui_pins, net_pins, delay) = reset_state.deref_mut();
-            handle_ctl(tlv, to_ctl.deref_mut(), &mut to_ui, &mut to_net, ui_pins, net_pins, delay).await;
+            handle_ctl(
+                tlv,
+                to_ctl.deref_mut(),
+                &mut to_ui,
+                &mut to_net,
+                ui_pins,
+                net_pins,
+                delay,
+            )
+            .await;
         }
     };
 
@@ -186,20 +203,21 @@ where
     unreachable!()
 }
 
-async fn handle_ctl<C, U, N, UiBoot, UiRst, NetBoot, NetRst, D>(
+async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
     tlv: Tlv<CtlToMgmt>,
     to_ctl: &mut C,
     to_ui: &mut U,
     to_net: &mut N,
-    ui_reset_pins: &mut UiResetPins<UiBoot, UiRst>,
+    ui_reset_pins: &mut UiResetPins<UiBoot0, UiBoot1, UiRst>,
     net_reset_pins: &mut NetResetPins<NetBoot, NetRst>,
     delay: &mut D,
 ) where
     C: WriteTlv<MgmtToCtl>,
     U: WriteTlv<MgmtToUi> + Write,
     N: WriteTlv<MgmtToNet> + Write,
-    UiBoot: OutputPin,
-    UiRst: OutputPin,
+    UiBoot0: StatefulOutputPin,
+    UiBoot1: StatefulOutputPin,
+    UiRst: StatefulOutputPin,
     NetBoot: OutputPin,
     NetRst: OutputPin,
     D: AsyncDelay,
@@ -211,13 +229,12 @@ async fn handle_ctl<C, U, N, UiBoot, UiRst, NetBoot, NetRst, D>(
         }
         CtlToMgmt::ToUi => {
             info!("mgmt: ctl -> ui");
-            to_ui.write_all(&SYNC_WORD).await.unwrap();
+            info!("ctl -> ui: {=[u8]:x}", tlv.value.as_slice());
             to_ui.write_all(&tlv.value).await.unwrap();
             to_ui.flush().await.unwrap();
         }
         CtlToMgmt::ToNet => {
             info!("mgmt: ctl -> net");
-            to_net.write_all(&SYNC_WORD).await.unwrap();
             to_net.write_all(&tlv.value).await.unwrap();
             to_net.flush().await.unwrap();
         }
