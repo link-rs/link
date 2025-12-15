@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 use embedded_io_adapters::tokio_1::FromTokio;
+use indicatif::{ProgressBar, ProgressStyle};
+use link::ctl::FlashPhase;
 use serialport::SerialPortType;
 use std::io::Write;
 use tokio_serial::SerialPortBuilderExt;
@@ -164,6 +166,101 @@ async fn handle_mgmt_info(port: Option<String>) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+/// Handle the `mgmt flash` command which requires bootloader mode
+async fn handle_mgmt_flash(
+    port: Option<String>,
+    file: std::path::PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("MGMT Flash");
+    println!("==========\n");
+
+    // Read the firmware file
+    let firmware = std::fs::read(&file)?;
+    println!("Firmware: {} ({} bytes)", file.display(), firmware.len());
+
+    let port_name = select_port(port)?;
+
+    println!("\nTo flash the MGMT chip, it must be in bootloader mode.");
+    println!("Please follow these steps:");
+    println!("  1. Set the BOOT0 pin high on the MGMT chip");
+    println!("  2. Reset the MGMT chip");
+    println!();
+    print!("Press Enter when ready (or Ctrl+C to cancel)... ");
+    std::io::stdout().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+
+    // Open serial port at 115200 baud with even parity
+    println!("Opening {} at 115200 baud with even parity...", port_name);
+    let port = tokio_serial::new(&port_name, 115200)
+        .parity(tokio_serial::Parity::Even)
+        .open_native_async()?;
+
+    let (reader, writer) = tokio::io::split(port);
+    let reader = FromTokio::new(reader);
+    let writer = FromTokio::new(writer);
+
+    let mut app = link::ctl::App::new(writer, reader);
+
+    // Create progress bar
+    let pb = ProgressBar::new(firmware.len() as u64);
+    let bytes_style = ProgressStyle::default_bar()
+        .template("{prefix:>12} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%)")
+        .unwrap()
+        .progress_chars("#>-");
+    let pages_style = ProgressStyle::default_bar()
+        .template("{prefix:>12} [{bar:40.cyan/blue}] {pos}/{len} pages ({percent}%)")
+        .unwrap()
+        .progress_chars("#>-");
+    pb.set_style(pages_style.clone());
+
+    let mut current_phase = None;
+    let result = app
+        .flash_mgmt(&firmware, |phase, progress, total| {
+            if current_phase != Some(phase) {
+                current_phase = Some(phase);
+                match phase {
+                    FlashPhase::Erasing => {
+                        pb.set_style(pages_style.clone());
+                        pb.set_prefix("Erasing");
+                    }
+                    FlashPhase::Writing => {
+                        pb.set_style(bytes_style.clone());
+                        pb.set_prefix("Writing");
+                    }
+                    FlashPhase::Verifying => {
+                        pb.set_style(bytes_style.clone());
+                        pb.set_prefix("Verifying");
+                    }
+                }
+                pb.set_length(total as u64);
+                pb.set_position(0);
+            }
+            pb.set_position(progress as u64);
+        })
+        .await;
+
+    pb.finish_and_clear();
+
+    match result {
+        Ok(()) => {
+            println!("\nFlash complete!");
+            println!("The MGMT chip should now be running the new firmware.");
+            println!("\nNote: Set BOOT0 low and reset to ensure normal boot on next power cycle.");
+        }
+        Err(e) => {
+            eprintln!("\nFlash failed: {:?}", e);
+            eprintln!("\nMake sure the MGMT chip is in bootloader mode:");
+            eprintln!("  1. Set BOOT0 pin high");
+            eprintln!("  2. Reset the device");
+            return Err("Flash failed".into());
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Subcommand)]
 enum Command {
     Mgmt {
@@ -198,6 +295,11 @@ enum MgmtAction {
     },
     /// Get bootloader information from MGMT chip (requires bootloader mode)
     Info,
+    /// Flash firmware to MGMT chip (requires bootloader mode)
+    Flash {
+        /// Path to binary file to flash
+        file: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -208,6 +310,11 @@ enum UiAction {
     },
     /// Get bootloader information from UI chip (auto-resets chip)
     Info,
+    /// Flash firmware to UI chip (auto-resets chip)
+    Flash {
+        /// Path to binary file to flash
+        file: std::path::PathBuf,
+    },
     GetVersion,
     SetVersion {
         /// Version number (base 10)
@@ -301,12 +408,15 @@ fn command_name(code: u8) -> &'static str {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // Handle mgmt info specially - it requires bootloader mode
-    if let Command::Mgmt {
-        action: MgmtAction::Info,
-    } = &cli.command
-    {
-        return handle_mgmt_info(cli.port).await;
+    // Handle mgmt commands specially - they require bootloader mode
+    match &cli.command {
+        Command::Mgmt {
+            action: MgmtAction::Info,
+        } => return handle_mgmt_info(cli.port).await,
+        Command::Mgmt {
+            action: MgmtAction::Flash { file },
+        } => return handle_mgmt_flash(cli.port, file.clone()).await,
+        _ => {}
     }
 
     let port_name = select_port(cli.port)?;
@@ -330,7 +440,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.mgmt_ping(data.as_bytes()).await;
                 println!("Received pong!");
             }
-            MgmtAction::Info => unreachable!(), // Handled above
+            MgmtAction::Info => unreachable!(),  // Handled above
+            MgmtAction::Flash { .. } => unreachable!(), // Handled above
         },
         Command::Ui { action } => match action {
             UiAction::Ping { data } => {
@@ -402,6 +513,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 println!("\nUI chip reset back to user mode.");
                 println!("Done!");
+            }
+            UiAction::Flash { file } => {
+                println!("UI Flash");
+                println!("========\n");
+
+                // Read the firmware file
+                let firmware = std::fs::read(&file).expect("Failed to read firmware file");
+                println!("Firmware: {} ({} bytes)", file.display(), firmware.len());
+                println!("Resetting UI chip to bootloader mode...\n");
+
+                // Create progress bar
+                let pb = ProgressBar::new(firmware.len() as u64);
+                let bytes_style = ProgressStyle::default_bar()
+                    .template(
+                        "{prefix:>12} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%)",
+                    )
+                    .unwrap()
+                    .progress_chars("#>-");
+                let sectors_style = ProgressStyle::default_bar()
+                    .template(
+                        "{prefix:>12} [{bar:40.cyan/blue}] {pos}/{len} sectors ({percent}%)",
+                    )
+                    .unwrap()
+                    .progress_chars("#>-");
+                pb.set_style(sectors_style.clone());
+
+                let mut current_phase = None;
+                let result = app
+                    .flash_ui(&firmware, |phase, progress, total| {
+                        if current_phase != Some(phase) {
+                            current_phase = Some(phase);
+                            match phase {
+                                FlashPhase::Erasing => {
+                                    pb.set_style(sectors_style.clone());
+                                    pb.set_prefix("Erasing");
+                                }
+                                FlashPhase::Writing => {
+                                    pb.set_style(bytes_style.clone());
+                                    pb.set_prefix("Writing");
+                                }
+                                FlashPhase::Verifying => {
+                                    pb.set_style(bytes_style.clone());
+                                    pb.set_prefix("Verifying");
+                                }
+                            }
+                            pb.set_length(total as u64);
+                            pb.set_position(0);
+                        }
+                        pb.set_position(progress as u64);
+                    })
+                    .await;
+
+                pb.finish_and_clear();
+
+                match result {
+                    Ok(()) => {
+                        println!("Flash complete!");
+                        println!("UI chip reset back to user mode.");
+                    }
+                    Err(e) => {
+                        eprintln!("\nFlash failed: {:?}", e);
+                        eprintln!("\nThe UI chip may not be responding correctly.");
+                        std::process::exit(1);
+                    }
+                }
             }
             UiAction::GetVersion => {
                 let version = app.get_version().await;

@@ -121,7 +121,7 @@ where
 
         // Initialize LED
         let mut led = Led::new(led.0, led.1, led.2);
-        led.set(Color::Blue);
+        led.set(Color::Green);
 
         const MAX_QUEUE_DEPTH: usize = 4;
         let channel: Channel<CriticalSectionRawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();

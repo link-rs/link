@@ -24,7 +24,7 @@ impl link::mgmt::AsyncDelay for EmbassyDelay {
     }
 }
 
-const DMA_BUF_SIZE: usize = 64;
+const DMA_BUF_SIZE: usize = link::shared::MAX_VALUE_SIZE;
 
 bind_interrupts!(
     struct Irqs {
@@ -103,9 +103,11 @@ async fn main(_spawner: Spawner) {
     let from_ctl = from_ctl.into_ring_buffered(ctl_rx_buf);
 
     // UART to UI (uses even parity for bootloader compatibility)
-    let (to_ui, from_ui) = Uart::new(p.USART2, p.PA3, p.PA2, Irqs, p.DMA1_CH4, p.DMA1_CH5, stm_config)
-        .unwrap()
-        .split();
+    let (to_ui, from_ui) = Uart::new(
+        p.USART2, p.PA3, p.PA2, Irqs, p.DMA1_CH4, p.DMA1_CH5, stm_config,
+    )
+    .unwrap()
+    .split();
     let from_ui = from_ui.into_ring_buffered(ui_rx_buf);
 
     // UART to NET (no parity)
@@ -150,7 +152,17 @@ async fn main(_spawner: Spawner) {
     let net_reset_pins = link::mgmt::NetResetPins::new(net_boot, net_rst);
 
     link::mgmt::run(
-        to_ctl, from_ctl, to_ui, from_ui, to_net, from_net, led_a, led_b, ui_reset_pins, net_reset_pins, EmbassyDelay,
+        to_ctl,
+        from_ctl,
+        to_ui,
+        from_ui,
+        to_net,
+        from_net,
+        led_a,
+        led_b,
+        ui_reset_pins,
+        net_reset_pins,
+        EmbassyDelay,
     )
     .await;
 }

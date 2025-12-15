@@ -8,7 +8,7 @@
 //! - **STM32 (AN3155)**: USART bootloader protocol for STM32 microcontrollers
 //! - **ESP32**: ROM bootloader protocol for ESP32 microcontrollers (coming soon)
 
-//#![no_std]
+#![no_std]
 
 pub mod esp;
 pub mod stm;

@@ -255,14 +255,11 @@ where
 
         // Send number of bytes - 1 and its complement
         let n = (len - 1) as u8;
-        self.write_byte(n).await?;
-        self.write_byte(!n).await?;
+        self.write_bytes(&[n, !n]).await?;
         self.wait_ack().await?;
 
-        // Read data
-        for slot in buffer.iter_mut().take(len) {
-            *slot = self.read_byte().await?;
-        }
+        // Read data in bulk
+        self.reader.read_exact(&mut buffer[..len]).await?;
 
         Ok(len)
     }
@@ -310,13 +307,12 @@ where
         // Send N (number of bytes - 1), data, and checksum
         let n = (data.len() - 1) as u8;
         let mut checksum = n;
-        self.write_byte(n).await?;
-
         for &byte in data {
-            self.write_byte(byte).await?;
             checksum ^= byte;
         }
 
+        self.write_byte(n).await?;
+        self.write_bytes(data).await?;
         self.write_byte(checksum).await?;
         self.wait_ack().await?;
 
@@ -337,25 +333,22 @@ where
         match pages {
             None => {
                 // Global erase: send 0xFF, 0x00
-                self.write_byte(0xFF).await?;
-                self.write_byte(0x00).await?;
+                self.write_bytes(&[0xFF, 0x00]).await?;
             }
             Some(pages) => {
                 if pages.is_empty() || pages.len() > 256 {
                     return Err(Error::InvalidPageCount);
                 }
 
-                // Send N (number of pages - 1)
+                // Build packet: N, page numbers, checksum
                 let n = (pages.len() - 1) as u8;
                 let mut checksum = n;
-                self.write_byte(n).await?;
-
-                // Send page numbers
                 for &page in pages {
-                    self.write_byte(page).await?;
                     checksum ^= page;
                 }
 
+                self.write_byte(n).await?;
+                self.write_bytes(pages).await?;
                 self.write_byte(checksum).await?;
             }
         }
@@ -384,10 +377,7 @@ where
             let code = special.code();
             let msb = (code >> 8) as u8;
             let lsb = (code & 0xFF) as u8;
-
-            self.write_byte(msb).await?;
-            self.write_byte(lsb).await?;
-            self.write_byte(msb ^ lsb).await?; // Checksum
+            self.write_bytes(&[msb, lsb, msb ^ lsb]).await?;
         } else if let Some(pages) = pages {
             if pages.is_empty() {
                 return Err(Error::InvalidPageCount);
@@ -399,15 +389,13 @@ where
             let n_lsb = (n & 0xFF) as u8;
 
             let mut checksum = n_msb ^ n_lsb;
-            self.write_byte(n_msb).await?;
-            self.write_byte(n_lsb).await?;
+            self.write_bytes(&[n_msb, n_lsb]).await?;
 
             // Send page numbers (2 bytes each, MSB first)
             for &page in pages {
                 let msb = (page >> 8) as u8;
                 let lsb = (page & 0xFF) as u8;
-                self.write_byte(msb).await?;
-                self.write_byte(lsb).await?;
+                self.write_bytes(&[msb, lsb]).await?;
                 checksum ^= msb ^ lsb;
             }
 
@@ -498,8 +486,7 @@ where
         W::Error: Into<R::Error>,
     {
         let code = cmd as u8;
-        self.write_byte(code).await?;
-        self.write_byte(!code).await?;
+        self.write_bytes(&[code, !code]).await?;
         Ok(())
     }
 
@@ -509,16 +496,16 @@ where
     {
         let bytes = address.to_be_bytes();
         let checksum = bytes[0] ^ bytes[1] ^ bytes[2] ^ bytes[3];
-
-        for &byte in &bytes {
-            self.write_byte(byte).await?;
-        }
-        self.write_byte(checksum).await?;
-
+        let packet = [bytes[0], bytes[1], bytes[2], bytes[3], checksum];
+        self.write_bytes(&packet).await?;
         Ok(())
     }
 
-    async fn wait_ack(&mut self) -> Result<(), Error<R::Error>> {
+    async fn wait_ack(&mut self) -> Result<(), Error<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+    {
+        self.flush().await?;
         let response = self.read_byte().await?;
         match response {
             ACK => Ok(()),
@@ -541,6 +528,24 @@ where
             .write_all(&[byte])
             .await
             .map_err(|e| Error::Io(e.into()))?;
+        Ok(())
+    }
+
+    async fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), Error<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+    {
+        self.writer
+            .write_all(bytes)
+            .await
+            .map_err(|e| Error::Io(e.into()))?;
+        Ok(())
+    }
+
+    async fn flush(&mut self) -> Result<(), Error<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+    {
         self.writer.flush().await.map_err(|e| Error::Io(e.into()))?;
         Ok(())
     }

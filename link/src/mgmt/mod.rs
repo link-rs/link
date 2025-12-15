@@ -150,8 +150,8 @@ where
     // Initialize LEDs
     let mut led_a = Led::new(led_a.0, led_a.1, led_a.2);
     let mut led_b = Led::new(led_b.0, led_b.1, led_b.2);
-    led_a.set(Color::Red);
-    led_b.set(Color::Green);
+    led_a.set(Color::Green);
+    led_b.set(Color::Red);
 
     let to_ctl: Mutex<NoopRawMutex, _> = Mutex::new(to_ctl);
     let reset_state: Mutex<NoopRawMutex, _> = Mutex::new((ui_reset_pins, net_reset_pins, delay));
@@ -161,6 +161,7 @@ where
         loop {
             buffer.resize(buffer.capacity(), 0).unwrap();
             let Ok(n) = from_ui.read(&mut buffer).await else {
+                info!("ui->mgmt: error!");
                 continue;
             };
             buffer.truncate(n);

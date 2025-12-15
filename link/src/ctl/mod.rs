@@ -33,6 +33,64 @@ pub struct NetBootloaderInfo {
     pub security_info: SecurityInfo,
 }
 
+/// Phase of the flash operation, reported to progress callbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashPhase {
+    /// Erasing flash memory.
+    Erasing,
+    /// Writing firmware data.
+    Writing,
+    /// Verifying written data.
+    Verifying,
+}
+
+/// Errors that can occur during flash operations.
+#[derive(Debug)]
+pub enum FlashError<E> {
+    /// Bootloader protocol error.
+    Bootloader(stm::Error<E>),
+    /// Verification failed - data read back doesn't match what was written.
+    VerifyFailed {
+        address: u32,
+        expected: Vec<u8>,
+        actual: Vec<u8>,
+    },
+}
+
+impl<E> From<stm::Error<E>> for FlashError<E> {
+    fn from(e: stm::Error<E>) -> Self {
+        FlashError::Bootloader(e)
+    }
+}
+
+/// Calculate the number of sectors needed for a given firmware size on STM32F405.
+/// Sectors 0-3: 16KB each, Sector 4: 64KB, Sectors 5-11: 128KB each.
+fn sectors_for_size_f405(size: usize) -> usize {
+    const SECTOR_SIZES: [usize; 12] = [
+        16 * 1024,  // Sector 0
+        16 * 1024,  // Sector 1
+        16 * 1024,  // Sector 2
+        16 * 1024,  // Sector 3
+        64 * 1024,  // Sector 4
+        128 * 1024, // Sector 5
+        128 * 1024, // Sector 6
+        128 * 1024, // Sector 7
+        128 * 1024, // Sector 8
+        128 * 1024, // Sector 9
+        128 * 1024, // Sector 10
+        128 * 1024, // Sector 11
+    ];
+
+    let mut total = 0;
+    for (i, &sector_size) in SECTOR_SIZES.iter().enumerate() {
+        if total >= size {
+            return i.max(1); // At least 1 sector
+        }
+        total += sector_size;
+    }
+    12 // All sectors needed
+}
+
 /// A reader that extracts data from TLV packets received through MGMT.
 ///
 /// Buffers incoming TLV values and exposes them as a continuous byte stream
@@ -69,7 +127,6 @@ where
             let tlv = self.reader.read_tlv().await.unwrap().unwrap();
             assert_eq!(tlv.tlv_type, self.tlv_type);
             self.buffer.extend_from_slice(&tlv.value);
-            println!("rfill: {:02x?}", &self.buffer);
         }
 
         let to_copy = core::cmp::min(self.buffer.len(), buf.len());
@@ -110,7 +167,6 @@ where
         self.writer
             .write_tlv(self.tlv_type, &buf[..to_write])
             .await?;
-        println!("write: {:02x?}", &buf[..to_write]);
         Ok(to_write)
     }
 
@@ -430,6 +486,88 @@ where
         })
     }
 
+    /// Flash firmware to the MGMT chip (STM32F072CB).
+    ///
+    /// This assumes the MGMT chip is already in bootloader mode (requires
+    /// manual BOOT0 pin manipulation) and the serial connection is configured
+    /// correctly (even parity, 115200 baud).
+    ///
+    /// This method:
+    /// 1. Initializes bootloader communication
+    /// 2. Performs a global erase of the flash
+    /// 3. Writes the firmware in 256-byte chunks
+    /// 4. Verifies the written data by reading it back
+    /// 5. Jumps to the new firmware
+    ///
+    /// The progress callback is called with (phase, bytes_processed, total_bytes).
+    pub async fn flash_mgmt<F>(
+        &mut self,
+        firmware: &[u8],
+        mut progress: F,
+    ) -> Result<(), FlashError<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+        F: FnMut(FlashPhase, usize, usize),
+    {
+        let mut bl = Bootloader::new(&mut self.reader, &mut self.writer);
+
+        // Initialize communication
+        bl.init().await?;
+
+        // Erase pages needed for firmware (STM32F072CB has 2KB pages)
+        // Erase page-by-page for progress feedback
+        const PAGE_SIZE: usize = 2048;
+        let pages_needed = (firmware.len() + PAGE_SIZE - 1) / PAGE_SIZE;
+        let pages_needed = pages_needed.max(1); // At least 1 page
+
+        for page in 0..pages_needed {
+            progress(FlashPhase::Erasing, page, pages_needed);
+            // Try extended erase first, fall back to legacy
+            let page_num = page as u16;
+            if bl.extended_erase(Some(&[page_num]), None).await.is_err() {
+                bl.erase(Some(&[page as u8])).await?;
+            }
+        }
+        progress(FlashPhase::Erasing, pages_needed, pages_needed);
+
+        // Write firmware in 256-byte chunks
+        let total = firmware.len();
+        let mut written = 0;
+        let base_address: u32 = 0x0800_0000;
+
+        for chunk in firmware.chunks(256) {
+            let address = base_address + written as u32;
+            bl.write_memory(address, chunk).await?;
+            written += chunk.len();
+            progress(FlashPhase::Writing, written, total);
+        }
+
+        // Verify by reading back
+        let mut verified = 0;
+        let mut read_buf = [0u8; 256];
+
+        for chunk in firmware.chunks(256) {
+            let address = base_address + verified as u32;
+            let len = bl
+                .read_memory(address, &mut read_buf[..chunk.len()])
+                .await?;
+            if &read_buf[..len] != chunk {
+                return Err(FlashError::VerifyFailed {
+                    address,
+                    expected: chunk.to_vec(),
+                    actual: read_buf[..len].to_vec(),
+                });
+            }
+            verified += len;
+            progress(FlashPhase::Verifying, verified, total);
+        }
+
+        // Jump to new firmware
+        bl.go(0x0800_0000).await?;
+
+        Ok(())
+    }
+
     /// Reset the UI chip into bootloader mode.
     ///
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins
@@ -494,18 +632,15 @@ where
         W::Error: Into<R::Error>,
     {
         // Reset UI chip into bootloader mode
-        println!("reset -> bl");
         self.reset_ui_to_bootloader().await;
 
         // Wait for bootloader to be ready
         std::thread::sleep(std::time::Duration::from_millis(1000));
 
         // Query bootloader info, capturing any error
-        println!("query");
         let result = self.query_ui_bootloader().await;
 
         // Always reset UI chip back to user mode
-        println!("reset -> user");
         self.reset_ui_to_user().await;
 
         result
@@ -522,19 +657,15 @@ where
         let mut bl = Bootloader::new(&mut ui_reader, &mut ui_writer);
 
         // Initialize communication (sends 0x7F for auto-baud detection)
-        println!("init");
         bl.init().await?;
 
         // Get bootloader info
-        println!("get");
         let info = bl.get().await?;
 
         // Get chip ID
-        println!("get_id");
         let chip_id = bl.get_id().await?;
 
         // Try to read a small amount of memory from the start of flash
-        println!("flash_sample");
         let mut flash_sample = [0u8; 32];
         let flash_sample = match bl.read_memory(0x0800_0000, &mut flash_sample).await {
             Ok(_) => Some(flash_sample),
@@ -548,6 +679,102 @@ where
             command_count: info.command_count,
             flash_sample,
         })
+    }
+
+    /// Flash firmware to the UI chip (STM32F405RG).
+    ///
+    /// This method:
+    /// 1. Resets the UI chip into bootloader mode
+    /// 2. Performs a mass erase of the flash
+    /// 3. Writes the firmware in 256-byte chunks
+    /// 4. Verifies the written data by reading it back
+    /// 5. Resets the UI chip back to user mode
+    ///
+    /// The progress callback is called with (phase, bytes_processed, total_bytes).
+    pub async fn flash_ui<F>(
+        &mut self,
+        firmware: &[u8],
+        mut progress: F,
+    ) -> Result<(), FlashError<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+        F: FnMut(FlashPhase, usize, usize),
+    {
+        // Reset UI chip into bootloader mode
+        self.reset_ui_to_bootloader().await;
+
+        // Wait for bootloader to be ready
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Flash the firmware
+        let result = self.do_flash_ui(firmware, &mut progress).await;
+
+        // Always reset UI chip back to user mode
+        self.reset_ui_to_user().await;
+
+        result
+    }
+
+    /// Helper to flash the UI chip. Separated so borrows are released before reset.
+    async fn do_flash_ui<F>(
+        &mut self,
+        firmware: &[u8],
+        progress: &mut F,
+    ) -> Result<(), FlashError<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+        F: FnMut(FlashPhase, usize, usize),
+    {
+        let mut ui_reader = self.reader.ui();
+        let mut ui_writer = self.writer.ui();
+        let mut bl = Bootloader::new(&mut ui_reader, &mut ui_writer);
+
+        // Initialize communication
+        bl.init().await?;
+
+        // Erase sectors needed for firmware (STM32F405RG has variable sector sizes)
+        // Sectors 0-3: 16KB, Sector 4: 64KB, Sectors 5-11: 128KB
+        let sectors_needed = sectors_for_size_f405(firmware.len());
+
+        for sector in 0..sectors_needed {
+            progress(FlashPhase::Erasing, sector, sectors_needed);
+            bl.extended_erase(Some(&[sector as u16]), None).await?;
+        }
+        progress(FlashPhase::Erasing, sectors_needed, sectors_needed);
+
+        // Write firmware in 256-byte chunks
+        let total = firmware.len();
+        let mut written = 0;
+        let base_address: u32 = 0x0800_0000;
+
+        for chunk in firmware.chunks(256) {
+            let address = base_address + written as u32;
+            bl.write_memory(address, chunk).await?;
+            written += chunk.len();
+            progress(FlashPhase::Writing, written, total);
+        }
+
+        // Verify by reading back
+        let mut verified = 0;
+        let mut read_buf = [0u8; 256];
+
+        for chunk in firmware.chunks(256) {
+            let address = base_address + verified as u32;
+            let len = bl
+                .read_memory(address, &mut read_buf[..chunk.len()])
+                .await?;
+            if &read_buf[..len] != chunk {
+                return Err(FlashError::VerifyFailed {
+                    address,
+                    expected: chunk.to_vec(),
+                    actual: read_buf[..len].to_vec(),
+                });
+            }
+            verified += len;
+            progress(FlashPhase::Verifying, verified, total);
+        }
+
+        Ok(())
     }
 
     /// Get bootloader information from the NET chip (ESP32).
@@ -566,17 +793,14 @@ where
         W::Error: Into<R::Error>,
     {
         // Reset NET chip into bootloader mode
-        println!("reset -> bl");
         self.reset_net_to_bootloader().await;
 
         // Query bootloader info (waits for "waiting for download" message)
-        println!("query");
         let result = self.query_net_bootloader().await;
 
         // Always reset NET chip back to user mode.
         // We can't use reset_net_to_user() directly because there may be
         // pending FromNet TLVs from bootloader communication that we need to skip.
-        println!("reset -> user");
         self.writer
             .must_write_tlv(CtlToMgmt::ResetNetToUser, &[])
             .await;
@@ -587,17 +811,15 @@ where
             let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
             match tlv.tlv_type {
                 MgmtToCtl::Ack => {
-                    println!("got Ack");
                     return result;
                 }
                 MgmtToCtl::FromNet => {
-                    println!("discarding FromNet TLV ({} bytes)", tlv.value.len());
                     continue;
                 }
                 other => panic!("unexpected TLV type: {:?}", other),
             }
         }
-        println!("warning: gave up waiting for Ack after discarding 100 FromNet TLVs");
+        eprintln!("warning: gave up waiting for Ack after discarding 100 FromNet TLVs");
 
         result
     }
@@ -612,7 +834,6 @@ where
 
         // Wait for ESP32 to be ready by scanning for "waiting for download"
         // The ESP32 prints boot messages before it's ready to receive SLIP commands
-        println!("waiting for ESP32 bootloader ready...");
         let mut line_buf = Vec::new();
         loop {
             let mut byte = [0u8; 1];
@@ -624,9 +845,6 @@ where
                 // End of line
                 if let Ok(line) = core::str::from_utf8(&line_buf) {
                     let line = line.trim();
-                    if !line.is_empty() {
-                        println!("< {}", line);
-                    }
                     if line.contains("waiting for download") {
                         break;
                     }
@@ -636,7 +854,6 @@ where
                 line_buf.push(byte[0]);
             }
         }
-        println!("ESP32 ready");
 
         // Longer delay to ensure ESP32 is fully ready after printing "waiting for download"
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -646,17 +863,9 @@ where
         let mut bl = EspBootloader::new(&mut net_reader, &mut net_writer);
 
         // Synchronize with the ESP32 bootloader
-        println!("calling sync...");
-        match bl.sync().await {
-            Ok(()) => println!("sync complete"),
-            Err(e) => {
-                println!("sync failed: {:?}", e);
-                return Err(e);
-            }
-        }
+        bl.sync().await?;
 
         // Get security information
-        println!("get_security_info");
         let security_info = bl.get_security_info().await?;
 
         Ok(NetBootloaderInfo { security_info })

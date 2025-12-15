@@ -210,7 +210,6 @@ where
         let mut got_sync = false;
         for _ in 0..8 {
             let result = self.read_response_any().await;
-            println!("response: {:?}", result);
             match result {
                 Ok((cmd, _)) => {
                     if cmd == Command::Sync as u8 {
