@@ -337,6 +337,14 @@ enum NetAction {
     },
     /// Get bootloader information from NET chip (ESP32, auto-resets chip)
     Info,
+    /// Flash firmware to NET chip (ESP32, auto-resets chip)
+    Flash {
+        /// Path to binary file to flash
+        file: std::path::PathBuf,
+        /// Flash address offset (use `net info` to see partition table)
+        #[arg(short, long)]
+        address: String,
+    },
     #[command(name = "add-wifi")]
     AddWifi {
         /// WiFi network SSID
@@ -639,8 +647,100 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     sec.key_purposes[6]
                 );
 
+                // Display partition table
+                println!("\nPartition Table ({} entries):", info.partitions.len());
+                println!(
+                    "{:<16} {:>8} {:>10} {:>10}  {:<8} {:<10}",
+                    "Name", "Type", "Offset", "Size", "SubType", "Flags"
+                );
+                println!("{}", "-".repeat(70));
+                for p in &info.partitions {
+                    println!(
+                        "{:<16} {:>8} 0x{:08X} 0x{:08X}  {:<8} 0x{:X}",
+                        p.name.as_str(),
+                        p.type_name(),
+                        p.offset,
+                        p.size,
+                        p.subtype_name(),
+                        p.flags
+                    );
+                }
+
                 println!("\nNET chip reset back to user mode.");
                 println!("Done!");
+            }
+            NetAction::Flash { file, address } => {
+                println!("NET Flash (ESP32)");
+                println!("=================\n");
+
+                // Parse the address (supports hex with 0x prefix or decimal)
+                let address: u32 = if address.starts_with("0x") || address.starts_with("0X") {
+                    u32::from_str_radix(&address[2..], 16)
+                        .expect("Invalid hex address")
+                } else {
+                    address.parse().expect("Invalid address")
+                };
+
+                // Read the firmware file
+                let firmware = std::fs::read(&file).expect("Failed to read firmware file");
+                println!("Firmware: {} ({} bytes)", file.display(), firmware.len());
+                println!("Flash address: 0x{:08X}", address);
+                println!("Resetting NET chip to bootloader mode...\n");
+
+                // Create progress bar
+                let pb = ProgressBar::new(firmware.len() as u64);
+                let bytes_style = ProgressStyle::default_bar()
+                    .template(
+                        "{prefix:>12} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%)",
+                    )
+                    .unwrap()
+                    .progress_chars("#>-");
+                let erase_style = ProgressStyle::default_bar()
+                    .template("{prefix:>12} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%)")
+                    .unwrap()
+                    .progress_chars("#>-");
+                pb.set_style(erase_style.clone());
+
+                let mut current_phase = None;
+                let result = app
+                    .flash_net(&firmware, address, |phase, progress, total| {
+                        if current_phase != Some(phase) {
+                            current_phase = Some(phase);
+                            match phase {
+                                FlashPhase::Erasing => {
+                                    pb.set_style(erase_style.clone());
+                                    pb.set_prefix("Erasing");
+                                }
+                                FlashPhase::Writing => {
+                                    pb.set_style(bytes_style.clone());
+                                    pb.set_prefix("Writing");
+                                }
+                                FlashPhase::Verifying => {
+                                    // ESP32 doesn't verify, but just in case
+                                    pb.set_style(bytes_style.clone());
+                                    pb.set_prefix("Verifying");
+                                }
+                            }
+                            pb.set_length(total as u64);
+                            pb.set_position(0);
+                        }
+                        pb.set_position(progress as u64);
+                    })
+                    .await;
+
+                pb.finish_and_clear();
+
+                match result {
+                    Ok(()) => {
+                        println!("Flash complete!");
+                        println!("NET chip reset back to user mode.");
+                    }
+                    Err(e) => {
+                        eprintln!("\nFlash failed: {:?}", e);
+                        eprintln!("\nThe NET chip may not be responding correctly.");
+                        std::process::exit(1);
+                    }
+                }
             }
             NetAction::AddWifi { ssid, password } => {
                 app.add_wifi_ssid(&ssid, &password).await;

@@ -7,7 +7,8 @@ use crate::shared::{
     CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt, WriteTlv,
     MAX_VALUE_SIZE,
 };
-use bootloader::esp::{self, Bootloader as EspBootloader, SecurityInfo};
+use bootloader::esp::{self, Bootloader as EspBootloader, PartitionEntry, SecurityInfo};
+pub use bootloader::esp::PartitionEntry as NetPartitionEntry;
 use bootloader::stm::{self, Bootloader};
 use embedded_io_async::{ErrorType, Read, Write};
 
@@ -31,6 +32,8 @@ pub struct MgmtBootloaderInfo {
 pub struct NetBootloaderInfo {
     /// Security information from the ESP32.
     pub security_info: SecurityInfo,
+    /// Partition table entries.
+    pub partitions: heapless::Vec<PartitionEntry, 16>,
 }
 
 /// Phase of the flash operation, reported to progress callbacks.
@@ -60,6 +63,26 @@ pub enum FlashError<E> {
 impl<E> From<stm::Error<E>> for FlashError<E> {
     fn from(e: stm::Error<E>) -> Self {
         FlashError::Bootloader(e)
+    }
+}
+
+/// Errors that can occur during NET (ESP32) flash operations.
+#[derive(Debug)]
+pub enum NetFlashError<E> {
+    /// ESP32 bootloader protocol error.
+    Bootloader(esp::Error<E>),
+    /// MD5 verification failed - flash contents don't match uploaded data.
+    VerifyFailed {
+        address: u32,
+        size: u32,
+        expected: [u8; 16],
+        actual: [u8; 16],
+    },
+}
+
+impl<E> From<esp::Error<E>> for NetFlashError<E> {
+    fn from(e: esp::Error<E>) -> Self {
+        NetFlashError::Bootloader(e)
     }
 }
 
@@ -125,7 +148,9 @@ where
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         while self.buffer.is_empty() {
             let tlv = self.reader.read_tlv().await.unwrap().unwrap();
-            assert_eq!(tlv.tlv_type, self.tlv_type);
+            if tlv.tlv_type != self.tlv_type {
+                continue;
+            }
             self.buffer.extend_from_slice(&tlv.value);
         }
 
@@ -855,9 +880,6 @@ where
             }
         }
 
-        // Longer delay to ensure ESP32 is fully ready after printing "waiting for download"
-        std::thread::sleep(std::time::Duration::from_millis(500));
-
         // Now create the bootloader client and sync
         let mut net_writer = self.writer.net();
         let mut bl = EspBootloader::new(&mut net_reader, &mut net_writer);
@@ -868,6 +890,168 @@ where
         // Get security information
         let security_info = bl.get_security_info().await?;
 
-        Ok(NetBootloaderInfo { security_info })
+        // Read partition table
+        let partitions = bl.read_partition_table().await?;
+
+        Ok(NetBootloaderInfo {
+            security_info,
+            partitions,
+        })
+    }
+
+    /// Flash firmware to the NET chip (ESP32-S3).
+    ///
+    /// This method:
+    /// 1. Resets the NET chip into bootloader mode
+    /// 2. Waits for the bootloader to be ready
+    /// 3. Syncs with the ESP32 bootloader
+    /// 4. Writes the firmware to flash
+    /// 5. Resets the NET chip back to user mode
+    ///
+    /// The `address` parameter specifies the flash offset (typically 0x0 for bootloader
+    /// or 0x10000 for application in ESP-IDF partition scheme).
+    ///
+    /// The progress callback is called with (phase, bytes_processed, total_bytes).
+    /// Note: ESP32 combines erase and write, so Erasing phase reports 0/1 then 1/1.
+    pub async fn flash_net<F>(
+        &mut self,
+        firmware: &[u8],
+        address: u32,
+        mut progress: F,
+    ) -> Result<(), NetFlashError<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+        F: FnMut(FlashPhase, usize, usize),
+    {
+        // Reset NET chip into bootloader mode
+        self.reset_net_to_bootloader().await;
+
+        // Flash the firmware
+        let result = self.do_flash_net(firmware, address, &mut progress).await;
+
+        // Always reset NET chip back to user mode.
+        // We can't use reset_net_to_user() directly because there may be
+        // pending FromNet TLVs from bootloader communication that we need to skip.
+        self.writer
+            .must_write_tlv(CtlToMgmt::ResetNetToUser, &[])
+            .await;
+
+        // Read TLVs, skipping any FromNet until we get the Ack
+        for _ in 0..100 {
+            let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+            match tlv.tlv_type {
+                MgmtToCtl::Ack => {
+                    return result;
+                }
+                MgmtToCtl::FromNet => {
+                    continue;
+                }
+                other => panic!("unexpected TLV type: {:?}", other),
+            }
+        }
+        eprintln!("warning: gave up waiting for Ack after discarding 100 FromNet TLVs");
+
+        result
+    }
+
+    /// Helper to flash the NET chip. Separated so borrows are released before reset.
+    async fn do_flash_net<F>(
+        &mut self,
+        firmware: &[u8],
+        address: u32,
+        progress: &mut F,
+    ) -> Result<(), NetFlashError<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+        F: FnMut(FlashPhase, usize, usize),
+    {
+        // Create reader for the NET tunnel
+        let mut net_reader = self.reader.net();
+
+        // Wait for ESP32 to be ready by scanning for "waiting for download"
+        let mut line_buf = Vec::new();
+        loop {
+            let mut byte = [0u8; 1];
+            embedded_io_async::Read::read_exact(&mut net_reader, &mut byte)
+                .await
+                .map_err(|_| esp::Error::<R::Error>::Timeout)?;
+
+            if byte[0] == 0x0a {
+                // End of line
+                if let Ok(line) = core::str::from_utf8(&line_buf) {
+                    let line = line.trim();
+                    if line.contains("waiting for download") {
+                        break;
+                    }
+                }
+                line_buf.clear();
+            } else if byte[0] != 0x0d {
+                line_buf.push(byte[0]);
+            }
+        }
+
+        // Create the bootloader client
+        let mut net_writer = self.writer.net();
+        let mut bl = EspBootloader::new(&mut net_reader, &mut net_writer);
+
+        // Synchronize with the ESP32 bootloader
+        bl.sync().await?;
+
+        // Report erase phase (ESP32 erases during flash_begin)
+        progress(FlashPhase::Erasing, 0, 1);
+
+        // Begin flash operation - this also erases the required sectors
+        // Use 1KB block size for good balance of speed and reliability
+        const BLOCK_SIZE: u32 = 1024;
+        let _packet_count = bl
+            .flash_begin(firmware.len() as u32, BLOCK_SIZE, address)
+            .await?;
+
+        progress(FlashPhase::Erasing, 1, 1);
+
+        // Write firmware in blocks
+        let total = firmware.len();
+        let mut written = 0;
+
+        for (seq, chunk) in firmware.chunks(BLOCK_SIZE as usize).enumerate() {
+            // Pad to block size with 0xFF and align to 4 bytes
+            let mut block = [0xFFu8; BLOCK_SIZE as usize];
+            block[..chunk.len()].copy_from_slice(chunk);
+            let padded_len = chunk.len().div_ceil(4) * 4;
+
+            bl.flash_data(&block[..padded_len.max(chunk.len())], seq as u32)
+                .await?;
+
+            written += chunk.len();
+            progress(FlashPhase::Writing, written, total);
+        }
+
+        // End flash operation (don't reboot - we'll reset via MGMT)
+        bl.flash_end(false).await?;
+
+        // Verify by computing MD5 of flashed region and comparing to firmware
+        progress(FlashPhase::Verifying, 0, total);
+
+        // Compute expected MD5 from firmware data
+        use md5::{Digest, Md5};
+        let mut hasher = Md5::new();
+        hasher.update(firmware);
+        let expected_md5: [u8; 16] = hasher.finalize().into();
+
+        // Get actual MD5 from flash
+        let actual_md5 = bl.spi_flash_md5(address, firmware.len() as u32).await?;
+
+        progress(FlashPhase::Verifying, total, total);
+
+        if expected_md5 != actual_md5 {
+            return Err(NetFlashError::VerifyFailed {
+                address,
+                size: firmware.len() as u32,
+                expected: expected_md5,
+                actual: actual_md5,
+            });
+        }
+
+        Ok(())
     }
 }

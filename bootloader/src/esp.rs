@@ -4,10 +4,18 @@
 //! using SLIP framing as described in the Espressif documentation.
 
 use embedded_io_async::{Read, Write};
-use serial_line_ip::{Decoder, Encoder};
 
 /// SLIP frame delimiter byte.
 const SLIP_END: u8 = 0xC0;
+
+/// SLIP escape byte.
+const SLIP_ESC: u8 = 0xDB;
+
+/// SLIP escaped END byte (sent as ESC + ESC_END to represent END in data).
+const SLIP_ESC_END: u8 = 0xDC;
+
+/// SLIP escaped ESC byte (sent as ESC + ESC_ESC to represent ESC in data).
+const SLIP_ESC_ESC: u8 = 0xDD;
 
 /// Direction byte for requests (host to device).
 const DIRECTION_REQUEST: u8 = 0x00;
@@ -99,7 +107,74 @@ pub struct Response {
     pub status: u8,
     /// Error code (if status != 0).
     pub error: u8,
+    /// Response data payload (between header and status bytes).
+    pub data: [u8; 256],
+    /// Length of valid data in the data array.
+    pub data_len: usize,
 }
+
+/// A partition table entry from the ESP32 flash.
+#[derive(Debug, Clone)]
+pub struct PartitionEntry {
+    /// Partition type (0x00 = app, 0x01 = data).
+    pub part_type: u8,
+    /// Partition subtype (for app: 0x00 = factory, 0x10+ = OTA).
+    pub subtype: u8,
+    /// Offset in flash.
+    pub offset: u32,
+    /// Size in bytes.
+    pub size: u32,
+    /// Partition name (up to 16 bytes).
+    pub name: heapless::String<16>,
+    /// Flags.
+    pub flags: u32,
+}
+
+impl PartitionEntry {
+    /// Check if this is an app partition.
+    pub fn is_app(&self) -> bool {
+        self.part_type == 0x00
+    }
+
+    /// Check if this is the factory app partition.
+    pub fn is_factory_app(&self) -> bool {
+        self.part_type == 0x00 && self.subtype == 0x00
+    }
+
+    /// Get a human-readable type name.
+    pub fn type_name(&self) -> &'static str {
+        match self.part_type {
+            0x00 => "app",
+            0x01 => "data",
+            _ => "unknown",
+        }
+    }
+
+    /// Get a human-readable subtype name.
+    pub fn subtype_name(&self) -> &'static str {
+        match (self.part_type, self.subtype) {
+            (0x00, 0x00) => "factory",
+            (0x00, 0x10..=0x1F) => "ota",
+            (0x00, 0x20) => "test",
+            (0x01, 0x00) => "ota_data",
+            (0x01, 0x01) => "phy",
+            (0x01, 0x02) => "nvs",
+            (0x01, 0x03) => "coredump",
+            (0x01, 0x04) => "nvs_keys",
+            (0x01, 0x05) => "efuse",
+            (0x01, 0x80) => "esphttpd",
+            (0x01, 0x81) => "fat",
+            (0x01, 0x82) => "spiffs",
+            _ => "unknown",
+        }
+    }
+}
+
+/// Partition table magic bytes.
+const PARTITION_MAGIC: [u8; 2] = [0xAA, 0x50];
+
+/// MD5 partition marker.
+const PARTITION_MD5_MARKER: [u8; 2] = [0xEB, 0xEB];
 
 /// Security information from GET_SECURITY_INFO command.
 #[derive(Debug, Clone, Copy)]
@@ -172,11 +247,12 @@ where
 
     /// Synchronize with the bootloader.
     ///
-    /// Sends SYNC commands until the bootloader responds. This must be called
-    /// first after the ESP32 enters bootloader mode.
+    /// Sends two SYNC commands and reads one response to confirm sync works.
+    /// This must be called first after the ESP32 enters bootloader mode.
     ///
-    /// The ESP32 bootloader sends 8 sync responses. We must read all of them
-    /// to prevent them from interfering with subsequent commands.
+    /// Two sync packets are sent to ensure the bootloader flushes its response.
+    /// Leftover sync responses are handled by `read_response()` which skips
+    /// non-matching response types.
     pub async fn sync(&mut self) -> Result<(), Error<R::Error>>
     where
         W::Error: Into<R::Error>,
@@ -189,7 +265,7 @@ where
         sync_data[3] = 0x20;
         sync_data[4..].fill(0x55);
 
-        // Send one sync packet
+        // Send two sync packets (some implementations need this)
         self.send_slip_packet_with_command(Command::Sync, &sync_data, 0)
             .await
             .map_err(|e| match e {
@@ -197,7 +273,6 @@ where
                 _ => Error::SyncFailed,
             })?;
 
-        // XXX send a second packet
         self.send_slip_packet_with_command(Command::Sync, &sync_data, 0)
             .await
             .map_err(|e| match e {
@@ -205,29 +280,14 @@ where
                 _ => Error::SyncFailed,
             })?;
 
-        // Read responses - ESP32 sends 8 sync responses
-        // Keep reading until we get at least one valid sync response
-        let mut got_sync = false;
-        for _ in 0..8 {
-            let result = self.read_response_any().await;
-            match result {
-                Ok((cmd, _)) => {
-                    if cmd == Command::Sync as u8 {
-                        got_sync = true;
-                    }
-                }
-                Err(_) => {
-                    // Continue trying to read more responses
-                    continue;
-                }
-            }
+        // Read the first sync response - this proves we're connected
+        // Any remaining responses will be skipped by read_response()
+        let (cmd, _) = self.read_response_any().await?;
+        if cmd != Command::Sync as u8 {
+            return Err(Error::SyncFailed);
         }
 
-        if got_sync {
-            Ok(())
-        } else {
-            Err(Error::SyncFailed)
-        }
+        Ok(())
     }
 
     /// Read a 32-bit register value.
@@ -526,13 +586,187 @@ where
 
         let response = self.send_command(Command::SpiFlashMd5, &data, 0).await?;
 
-        // ROM loader returns 32 ASCII hex chars, but we return raw bytes
-        // This assumes we're talking to the stub loader which returns 16 raw bytes
-        let md5 = [0u8; 16];
-        // The MD5 is in the response data after status bytes
-        // For now, return zeros - actual implementation needs response data parsing
-        let _ = response;
+        // ROM loader returns 32 ASCII hex chars, stub loader returns 16 raw bytes
+        let mut md5 = [0u8; 16];
+
+        if response.data_len == 32 {
+            // ROM loader: 32 ASCII hex characters (e.g., "d41d8cd98f00b204e9800998ecf8427e")
+            for i in 0..16 {
+                let hi = Self::hex_char_to_nibble(response.data[i * 2]);
+                let lo = Self::hex_char_to_nibble(response.data[i * 2 + 1]);
+                md5[i] = (hi << 4) | lo;
+            }
+        } else if response.data_len >= 16 {
+            // Stub loader: 16 raw bytes
+            md5.copy_from_slice(&response.data[..16]);
+        }
+
         Ok(md5)
+    }
+
+    /// Convert a hex ASCII character to its nibble value.
+    fn hex_char_to_nibble(c: u8) -> u8 {
+        match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => 0,
+        }
+    }
+
+    /// Read data from flash using SPI peripheral registers.
+    ///
+    /// This reads up to 64 bytes at a time by controlling the SPI1 flash
+    /// peripheral directly via READ_REG/WRITE_REG commands.
+    ///
+    /// For ESP32-S3, SPI1 is at base 0x60002000.
+    pub async fn read_flash(
+        &mut self,
+        address: u32,
+        data: &mut [u8],
+    ) -> Result<(), Error<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+    {
+        // ESP32-S3 SPI1 registers (flash SPI controller)
+        const SPI1_BASE: u32 = 0x6000_2000;
+        const SPI1_CMD_REG: u32 = SPI1_BASE + 0x00;
+        const SPI1_ADDR_REG: u32 = SPI1_BASE + 0x04;
+        const SPI1_USER_REG: u32 = SPI1_BASE + 0x18;
+        const SPI1_USER1_REG: u32 = SPI1_BASE + 0x1C;
+        const SPI1_USER2_REG: u32 = SPI1_BASE + 0x20;
+        const SPI1_MISO_DLEN_REG: u32 = SPI1_BASE + 0x28;
+        const SPI1_W0_REG: u32 = SPI1_BASE + 0x98;
+
+        // SPI flash read command
+        const SPI_FLASH_READ_CMD: u32 = 0x03;
+
+        // Read in chunks of up to 64 bytes (16 words)
+        let mut offset = 0;
+        while offset < data.len() {
+            let chunk_len = (data.len() - offset).min(64);
+            let flash_addr = address + offset as u32;
+
+            // Configure SPI for read operation
+            // USER_REG: enable command, address, and data-in phases
+            // Bit 27: USR_COMMAND, Bit 28: USR_ADDR, Bit 29: USR_MISO
+            self.write_reg(SPI1_USER_REG, (1 << 27) | (1 << 28) | (1 << 29), 0xFFFFFFFF, 0)
+                .await?;
+
+            // USER1_REG: set address bit length (24 bits = 23 in the field)
+            // Bits 26-31: USR_ADDR_BITLEN
+            self.write_reg(SPI1_USER1_REG, 23 << 26, 0xFFFFFFFF, 0).await?;
+
+            // USER2_REG: set command value and length
+            // Bits 0-15: USR_COMMAND_VALUE, Bits 28-31: USR_COMMAND_BITLEN (7 = 8 bits)
+            self.write_reg(SPI1_USER2_REG, SPI_FLASH_READ_CMD | (7 << 28), 0xFFFFFFFF, 0)
+                .await?;
+
+            // ADDR_REG: set flash address (shifted for 24-bit addressing)
+            self.write_reg(SPI1_ADDR_REG, flash_addr << 8, 0xFFFFFFFF, 0).await?;
+
+            // MISO_DLEN_REG: set read data bit length
+            self.write_reg(SPI1_MISO_DLEN_REG, (chunk_len as u32 * 8) - 1, 0xFFFFFFFF, 0)
+                .await?;
+
+            // CMD_REG: trigger the SPI transaction (bit 18: USR)
+            self.write_reg(SPI1_CMD_REG, 1 << 18, 0xFFFFFFFF, 0).await?;
+
+            // Wait for completion by polling CMD_REG until USR bit clears
+            for _ in 0..100 {
+                let cmd = self.read_reg(SPI1_CMD_REG).await?;
+                if (cmd & (1 << 18)) == 0 {
+                    break;
+                }
+            }
+
+            // Read data from W0-W15 registers
+            let words = (chunk_len + 3) / 4;
+            for i in 0..words {
+                let word = self.read_reg(SPI1_W0_REG + i as u32 * 4).await?;
+                let word_bytes = word.to_le_bytes();
+                let start = offset + i * 4;
+                let end = (start + 4).min(data.len());
+                let copy_len = end - start;
+                data[start..end].copy_from_slice(&word_bytes[..copy_len]);
+            }
+
+            offset += chunk_len;
+        }
+
+        Ok(())
+    }
+
+    /// Read the partition table from flash.
+    ///
+    /// Reads the partition table from flash offset 0x8000 using direct
+    /// SPI flash reads via the bootloader protocol.
+    ///
+    /// Returns a vector of partition entries (up to 16).
+    pub async fn read_partition_table(
+        &mut self,
+    ) -> Result<heapless::Vec<PartitionEntry, 16>, Error<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+    {
+        const PARTITION_TABLE_OFFSET: u32 = 0x8000;
+        const PARTITION_ENTRY_SIZE: usize = 32;
+
+        let mut entries = heapless::Vec::new();
+
+        // Read up to 16 partition entries
+        for i in 0..16u32 {
+            let entry_addr = PARTITION_TABLE_OFFSET + i * PARTITION_ENTRY_SIZE as u32;
+
+            // Read 32 bytes for one partition entry
+            let mut entry_data = [0u8; 32];
+            self.read_flash(entry_addr, &mut entry_data).await?;
+
+            // Check magic bytes
+            if entry_data[0] == PARTITION_MAGIC[0] && entry_data[1] == PARTITION_MAGIC[1] {
+                // Parse name (16 bytes, null-terminated)
+                let name_bytes = &entry_data[12..28];
+                let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(16);
+                let name_str = core::str::from_utf8(&name_bytes[..name_len]).unwrap_or("");
+                let mut name = heapless::String::new();
+                let _ = name.push_str(name_str);
+
+                let entry = PartitionEntry {
+                    part_type: entry_data[2],
+                    subtype: entry_data[3],
+                    offset: u32::from_le_bytes([
+                        entry_data[4],
+                        entry_data[5],
+                        entry_data[6],
+                        entry_data[7],
+                    ]),
+                    size: u32::from_le_bytes([
+                        entry_data[8],
+                        entry_data[9],
+                        entry_data[10],
+                        entry_data[11],
+                    ]),
+                    name,
+                    flags: u32::from_le_bytes([
+                        entry_data[28],
+                        entry_data[29],
+                        entry_data[30],
+                        entry_data[31],
+                    ]),
+                };
+                let _ = entries.push(entry);
+            } else if entry_data[0] == PARTITION_MD5_MARKER[0]
+                && entry_data[1] == PARTITION_MD5_MARKER[1]
+            {
+                // MD5 checksum marker - end of partition table
+                break;
+            } else if entry_data[0] == 0xFF && entry_data[1] == 0xFF {
+                // Empty entry - end of partition table
+                break;
+            }
+        }
+
+        Ok(entries)
     }
 
     /// Get security information from the chip.
@@ -596,14 +830,12 @@ where
     where
         W::Error: Into<R::Error>,
     {
-        let mut encoded = [0u8; MAX_DATA_SIZE * 2 + 2];
         let mut decoded = [0u8; MAX_DATA_SIZE + 8];
-        let mut decoder = Decoder::new();
 
         // Read until we get a complete SLIP frame
-        let mut encoded_pos = 0;
         let mut decoded_pos = 0;
         let mut in_frame = false;
+        let mut in_escape = false;
 
         loop {
             // Read one byte at a time
@@ -613,13 +845,16 @@ where
                 .await
                 .map_err(|_| Error::Timeout)?;
 
-            if byte[0] == SLIP_END {
+            let b = byte[0];
+
+            if b == SLIP_END {
                 if in_frame && decoded_pos > 0 {
                     // End of frame
                     break;
                 } else {
                     // Start of frame
                     in_frame = true;
+                    in_escape = false;
                     continue;
                 }
             }
@@ -628,27 +863,27 @@ where
                 continue;
             }
 
-            encoded[encoded_pos] = byte[0];
-            encoded_pos += 1;
-
-            // Try to decode
-            let (input_used, output, is_end) = decoder
-                .decode(
-                    &encoded[encoded_pos - 1..encoded_pos],
-                    &mut decoded[decoded_pos..],
-                )
-                .map_err(|_| Error::SlipError)?;
-
-            if input_used > 0 {
-                decoded_pos += output.len();
-            }
-
-            if is_end {
-                break;
-            }
-
-            if decoded_pos >= decoded.len() {
-                return Err(Error::BufferOverflow);
+            // Handle SLIP escape sequences
+            if in_escape {
+                in_escape = false;
+                let decoded_byte = match b {
+                    SLIP_ESC_END => SLIP_END,   // 0xDC -> 0xC0
+                    SLIP_ESC_ESC => SLIP_ESC,   // 0xDD -> 0xDB
+                    _ => return Err(Error::SlipError), // Invalid escape sequence
+                };
+                if decoded_pos >= decoded.len() {
+                    return Err(Error::BufferOverflow);
+                }
+                decoded[decoded_pos] = decoded_byte;
+                decoded_pos += 1;
+            } else if b == SLIP_ESC {
+                in_escape = true;
+            } else {
+                if decoded_pos >= decoded.len() {
+                    return Err(Error::BufferOverflow);
+                }
+                decoded[decoded_pos] = b;
+                decoded_pos += 1;
             }
         }
 
@@ -666,14 +901,23 @@ where
         let _size = u16::from_le_bytes([decoded[2], decoded[3]]);
         let value = u32::from_le_bytes([decoded[4], decoded[5], decoded[6], decoded[7]]);
 
-        // Status is at the end of the data
-        let status = if decoded_pos > 8 {
-            decoded[decoded_pos - 4]
+        // Status bytes are at the end (last 2 bytes before any padding)
+        // Data is between byte 8 and status bytes
+        let (status, error, data_end) = if decoded_pos > 10 {
+            (decoded[decoded_pos - 2], decoded[decoded_pos - 1], decoded_pos - 2)
+        } else if decoded_pos > 8 {
+            (decoded[decoded_pos - 2], decoded[decoded_pos - 1], 8)
         } else {
-            0
+            (0, 0, 8)
         };
-        let error = if decoded_pos > 9 {
-            decoded[decoded_pos - 3]
+
+        // Extract data payload
+        let mut data = [0u8; 256];
+        let data_start = 8;
+        let data_len = if data_end > data_start {
+            let len = (data_end - data_start).min(256);
+            data[..len].copy_from_slice(&decoded[data_start..data_start + len]);
+            len
         } else {
             0
         };
@@ -683,6 +927,8 @@ where
             value,
             status,
             error,
+            data,
+            data_len,
         };
 
         Ok((command, response))
@@ -722,22 +968,48 @@ where
         W::Error: Into<R::Error>,
     {
         // SLIP encode the data
-        // The serial_line_ip encoder adds the leading END byte, so we don't add it manually
         let mut encoded = [0u8; MAX_DATA_SIZE * 2 + 2];
-        let mut encoder = Encoder::new();
         let mut pos = 0;
 
-        // Encode data (encoder adds leading END)
-        let totals = encoder
-            .encode(data, &mut encoded[pos..])
-            .map_err(|_| Error::BufferOverflow)?;
-        pos += totals.written;
+        // Start with END delimiter
+        encoded[pos] = SLIP_END;
+        pos += 1;
 
-        // Finish frame (adds trailing END)
-        let totals = encoder
-            .finish(&mut encoded[pos..])
-            .map_err(|_| Error::BufferOverflow)?;
-        pos += totals.written;
+        // Encode data with escape sequences
+        for &byte in data {
+            match byte {
+                SLIP_END => {
+                    if pos + 2 > encoded.len() {
+                        return Err(Error::BufferOverflow);
+                    }
+                    encoded[pos] = SLIP_ESC;
+                    encoded[pos + 1] = SLIP_ESC_END;
+                    pos += 2;
+                }
+                SLIP_ESC => {
+                    if pos + 2 > encoded.len() {
+                        return Err(Error::BufferOverflow);
+                    }
+                    encoded[pos] = SLIP_ESC;
+                    encoded[pos + 1] = SLIP_ESC_ESC;
+                    pos += 2;
+                }
+                _ => {
+                    if pos + 1 > encoded.len() {
+                        return Err(Error::BufferOverflow);
+                    }
+                    encoded[pos] = byte;
+                    pos += 1;
+                }
+            }
+        }
+
+        // End with END delimiter
+        if pos + 1 > encoded.len() {
+            return Err(Error::BufferOverflow);
+        }
+        encoded[pos] = SLIP_END;
+        pos += 1;
 
         // Write to serial
         self.writer
@@ -750,6 +1022,9 @@ where
     }
 
     /// Read a SLIP-encoded response packet.
+    ///
+    /// This will skip any responses that don't match the expected command,
+    /// which allows draining leftover sync responses.
     async fn read_response(
         &mut self,
         expected_command: Command,
@@ -757,104 +1032,22 @@ where
     where
         W::Error: Into<R::Error>,
     {
-        let mut encoded = [0u8; MAX_DATA_SIZE * 2 + 2];
-        let mut decoded = [0u8; MAX_DATA_SIZE + 8];
-        let mut decoder = Decoder::new();
-
-        // Read until we get a complete SLIP frame
-        let mut encoded_pos = 0;
-        let mut decoded_pos = 0;
-        let mut in_frame = false;
-
-        loop {
-            // Read one byte at a time
-            let mut byte = [0u8; 1];
-            self.reader
-                .read_exact(&mut byte)
-                .await
-                .map_err(|_| Error::Timeout)?;
-
-            if byte[0] == SLIP_END {
-                if in_frame && decoded_pos > 0 {
-                    // End of frame
-                    break;
-                } else {
-                    // Start of frame
-                    in_frame = true;
-                    continue;
+        // Skip up to 8 non-matching responses (e.g., leftover sync responses)
+        for _ in 0..8 {
+            let (cmd, response) = self.read_response_any().await?;
+            if cmd == expected_command as u8 {
+                if response.status != 0 {
+                    return Err(Error::BootloaderError(response.error));
                 }
+                return Ok(response);
             }
-
-            if !in_frame {
-                continue;
-            }
-
-            encoded[encoded_pos] = byte[0];
-            encoded_pos += 1;
-
-            // Try to decode
-            let (input_used, output, is_end) = decoder
-                .decode(
-                    &encoded[encoded_pos - 1..encoded_pos],
-                    &mut decoded[decoded_pos..],
-                )
-                .map_err(|_| Error::SlipError)?;
-
-            if input_used > 0 {
-                decoded_pos += output.len();
-            }
-
-            if is_end {
-                break;
-            }
-
-            if decoded_pos >= decoded.len() {
-                return Err(Error::BufferOverflow);
-            }
+            // Wrong command, try reading another
         }
 
-        // Parse response
-        if decoded_pos < 8 {
-            return Err(Error::ResponseTooShort);
-        }
-
-        let direction = decoded[0];
-        if direction != DIRECTION_RESPONSE {
-            return Err(Error::InvalidDirection(direction));
-        }
-
-        let command = decoded[1];
-        if command != expected_command as u8 {
-            return Err(Error::CommandMismatch {
-                expected: expected_command as u8,
-                got: command,
-            });
-        }
-
-        let _size = u16::from_le_bytes([decoded[2], decoded[3]]);
-        let value = u32::from_le_bytes([decoded[4], decoded[5], decoded[6], decoded[7]]);
-
-        // Status is at the end of the data
-        let status = if decoded_pos > 8 {
-            decoded[decoded_pos - 4]
-        } else {
-            0
-        };
-        let error = if decoded_pos > 9 {
-            decoded[decoded_pos - 3]
-        } else {
-            0
-        };
-
-        if status != 0 {
-            return Err(Error::BootloaderError(error));
-        }
-
-        Ok(Response {
-            command,
-            value,
-            status,
-            error,
+        // Couldn't find matching response after 8 tries
+        Err(Error::CommandMismatch {
+            expected: expected_command as u8,
+            got: 0,
         })
     }
 }
