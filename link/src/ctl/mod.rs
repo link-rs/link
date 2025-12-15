@@ -7,6 +7,7 @@ use crate::shared::{
     CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt, WriteTlv,
     MAX_VALUE_SIZE,
 };
+use bootloader::esp::{self, Bootloader as EspBootloader, SecurityInfo};
 use bootloader::stm::{self, Bootloader};
 use embedded_io_async::{ErrorType, Read, Write};
 
@@ -23,6 +24,13 @@ pub struct MgmtBootloaderInfo {
     pub command_count: usize,
     /// First 32 bytes of flash memory (vector table).
     pub flash_sample: Option<[u8; 32]>,
+}
+
+/// Information retrieved from the NET chip (ESP32) when it's in bootloader mode.
+#[derive(Debug, Clone)]
+pub struct NetBootloaderInfo {
+    /// Security information from the ESP32.
+    pub security_info: SecurityInfo,
 }
 
 /// A reader that extracts data from TLV packets received through MGMT.
@@ -67,7 +75,6 @@ where
         let to_copy = core::cmp::min(self.buffer.len(), buf.len());
         buf[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
         self.buffer.drain(..to_copy);
-        println!("rcopy: {:02x?}", &buf[..to_copy]);
         Ok(to_copy)
     }
 }
@@ -541,5 +548,117 @@ where
             command_count: info.command_count,
             flash_sample,
         })
+    }
+
+    /// Get bootloader information from the NET chip (ESP32).
+    ///
+    /// This method:
+    /// 1. Resets the NET chip into bootloader mode
+    /// 2. Syncs with the ESP32 bootloader via SLIP framing
+    /// 3. Queries security information
+    /// 4. Resets the NET chip back to user mode
+    ///
+    /// Returns security information including chip ID and security flags.
+    pub async fn get_net_bootloader_info(
+        &mut self,
+    ) -> Result<NetBootloaderInfo, esp::Error<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+    {
+        // Reset NET chip into bootloader mode
+        println!("reset -> bl");
+        self.reset_net_to_bootloader().await;
+
+        // Query bootloader info (waits for "waiting for download" message)
+        println!("query");
+        let result = self.query_net_bootloader().await;
+
+        // Always reset NET chip back to user mode.
+        // We can't use reset_net_to_user() directly because there may be
+        // pending FromNet TLVs from bootloader communication that we need to skip.
+        println!("reset -> user");
+        self.writer
+            .must_write_tlv(CtlToMgmt::ResetNetToUser, &[])
+            .await;
+
+        // Read TLVs, skipping any FromNet until we get the Ack
+        // Limit iterations to prevent infinite loop if Ack never arrives
+        for _ in 0..100 {
+            let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+            match tlv.tlv_type {
+                MgmtToCtl::Ack => {
+                    println!("got Ack");
+                    return result;
+                }
+                MgmtToCtl::FromNet => {
+                    println!("discarding FromNet TLV ({} bytes)", tlv.value.len());
+                    continue;
+                }
+                other => panic!("unexpected TLV type: {:?}", other),
+            }
+        }
+        println!("warning: gave up waiting for Ack after discarding 100 FromNet TLVs");
+
+        result
+    }
+
+    /// Helper to query the NET bootloader. Separated so borrows are released before reset.
+    async fn query_net_bootloader(&mut self) -> Result<NetBootloaderInfo, esp::Error<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+    {
+        // Create reader for the NET tunnel
+        let mut net_reader = self.reader.net();
+
+        // Wait for ESP32 to be ready by scanning for "waiting for download"
+        // The ESP32 prints boot messages before it's ready to receive SLIP commands
+        println!("waiting for ESP32 bootloader ready...");
+        let mut line_buf = Vec::new();
+        loop {
+            let mut byte = [0u8; 1];
+            embedded_io_async::Read::read_exact(&mut net_reader, &mut byte)
+                .await
+                .map_err(|_| esp::Error::Timeout)?;
+
+            if byte[0] == 0x0a {
+                // End of line
+                if let Ok(line) = core::str::from_utf8(&line_buf) {
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        println!("< {}", line);
+                    }
+                    if line.contains("waiting for download") {
+                        break;
+                    }
+                }
+                line_buf.clear();
+            } else if byte[0] != 0x0d {
+                line_buf.push(byte[0]);
+            }
+        }
+        println!("ESP32 ready");
+
+        // Longer delay to ensure ESP32 is fully ready after printing "waiting for download"
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // Now create the bootloader client and sync
+        let mut net_writer = self.writer.net();
+        let mut bl = EspBootloader::new(&mut net_reader, &mut net_writer);
+
+        // Synchronize with the ESP32 bootloader
+        println!("calling sync...");
+        match bl.sync().await {
+            Ok(()) => println!("sync complete"),
+            Err(e) => {
+                println!("sync failed: {:?}", e);
+                return Err(e);
+            }
+        }
+
+        // Get security information
+        println!("get_security_info");
+        let security_info = bl.get_security_info().await?;
+
+        Ok(NetBootloaderInfo { security_info })
     }
 }

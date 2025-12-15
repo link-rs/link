@@ -329,12 +329,17 @@ async fn reset_net_to_bootloader_gpio_sequence() {
         ctl.reset_net_to_bootloader().await;
 
         let ops = gpio_ops.lock().unwrap();
-        // NET bootloader sequence: BOOT low -> RST low -> (delay) -> RST high -> BOOT high
-        assert_eq!(ops.len(), 4);
-        assert_eq!(ops[0], ("NET_BOOT", GpioOp::SetLow));
-        assert_eq!(ops[1], ("NET_RST", GpioOp::SetLow));
-        assert_eq!(ops[2], ("NET_RST", GpioOp::SetHigh));
-        assert_eq!(ops[3], ("NET_BOOT", GpioOp::SetHigh));
+        // NET bootloader sequence (matches C code):
+        // 1. First power cycle (clean slate)
+        // 2. BOOT low
+        // 3. Second power cycle (ESP32 samples BOOT when RST goes high)
+        assert_eq!(ops.len(), 5);
+        assert_eq!(ops[0], ("NET_RST", GpioOp::SetLow));
+        assert_eq!(ops[1], ("NET_RST", GpioOp::SetHigh));
+        assert_eq!(ops[2], ("NET_BOOT", GpioOp::SetLow));
+        assert_eq!(ops[3], ("NET_RST", GpioOp::SetLow));
+        assert_eq!(ops[4], ("NET_RST", GpioOp::SetHigh));
+        // BOOT stays low (not set back to high)
     })
     .await;
 }

@@ -82,13 +82,22 @@ where
     }
 
     /// Reset NET chip into bootloader mode.
-    /// Sequence: BOOT low -> RST low -> delay -> RST high -> BOOT high
+    /// Sequence matches C code: power cycle, then BOOT low, then power cycle again.
+    /// BOOT must be low when RST goes high for ESP32 to enter bootloader.
     pub async fn reset_to_bootloader<D: AsyncDelay>(&mut self, delay: &mut D) {
-        let _ = self.boot.set_low();
+        // First power cycle (clean slate)
         let _ = self.rst.set_low();
         delay.delay_ms(10).await;
         let _ = self.rst.set_high();
-        let _ = self.boot.set_high();
+
+        // Set BOOT low for bootloader mode
+        let _ = self.boot.set_low();
+
+        // Second power cycle - ESP32 samples BOOT when RST goes high
+        let _ = self.rst.set_low();
+        delay.delay_ms(10).await;
+        let _ = self.rst.set_high();
+        // BOOT stays low
     }
 
     /// Reset NET chip into user mode.
@@ -170,6 +179,7 @@ where
                 continue;
             };
             buffer.truncate(n);
+            info!("net->ctl: {=[u8]:x}", &buffer);
 
             let mut to_ctl = to_ctl.lock().await;
             let _ = to_ctl.write_tlv(MgmtToCtl::FromNet, &buffer).await;
@@ -237,6 +247,7 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
             info!("mgmt: ctl -> net");
             to_net.write_all(&tlv.value).await.unwrap();
             to_net.flush().await.unwrap();
+            info!("ctl->net: {=[u8]:x}", &tlv.value);
         }
         CtlToMgmt::ResetUiToBootloader => {
             info!("mgmt: resetting UI to bootloader mode");

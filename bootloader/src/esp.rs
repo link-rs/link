@@ -138,8 +138,8 @@ impl Default for SpiParams {
         Self {
             id: 0,
             total_size: 4 * 1024 * 1024, // 4MB default
-            block_size: 64 * 1024,        // 64KB
-            sector_size: 4 * 1024,        // 4KB
+            block_size: 64 * 1024,       // 64KB
+            sector_size: 4 * 1024,       // 4KB
             page_size: 256,
             status_mask: 0xFFFF,
         }
@@ -174,6 +174,9 @@ where
     ///
     /// Sends SYNC commands until the bootloader responds. This must be called
     /// first after the ESP32 enters bootloader mode.
+    ///
+    /// The ESP32 bootloader sends 8 sync responses. We must read all of them
+    /// to prevent them from interfering with subsequent commands.
     pub async fn sync(&mut self) -> Result<(), Error<R::Error>>
     where
         W::Error: Into<R::Error>,
@@ -186,18 +189,46 @@ where
         sync_data[3] = 0x20;
         sync_data[4..].fill(0x55);
 
-        // Try sync multiple times
-        for _ in 0..10 {
-            if self.send_command(Command::Sync, &sync_data, 0).await.is_ok() {
-                // Read and discard any additional sync responses
-                for _ in 0..7 {
-                    let _ = self.read_response(Command::Sync).await;
+        // Send one sync packet
+        self.send_slip_packet_with_command(Command::Sync, &sync_data, 0)
+            .await
+            .map_err(|e| match e {
+                Error::Io(io_err) => Error::Io(io_err),
+                _ => Error::SyncFailed,
+            })?;
+
+        // XXX send a second packet
+        self.send_slip_packet_with_command(Command::Sync, &sync_data, 0)
+            .await
+            .map_err(|e| match e {
+                Error::Io(io_err) => Error::Io(io_err),
+                _ => Error::SyncFailed,
+            })?;
+
+        // Read responses - ESP32 sends 8 sync responses
+        // Keep reading until we get at least one valid sync response
+        let mut got_sync = false;
+        for _ in 0..8 {
+            let result = self.read_response_any().await;
+            println!("response: {:?}", result);
+            match result {
+                Ok((cmd, _)) => {
+                    if cmd == Command::Sync as u8 {
+                        got_sync = true;
+                    }
                 }
-                return Ok(());
+                Err(_) => {
+                    // Continue trying to read more responses
+                    continue;
+                }
             }
         }
 
-        Err(Error::SyncFailed)
+        if got_sync {
+            Ok(())
+        } else {
+            Err(Error::SyncFailed)
+        }
     }
 
     /// Read a 32-bit register value.
@@ -535,6 +566,129 @@ where
         checksum as u32
     }
 
+    /// Send a SLIP packet with command header (without reading response).
+    async fn send_slip_packet_with_command(
+        &mut self,
+        command: Command,
+        data: &[u8],
+        checksum: u32,
+    ) -> Result<(), Error<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+    {
+        // Build the packet
+        let mut packet = [0u8; MAX_DATA_SIZE + 8];
+        packet[0] = DIRECTION_REQUEST;
+        packet[1] = command as u8;
+        let size = data.len() as u16;
+        packet[2..4].copy_from_slice(&size.to_le_bytes());
+        packet[4..8].copy_from_slice(&checksum.to_le_bytes());
+        packet[8..8 + data.len()].copy_from_slice(data);
+
+        let packet_len = 8 + data.len();
+
+        // SLIP encode and send
+        self.send_slip_packet(&packet[..packet_len]).await
+    }
+
+    /// Read a response without checking the command type.
+    /// Returns (command, response) on success.
+    async fn read_response_any(&mut self) -> Result<(u8, Response), Error<R::Error>>
+    where
+        W::Error: Into<R::Error>,
+    {
+        let mut encoded = [0u8; MAX_DATA_SIZE * 2 + 2];
+        let mut decoded = [0u8; MAX_DATA_SIZE + 8];
+        let mut decoder = Decoder::new();
+
+        // Read until we get a complete SLIP frame
+        let mut encoded_pos = 0;
+        let mut decoded_pos = 0;
+        let mut in_frame = false;
+
+        loop {
+            // Read one byte at a time
+            let mut byte = [0u8; 1];
+            self.reader
+                .read_exact(&mut byte)
+                .await
+                .map_err(|_| Error::Timeout)?;
+
+            if byte[0] == SLIP_END {
+                if in_frame && decoded_pos > 0 {
+                    // End of frame
+                    break;
+                } else {
+                    // Start of frame
+                    in_frame = true;
+                    continue;
+                }
+            }
+
+            if !in_frame {
+                continue;
+            }
+
+            encoded[encoded_pos] = byte[0];
+            encoded_pos += 1;
+
+            // Try to decode
+            let (input_used, output, is_end) = decoder
+                .decode(
+                    &encoded[encoded_pos - 1..encoded_pos],
+                    &mut decoded[decoded_pos..],
+                )
+                .map_err(|_| Error::SlipError)?;
+
+            if input_used > 0 {
+                decoded_pos += output.len();
+            }
+
+            if is_end {
+                break;
+            }
+
+            if decoded_pos >= decoded.len() {
+                return Err(Error::BufferOverflow);
+            }
+        }
+
+        // Parse response
+        if decoded_pos < 8 {
+            return Err(Error::ResponseTooShort);
+        }
+
+        let direction = decoded[0];
+        if direction != DIRECTION_RESPONSE {
+            return Err(Error::InvalidDirection(direction));
+        }
+
+        let command = decoded[1];
+        let _size = u16::from_le_bytes([decoded[2], decoded[3]]);
+        let value = u32::from_le_bytes([decoded[4], decoded[5], decoded[6], decoded[7]]);
+
+        // Status is at the end of the data
+        let status = if decoded_pos > 8 {
+            decoded[decoded_pos - 4]
+        } else {
+            0
+        };
+        let error = if decoded_pos > 9 {
+            decoded[decoded_pos - 3]
+        } else {
+            0
+        };
+
+        let response = Response {
+            command,
+            value,
+            status,
+            error,
+        };
+
+        Ok((command, response))
+    }
+
     /// Send a command and wait for response.
     async fn send_command(
         &mut self,
@@ -569,20 +723,18 @@ where
         W::Error: Into<R::Error>,
     {
         // SLIP encode the data
+        // The serial_line_ip encoder adds the leading END byte, so we don't add it manually
         let mut encoded = [0u8; MAX_DATA_SIZE * 2 + 2];
         let mut encoder = Encoder::new();
+        let mut pos = 0;
 
-        // Start frame
-        encoded[0] = SLIP_END;
-        let mut pos = 1;
-
-        // Encode data
+        // Encode data (encoder adds leading END)
         let totals = encoder
             .encode(data, &mut encoded[pos..])
             .map_err(|_| Error::BufferOverflow)?;
         pos += totals.written;
 
-        // Finish frame
+        // Finish frame (adds trailing END)
         let totals = encoder
             .finish(&mut encoded[pos..])
             .map_err(|_| Error::BufferOverflow)?;
@@ -599,7 +751,10 @@ where
     }
 
     /// Read a SLIP-encoded response packet.
-    async fn read_response(&mut self, expected_command: Command) -> Result<Response, Error<R::Error>>
+    async fn read_response(
+        &mut self,
+        expected_command: Command,
+    ) -> Result<Response, Error<R::Error>>
     where
         W::Error: Into<R::Error>,
     {

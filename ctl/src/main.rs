@@ -228,6 +228,8 @@ enum NetAction {
         #[arg(default_value = "hello")]
         data: String,
     },
+    /// Get bootloader information from NET chip (ESP32, auto-resets chip)
+    Info,
     #[command(name = "add-wifi")]
     AddWifi {
         /// WiFi network SSID
@@ -430,6 +432,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Sending NET ping with data: {}", data);
                 app.net_ping(data.as_bytes()).await;
                 println!("Received pong!");
+            }
+            NetAction::Info => {
+                println!("NET Bootloader Info (ESP32)");
+                println!("===========================\n");
+
+                println!("Resetting NET chip to bootloader mode...");
+                let info = match app.get_net_bootloader_info().await {
+                    Ok(info) => info,
+                    Err(e) => {
+                        eprintln!("Failed to get bootloader info: {:?}", e);
+                        eprintln!("\nThe NET chip may not be responding correctly.");
+                        std::process::exit(1);
+                    }
+                };
+
+                let sec = &info.security_info;
+                println!("Chip ID:           0x{:08X}", sec.chip_id);
+                println!("ECO Version:       {}", sec.eco_version);
+                println!("Security Flags:    0x{:08X}", sec.flags);
+                println!("Flash Crypt Count: {}", sec.flash_crypt_cnt);
+                println!(
+                    "Key Purposes:      {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                    sec.key_purposes[0],
+                    sec.key_purposes[1],
+                    sec.key_purposes[2],
+                    sec.key_purposes[3],
+                    sec.key_purposes[4],
+                    sec.key_purposes[5],
+                    sec.key_purposes[6]
+                );
+
+                println!("\nNET chip reset back to user mode.");
+                println!("Done!");
             }
             NetAction::AddWifi { ssid, password } => {
                 app.add_wifi_ssid(&ssid, &password).await;
