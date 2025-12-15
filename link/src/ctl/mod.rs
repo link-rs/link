@@ -1,8 +1,12 @@
 //! CTL (Controller) chip - the host computer interface.
 //!
-//! This module requires the `std` feature or test mode.
+//! This module is `no_std` compatible but requires the `alloc` crate for
+//! compression support.
+
+extern crate alloc;
 
 use crate::net::WifiSsid;
+use core::future::Future;
 use crate::shared::{
     CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt, WriteTlv,
     MAX_VALUE_SIZE,
@@ -11,6 +15,12 @@ use bootloader::esp::{self, Bootloader as EspBootloader, SecurityInfo};
 pub use bootloader::esp::ChipType as NetChipType;
 use bootloader::stm::{self, Bootloader};
 use embedded_io_async::{ErrorType, Read, Write};
+
+/// Maximum size for verification error data (matches write chunk size).
+const VERIFY_CHUNK_SIZE: usize = 256;
+
+/// Maximum size for ESP32 boot message line buffer.
+const LINE_BUFFER_SIZE: usize = 128;
 
 /// Information retrieved from the MGMT chip when it's in bootloader mode.
 #[derive(Debug, Clone, Default)]
@@ -55,8 +65,8 @@ pub enum FlashError<E> {
     /// Verification failed - data read back doesn't match what was written.
     VerifyFailed {
         address: u32,
-        expected: Vec<u8>,
-        actual: Vec<u8>,
+        expected: heapless::Vec<u8, VERIFY_CHUNK_SIZE>,
+        actual: heapless::Vec<u8, VERIFY_CHUNK_SIZE>,
     },
 }
 
@@ -123,11 +133,11 @@ fn sectors_for_size_f405(size: usize) -> usize {
 struct TunnelReader<'a, R> {
     tlv_type: MgmtToCtl,
     reader: &'a mut R,
-    buffer: &'a mut Vec<u8>,
+    buffer: &'a mut heapless::Vec<u8, MAX_VALUE_SIZE>,
 }
 
 impl<'a, R> TunnelReader<'a, R> {
-    fn new(tlv_type: MgmtToCtl, reader: &'a mut R, buffer: &'a mut Vec<u8>) -> Self {
+    fn new(tlv_type: MgmtToCtl, reader: &'a mut R, buffer: &'a mut heapless::Vec<u8, MAX_VALUE_SIZE>) -> Self {
         Self {
             tlv_type,
             reader,
@@ -153,12 +163,18 @@ where
             if tlv.tlv_type != self.tlv_type {
                 continue;
             }
-            self.buffer.extend_from_slice(&tlv.value);
+            // heapless extend_from_slice returns Result, unwrap since we know capacity is sufficient
+            self.buffer.extend_from_slice(&tlv.value).unwrap();
         }
 
         let to_copy = core::cmp::min(self.buffer.len(), buf.len());
         buf[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
-        self.buffer.drain(..to_copy);
+        // Drain from front by copying remaining bytes and truncating
+        let remaining = self.buffer.len() - to_copy;
+        for i in 0..remaining {
+            self.buffer[i] = self.buffer[i + to_copy];
+        }
+        self.buffer.truncate(remaining);
         Ok(to_copy)
     }
 }
@@ -208,8 +224,8 @@ where
 /// independently from the write side.
 struct MgmtReader<R> {
     from_mgmt: R,
-    ui_buffer: Vec<u8>,
-    net_buffer: Vec<u8>,
+    ui_buffer: heapless::Vec<u8, MAX_VALUE_SIZE>,
+    net_buffer: heapless::Vec<u8, MAX_VALUE_SIZE>,
 }
 
 impl<R> ErrorType for MgmtReader<R>
@@ -235,8 +251,8 @@ where
     fn new(from_mgmt: R) -> Self {
         Self {
             from_mgmt,
-            ui_buffer: Vec::new(),
-            net_buffer: Vec::new(),
+            ui_buffer: heapless::Vec::new(),
+            net_buffer: heapless::Vec::new(),
         }
     }
 
@@ -581,8 +597,8 @@ where
             if &read_buf[..len] != chunk {
                 return Err(FlashError::VerifyFailed {
                     address,
-                    expected: chunk.to_vec(),
-                    actual: read_buf[..len].to_vec(),
+                    expected: heapless::Vec::from_slice(chunk).unwrap(),
+                    actual: heapless::Vec::from_slice(&read_buf[..len]).unwrap(),
                 });
             }
             verified += len;
@@ -650,19 +666,25 @@ where
     /// 2. Queries bootloader information via the tunneled UI connection
     /// 3. Resets the UI chip back to user mode
     ///
+    /// The `delay_ms` parameter should return a future that completes after
+    /// the specified number of milliseconds. For tokio, use `|ms| tokio::time::sleep(Duration::from_millis(ms))`.
+    ///
     /// Returns bootloader version, chip ID, supported commands, and optionally
     /// a sample of flash memory if read protection is not enabled.
-    pub async fn get_ui_bootloader_info(
+    pub async fn get_ui_bootloader_info<D, Fut>(
         &mut self,
+        delay_ms: D,
     ) -> Result<MgmtBootloaderInfo, stm::Error<R::Error>>
     where
         W::Error: Into<R::Error>,
+        D: FnOnce(u64) -> Fut,
+        Fut: Future<Output = ()>,
     {
         // Reset UI chip into bootloader mode
         self.reset_ui_to_bootloader().await;
 
         // Wait for bootloader to be ready
-        std::thread::sleep(std::time::Duration::from_millis(1000));
+        delay_ms(1000).await;
 
         // Query bootloader info, capturing any error
         let result = self.query_ui_bootloader().await;
@@ -717,21 +739,27 @@ where
     /// 4. Verifies the written data by reading it back
     /// 5. Resets the UI chip back to user mode
     ///
+    /// The `delay_ms` parameter should return a future that completes after
+    /// the specified number of milliseconds.
+    ///
     /// The progress callback is called with (phase, bytes_processed, total_bytes).
-    pub async fn flash_ui<F>(
+    pub async fn flash_ui<F, D, Fut>(
         &mut self,
         firmware: &[u8],
+        delay_ms: D,
         mut progress: F,
     ) -> Result<(), FlashError<R::Error>>
     where
         W::Error: Into<R::Error>,
         F: FnMut(FlashPhase, usize, usize),
+        D: FnOnce(u64) -> Fut,
+        Fut: Future<Output = ()>,
     {
         // Reset UI chip into bootloader mode
         self.reset_ui_to_bootloader().await;
 
         // Wait for bootloader to be ready
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        delay_ms(100).await;
 
         // Flash the firmware
         let result = self.do_flash_ui(firmware, &mut progress).await;
@@ -793,8 +821,8 @@ where
             if &read_buf[..len] != chunk {
                 return Err(FlashError::VerifyFailed {
                     address,
-                    expected: chunk.to_vec(),
-                    actual: read_buf[..len].to_vec(),
+                    expected: heapless::Vec::from_slice(chunk).unwrap(),
+                    actual: heapless::Vec::from_slice(&read_buf[..len]).unwrap(),
                 });
             }
             verified += len;
@@ -846,7 +874,7 @@ where
                 other => panic!("unexpected TLV type: {:?}", other),
             }
         }
-        eprintln!("warning: gave up waiting for Ack after discarding 100 FromNet TLVs");
+        // Gave up waiting for Ack after discarding 100 FromNet TLVs
 
         result
     }
@@ -861,7 +889,7 @@ where
 
         // Wait for ESP32 to be ready by scanning for "waiting for download"
         // The ESP32 prints boot messages before it's ready to receive SLIP commands
-        let mut line_buf = Vec::new();
+        let mut line_buf: heapless::Vec<u8, LINE_BUFFER_SIZE> = heapless::Vec::new();
         loop {
             let mut byte = [0u8; 1];
             embedded_io_async::Read::read_exact(&mut net_reader, &mut byte)
@@ -878,7 +906,8 @@ where
                 }
                 line_buf.clear();
             } else if byte[0] != 0x0d {
-                line_buf.push(byte[0]);
+                // Ignore error if buffer is full - just skip extra chars
+                let _ = line_buf.push(byte[0]);
             }
         }
 
@@ -959,7 +988,7 @@ where
                 other => panic!("unexpected TLV type: {:?}", other),
             }
         }
-        eprintln!("warning: gave up waiting for Ack after discarding 100 FromNet TLVs");
+        // Gave up waiting for Ack after discarding 100 FromNet TLVs
 
         result
     }
@@ -981,7 +1010,7 @@ where
         let mut net_reader = self.reader.net();
 
         // Wait for ESP32 to be ready by scanning for "waiting for download"
-        let mut line_buf = Vec::new();
+        let mut line_buf: heapless::Vec<u8, LINE_BUFFER_SIZE> = heapless::Vec::new();
         loop {
             let mut byte = [0u8; 1];
             embedded_io_async::Read::read_exact(&mut net_reader, &mut byte)
@@ -998,7 +1027,8 @@ where
                 }
                 line_buf.clear();
             } else if byte[0] != 0x0d {
-                line_buf.push(byte[0]);
+                // Ignore error if buffer is full - just skip extra chars
+                let _ = line_buf.push(byte[0]);
             }
         }
 
@@ -1015,19 +1045,12 @@ where
 
         if compress {
             // Compress the firmware using zlib/deflate
-            use flate2::write::ZlibEncoder;
-            use flate2::Compression;
-            use std::io::Write as IoWrite;
+            use miniz_oxide::deflate::compress_to_vec_zlib;
 
             progress(FlashPhase::Compressing, 0, firmware.len());
 
-            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-            encoder
-                .write_all(firmware)
-                .map_err(|_| NetFlashError::CompressionFailed)?;
-            let compressed = encoder
-                .finish()
-                .map_err(|_| NetFlashError::CompressionFailed)?;
+            // Compression level 6 is default (good balance of speed and ratio)
+            let compressed = compress_to_vec_zlib(firmware, 6);
 
             progress(FlashPhase::Compressing, firmware.len(), firmware.len());
 

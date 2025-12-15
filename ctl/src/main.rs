@@ -479,7 +479,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("==================\n");
 
                 println!("Resetting UI chip to bootloader mode...");
-                let Ok(info) = app.get_ui_bootloader_info().await else {
+                let delay = |ms| tokio::time::sleep(std::time::Duration::from_millis(ms));
+                let Ok(info) = app.get_ui_bootloader_info(delay).await else {
                     eprintln!("Failed to get bootloader info");
                     eprintln!("\nThe UI chip may not be responding correctly.");
                     std::process::exit(1);
@@ -565,8 +566,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pb.set_style(sectors_style.clone());
 
                 let mut current_phase = None;
+                let delay = |ms| tokio::time::sleep(std::time::Duration::from_millis(ms));
                 let result = app
-                    .flash_ui(&firmware, |phase, progress, total| {
+                    .flash_ui(&firmware, delay, |phase, progress, total| {
                         if current_phase != Some(phase) {
                             current_phase = Some(phase);
                             match phase {
