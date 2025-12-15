@@ -143,14 +143,6 @@ where
             // Track which button is currently held (if any)
             let mut active_button: Option<Button> = None;
 
-            // TX (microphone) frame statistics
-            let mut tx_frame_count: u32 = 0;
-            let mut tx_energy_sum: u64 = 0;
-
-            // RX (playback) frame statistics
-            let mut rx_frame_count: u32 = 0;
-            let mut rx_energy_sum: u64 = 0;
-
             loop {
                 match channel.receive().await {
                     Event::Mgmt(tlv) => {
@@ -158,19 +150,6 @@ where
                     }
                     Event::Net(tlv) => {
                         if let Some(frame) = handle_net(tlv, &mut to_mgmt).await {
-                            // Track playback frame energy
-                            rx_energy_sum += frame.energy() as u64;
-                            rx_frame_count += 1;
-                            if rx_frame_count % 50 == 0 {
-                                let avg_energy = rx_energy_sum / 50;
-                                info!(
-                                    "ui: received {} playback frames, avg energy={}",
-                                    rx_frame_count, avg_energy
-                                );
-                                rx_energy_sum = 0;
-                            }
-
-                            // Queue the playback frame
                             playback_channel.send(frame).await;
                         }
                     }
@@ -178,8 +157,6 @@ where
                         info!("ui: button {:?} down", button);
                         if active_button.is_none() {
                             active_button = Some(button);
-                            tx_frame_count = 0;
-                            tx_energy_sum = 0;
                         }
                     }
                     Event::ButtonUp(button) => {
@@ -195,25 +172,7 @@ where
                                 Button::A => UiToNet::AudioFrameA,
                                 Button::B => UiToNet::AudioFrameB,
                             };
-
-                            // Log the energy of every transmitted frame
-                            info!("ui: audio frame energy={}", frame.energy());
-
-                            // Track energy
-                            tx_energy_sum += frame.energy() as u64;
-
-                            let bytes = frame.as_bytes();
-                            to_net.must_write_tlv(tlv_type, &bytes).await;
-
-                            tx_frame_count += 1;
-                            if tx_frame_count % 50 == 0 {
-                                let avg_energy = tx_energy_sum / 50;
-                                info!(
-                                    "ui: sent {} audio frames, avg energy={}",
-                                    tx_frame_count, avg_energy
-                                );
-                                tx_energy_sum = 0;
-                            }
+                            to_net.must_write_tlv(tlv_type, &frame.as_bytes()).await;
                         }
                     }
                 }

@@ -49,7 +49,7 @@ cargo run
 cd ../net
 cargo run
 # Wait for debug logs to start appearing, then Ctrl-C
-# NET LED should light up yellow
+# NET LED should light up blue
 
 # Build the UI firmware and flash it
 # Connect ST-LINK to the UI header
