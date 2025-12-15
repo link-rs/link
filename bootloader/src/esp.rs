@@ -26,8 +26,8 @@ const DIRECTION_RESPONSE: u8 = 0x01;
 /// Checksum seed value.
 const CHECKSUM_SEED: u8 = 0xEF;
 
-/// Maximum packet data size.
-const MAX_DATA_SIZE: usize = 1024;
+/// Maximum packet data size (must accommodate 1KB flash blocks + 16-byte header).
+const MAX_DATA_SIZE: usize = 1024 + 16;
 
 /// Bootloader command codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,16 +176,61 @@ const PARTITION_MAGIC: [u8; 2] = [0xAA, 0x50];
 /// MD5 partition marker.
 const PARTITION_MD5_MARKER: [u8; 2] = [0xEB, 0xEB];
 
+/// Detected chip type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipType {
+    Esp32,
+    Esp32S2,
+    Esp32S3,
+    Esp32C2,
+    Esp32C3,
+    Esp32C6,
+    Esp32H2,
+    Unknown(u32),
+}
+
+impl ChipType {
+    /// Get chip type from chip ID value.
+    pub fn from_chip_id(chip_id: u32) -> Self {
+        match chip_id {
+            0x0000 => ChipType::Esp32,
+            0x0002 => ChipType::Esp32S2,
+            0x0009 => ChipType::Esp32S3,
+            0x000C => ChipType::Esp32C2,
+            0x0005 => ChipType::Esp32C3,
+            0x000D => ChipType::Esp32C6,
+            0x0010 => ChipType::Esp32H2,
+            other => ChipType::Unknown(other),
+        }
+    }
+
+    /// Get a human-readable name for the chip.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ChipType::Esp32 => "ESP32",
+            ChipType::Esp32S2 => "ESP32-S2",
+            ChipType::Esp32S3 => "ESP32-S3",
+            ChipType::Esp32C2 => "ESP32-C2",
+            ChipType::Esp32C3 => "ESP32-C3",
+            ChipType::Esp32C6 => "ESP32-C6",
+            ChipType::Esp32H2 => "ESP32-H2",
+            ChipType::Unknown(_) => "Unknown",
+        }
+    }
+}
+
 /// Security information from GET_SECURITY_INFO command.
 #[derive(Debug, Clone, Copy)]
 pub struct SecurityInfo {
+    /// Detected chip type.
+    pub chip_type: ChipType,
     /// Security flags.
     pub flags: u32,
     /// Flash crypt count.
     pub flash_crypt_cnt: u8,
     /// Key purposes (7 bytes).
     pub key_purposes: [u8; 7],
-    /// Chip ID.
+    /// Chip ID (raw value).
     pub chip_id: u32,
     /// ECO version.
     pub eco_version: u8,
@@ -629,6 +674,7 @@ where
         W::Error: Into<R::Error>,
     {
         // ESP32-S3 SPI1 registers (flash SPI controller)
+        // Reference: esptool esp32s3.py SPI register offsets
         const SPI1_BASE: u32 = 0x6000_2000;
         const SPI1_CMD_REG: u32 = SPI1_BASE + 0x00;
         const SPI1_ADDR_REG: u32 = SPI1_BASE + 0x04;
@@ -636,7 +682,7 @@ where
         const SPI1_USER1_REG: u32 = SPI1_BASE + 0x1C;
         const SPI1_USER2_REG: u32 = SPI1_BASE + 0x20;
         const SPI1_MISO_DLEN_REG: u32 = SPI1_BASE + 0x28;
-        const SPI1_W0_REG: u32 = SPI1_BASE + 0x98;
+        const SPI1_W0_REG: u32 = SPI1_BASE + 0x58;
 
         // SPI flash read command
         const SPI_FLASH_READ_CMD: u32 = 0x03;
@@ -770,21 +816,57 @@ where
     }
 
     /// Get security information from the chip.
+    ///
+    /// This also performs chip type detection based on the chip_id field.
+    /// Response format (20 bytes):
+    /// - 4 bytes: flags (u32)
+    /// - 1 byte: flash_crypt_cnt
+    /// - 7 bytes: key_purposes
+    /// - 4 bytes: chip_id (u32)
+    /// - 4 bytes: api_version (u32)
     pub async fn get_security_info(&mut self) -> Result<SecurityInfo, Error<R::Error>>
     where
         W::Error: Into<R::Error>,
     {
         let response = self.send_command(Command::GetSecurityInfo, &[], 0).await?;
 
-        // Parse security info from response
-        // The actual parsing depends on the response format
-        let _ = response;
+        // Parse security info from response data
+        // Format: flags(4) + flash_crypt_cnt(1) + key_purposes(7) + chip_id(4) + api_version(4)
+        let data = &response.data[..response.data_len.min(20)];
+
+        let flags = if data.len() >= 4 {
+            u32::from_le_bytes([data[0], data[1], data[2], data[3]])
+        } else {
+            0
+        };
+
+        let flash_crypt_cnt = if data.len() >= 5 { data[4] } else { 0 };
+
+        let mut key_purposes = [0u8; 7];
+        if data.len() >= 12 {
+            key_purposes.copy_from_slice(&data[5..12]);
+        }
+
+        let chip_id = if data.len() >= 16 {
+            u32::from_le_bytes([data[12], data[13], data[14], data[15]])
+        } else {
+            0
+        };
+
+        let eco_version = if data.len() >= 20 {
+            // api_version is at bytes 16-19, but we'll store it as eco_version
+            data[16]
+        } else {
+            0
+        };
+
         Ok(SecurityInfo {
-            flags: 0,
-            flash_crypt_cnt: 0,
-            key_purposes: [0; 7],
-            chip_id: 0,
-            eco_version: 0,
+            chip_type: ChipType::from_chip_id(chip_id),
+            flags,
+            flash_crypt_cnt,
+            key_purposes,
+            chip_id,
+            eco_version,
         })
     }
 
@@ -1024,7 +1106,9 @@ where
     /// Read a SLIP-encoded response packet.
     ///
     /// This will skip any responses that don't match the expected command,
-    /// which allows draining leftover sync responses.
+    /// which allows draining leftover sync responses. ESP32 sends 8 sync
+    /// responses per sync packet, and we may send 2 packets, so we need
+    /// to skip up to 16 responses.
     async fn read_response(
         &mut self,
         expected_command: Command,
@@ -1032,9 +1116,12 @@ where
     where
         W::Error: Into<R::Error>,
     {
-        // Skip up to 8 non-matching responses (e.g., leftover sync responses)
-        for _ in 0..8 {
+        // Skip up to 16 non-matching responses (e.g., leftover sync responses)
+        // ESP32 sends 8 sync responses per packet, we send 2, sync() reads 1
+        let mut last_cmd = 0u8;
+        for _ in 0..16 {
             let (cmd, response) = self.read_response_any().await?;
+            last_cmd = cmd;
             if cmd == expected_command as u8 {
                 if response.status != 0 {
                     return Err(Error::BootloaderError(response.error));
@@ -1044,10 +1131,10 @@ where
             // Wrong command, try reading another
         }
 
-        // Couldn't find matching response after 8 tries
+        // Couldn't find matching response after 16 tries
         Err(Error::CommandMismatch {
             expected: expected_command as u8,
-            got: 0,
+            got: last_cmd,
         })
     }
 }

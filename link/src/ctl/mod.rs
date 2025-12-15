@@ -7,8 +7,8 @@ use crate::shared::{
     CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt, WriteTlv,
     MAX_VALUE_SIZE,
 };
-use bootloader::esp::{self, Bootloader as EspBootloader, PartitionEntry, SecurityInfo};
-pub use bootloader::esp::PartitionEntry as NetPartitionEntry;
+use bootloader::esp::{self, Bootloader as EspBootloader, SecurityInfo};
+pub use bootloader::esp::ChipType as NetChipType;
 use bootloader::stm::{self, Bootloader};
 use embedded_io_async::{ErrorType, Read, Write};
 
@@ -30,15 +30,15 @@ pub struct MgmtBootloaderInfo {
 /// Information retrieved from the NET chip (ESP32) when it's in bootloader mode.
 #[derive(Debug, Clone)]
 pub struct NetBootloaderInfo {
-    /// Security information from the ESP32.
+    /// Security information from the ESP32 (includes chip type detection).
     pub security_info: SecurityInfo,
-    /// Partition table entries.
-    pub partitions: heapless::Vec<PartitionEntry, 16>,
 }
 
 /// Phase of the flash operation, reported to progress callbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlashPhase {
+    /// Compressing firmware data.
+    Compressing,
     /// Erasing flash memory.
     Erasing,
     /// Writing firmware data.
@@ -78,6 +78,8 @@ pub enum NetFlashError<E> {
         expected: [u8; 16],
         actual: [u8; 16],
     },
+    /// Compression failed.
+    CompressionFailed,
 }
 
 impl<E> From<esp::Error<E>> for NetFlashError<E> {
@@ -887,16 +889,10 @@ where
         // Synchronize with the ESP32 bootloader
         bl.sync().await?;
 
-        // Get security information
+        // Get security information (includes chip type detection)
         let security_info = bl.get_security_info().await?;
 
-        // Read partition table
-        let partitions = bl.read_partition_table().await?;
-
-        Ok(NetBootloaderInfo {
-            security_info,
-            partitions,
-        })
+        Ok(NetBootloaderInfo { security_info })
     }
 
     /// Flash firmware to the NET chip (ESP32-S3).
@@ -906,10 +902,20 @@ where
     /// 2. Waits for the bootloader to be ready
     /// 3. Syncs with the ESP32 bootloader
     /// 4. Writes the firmware to flash
-    /// 5. Resets the NET chip back to user mode
+    /// 5. Verifies with MD5 checksum
+    /// 6. Resets the NET chip back to user mode
     ///
-    /// The `address` parameter specifies the flash offset (typically 0x0 for bootloader
-    /// or 0x10000 for application in ESP-IDF partition scheme).
+    /// # Address Parameter
+    ///
+    /// The `address` parameter specifies the flash offset. Standard ESP-IDF layout:
+    /// - `0x0` - Bootloader
+    /// - `0x8000` - Partition table
+    /// - `0x10000` - Application (most common for app-only updates)
+    ///
+    /// **WARNING:** This function only flashes a single binary. For full ESP-IDF
+    /// firmware updates, you may need to flash bootloader, partition table, and app
+    /// separately. A future version should parse `flasher_args.json` from the
+    /// ESP-IDF build directory to automate this.
     ///
     /// The progress callback is called with (phase, bytes_processed, total_bytes).
     /// Note: ESP32 combines erase and write, so Erasing phase reports 0/1 then 1/1.
@@ -917,6 +923,8 @@ where
         &mut self,
         firmware: &[u8],
         address: u32,
+        compress: bool,
+        verify: bool,
         mut progress: F,
     ) -> Result<(), NetFlashError<R::Error>>
     where
@@ -927,7 +935,9 @@ where
         self.reset_net_to_bootloader().await;
 
         // Flash the firmware
-        let result = self.do_flash_net(firmware, address, &mut progress).await;
+        let result = self
+            .do_flash_net(firmware, address, compress, verify, &mut progress)
+            .await;
 
         // Always reset NET chip back to user mode.
         // We can't use reset_net_to_user() directly because there may be
@@ -959,6 +969,8 @@ where
         &mut self,
         firmware: &[u8],
         address: u32,
+        compress: bool,
+        verify: bool,
         progress: &mut F,
     ) -> Result<(), NetFlashError<R::Error>>
     where
@@ -997,59 +1009,106 @@ where
         // Synchronize with the ESP32 bootloader
         bl.sync().await?;
 
-        // Report erase phase (ESP32 erases during flash_begin)
-        progress(FlashPhase::Erasing, 0, 1);
-
-        // Begin flash operation - this also erases the required sectors
         // Use 1KB block size for good balance of speed and reliability
         const BLOCK_SIZE: u32 = 1024;
-        let _packet_count = bl
-            .flash_begin(firmware.len() as u32, BLOCK_SIZE, address)
-            .await?;
+        let uncompressed_size = firmware.len() as u32;
 
-        progress(FlashPhase::Erasing, 1, 1);
+        if compress {
+            // Compress the firmware using zlib/deflate
+            use flate2::write::ZlibEncoder;
+            use flate2::Compression;
+            use std::io::Write as IoWrite;
 
-        // Write firmware in blocks
-        let total = firmware.len();
-        let mut written = 0;
+            progress(FlashPhase::Compressing, 0, firmware.len());
 
-        for (seq, chunk) in firmware.chunks(BLOCK_SIZE as usize).enumerate() {
-            // Pad to block size with 0xFF and align to 4 bytes
-            let mut block = [0xFFu8; BLOCK_SIZE as usize];
-            block[..chunk.len()].copy_from_slice(chunk);
-            let padded_len = chunk.len().div_ceil(4) * 4;
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+            encoder
+                .write_all(firmware)
+                .map_err(|_| NetFlashError::CompressionFailed)?;
+            let compressed = encoder
+                .finish()
+                .map_err(|_| NetFlashError::CompressionFailed)?;
 
-            bl.flash_data(&block[..padded_len.max(chunk.len())], seq as u32)
+            progress(FlashPhase::Compressing, firmware.len(), firmware.len());
+
+            // Report erase phase (ESP32 erases during flash_defl_begin)
+            progress(FlashPhase::Erasing, 0, 1);
+
+            // Begin compressed flash operation
+            let _packet_count = bl
+                .flash_defl_begin(uncompressed_size, BLOCK_SIZE, address)
                 .await?;
 
-            written += chunk.len();
-            progress(FlashPhase::Writing, written, total);
+            progress(FlashPhase::Erasing, 1, 1);
+
+            // Write compressed data in blocks
+            let compressed_total = compressed.len();
+            let mut written = 0;
+
+            for (seq, chunk) in compressed.chunks(BLOCK_SIZE as usize).enumerate() {
+                bl.flash_defl_data(chunk, seq as u32).await?;
+
+                written += chunk.len();
+                progress(FlashPhase::Writing, written, compressed_total);
+            }
+
+            // End compressed flash operation (don't reboot - we'll reset via MGMT)
+            bl.flash_defl_end(false).await?;
+        } else {
+            // Uncompressed flash path
+            progress(FlashPhase::Erasing, 0, 1);
+
+            let _packet_count = bl
+                .flash_begin(uncompressed_size, BLOCK_SIZE, address)
+                .await?;
+
+            progress(FlashPhase::Erasing, 1, 1);
+
+            // Write firmware in blocks
+            let total = firmware.len();
+            let mut written = 0;
+
+            for (seq, chunk) in firmware.chunks(BLOCK_SIZE as usize).enumerate() {
+                // Pad to block size with 0xFF and align to 4 bytes
+                let mut block = [0xFFu8; BLOCK_SIZE as usize];
+                block[..chunk.len()].copy_from_slice(chunk);
+                let padded_len = chunk.len().div_ceil(4) * 4;
+
+                bl.flash_data(&block[..padded_len.max(chunk.len())], seq as u32)
+                    .await?;
+
+                written += chunk.len();
+                progress(FlashPhase::Writing, written, total);
+            }
+
+            // End flash operation (don't reboot - we'll reset via MGMT)
+            bl.flash_end(false).await?;
         }
 
-        // End flash operation (don't reboot - we'll reset via MGMT)
-        bl.flash_end(false).await?;
-
         // Verify by computing MD5 of flashed region and comparing to firmware
-        progress(FlashPhase::Verifying, 0, total);
+        if verify {
+            let total = firmware.len();
+            progress(FlashPhase::Verifying, 0, total);
 
-        // Compute expected MD5 from firmware data
-        use md5::{Digest, Md5};
-        let mut hasher = Md5::new();
-        hasher.update(firmware);
-        let expected_md5: [u8; 16] = hasher.finalize().into();
+            // Compute expected MD5 from firmware data
+            use md5::{Digest, Md5};
+            let mut hasher = Md5::new();
+            hasher.update(firmware);
+            let expected_md5: [u8; 16] = hasher.finalize().into();
 
-        // Get actual MD5 from flash
-        let actual_md5 = bl.spi_flash_md5(address, firmware.len() as u32).await?;
+            // Get actual MD5 from flash
+            let actual_md5 = bl.spi_flash_md5(address, uncompressed_size).await?;
 
-        progress(FlashPhase::Verifying, total, total);
+            progress(FlashPhase::Verifying, total, total);
 
-        if expected_md5 != actual_md5 {
-            return Err(NetFlashError::VerifyFailed {
-                address,
-                size: firmware.len() as u32,
-                expected: expected_md5,
-                actual: actual_md5,
-            });
+            if expected_md5 != actual_md5 {
+                return Err(NetFlashError::VerifyFailed {
+                    address,
+                    size: uncompressed_size,
+                    expected: expected_md5,
+                    actual: actual_md5,
+                });
+            }
         }
 
         Ok(())

@@ -49,7 +49,7 @@ fn select_port(specified: Option<String>) -> Result<String, String> {
             for (i, port) in ports.iter().enumerate() {
                 println!("  {}: {}", i + 1, port);
             }
-            print!("Select port [1-{}]: ", ports.len());
+            print!("Select port [1-{}] (default: 1): ", ports.len());
             std::io::stdout().flush().unwrap();
 
             let mut input = String::new();
@@ -57,10 +57,14 @@ fn select_port(specified: Option<String>) -> Result<String, String> {
                 .read_line(&mut input)
                 .map_err(|e| format!("Failed to read input: {}", e))?;
 
-            let choice: usize = input
-                .trim()
-                .parse()
-                .map_err(|_| "Invalid number".to_string())?;
+            let trimmed = input.trim();
+            let choice: usize = if trimmed.is_empty() {
+                1 // Default to first port
+            } else {
+                trimmed
+                    .parse()
+                    .map_err(|_| "Invalid number".to_string())?
+            };
 
             if choice < 1 || choice > ports.len() {
                 return Err(format!(
@@ -221,6 +225,9 @@ async fn handle_mgmt_flash(
             if current_phase != Some(phase) {
                 current_phase = Some(phase);
                 match phase {
+                    FlashPhase::Compressing => {
+                        // MGMT doesn't use compression
+                    }
                     FlashPhase::Erasing => {
                         pb.set_style(pages_style.clone());
                         pb.set_prefix("Erasing");
@@ -338,12 +345,22 @@ enum NetAction {
     /// Get bootloader information from NET chip (ESP32, auto-resets chip)
     Info,
     /// Flash firmware to NET chip (ESP32, auto-resets chip)
+    ///
+    /// WARNING: Currently assumes standard ESP-IDF partition layout with app at 0x10000.
+    /// This may not work for custom partition tables. A future version should parse
+    /// flasher_args.json from the build directory to determine correct addresses.
     Flash {
         /// Path to binary file to flash
         file: std::path::PathBuf,
-        /// Flash address offset (use `net info` to see partition table)
-        #[arg(short, long)]
+        /// Flash address offset (default: 0x10000 for standard ESP-IDF app partition)
+        #[arg(short, long, default_value = "0x10000")]
         address: String,
+        /// Use compressed transfer (faster for large files)
+        #[arg(short, long)]
+        compress: bool,
+        /// Skip MD5 verification after flashing (faster for large files)
+        #[arg(long)]
+        no_verify: bool,
     },
     #[command(name = "add-wifi")]
     AddWifi {
@@ -553,6 +570,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if current_phase != Some(phase) {
                             current_phase = Some(phase);
                             match phase {
+                                FlashPhase::Compressing => {
+                                    // UI doesn't use compression
+                                }
                                 FlashPhase::Erasing => {
                                     pb.set_style(sectors_style.clone());
                                     pb.set_prefix("Erasing");
@@ -618,9 +638,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Received pong!");
             }
             NetAction::Info => {
-                println!("NET Bootloader Info (ESP32)");
-                println!("===========================\n");
-
                 println!("Resetting NET chip to bootloader mode...");
                 let info = match app.get_net_bootloader_info().await {
                     Ok(info) => info,
@@ -632,8 +649,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
 
                 let sec = &info.security_info;
-                println!("Chip ID:           0x{:08X}", sec.chip_id);
-                println!("ECO Version:       {}", sec.eco_version);
+                println!("\nNET Bootloader Info");
+                println!("===================\n");
+                println!("Chip Type:         {}", sec.chip_type.name());
+                println!("Chip ID:           {} (0x{:04X})", sec.chip_id, sec.chip_id);
                 println!("Security Flags:    0x{:08X}", sec.flags);
                 println!("Flash Crypt Count: {}", sec.flash_crypt_cnt);
                 println!(
@@ -647,29 +666,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     sec.key_purposes[6]
                 );
 
-                // Display partition table
-                println!("\nPartition Table ({} entries):", info.partitions.len());
-                println!(
-                    "{:<16} {:>8} {:>10} {:>10}  {:<8} {:<10}",
-                    "Name", "Type", "Offset", "Size", "SubType", "Flags"
-                );
-                println!("{}", "-".repeat(70));
-                for p in &info.partitions {
-                    println!(
-                        "{:<16} {:>8} 0x{:08X} 0x{:08X}  {:<8} 0x{:X}",
-                        p.name.as_str(),
-                        p.type_name(),
-                        p.offset,
-                        p.size,
-                        p.subtype_name(),
-                        p.flags
-                    );
-                }
-
                 println!("\nNET chip reset back to user mode.");
                 println!("Done!");
             }
-            NetAction::Flash { file, address } => {
+            NetAction::Flash { file, address, compress, no_verify } => {
                 println!("NET Flash (ESP32)");
                 println!("=================\n");
 
@@ -680,6 +680,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     address.parse().expect("Invalid address")
                 };
+
+                // TODO: Parse flasher_args.json to get correct addresses automatically
+                // For now, we assume standard ESP-IDF layout (app at 0x10000)
+                if address == 0x10000 {
+                    println!("Note: Using default app address 0x10000 (standard ESP-IDF layout)");
+                    println!("      Use --address to override if needed.\n");
+                }
+
+                if compress {
+                    println!("Mode: Compressed transfer enabled (-c)\n");
+                }
+
+                if no_verify {
+                    println!("Note: MD5 verification disabled (--no-verify)\n");
+                }
 
                 // Read the firmware file
                 let firmware = std::fs::read(&file).expect("Failed to read firmware file");
@@ -702,11 +717,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pb.set_style(erase_style.clone());
 
                 let mut current_phase = None;
+                let verify = !no_verify;
                 let result = app
-                    .flash_net(&firmware, address, |phase, progress, total| {
+                    .flash_net(&firmware, address, compress, verify, |phase, progress, total| {
                         if current_phase != Some(phase) {
                             current_phase = Some(phase);
                             match phase {
+                                FlashPhase::Compressing => {
+                                    pb.set_style(bytes_style.clone());
+                                    pb.set_prefix("Compressing");
+                                }
                                 FlashPhase::Erasing => {
                                     pb.set_style(erase_style.clone());
                                     pb.set_prefix("Erasing");
@@ -716,7 +736,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     pb.set_prefix("Writing");
                                 }
                                 FlashPhase::Verifying => {
-                                    // ESP32 doesn't verify, but just in case
                                     pb.set_style(bytes_style.clone());
                                     pb.set_prefix("Verifying");
                                 }
