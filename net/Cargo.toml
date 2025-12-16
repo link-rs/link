@@ -42,6 +42,9 @@ critical-section = "1.2"
 # Random number generation for WebSocket masking
 rand_core = "0.6"
 
+# Heapless collections for no_std
+heapless = { version = "0.9", features = ["defmt"] }
+
 link = { path = "../link", features = ["defmt", "trace-tlv"] }
 
 [profile.dev]

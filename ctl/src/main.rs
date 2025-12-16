@@ -373,12 +373,18 @@ enum NetAction {
     GetWifi,
     #[command(name = "clear-wifi")]
     ClearWifi,
-    #[command(name = "get-moq-url")]
-    GetMoqUrl,
-    #[command(name = "set-moq-url")]
-    SetMoqUrl {
-        /// MOQ server URL
+    #[command(name = "get-relay-url")]
+    GetRelayUrl,
+    #[command(name = "set-relay-url")]
+    SetRelayUrl {
+        /// Relay server URL (wss://...)
         url: String,
+    },
+    #[command(name = "ws-ping")]
+    WsPing {
+        /// Data to send (will be echoed back by server)
+        #[arg(default_value = "hello from hactar")]
+        data: String,
     },
 }
 
@@ -781,13 +787,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.clear_wifi_ssids().await;
                 println!("Cleared all WiFi networks");
             }
-            NetAction::GetMoqUrl => {
-                let url = app.get_moq_url().await;
+            NetAction::GetRelayUrl => {
+                let url = app.get_relay_url().await;
                 println!("{}", url);
             }
-            NetAction::SetMoqUrl { url } => {
-                app.set_moq_url(&url).await;
-                println!("MOQ URL set to {}", url);
+            NetAction::SetRelayUrl { url } => {
+                app.set_relay_url(&url).await;
+                println!("Relay URL set to {}", url);
+            }
+            NetAction::WsPing { data } => {
+                println!("Sending WebSocket ping with data: {}", data);
+                app.ws_ping(data.as_bytes()).await;
+                println!("Received echo response!");
             }
         },
         Command::CircularPing { reverse, data } => {

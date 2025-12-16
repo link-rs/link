@@ -11,7 +11,7 @@ pub use tlv::{ReadTlv, Tlv, Value, WriteTlv, MAX_VALUE_SIZE, SYNC_WORD};
 // Re-export embassy_sync types for use by chip modules
 pub use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, RawMutex},
-    channel::{Channel, Sender},
+    channel::{Channel, Receiver, Sender},
     mutex::Mutex,
 };
 

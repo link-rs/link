@@ -6,6 +6,8 @@ use crate::mocks::{
 };
 use crate::{ctl, mgmt, net, ui};
 use core::future::Future;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
 use embedded_io_adapters::futures_03::FromFutures;
 use std::sync::{Arc, Mutex};
 
@@ -64,6 +66,10 @@ where
         MockDelay,
         MockAudioStream::new(),
     );
+    // Create WS channels for NET app
+    let ws_cmd_channel: Channel<CriticalSectionRawMutex, net::WsCommand, 4> = Channel::new();
+    let ws_event_channel: Channel<CriticalSectionRawMutex, net::WsEvent, 4> = Channel::new();
+
     let net_app = net::App::new(
         net_to_mgmt,
         net_from_mgmt,
@@ -72,6 +78,8 @@ where
         mock_led_pins(),
         MockFlash::new(),
         0,
+        ws_cmd_channel.sender(),
+        ws_event_channel.receiver(),
     );
 
     tokio::select! {
@@ -139,6 +147,10 @@ where
         MockDelay,
         MockAudioStream::new(),
     );
+    // Create WS channels for NET app
+    let ws_cmd_channel: Channel<CriticalSectionRawMutex, net::WsCommand, 4> = Channel::new();
+    let ws_event_channel: Channel<CriticalSectionRawMutex, net::WsEvent, 4> = Channel::new();
+
     let net_app = net::App::new(
         net_to_mgmt,
         net_from_mgmt,
@@ -147,6 +159,8 @@ where
         mock_led_pins(),
         MockFlash::new(),
         0,
+        ws_cmd_channel.sender(),
+        ws_event_channel.receiver(),
     );
 
     tokio::select! {
@@ -273,20 +287,20 @@ async fn clear_wifi_ssids() {
 }
 
 #[tokio::test]
-async fn get_moq_url_default() {
+async fn get_relay_url_default() {
     device_test(|mut ctl| async move {
-        let url = ctl.get_moq_url().await;
+        let url = ctl.get_relay_url().await;
         assert_eq!(url.as_str(), "");
     })
     .await;
 }
 
 #[tokio::test]
-async fn set_and_get_moq_url() {
+async fn set_and_get_relay_url() {
     device_test(|mut ctl| async move {
-        ctl.set_moq_url("https://moq.example.com/stream").await;
-        let url = ctl.get_moq_url().await;
-        assert_eq!(url.as_str(), "https://moq.example.com/stream");
+        ctl.set_relay_url("wss://relay.example.com/stream").await;
+        let url = ctl.get_relay_url().await;
+        assert_eq!(url.as_str(), "wss://relay.example.com/stream");
     })
     .await;
 }

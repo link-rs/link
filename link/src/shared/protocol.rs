@@ -57,8 +57,9 @@ pub enum MgmtToNet {
     AddWifiSsid,
     GetWifiSsids,
     ClearWifiSsids,
-    GetMoqUrl,
-    SetMoqUrl,
+    GetRelayUrl,
+    SetRelayUrl,
+    WsSend,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -67,9 +68,12 @@ pub enum NetToMgmt {
     Pong = 0x50,
     CircularPing,
     WifiSsids,
-    MoqUrl,
+    RelayUrl,
     Ack,
     Error,
+    WsReceived,
+    WsConnected,
+    WsDisconnected,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

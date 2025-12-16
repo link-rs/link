@@ -462,26 +462,40 @@ where
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
     }
 
-    /// Get the MOQ URL from NET chip storage.
-    pub async fn get_moq_url(&mut self) -> heapless::String<128> {
+    /// Get the relay URL from NET chip storage.
+    pub async fn get_relay_url(&mut self) -> heapless::String<128> {
         self.writer
             .net()
-            .must_write_tlv(MgmtToNet::GetMoqUrl, &[])
+            .must_write_tlv(MgmtToNet::GetRelayUrl, &[])
             .await;
         let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
-        assert_eq!(tlv.tlv_type, NetToMgmt::MoqUrl);
+        assert_eq!(tlv.tlv_type, NetToMgmt::RelayUrl);
         let url_str = core::str::from_utf8(&tlv.value).expect("Invalid UTF-8");
         url_str.try_into().expect("URL too long")
     }
 
-    /// Set the MOQ URL in NET chip storage.
-    pub async fn set_moq_url(&mut self, url: &str) {
+    /// Set the relay URL in NET chip storage.
+    pub async fn set_relay_url(&mut self, url: &str) {
         self.writer
             .net()
-            .must_write_tlv(MgmtToNet::SetMoqUrl, url.as_bytes())
+            .must_write_tlv(MgmtToNet::SetRelayUrl, url.as_bytes())
             .await;
         let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+    }
+
+    /// Send data over WebSocket and verify echo response.
+    ///
+    /// This sends data to the relay server via WebSocket and expects the same
+    /// data back (assumes an echo server). Useful for testing WS connectivity.
+    pub async fn ws_ping(&mut self, data: &[u8]) {
+        self.writer
+            .net()
+            .must_write_tlv(MgmtToNet::WsSend, data)
+            .await;
+        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, NetToMgmt::WsReceived);
+        assert_eq!(&tlv.value, data);
     }
 
     /// Get bootloader information from the MGMT chip.

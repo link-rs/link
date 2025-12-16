@@ -13,8 +13,8 @@ pub const MAX_PASSWORD_LEN: usize = 63;
 /// Maximum number of WiFi credentials to store.
 pub const MAX_WIFI_SSIDS: usize = 8;
 
-/// Maximum length for MOQ URL.
-pub const MAX_MOQ_URL_LEN: usize = 128;
+/// Maximum length for relay URL.
+pub const MAX_RELAY_URL_LEN: usize = 128;
 
 /// A WiFi SSID and password pair.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,7 +29,7 @@ pub struct WifiSsid {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NetStorageData {
     pub wifi_ssids: Vec<WifiSsid, MAX_WIFI_SSIDS>,
-    pub moq_url: String<MAX_MOQ_URL_LEN>,
+    pub relay_url: String<MAX_RELAY_URL_LEN>,
 }
 
 /// Flash storage interface for the NET chip.
@@ -148,14 +148,14 @@ where
         self.data.wifi_ssids.clear();
     }
 
-    /// Get the MOQ URL.
-    pub fn get_moq_url(&self) -> &str {
-        &self.data.moq_url
+    /// Get the relay URL.
+    pub fn get_relay_url(&self) -> &str {
+        &self.data.relay_url
     }
 
-    /// Set the MOQ URL.
-    pub fn set_moq_url(&mut self, url: &str) -> Result<(), ()> {
-        self.data.moq_url = String::try_from(url).map_err(|_| ())?;
+    /// Set the relay URL.
+    pub fn set_relay_url(&mut self, url: &str) -> Result<(), ()> {
+        self.data.relay_url = String::try_from(url).map_err(|_| ())?;
         Ok(())
     }
 }
@@ -203,7 +203,7 @@ mod tests {
         let flash = MockFlash::new();
         let storage = NetStorage::new(flash, 0);
         assert!(storage.get_wifi_ssids().is_empty());
-        assert_eq!(storage.get_moq_url(), "");
+        assert_eq!(storage.get_relay_url(), "");
     }
 
     #[test]
@@ -245,14 +245,14 @@ mod tests {
     }
 
     #[test]
-    fn set_and_get_moq_url() {
+    fn set_and_get_relay_url() {
         let flash = MockFlash::new();
         let mut storage = NetStorage::new(flash, 0);
 
         storage
-            .set_moq_url("https://moq.example.com/stream")
+            .set_relay_url("https://relay.example.com/stream")
             .unwrap();
-        assert_eq!(storage.get_moq_url(), "https://moq.example.com/stream");
+        assert_eq!(storage.get_relay_url(), "https://relay.example.com/stream");
     }
 
     #[test]
@@ -263,7 +263,7 @@ mod tests {
         {
             let mut storage = NetStorage::new(MockFlash::new(), 0);
             storage.add_wifi_ssid("TestSSID", "TestPass").unwrap();
-            storage.set_moq_url("https://test.moq").unwrap();
+            storage.set_relay_url("https://test.relay").unwrap();
             storage.save().unwrap();
 
             // Copy flash data
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(storage.get_wifi_ssids().len(), 1);
         assert_eq!(storage.get_wifi_ssids()[0].ssid.as_str(), "TestSSID");
         assert_eq!(storage.get_wifi_ssids()[0].password.as_str(), "TestPass");
-        assert_eq!(storage.get_moq_url(), "https://test.moq");
+        assert_eq!(storage.get_relay_url(), "https://test.relay");
     }
 
     #[test]
