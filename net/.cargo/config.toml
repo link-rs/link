@@ -2,7 +2,7 @@
 runner = "probe-rs run --chip=esp32s3 --probe=0403:6010 --preverify --always-print-stacktrace --no-location --catch-hardfault"
 
 [env]
-DEFMT_LOG="debug"
+DEFMT_LOG="info"
 
 [build]
 rustflags = [

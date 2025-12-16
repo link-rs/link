@@ -1,20 +1,35 @@
 [package]
 edition = "2021"
 name = "net"
-rust-version = "1.86"
+rust-version = "1.88"
 version = "0.1.0"
 
 [dependencies]
 defmt = "1"
 esp-bootloader-esp-idf = { version = "0.2", features = ["esp32s3", "defmt"] }
-esp-hal = { version = "=1.0.0-rc.0", features = ["defmt", "esp32s3", "unstable"] }
-esp-hal-embassy = { version = "0.9", features = ["defmt", "esp32s3"] }
-esp-alloc = { version = "0.8", features = ["defmt"] }
+esp-hal = { version = "1.0", features = ["defmt", "esp32s3", "unstable"] }
+esp-rtos = { version = "0.2", features = ["defmt", "esp32s3", "embassy", "esp-alloc", "esp-radio"] }
+esp-alloc = { version = "0.9", features = ["defmt"] }
 
-embassy-executor = { version = "0.7", features = ["defmt", "task-arena-size-20480"] }
-embassy-time = { version = "0.4", features = ["defmt"] }
+# WiFi support
+esp-radio = { version = "0.17", features = ["defmt", "esp32s3", "wifi"] }
+
+# Embassy async runtime and networking
+embassy-executor = { version = "0.9", features = ["defmt"] }
+embassy-time = { version = "0.5", features = ["defmt"] }
 embassy-sync = { version = "0.7", features = ["defmt"] }
+embassy-net = { version = "0.7", features = ["defmt", "dhcpv4", "tcp", "dns"] }
 
+# WebSocket support
+embedded-websocket-embedded-io = { version = "0.1", default-features = false, features = ["embedded-io-async"] }
+
+# TLS support for WSS
+embedded-tls = { version = "0.17", default-features = false, features = ["defmt"] }
+
+# Static cell for static lifetime requirements
+static_cell = "2.1"
+
+embedded-hal = "1.0"
 embedded-io = { version = "0.6", features = ["defmt-03"] }
 embedded-io-async = { version = "0.6", features = ["defmt-03"] }
 embedded-storage = "0.3"
@@ -23,6 +38,9 @@ esp-storage = { version = "0.4", features = ["esp32s3"] }
 
 rtt-target = { version = "0.6", features = ["defmt"] }
 critical-section = "1.2"
+
+# Random number generation for WebSocket masking
+rand_core = "0.6"
 
 link = { path = "../link", features = ["defmt", "trace-tlv"] }
 
