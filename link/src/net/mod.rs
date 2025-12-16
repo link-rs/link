@@ -139,7 +139,7 @@ where
                     Event::Mgmt(tlv) => {
                         handle_mgmt(tlv, &mut to_mgmt, &mut to_ui, &mut storage, &ws_cmd_tx).await
                     }
-                    Event::Ui(tlv) => handle_ui(tlv, &mut to_mgmt).await,
+                    Event::Ui(tlv) => handle_ui(tlv, &mut to_mgmt, &mut to_ui).await,
                     Event::Ws(event) => handle_ws(event, &mut to_mgmt, &mut led).await,
                 }
             }
@@ -259,9 +259,10 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
     }
 }
 
-async fn handle_ui<M>(tlv: Tlv<UiToNet>, to_mgmt: &mut M)
+async fn handle_ui<M, U>(tlv: Tlv<UiToNet>, to_mgmt: &mut M, to_ui: &mut U)
 where
     M: WriteTlv<NetToMgmt>,
+    U: WriteTlv<NetToUi>,
 {
     match tlv.tlv_type {
         UiToNet::CircularPing => {
@@ -273,6 +274,7 @@ where
         UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
             // Drop audio frames on the floor for now
             // TODO: Process audio frames (e.g., encode and send over network)
+            to_ui.must_write_tlv(NetToUi::AudioFrame, &tlv.value).await;
         }
     }
 }
@@ -411,7 +413,14 @@ mod tests {
             value: heapless::Vec::from_slice(b"test").unwrap(),
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_ui, &mut storage, &channel.sender()).await;
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_ui,
+            &mut storage,
+            &channel.sender(),
+        )
+        .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, NetToMgmt::Pong);
@@ -430,7 +439,14 @@ mod tests {
             value: heapless::Vec::from_slice(b"ws payload").unwrap(),
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_ui, &mut storage, &channel.sender()).await;
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_ui,
+            &mut storage,
+            &channel.sender(),
+        )
+        .await;
 
         // Should have queued a command
         let cmd = channel.receiver().try_receive().unwrap();
@@ -454,7 +470,14 @@ mod tests {
             value: heapless::Vec::from_slice(b"wss://relay.example.com").unwrap(),
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_ui, &mut storage, &channel.sender()).await;
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_ui,
+            &mut storage,
+            &channel.sender(),
+        )
+        .await;
 
         // Should have sent Ack
         assert!(to_mgmt.written.iter().any(|(t, _)| *t == NetToMgmt::Ack));
@@ -485,7 +508,14 @@ mod tests {
             value: heapless::Vec::new(),
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_ui, &mut storage, &channel.sender()).await;
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_ui,
+            &mut storage,
+            &channel.sender(),
+        )
+        .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, NetToMgmt::RelayUrl);

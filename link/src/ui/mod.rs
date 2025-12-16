@@ -165,9 +165,7 @@ where
                         }
                     }
                     Event::AudioFrame(frame) => {
-                        playback_channel.send(frame).await;
-                        /*
-                            // Audio frame read from microphone - send if button is held
+                        // Audio frame read from microphone - send if button is held
                         if let Some(button) = active_button {
                             let tlv_type = match button {
                                 Button::A => UiToNet::AudioFrameA,
@@ -175,7 +173,6 @@ where
                             };
                             to_net.must_write_tlv(tlv_type, &frame.as_bytes()).await;
                         }
-                        */
                     }
                 }
             }
