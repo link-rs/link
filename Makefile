@@ -34,10 +34,10 @@ $(NET_BIN): FORCE
 
 # Flash targets
 flash-ui: $(UI_BIN)
-	cd ctl && cargo run -- ui flash ../ui.bin
+	cd ctl && cargo run -- ui flash ../$(UI_BIN)
 
 flash-mgmt: $(MGMT_BIN)
-	cd ctl && cargo run -- mgmt flash ../mgmt.bin
+	cd ctl && cargo run -- mgmt flash ../$(MGMT_BIN)
 
 # Flash NET chip (ESP32-S3)
 # WARNING: Uses default app address 0x10000. Override NET_BUILD_DIR if needed.
