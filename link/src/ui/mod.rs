@@ -30,7 +30,6 @@ enum Event {
     Net(Tlv<NetToUi>),
     ButtonDown(Button),
     ButtonUp(Button),
-    /// An audio frame was read from the microphone
     AudioFrame(Frame),
 }
 
@@ -166,7 +165,9 @@ where
                         }
                     }
                     Event::AudioFrame(frame) => {
-                        // Audio frame read from microphone - send if button is held
+                        playback_channel.send(frame).await;
+                        /*
+                            // Audio frame read from microphone - send if button is held
                         if let Some(button) = active_button {
                             let tlv_type = match button {
                                 Button::A => UiToNet::AudioFrameA,
@@ -174,6 +175,7 @@ where
                             };
                             to_net.must_write_tlv(tlv_type, &frame.as_bytes()).await;
                         }
+                        */
                     }
                 }
             }
@@ -183,33 +185,31 @@ where
         let audio_task = async {
             audio_stream.start().await;
 
-            // 400Hz stereo square wave
+            // Play a 400Hz stereo square wave for one second
             let tone_frame = Frame(core::array::from_fn(|i| {
                 const AMPLITUDE: u16 = 0x1ff;
                 const FREQ: u16 = 20;
                 (((i as u16) / FREQ) % 2) * AMPLITUDE
             }));
+            let mut zero = Frame::default();
+            for _i in 0..50 {
+                let _ = audio_stream.read_write(&tone_frame, &mut zero).await;
+            }
 
-            let mut i = 0_usize;
-            let mut frame_buffer: [Frame; 50] = core::array::from_fn(|_| tone_frame.clone());
             loop {
                 // Get a frame to play (or silence if queue is empty)
-                // let tx_frame = playback_channel.try_receive().unwrap_or_default();
-                // let mut rx_frame = Frame::default();
-
-                let last_i = i;
-                i = (i + 1) % frame_buffer.len();
-                let tx_frame = frame_buffer[i].clone();
+                let tx_frame = playback_channel.try_receive().unwrap_or_default();
+                let mut rx_frame = Frame::default();
 
                 // Do the I2S read/write cycle
                 if audio_stream
-                    .read_write(&tx_frame, &mut frame_buffer[last_i])
+                    .read_write(&tx_frame, &mut rx_frame)
                     .await
                     .is_ok()
                 {
                     // Try to send the recorded frame - drop if channel is full
                     // This prevents blocking the audio task if event handler is slow
-                    // let _ = channel.try_send(Event::AudioFrame(rx_frame.clone()));
+                    let _ = channel.try_send(Event::AudioFrame(rx_frame.clone()));
                 }
             }
         };
