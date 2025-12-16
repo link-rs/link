@@ -16,6 +16,8 @@ pub enum CtlToMgmt {
     ResetNetToBootloader,
     /// Reset NET chip into user mode (BOOT0 low, then reset)
     ResetNetToUser,
+    /// Hello handshake for device detection (4 bytes, XOR'd with b"LINK")
+    Hello,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -25,6 +27,8 @@ pub enum MgmtToCtl {
     FromUi,
     FromNet,
     Ack,
+    /// Hello response (4 bytes XOR'd with b"LINK")
+    Hello,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

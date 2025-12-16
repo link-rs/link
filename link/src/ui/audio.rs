@@ -142,7 +142,7 @@ impl<'a, I: I2c> AudioControl<'a, I> {
 
     /// Initialize the audio codec with default settings.
     pub fn init(&mut self, delay: &mut impl DelayNs) {
-        self.power_on();
+        self.power_on(delay);
 
         // Allow for power to stabilize
         delay.delay_ms(100);
@@ -162,14 +162,24 @@ impl<'a, I: I2c> AudioControl<'a, I> {
     }
 
     /// Reset the device and enable baseline devices
-    fn power_on(&mut self) {
+    fn power_on(&mut self, delay: &mut impl DelayNs) {
         // address = 0x0f, value = 0b0_0000_0000
         const RESET_SIGNAL: [u8; 2] = [0x1e, 0x00];
         let _ = self.i2c.write(I2C_ADDR, &RESET_SIGNAL);
 
         self.regs.modify(&mut self.i2c, |r| {
             r.set(PowerMgmt1VrefEnable(true));
+        });
+
+        delay.delay_ms(100);
+
+        self.regs.modify(&mut self.i2c, |r| {
             r.set(PowerMgmt1VmidSelect(0b01));
+        });
+
+        delay.delay_ms(100);
+
+        self.regs.modify(&mut self.i2c, |r| {
             r.set(MicrophoneBiasEnable(true));
         });
     }
@@ -777,7 +787,7 @@ define_field!(PllKLsb, 0x37, 0, 8, u8);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::{I2cDevice, MockI2c};
+    use crate::mocks::{I2cDevice, MockDelay, MockI2c};
 
     /// Mock audio control chip (WM8960) for testing
     pub struct MockAudioControl {
@@ -844,7 +854,8 @@ mod tests {
     fn audio_control_power_on() {
         let (mut i2c, mock) = mock_i2c_with_audio();
         let mut audio = AudioControl::new(&mut i2c);
-        audio.init();
+        let mut delay = MockDelay;
+        audio.init(&mut delay);
 
         let mock = mock.borrow();
         // R25 (0x19) Power Management (1): VREF enabled, VMID=01, mic bias enabled

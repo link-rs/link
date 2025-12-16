@@ -270,5 +270,15 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
             net_reset_pins.reset_to_user(delay).await;
             to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
         }
+        CtlToMgmt::Hello => {
+            info!("mgmt: hello handshake");
+            // XOR the 4-byte value with b"LINK" and send back
+            const MAGIC: &[u8; 4] = b"LINK";
+            let mut response = [0u8; 4];
+            for (i, byte) in tlv.value.iter().take(4).enumerate() {
+                response[i] = byte ^ MAGIC[i];
+            }
+            to_ctl.must_write_tlv(MgmtToCtl::Hello, &response).await;
+        }
     }
 }

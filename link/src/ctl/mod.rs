@@ -342,6 +342,29 @@ where
         assert_eq!(&tlv.value, data);
     }
 
+    /// Send a Hello handshake to detect if a valid device is connected.
+    ///
+    /// Sends a 4-byte challenge value and verifies the response is the challenge
+    /// XOR'd with b"LINK". Returns true if the handshake succeeded.
+    pub async fn hello(&mut self, challenge: &[u8; 4]) -> bool {
+        const MAGIC: &[u8; 4] = b"LINK";
+
+        self.writer.must_write_tlv(CtlToMgmt::Hello, challenge).await;
+        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+
+        if tlv.tlv_type != MgmtToCtl::Hello || tlv.value.len() != 4 {
+            return false;
+        }
+
+        // Verify response is challenge XOR'd with MAGIC
+        for i in 0..4 {
+            if tlv.value[i] != (challenge[i] ^ MAGIC[i]) {
+                return false;
+            }
+        }
+        true
+    }
+
     pub async fn ui_ping(&mut self, data: &[u8]) {
         self.writer.ui().must_write_tlv(MgmtToUi::Ping, data).await;
         let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;

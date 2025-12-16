@@ -17,3 +17,5 @@ embedded-io-adapters = { version = "0.6", features = ["tokio-1"] }
 serialport = "4.8.1"
 hex = "0.4"
 indicatif = "0.17"
+rand = "0.9"
+futures = "0.3"

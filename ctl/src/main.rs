@@ -2,8 +2,10 @@ use clap::{Parser, Subcommand};
 use embedded_io_adapters::tokio_1::FromTokio;
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::FlashPhase;
+use rand::Rng;
 use serialport::SerialPortType;
 use std::io::Write;
+use std::time::Duration;
 use tokio_serial::SerialPortBuilderExt;
 
 #[derive(Parser)]
@@ -21,22 +23,83 @@ struct Cli {
     command: Command,
 }
 
-/// Find USB serial ports that might be the link device
-fn find_usb_serial_ports() -> Vec<String> {
-    serialport::available_ports()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|p| matches!(p.port_type, SerialPortType::UsbPort(_)))
-        .map(|p| p.port_name)
-        .collect()
+/// Test if a serial port has a valid Link device connected.
+/// Sends a Hello handshake with a random challenge and verifies the response.
+async fn test_link_device(port_name: &str, baud: u32) -> bool {
+    // Open port with timeout
+    let port = match tokio_serial::new(port_name, baud)
+        .parity(tokio_serial::Parity::Even)
+        .open_native_async()
+    {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+
+    let (reader, writer) = tokio::io::split(port);
+    let reader = FromTokio::new(reader);
+    let writer = FromTokio::new(writer);
+
+    let mut app = link::ctl::App::new(writer, reader);
+
+    // Generate random 4-byte challenge
+    let challenge: [u8; 4] = rand::rng().random();
+
+    // Try Hello handshake with 50ms timeout
+    match tokio::time::timeout(Duration::from_millis(50), app.hello(&challenge)).await {
+        Ok(result) => result,
+        Err(_) => false, // Timeout
+    }
 }
 
-fn select_port(specified: Option<String>) -> Result<String, String> {
+/// Select a serial port, optionally filtering by valid Link devices.
+async fn select_port(specified: Option<String>, baud: u32) -> Result<String, String> {
     if let Some(port) = specified {
         return Ok(port);
     }
 
-    let ports = find_usb_serial_ports();
+    // Find candidate serial ports
+    let all_ports: Vec<_> = serialport::available_ports()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| matches!(p.port_type, SerialPortType::UsbPort(_)))
+        .map(|p| p.port_name)
+        // Filter out /dev/tty.* ports on macOS (prefer /dev/cu.* for outgoing connections)
+        .filter(|name| !name.starts_with("/dev/tty."))
+        .collect();
+
+    if all_ports.is_empty() {
+        return Err("No USB serial ports found".to_string());
+    } else if all_ports.len() == 1 {
+        println!("Auto-selected port: {}", all_ports[0]);
+        return Ok(all_ports[0].clone());
+    }
+
+    // Test all ports in parallel for valid Link devices
+    println!("Scanning for Link devices...");
+    let futures: Vec<_> = all_ports
+        .iter()
+        .map(|port| {
+            let port = port.clone();
+            async move {
+                let is_valid = test_link_device(&port, baud).await;
+                (port, is_valid)
+            }
+        })
+        .collect();
+
+    let results = futures::future::join_all(futures).await;
+    let valid_ports: Vec<String> = results
+        .into_iter()
+        .filter_map(|(port, is_valid)| if is_valid { Some(port) } else { None })
+        .collect();
+
+    // If we found valid devices, use those; otherwise fall back to all USB ports
+    let ports = if valid_ports.is_empty() {
+        println!("No Link devices detected, showing all USB serial ports");
+        all_ports
+    } else {
+        valid_ports
+    };
 
     match ports.len() {
         0 => Err("No USB serial ports found".to_string()),
@@ -45,7 +108,7 @@ fn select_port(specified: Option<String>) -> Result<String, String> {
             Ok(ports[0].clone())
         }
         _ => {
-            println!("Multiple USB serial ports found:");
+            println!("Multiple ports found:");
             for (i, port) in ports.iter().enumerate() {
                 println!("  {}: {}", i + 1, port);
             }
@@ -61,9 +124,7 @@ fn select_port(specified: Option<String>) -> Result<String, String> {
             let choice: usize = if trimmed.is_empty() {
                 1 // Default to first port
             } else {
-                trimmed
-                    .parse()
-                    .map_err(|_| "Invalid number".to_string())?
+                trimmed.parse().map_err(|_| "Invalid number".to_string())?
             };
 
             if choice < 1 || choice > ports.len() {
@@ -83,7 +144,7 @@ async fn handle_mgmt_info(port: Option<String>) -> Result<(), Box<dyn std::error
     println!("MGMT Bootloader Info");
     println!("====================\n");
 
-    let port_name = select_port(port)?;
+    let port_name = select_port(port, 115200).await?;
 
     println!("\nTo read bootloader information, the MGMT chip must be in bootloader mode.");
     println!("Please follow these steps:");
@@ -182,7 +243,7 @@ async fn handle_mgmt_flash(
     let firmware = std::fs::read(&file)?;
     println!("Firmware: {} ({} bytes)", file.display(), firmware.len());
 
-    let port_name = select_port(port)?;
+    let port_name = select_port(port, 115200).await?;
 
     println!("\nTo flash the MGMT chip, it must be in bootloader mode.");
     println!("Please follow these steps:");
@@ -450,7 +511,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {}
     }
 
-    let port_name = select_port(cli.port)?;
+    let port_name = select_port(cli.port, cli.baud).await?;
     let port = tokio_serial::new(&port_name, cli.baud)
         .parity(tokio_serial::Parity::Even)
         .open_native_async()?;
@@ -471,7 +532,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.mgmt_ping(data.as_bytes()).await;
                 println!("Received pong!");
             }
-            MgmtAction::Info => unreachable!(),  // Handled above
+            MgmtAction::Info => unreachable!(), // Handled above
             MgmtAction::Flash { .. } => unreachable!(), // Handled above
         },
         Command::Ui { action } => match action {
@@ -533,14 +594,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("  (SP appears valid - points to SRAM)");
                     }
                     if (0x0800_0000..0x0810_0000).contains(&reset) && (reset & 1) == 1 {
-                        println!(
-                            "  (Reset handler appears valid - points to Flash, Thumb mode)"
-                        );
+                        println!("  (Reset handler appears valid - points to Flash, Thumb mode)");
                     }
                 } else {
-                    println!(
-                        "\nFlash Memory: Could not read (read protection may be enabled)"
-                    );
+                    println!("\nFlash Memory: Could not read (read protection may be enabled)");
                 }
 
                 println!("\nUI chip reset back to user mode.");
@@ -564,9 +621,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap()
                     .progress_chars("#>-");
                 let sectors_style = ProgressStyle::default_bar()
-                    .template(
-                        "{prefix:>12} [{bar:40.cyan/blue}] {pos}/{len} sectors ({percent}%)",
-                    )
+                    .template("{prefix:>12} [{bar:40.cyan/blue}] {pos}/{len} sectors ({percent}%)")
                     .unwrap()
                     .progress_chars("#>-");
                 pb.set_style(sectors_style.clone());
@@ -677,14 +732,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("\nNET chip reset back to user mode.");
                 println!("Done!");
             }
-            NetAction::Flash { file, address, compress, no_verify } => {
+            NetAction::Flash {
+                file,
+                address,
+                compress,
+                no_verify,
+            } => {
                 println!("NET Flash (ESP32)");
                 println!("=================\n");
 
                 // Parse the address (supports hex with 0x prefix or decimal)
                 let address: u32 = if address.starts_with("0x") || address.starts_with("0X") {
-                    u32::from_str_radix(&address[2..], 16)
-                        .expect("Invalid hex address")
+                    u32::from_str_radix(&address[2..], 16).expect("Invalid hex address")
                 } else {
                     address.parse().expect("Invalid address")
                 };
@@ -727,32 +786,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut current_phase = None;
                 let verify = !no_verify;
                 let result = app
-                    .flash_net(&firmware, address, compress, verify, |phase, progress, total| {
-                        if current_phase != Some(phase) {
-                            current_phase = Some(phase);
-                            match phase {
-                                FlashPhase::Compressing => {
-                                    pb.set_style(bytes_style.clone());
-                                    pb.set_prefix("Compressing");
+                    .flash_net(
+                        &firmware,
+                        address,
+                        compress,
+                        verify,
+                        |phase, progress, total| {
+                            if current_phase != Some(phase) {
+                                current_phase = Some(phase);
+                                match phase {
+                                    FlashPhase::Compressing => {
+                                        pb.set_style(bytes_style.clone());
+                                        pb.set_prefix("Compressing");
+                                    }
+                                    FlashPhase::Erasing => {
+                                        pb.set_style(erase_style.clone());
+                                        pb.set_prefix("Erasing");
+                                    }
+                                    FlashPhase::Writing => {
+                                        pb.set_style(bytes_style.clone());
+                                        pb.set_prefix("Writing");
+                                    }
+                                    FlashPhase::Verifying => {
+                                        pb.set_style(bytes_style.clone());
+                                        pb.set_prefix("Verifying");
+                                    }
                                 }
-                                FlashPhase::Erasing => {
-                                    pb.set_style(erase_style.clone());
-                                    pb.set_prefix("Erasing");
-                                }
-                                FlashPhase::Writing => {
-                                    pb.set_style(bytes_style.clone());
-                                    pb.set_prefix("Writing");
-                                }
-                                FlashPhase::Verifying => {
-                                    pb.set_style(bytes_style.clone());
-                                    pb.set_prefix("Verifying");
-                                }
+                                pb.set_length(total as u64);
+                                pb.set_position(0);
                             }
-                            pb.set_length(total as u64);
-                            pb.set_position(0);
-                        }
-                        pb.set_position(progress as u64);
-                    })
+                            pb.set_position(progress as u64);
+                        },
+                    )
                     .await;
 
                 pb.finish_and_clear();
