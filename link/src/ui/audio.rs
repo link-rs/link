@@ -4,6 +4,7 @@
 
 #![allow(dead_code)] // No need to use all of the fields on the device
 
+use embedded_hal::delay::DelayNs;
 use embedded_hal::i2c::I2c;
 
 /// Size of an audio frame in 16-bit samples.
@@ -71,7 +72,7 @@ pub enum AudioError {
 /// including power management and enabling audio paths.
 pub trait AudioCodec {
     /// Initialize and start the audio codec with default settings.
-    fn start(&mut self);
+    fn start(&mut self, delay: &mut impl DelayNs);
 
     /// Enable or disable the audio input (microphone) path.
     fn enable_input(&mut self, enabled: bool);
@@ -140,14 +141,24 @@ impl<'a, I: I2c> AudioControl<'a, I> {
     }
 
     /// Initialize the audio codec with default settings.
-    pub fn init(&mut self) {
+    pub fn init(&mut self, delay: &mut impl DelayNs) {
         self.power_on();
+
+        // Allow for power to stabilize
+        delay.delay_ms(100);
+
         self.left_input_path(true);
+        delay.delay_ms(100);
         self.left_output_path(true);
+        delay.delay_ms(100);
         self.left_adc(true);
+        delay.delay_ms(100);
         self.left_dac(true);
+        delay.delay_ms(100);
         self.configure_dac(true, true, false);
+        delay.delay_ms(100);
         self.enable_i2s();
+        delay.delay_ms(100);
     }
 
     /// Reset the device and enable baseline devices
@@ -335,8 +346,8 @@ impl<'a, I: I2c> AudioControl<'a, I> {
 }
 
 impl<'a, I: I2c> AudioCodec for AudioControl<'a, I> {
-    fn start(&mut self) {
-        self.init();
+    fn start(&mut self, delay: &mut impl DelayNs) {
+        self.init(delay);
     }
 
     fn enable_input(&mut self, enabled: bool) {

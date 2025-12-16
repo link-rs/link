@@ -93,7 +93,7 @@ where
     /// Initialize the audio codec using the shared I2C bus.
     pub fn init_audio(&mut self) {
         let mut audio = AudioControl::new(&mut self.i2c);
-        audio.init();
+        audio.init(&mut self.delay);
         audio.enable_input(true);
         audio.enable_output(true);
     }
@@ -182,20 +182,34 @@ where
         // Audio I/O task: reads from microphone, writes queued playback frames
         let audio_task = async {
             audio_stream.start().await;
+
+            // 400Hz stereo square wave
+            let tone_frame = Frame(core::array::from_fn(|i| {
+                const AMPLITUDE: u16 = 0x1ff;
+                const FREQ: u16 = 20;
+                (((i as u16) / FREQ) % 2) * AMPLITUDE
+            }));
+
+            let mut i = 0_usize;
+            let mut frame_buffer: [Frame; 50] = core::array::from_fn(|_| tone_frame.clone());
             loop {
                 // Get a frame to play (or silence if queue is empty)
-                let tx_frame = playback_channel.try_receive().unwrap_or_default();
-                let mut rx_frame = Frame::default();
+                // let tx_frame = playback_channel.try_receive().unwrap_or_default();
+                // let mut rx_frame = Frame::default();
+
+                let last_i = i;
+                i = (i + 1) % frame_buffer.len();
+                let tx_frame = frame_buffer[i].clone();
 
                 // Do the I2S read/write cycle
                 if audio_stream
-                    .read_write(&tx_frame, &mut rx_frame)
+                    .read_write(&tx_frame, &mut frame_buffer[last_i])
                     .await
                     .is_ok()
                 {
                     // Try to send the recorded frame - drop if channel is full
                     // This prevents blocking the audio task if event handler is slow
-                    let _ = channel.try_send(Event::AudioFrame(rx_frame));
+                    // let _ = channel.try_send(Event::AudioFrame(rx_frame.clone()));
                 }
             }
         };
