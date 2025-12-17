@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebLink - Virtual Link Device</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        h1 {
+            text-align: center;
+            color: #00d4ff;
+            margin-bottom: 30px;
+        }
+        .device {
+            max-width: 500px;
+            margin: 0 auto;
+            background: #16213e;
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+        .device-label {
+            text-align: center;
+            font-size: 24px;
+            font-weight: bold;
+            color: #888;
+            margin-bottom: 20px;
+            letter-spacing: 4px;
+        }
+        .leds {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #0f0f23;
+            border-radius: 10px;
+        }
+        .led-group {
+            text-align: center;
+        }
+        .led-label {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+        .led {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: #000;
+            margin: 0 auto;
+            box-shadow: 0 0 10px currentColor, inset 0 0 10px rgba(255,255,255,0.1);
+            transition: background-color 0.1s, box-shadow 0.1s;
+        }
+        .led.on {
+            box-shadow: 0 0 20px currentColor, 0 0 40px currentColor, inset 0 0 10px rgba(255,255,255,0.3);
+        }
+        .mgmt-leds {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+        .buttons {
+            display: flex;
+            justify-content: space-around;
+            padding: 20px;
+        }
+        .button-group {
+            text-align: center;
+        }
+        .button-label {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+        .btn {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: transform 0.1s, box-shadow 0.1s;
+            user-select: none;
+        }
+        .btn:active {
+            transform: scale(0.95);
+        }
+        .btn-a {
+            background: linear-gradient(145deg, #ff6b6b, #ee5a5a);
+            color: white;
+            box-shadow: 0 4px 15px rgba(255, 107, 107, 0.4);
+        }
+        .btn-a:active {
+            box-shadow: 0 2px 8px rgba(255, 107, 107, 0.6);
+        }
+        .btn-b {
+            background: linear-gradient(145deg, #4ecdc4, #44b3ab);
+            color: white;
+            box-shadow: 0 4px 15px rgba(78, 205, 196, 0.4);
+        }
+        .btn-b:active {
+            box-shadow: 0 2px 8px rgba(78, 205, 196, 0.6);
+        }
+        .btn-mic {
+            background: linear-gradient(145deg, #ffe66d, #ffd93d);
+            color: #333;
+            box-shadow: 0 4px 15px rgba(255, 230, 109, 0.4);
+        }
+        .btn-mic:active {
+            box-shadow: 0 2px 8px rgba(255, 230, 109, 0.6);
+        }
+        .audio-section {
+            margin-top: 20px;
+            padding: 20px;
+            background: #0f0f23;
+            border-radius: 10px;
+        }
+        .audio-title {
+            font-size: 14px;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 15px;
+        }
+        .audio-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .audio-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #e74c3c;
+        }
+        .audio-indicator.active {
+            background: #2ecc71;
+        }
+        .audio-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            background: #9b59b6;
+            color: white;
+            transition: background 0.2s;
+        }
+        .audio-btn:hover {
+            background: #8e44ad;
+        }
+        .audio-btn:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        .config-section {
+            margin-top: 20px;
+            padding: 20px;
+            background: #0f0f23;
+            border-radius: 10px;
+        }
+        .config-title {
+            font-size: 14px;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 15px;
+        }
+        .config-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .config-input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #333;
+            border-radius: 5px;
+            background: #1a1a2e;
+            color: #eee;
+            font-size: 14px;
+        }
+        .config-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            background: #3498db;
+            color: white;
+            transition: background 0.2s;
+        }
+        .config-btn:hover {
+            background: #2980b9;
+        }
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 13px;
+            color: #888;
+        }
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #e74c3c;
+        }
+        .status-indicator.connected {
+            background: #2ecc71;
+        }
+        .log-section {
+            margin-top: 20px;
+            padding: 20px;
+            background: #0f0f23;
+            border-radius: 10px;
+        }
+        .log-title {
+            font-size: 14px;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+        .log {
+            height: 150px;
+            overflow-y: auto;
+            background: #0a0a15;
+            border-radius: 5px;
+            padding: 10px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            margin-bottom: 2px;
+            color: #aaa;
+        }
+        .log-entry.ws {
+            color: #9b59b6;
+        }
+        .log-entry.audio {
+            color: #e67e22;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebLink</h1>
+
+    <div class="device">
+        <div class="device-label">LINK</div>
+
+        <div class="leds">
+            <div class="led-group">
+                <div class="led-label">MGMT</div>
+                <div class="mgmt-leds">
+                    <div class="led" id="led-mgmt-a"></div>
+                    <div class="led" id="led-mgmt-b"></div>
+                </div>
+            </div>
+            <div class="led-group">
+                <div class="led-label">UI</div>
+                <div class="led" id="led-ui"></div>
+            </div>
+            <div class="led-group">
+                <div class="led-label">NET</div>
+                <div class="led" id="led-net"></div>
+            </div>
+        </div>
+
+        <div class="buttons">
+            <div class="button-group">
+                <div class="button-label">Button A</div>
+                <button class="btn btn-a" id="btn-a">A</button>
+            </div>
+            <div class="button-group">
+                <div class="button-label">Button B</div>
+                <button class="btn btn-b" id="btn-b">B</button>
+            </div>
+            <div class="button-group">
+                <div class="button-label">Mic</div>
+                <button class="btn btn-mic" id="btn-mic">MIC</button>
+            </div>
+        </div>
+
+        <div class="audio-section" id="audio-section" style="display: none;">
+            <div class="audio-title">Audio</div>
+            <div class="audio-status">
+                <div class="audio-indicator" id="audio-indicator"></div>
+                <span id="audio-status">Microphone: Not initialized</span>
+            </div>
+            <button class="audio-btn" id="audio-btn">Enable Microphone</button>
+        </div>
+
+        <div class="config-section">
+            <div class="config-title">Relay</div>
+            <div class="config-row">
+                <input type="text" class="config-input" id="relay-url" placeholder="Relay URL (e.g., wss://relay.example.com)">
+                <button class="config-btn" id="set-relay">Save</button>
+                <button class="config-btn" id="clear-relay" style="background: #e74c3c;">Clear</button>
+            </div>
+            <div class="status-row">
+                <div class="status-indicator" id="ws-indicator"></div>
+                <span id="ws-status">Not configured</span>
+            </div>
+        </div>
+
+        <div class="log-section">
+            <div class="log-title">Device Log</div>
+            <div class="log" id="device-log"></div>
+        </div>
+    </div>
+
+    <script type="module">
+        import init, { WebLink } from './pkg/web_link.js';
+
+        let device = null;
+        let ws = null;
+        let audioContext = null;
+        let audioWorklet = null;
+        let micStream = null;
+
+        // Override console.log to capture device logs
+        const originalLog = console.log;
+        const deviceLog = document.getElementById('device-log');
+
+        console.log = function(...args) {
+            originalLog.apply(console, args);
+            const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            deviceLog.appendChild(entry);
+            deviceLog.scrollTop = deviceLog.scrollHeight;
+        };
+
+        function wsLog(message) {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry ws';
+            entry.textContent = `[${new Date().toLocaleTimeString()}] [WS] ${message}`;
+            deviceLog.appendChild(entry);
+            deviceLog.scrollTop = deviceLog.scrollHeight;
+        }
+
+        function audioLog(message) {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry audio';
+            entry.textContent = `[${new Date().toLocaleTimeString()}] [Audio] ${message}`;
+            deviceLog.appendChild(entry);
+            deviceLog.scrollTop = deviceLog.scrollHeight;
+        }
+
+        const RELAY_URL_KEY = 'weblink_relay_url';
+
+        function getStoredRelayUrl() {
+            return localStorage.getItem(RELAY_URL_KEY) || '';
+        }
+
+        function setStoredRelayUrl(url) {
+            if (url) {
+                localStorage.setItem(RELAY_URL_KEY, url);
+            } else {
+                localStorage.removeItem(RELAY_URL_KEY);
+            }
+        }
+
+        function updateWsStatus(connected, hasUrl) {
+            const indicator = document.getElementById('ws-indicator');
+            const status = document.getElementById('ws-status');
+            if (!hasUrl) {
+                indicator.classList.remove('connected');
+                status.textContent = 'Not configured';
+            } else if (connected) {
+                indicator.classList.add('connected');
+                status.textContent = 'Connected';
+            } else {
+                indicator.classList.remove('connected');
+                status.textContent = 'Disconnected';
+            }
+        }
+
+        function updateAudioStatus(active, message) {
+            const indicator = document.getElementById('audio-indicator');
+            const status = document.getElementById('audio-status');
+            const btn = document.getElementById('audio-btn');
+            if (active) {
+                indicator.classList.add('active');
+                btn.textContent = 'Disable Microphone';
+            } else {
+                indicator.classList.remove('active');
+                btn.textContent = 'Enable Microphone';
+            }
+            status.textContent = message;
+        }
+
+        function showAudioSection() {
+            document.getElementById('audio-section').style.display = 'block';
+        }
+
+        async function checkMicrophonePermission() {
+            try {
+                const result = await navigator.permissions.query({ name: 'microphone' });
+                return result.state; // 'granted', 'denied', or 'prompt'
+            } catch (e) {
+                // Permissions API not supported, assume we need to ask
+                return 'prompt';
+            }
+        }
+
+        // LED update loop
+        function updateLeds() {
+            if (!device) return;
+
+            const leds = [
+                { id: 'led-mgmt-a', getter: () => device.getMgmtLedA() },
+                { id: 'led-mgmt-b', getter: () => device.getMgmtLedB() },
+                { id: 'led-ui', getter: () => device.getUiLed() },
+                { id: 'led-net', getter: () => device.getNetLed() },
+            ];
+
+            for (const led of leds) {
+                const el = document.getElementById(led.id);
+                const color = led.getter();
+                el.style.backgroundColor = color;
+                el.style.color = color;
+                el.classList.toggle('on', color !== '#000000');
+            }
+
+            requestAnimationFrame(updateLeds);
+        }
+
+        // Initialize WebAudio
+        async function initAudio() {
+            if (audioContext) {
+                // Already initialized - toggle off
+                await stopAudio();
+                return;
+            }
+
+            try {
+                // Request microphone access
+                micStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false,
+                        sampleRate: 48000 // Preferred, browser may ignore
+                    }
+                });
+
+                // Create audio context
+                audioContext = new AudioContext({ sampleRate: 48000 });
+                audioLog(`Audio context created at ${audioContext.sampleRate}Hz`);
+
+                // Load the audio worklet
+                await audioContext.audioWorklet.addModule('audio-processor.js');
+                audioLog('Audio worklet loaded');
+
+                // Create worklet node
+                audioWorklet = new AudioWorkletNode(audioContext, 'link-audio-processor');
+
+                // Handle messages from worklet
+                audioWorklet.port.onmessage = (event) => {
+                    if (event.data.type === 'capture') {
+                        // Got a captured frame - send to device
+                        const samples = new Int16Array(event.data.samples);
+                        device.audioCapture(samples);
+                    } else if (event.data.type === 'ready') {
+                        audioLog('Audio worklet ready');
+                    } else if (event.data.type === 'diag') {
+                        const d = event.data;
+                        audioLog(`DIAG: rate=${d.sampleRate} ratio=${d.resampleRatio.toFixed(2)} input=[${d.inputMin.toFixed(4)}, ${d.inputMax.toFixed(4)}] output=[${d.outputMin}, ${d.outputMax}] buf=${d.outputBufferLen}`);
+                    }
+                };
+
+                // Connect microphone to worklet
+                const micSource = audioContext.createMediaStreamSource(micStream);
+                micSource.connect(audioWorklet);
+
+                // Connect worklet to speakers (for playback)
+                audioWorklet.connect(audioContext.destination);
+
+                // Hide audio section - mic is working silently
+                document.getElementById('audio-section').style.display = 'none';
+                audioLog('Microphone connected');
+
+            } catch (err) {
+                audioLog(`Error: ${err.message}`);
+                showAudioSection();
+                updateAudioStatus(false, `Microphone: Error - ${err.message}`);
+            }
+        }
+
+        async function stopAudio() {
+            if (micStream) {
+                micStream.getTracks().forEach(track => track.stop());
+                micStream = null;
+            }
+            if (audioWorklet) {
+                audioWorklet.disconnect();
+                audioWorklet = null;
+            }
+            if (audioContext) {
+                await audioContext.close();
+                audioContext = null;
+            }
+            updateAudioStatus(false, 'Microphone: Disabled');
+            audioLog('Audio stopped');
+        }
+
+        // Handle playback frames from device
+        function handlePlayback(samples) {
+            if (!audioWorklet) return;
+            // Convert Int16Array to regular array for transfer
+            audioWorklet.port.postMessage({
+                type: 'playback',
+                samples: Array.from(samples)
+            });
+        }
+
+        let currentRelayUrl = '';
+
+        // Handle WebSocket commands from NET chip
+        function handleWsCommand(command, arg) {
+            wsLog(`Command: ${command} ${arg ? '(' + arg.substring(0, 50) + (arg.length > 50 ? '...' : '') + ')' : ''}`);
+
+            switch (command) {
+                case 'connect':
+                    currentRelayUrl = arg;
+                    if (ws) {
+                        ws.close();
+                    }
+                    wsLog(`Connecting to ${arg}...`);
+                    updateWsStatus(false, true);
+                    try {
+                        ws = new WebSocket(arg);
+                        ws.binaryType = 'arraybuffer';
+
+                        ws.onopen = () => {
+                            wsLog('Connected!');
+                            updateWsStatus(true, true);
+                            device.wsConnected();
+                        };
+
+                        ws.onclose = () => {
+                            wsLog('Disconnected');
+                            updateWsStatus(false, !!currentRelayUrl);
+                            device.wsDisconnected();
+                            ws = null;
+                        };
+
+                        ws.onerror = (e) => {
+                            wsLog(`Error: ${e.message || 'Connection failed'}`);
+                        };
+
+                        ws.onmessage = (e) => {
+                            let hexData;
+                            if (e.data instanceof ArrayBuffer) {
+                                const arr = new Uint8Array(e.data);
+                                hexData = Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+                            } else {
+                                // Text message - convert to hex
+                                hexData = Array.from(new TextEncoder().encode(e.data)).map(b => b.toString(16).padStart(2, '0')).join('');
+                            }
+                            wsLog(`Received ${hexData.length / 2} bytes`);
+                            device.wsReceived(hexData);
+                        };
+                    } catch (e) {
+                        wsLog(`Failed to connect: ${e.message}`);
+                    }
+                    break;
+
+                case 'disconnect':
+                    currentRelayUrl = '';
+                    updateWsStatus(false, false);
+                    if (ws) {
+                        ws.close();
+                        ws = null;
+                    }
+                    break;
+
+                case 'send':
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        // arg is hex-encoded data
+                        const bytes = new Uint8Array(arg.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+                        ws.send(bytes);
+                        wsLog(`Sent ${bytes.length} bytes`);
+                    } else {
+                        wsLog('Cannot send: not connected');
+                    }
+                    break;
+            }
+        }
+
+        async function main() {
+            await init();
+
+            device = new WebLink();
+            console.log('Virtual Link device created');
+
+            // Set up WebSocket command handler
+            device.onWsCommand(handleWsCommand);
+
+            // Set up audio playback handler
+            device.onAudioPlayback(handlePlayback);
+
+            // Start LED update loop
+            updateLeds();
+
+            // Button handlers
+            const btnA = document.getElementById('btn-a');
+            const btnB = document.getElementById('btn-b');
+            const btnMic = document.getElementById('btn-mic');
+
+            btnA.addEventListener('mousedown', () => device.pressA());
+            btnA.addEventListener('mouseup', () => device.releaseA());
+            btnA.addEventListener('mouseleave', () => device.releaseA());
+            btnA.addEventListener('touchstart', (e) => { e.preventDefault(); device.pressA(); });
+            btnA.addEventListener('touchend', () => device.releaseA());
+
+            btnB.addEventListener('mousedown', () => device.pressB());
+            btnB.addEventListener('mouseup', () => device.releaseB());
+            btnB.addEventListener('mouseleave', () => device.releaseB());
+            btnB.addEventListener('touchstart', (e) => { e.preventDefault(); device.pressB(); });
+            btnB.addEventListener('touchend', () => device.releaseB());
+
+            btnMic.addEventListener('mousedown', () => device.pressMic());
+            btnMic.addEventListener('mouseup', () => device.releaseMic());
+            btnMic.addEventListener('mouseleave', () => device.releaseMic());
+            btnMic.addEventListener('touchstart', (e) => { e.preventDefault(); device.pressMic(); });
+            btnMic.addEventListener('touchend', () => device.releaseMic());
+
+            // Audio button
+            document.getElementById('audio-btn').addEventListener('click', initAudio);
+
+            // Check microphone permission and auto-enable if already granted
+            const micPermission = await checkMicrophonePermission();
+            if (micPermission === 'granted') {
+                // Permission already granted - auto-initialize audio
+                audioLog('Microphone permission already granted, auto-enabling...');
+                await initAudio();
+            } else {
+                // Need to prompt user - show the audio section
+                showAudioSection();
+                if (micPermission === 'denied') {
+                    updateAudioStatus(false, 'Microphone: Permission denied');
+                }
+            }
+
+            // Relay URL configuration
+            const relayInput = document.getElementById('relay-url');
+            const setRelayBtn = document.getElementById('set-relay');
+            const clearRelayBtn = document.getElementById('clear-relay');
+
+            // Load stored relay URL
+            const storedUrl = getStoredRelayUrl();
+            if (storedUrl) {
+                relayInput.value = storedUrl;
+                // Tell NET chip about the stored URL - it will auto-connect
+                device.setRelayUrl(storedUrl);
+            }
+
+            setRelayBtn.addEventListener('click', () => {
+                const url = relayInput.value.trim();
+                if (url) {
+                    setStoredRelayUrl(url);
+                    device.setRelayUrl(url);
+                }
+            });
+
+            clearRelayBtn.addEventListener('click', () => {
+                relayInput.value = '';
+                setStoredRelayUrl('');
+                device.setRelayUrl('');
+            });
+
+            relayInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    setRelayBtn.click();
+                }
+            });
+        }
+
+        main().catch(console.error);
+    </script>
+</body>
+</html>

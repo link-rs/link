@@ -1,4 +1,4 @@
-.PHONY: flash-ui flash-mgmt flash-net clean web-ctl serve-web
+.PHONY: flash-ui flash-mgmt flash-net clean web-ctl serve-web web-link serve-link
 
 # UI chip (STM32F405RG - Cortex-M4F)
 UI_TARGET = thumbv7em-none-eabihf
@@ -62,13 +62,23 @@ serve-web: web-ctl
 	@echo "Serving at http://localhost:8080"
 	cd web-ctl/www && python3 -m http.server 8080
 
+# Web Link (Virtual device in WASM)
+web-link:
+	cd web-link && wasm-pack build --target web --out-dir www/pkg
+
+serve-link: web-link
+	@echo "Serving at http://localhost:8081"
+	cd web-link/www && python3 -m http.server 8081
+
 clean:
 	cd ui && cargo clean
 	cd mgmt && cargo clean
 	cd net && cargo clean
 	cd ctl && cargo clean
 	cd web-ctl && cargo clean
+	-cd web-link && cargo clean
 	rm -rf web-ctl/www/pkg
 	rm -rf web-ctl/www/firmware
+	rm -rf web-link/www/pkg
 
 FORCE:
