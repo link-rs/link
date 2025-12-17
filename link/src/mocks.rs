@@ -422,9 +422,9 @@ impl crate::ui::AudioStream for MockAudioStream {
     async fn start(&mut self) {}
     async fn stop(&mut self) {}
     async fn read(&mut self) -> crate::ui::Frame {
-        // Wait 20ms between frames (8kHz sample rate, 320 samples = 40ms per frame,
-        // but we use 20ms for faster test execution)
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // Simulate real audio timing (20ms per frame at 16kHz, 320 samples)
+        // Use shorter delay in tests to speed them up while still allowing scheduler to run
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
         // Create a frame with a unique identifier in the first sample
         let mut frame = crate::ui::Frame::default();
@@ -466,7 +466,8 @@ impl crate::ui::AudioStream for CapturingAudioStream {
     async fn start(&mut self) {}
     async fn stop(&mut self) {}
     async fn read(&mut self) -> crate::ui::Frame {
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // Simulate real audio timing (5ms per frame for faster tests)
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let mut frame = crate::ui::Frame::default();
         frame.0[0] = self.frame_counter;
         self.frame_counter = self.frame_counter.wrapping_add(1);

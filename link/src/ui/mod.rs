@@ -634,20 +634,20 @@ mod audio_streaming_tests {
             _ = ui_app.run() => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
-                // Wait a bit for the app to start
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                // Wait for startup tone to complete (50 frames × 5ms = 250ms)
+                tokio::time::sleep(Duration::from_millis(300)).await;
 
                 // Press button A
                 button_a_ctrl.press().await;
 
-                // Wait for at least 2 audio frames (20ms each + some margin)
-                tokio::time::sleep(Duration::from_millis(60)).await;
+                // Wait for at least 2 audio frames (5ms each + margin)
+                tokio::time::sleep(Duration::from_millis(100)).await;
 
                 // Release button A
                 button_a_ctrl.release().await;
 
                 // Wait a bit to ensure no more frames after release
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(30)).await;
             } => {}
         }
 
@@ -696,20 +696,20 @@ mod audio_streaming_tests {
             _ = ui_app.run() => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
-                // Wait a bit for the app to start
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                // Wait for startup tone to complete (50 frames × 5ms = 250ms)
+                tokio::time::sleep(Duration::from_millis(300)).await;
 
                 // Press mic button (active-low)
                 button_mic_ctrl.press_active_low().await;
 
                 // Wait for at least 2 audio frames
-                tokio::time::sleep(Duration::from_millis(60)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
 
                 // Release mic button (active-low)
                 button_mic_ctrl.release_active_low().await;
 
                 // Wait a bit
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(30)).await;
             } => {}
         }
 
@@ -759,20 +759,20 @@ mod audio_streaming_tests {
             _ = ui_app.run() => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
-                // Wait a bit for the app to start
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                // Wait for startup tone to complete (50 frames × 5ms = 250ms)
+                tokio::time::sleep(Duration::from_millis(300)).await;
 
                 // Press button B
                 button_b_ctrl.press().await;
 
                 // Wait for at least 2 audio frames
-                tokio::time::sleep(Duration::from_millis(60)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
 
                 // Release button B
                 button_b_ctrl.release().await;
 
                 // Wait a bit
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(30)).await;
             } => {}
         }
 
@@ -819,8 +819,8 @@ mod audio_streaming_tests {
             _ = ui_app.run() => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
-                // Wait for several audio frame periods without pressing any button
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Wait for startup tone + extra time without pressing any button
+                tokio::time::sleep(Duration::from_millis(350)).await;
             } => {}
         }
 
@@ -859,8 +859,8 @@ mod audio_streaming_tests {
             _ = ui_app.run() => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
-                // Wait for app to start
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                // Wait for startup tone to complete
+                tokio::time::sleep(Duration::from_millis(300)).await;
 
                 // Press button A briefly
                 button_a_ctrl.press().await;
@@ -868,7 +868,7 @@ mod audio_streaming_tests {
                 button_a_ctrl.release().await;
 
                 // Record frame count after release
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
                 let count_after_release = frames_a.lock().unwrap().len();
 
                 // Wait more and verify no new frames
@@ -915,8 +915,8 @@ mod audio_streaming_tests {
             _ = ui_app.run() => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
-                // Wait for app to start
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                // Wait for startup tone to complete
+                tokio::time::sleep(Duration::from_millis(300)).await;
 
                 // Press button A first
                 button_a_ctrl.press().await;
@@ -981,8 +981,8 @@ mod audio_streaming_tests {
         tokio::select! {
             _ = ui_app.run() => unreachable!(),
             _ = async {
-                // Wait for app to start
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                // Wait for startup tone to complete (50 frames × 5ms = 250ms)
+                tokio::time::sleep(Duration::from_millis(300)).await;
 
                 // Create a test frame with known data
                 let mut test_frame = crate::ui::Frame::default();
@@ -1045,8 +1045,8 @@ mod audio_streaming_tests {
         tokio::select! {
             _ = ui_app.run() => unreachable!(),
             _ = async {
-                // Wait for app to start
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                // Wait for startup tone to complete (50 frames × 5ms = 250ms)
+                tokio::time::sleep(Duration::from_millis(300)).await;
 
                 // Send multiple frames with sequence numbers
                 for i in 0u16..3 {
@@ -1061,7 +1061,7 @@ mod audio_streaming_tests {
                 }
 
                 // Wait for all frames to be processed
-                tokio::time::sleep(Duration::from_millis(150)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
             } => {}
         }
 

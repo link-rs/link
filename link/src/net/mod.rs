@@ -16,7 +16,7 @@ use embedded_storage::{ReadStorage, Storage};
 use heapless::{String, Vec};
 
 /// Maximum size for WebSocket message payload.
-pub const MAX_WS_PAYLOAD: usize = 256;
+pub const MAX_WS_PAYLOAD: usize = 640;
 
 /// Commands sent to the WebSocket task.
 #[derive(Clone)]
@@ -29,6 +29,7 @@ pub enum WsCommand {
 }
 
 /// Events received from the WebSocket task.
+#[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum WsEvent {
     /// WebSocket connected to relay.
@@ -139,8 +140,8 @@ where
                     Event::Mgmt(tlv) => {
                         handle_mgmt(tlv, &mut to_mgmt, &mut to_ui, &mut storage, &ws_cmd_tx).await
                     }
-                    Event::Ui(tlv) => handle_ui(tlv, &mut to_mgmt, &mut to_ui).await,
-                    Event::Ws(event) => handle_ws(event, &mut to_mgmt, &mut led).await,
+                    Event::Ui(tlv) => handle_ui(tlv, &mut to_mgmt, &ws_cmd_tx).await,
+                    Event::Ws(event) => handle_ws(event, &mut to_mgmt, &mut to_ui, &mut led).await,
                 }
             }
         };
@@ -259,10 +260,12 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
     }
 }
 
-async fn handle_ui<M, U>(tlv: Tlv<UiToNet>, to_mgmt: &mut M, to_ui: &mut U)
-where
+async fn handle_ui<'a, M, RM: RawMutex, const N: usize>(
+    tlv: Tlv<UiToNet>,
+    to_mgmt: &mut M,
+    ws_cmd_tx: &Sender<'a, RM, WsCommand, N>,
+) where
     M: WriteTlv<NetToMgmt>,
-    U: WriteTlv<NetToUi>,
 {
     match tlv.tlv_type {
         UiToNet::CircularPing => {
@@ -272,16 +275,23 @@ where
                 .await;
         }
         UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
-            // Drop audio frames on the floor for now
-            // TODO: Process audio frames (e.g., encode and send over network)
-            to_ui.must_write_tlv(NetToUi::AudioFrame, &tlv.value).await;
+            let Ok(payload) = Vec::try_from(tlv.value.as_slice()) else {
+                info!("net: ws payload too large");
+                return;
+            };
+            ws_cmd_tx.send(WsCommand::Send(payload)).await;
         }
     }
 }
 
-async fn handle_ws<M, LR, LG, LB>(event: WsEvent, to_mgmt: &mut M, led: &mut Led<LR, LG, LB>)
-where
+async fn handle_ws<M, U, LR, LG, LB>(
+    event: WsEvent,
+    to_mgmt: &mut M,
+    to_ui: &mut U,
+    led: &mut Led<LR, LG, LB>,
+) where
     M: WriteTlv<NetToMgmt>,
+    U: WriteTlv<NetToUi>,
     LR: StatefulOutputPin,
     LG: StatefulOutputPin,
     LB: StatefulOutputPin,
@@ -299,7 +309,7 @@ where
         }
         WsEvent::Received(data) => {
             info!("net: ws received {} bytes", data.len());
-            to_mgmt.must_write_tlv(NetToMgmt::WsReceived, &data).await;
+            to_ui.must_write_tlv(NetToUi::AudioFrame, &data).await;
         }
     }
 }
@@ -365,9 +375,10 @@ mod tests {
     #[tokio::test]
     async fn handle_ws_connected_sends_tlv() {
         let mut to_mgmt = MockMgmtWriter::new();
+        let mut to_ui = MockUiWriter::new();
         let mut led = mock_led();
 
-        handle_ws(WsEvent::Connected, &mut to_mgmt, &mut led).await;
+        handle_ws(WsEvent::Connected, &mut to_mgmt, &mut to_ui, &mut led).await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, NetToMgmt::WsConnected);
@@ -377,9 +388,10 @@ mod tests {
     #[tokio::test]
     async fn handle_ws_disconnected_sends_tlv() {
         let mut to_mgmt = MockMgmtWriter::new();
+        let mut to_ui = MockUiWriter::new();
         let mut led = mock_led();
 
-        handle_ws(WsEvent::Disconnected, &mut to_mgmt, &mut led).await;
+        handle_ws(WsEvent::Disconnected, &mut to_mgmt, &mut to_ui, &mut led).await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, NetToMgmt::WsDisconnected);
@@ -387,16 +399,73 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_ws_received_sends_tlv_with_data() {
+    async fn handle_ws_received_forwards_audio_to_ui() {
         let mut to_mgmt = MockMgmtWriter::new();
+        let mut to_ui = MockUiWriter::new();
         let mut led = mock_led();
 
-        let data: Vec<u8, MAX_WS_PAYLOAD> = Vec::from_slice(b"hello world").unwrap();
-        handle_ws(WsEvent::Received(data), &mut to_mgmt, &mut led).await;
+        // Simulate receiving audio data from WebSocket
+        let audio_data: Vec<u8, MAX_WS_PAYLOAD> = Vec::from_slice(&[0x01, 0x02, 0x03, 0x04]).unwrap();
+        handle_ws(WsEvent::Received(audio_data), &mut to_mgmt, &mut to_ui, &mut led).await;
 
-        assert_eq!(to_mgmt.written.len(), 1);
-        assert_eq!(to_mgmt.written[0].0, NetToMgmt::WsReceived);
-        assert_eq!(to_mgmt.written[0].1, b"hello world");
+        // Should forward to UI as AudioFrame
+        assert_eq!(to_ui.written.len(), 1);
+        assert_eq!(to_ui.written[0].0, NetToUi::AudioFrame);
+        assert_eq!(to_ui.written[0].1, &[0x01, 0x02, 0x03, 0x04]);
+    }
+
+    // ==================== handle_ui Audio Tests ====================
+
+    #[tokio::test]
+    async fn handle_ui_audio_frame_a_sends_to_websocket() {
+        let mut to_mgmt = MockMgmtWriter::new();
+        let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
+
+        // Simulate audio frame from UI (button A)
+        let audio_data: heapless::Vec<u8, { crate::shared::MAX_VALUE_SIZE }> =
+            heapless::Vec::from_slice(&[0xAA; 640]).unwrap();
+        let tlv = Tlv {
+            tlv_type: UiToNet::AudioFrameA,
+            value: audio_data,
+        };
+
+        handle_ui(tlv, &mut to_mgmt, &channel.sender()).await;
+
+        // Should queue a WsCommand::Send with the audio data
+        let cmd = channel.receiver().try_receive().unwrap();
+        match cmd {
+            WsCommand::Send(data) => {
+                assert_eq!(data.len(), 640);
+                assert!(data.iter().all(|&b| b == 0xAA));
+            }
+            _ => panic!("Expected WsCommand::Send"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_ui_audio_frame_b_sends_to_websocket() {
+        let mut to_mgmt = MockMgmtWriter::new();
+        let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
+
+        // Simulate audio frame from UI (button B)
+        let audio_data: heapless::Vec<u8, { crate::shared::MAX_VALUE_SIZE }> =
+            heapless::Vec::from_slice(&[0xBB; 640]).unwrap();
+        let tlv = Tlv {
+            tlv_type: UiToNet::AudioFrameB,
+            value: audio_data,
+        };
+
+        handle_ui(tlv, &mut to_mgmt, &channel.sender()).await;
+
+        // Should queue a WsCommand::Send with the audio data
+        let cmd = channel.receiver().try_receive().unwrap();
+        match cmd {
+            WsCommand::Send(data) => {
+                assert_eq!(data.len(), 640);
+                assert!(data.iter().all(|&b| b == 0xBB));
+            }
+            _ => panic!("Expected WsCommand::Send"),
+        }
     }
 
     // ==================== handle_mgmt Tests ====================

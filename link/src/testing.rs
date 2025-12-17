@@ -372,3 +372,8 @@ async fn reset_net_to_user_gpio_sequence() {
     })
     .await;
 }
+
+// NOTE: Audio/WebSocket integration tests are not included because the test harness
+// uses tokio::select! with futures::join! which doesn't work well with tokio::time::sleep.
+// The audio functionality is tested in the ui::audio_streaming_tests module instead,
+// and the NET unit tests verify the WebSocket forwarding logic.
