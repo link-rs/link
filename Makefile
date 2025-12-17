@@ -1,4 +1,4 @@
-.PHONY: flash-ui flash-mgmt flash-net clean web-ctl serve-web web-link serve-link
+.PHONY: flash-ui flash-mgmt flash-net clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export
 
 # UI chip (STM32F405RG - Cortex-M4F)
 UI_TARGET = thumbv7em-none-eabihf
@@ -80,5 +80,20 @@ clean:
 	rm -rf web-ctl/www/pkg
 	rm -rf web-ctl/www/firmware
 	rm -rf web-link/www/pkg
+	rm -f web-ctl.tar.gz web-link.tar.gz
+
+# Export targets - create distributable .tar.gz archives for static hosting
+export-web-ctl: web-ctl
+	@echo "Creating web-ctl.tar.gz..."
+	cd web-ctl/www && tar -czf ../../web-ctl.tar.gz --exclude='./.*' *
+	@ls -lh web-ctl.tar.gz
+
+export-web-link: web-link
+	@echo "Creating web-link.tar.gz..."
+	cd web-link/www && tar -czf ../../web-link.tar.gz --exclude='./.*' *
+	@ls -lh web-link.tar.gz
+
+export: export-web-ctl export-web-link
+	@echo "Export complete."
 
 FORCE:
