@@ -680,8 +680,16 @@ where
         self.writer
             .must_write_tlv(CtlToMgmt::ResetNetToBootloader, &[])
             .await;
-        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
-        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+        // Read TLVs, skipping any FromNet (boot messages from NET chip) until we get the Ack
+        for _ in 0..100 {
+            let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+            match tlv.tlv_type {
+                MgmtToCtl::Ack => return,
+                MgmtToCtl::FromNet => continue,
+                other => panic!("unexpected TLV type: {:?}", other),
+            }
+        }
+        panic!("gave up waiting for Ack after discarding 100 FromNet TLVs");
     }
 
     /// Reset the NET chip into user mode (normal operation).
@@ -692,8 +700,16 @@ where
         self.writer
             .must_write_tlv(CtlToMgmt::ResetNetToUser, &[])
             .await;
-        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
-        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+        // Read TLVs, skipping any FromNet (boot messages from NET chip) until we get the Ack
+        for _ in 0..100 {
+            let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+            match tlv.tlv_type {
+                MgmtToCtl::Ack => return,
+                MgmtToCtl::FromNet => continue,
+                other => panic!("unexpected TLV type: {:?}", other),
+            }
+        }
+        panic!("gave up waiting for Ack after discarding 100 FromNet TLVs");
     }
 
     /// Get bootloader information from the UI chip.

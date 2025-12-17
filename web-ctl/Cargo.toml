@@ -1,0 +1,56 @@
+[package]
+name = "web-ctl"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+link = { path = "../link", default-features = false, features = ["std"] }
+bootloader = { path = "../bootloader" }
+
+# WASM bindings
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+# Web APIs
+web-sys = { version = "0.3", features = [
+    "console",
+    "Window",
+    "Navigator",
+    "Serial",
+    "SerialPort",
+    "SerialPortInfo",
+    "SerialOptions",
+    "SerialPortRequestOptions",
+    "ParityType",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "WritableStream",
+    "WritableStreamDefaultWriter",
+    "Blob",
+    "File",
+    "FileReader",
+] }
+
+# Async
+futures = "0.3"
+
+# Embedded IO traits
+embedded-io-async = "0.6"
+
+# Logging
+console_error_panic_hook = "0.1"
+
+# Serialization for passing data to JS
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+# Hex encoding/decoding
+hex = "0.4"
+
+[profile.release]
+opt-level = "s"
+lto = true

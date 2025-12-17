@@ -1,4 +1,4 @@
-.PHONY: flash-ui flash-mgmt flash-net clean
+.PHONY: flash-ui flash-mgmt flash-net clean web-ctl serve-web
 
 # UI chip (STM32F405RG - Cortex-M4F)
 UI_TARGET = thumbv7em-none-eabihf
@@ -45,5 +45,30 @@ flash-mgmt: $(MGMT_BIN)
 flash-net: $(NET_BIN)
 	@test -f $(NET_BIN) || (echo "Error: $(NET_BIN) not found. Set NET_BUILD_DIR to your ESP-IDF build directory." && exit 1)
 	cd ctl && cargo run -- net flash $(abspath $(NET_BIN)) -c --no-verify
+
+# Web CTL (WASM)
+web-ctl: $(UI_BIN) $(MGMT_BIN) $(NET_BIN)
+	cd web-ctl && wasm-pack build --target web --out-dir www/pkg
+	mkdir -p web-ctl/www/firmware
+	cp $(UI_BIN) web-ctl/www/firmware/
+	cp $(MGMT_BIN) web-ctl/www/firmware/
+	@if [ -f $(NET_BIN) ]; then cp $(NET_BIN) web-ctl/www/firmware/; fi
+
+# Build web-ctl without firmware (for quick iteration)
+web-ctl-quick:
+	cd web-ctl && wasm-pack build --target web --out-dir www/pkg
+
+serve-web: web-ctl
+	@echo "Serving at http://localhost:8080"
+	cd web-ctl/www && python3 -m http.server 8080
+
+clean:
+	cd ui && cargo clean
+	cd mgmt && cargo clean
+	cd net && cargo clean
+	cd ctl && cargo clean
+	cd web-ctl && cargo clean
+	rm -rf web-ctl/www/pkg
+	rm -rf web-ctl/www/firmware
 
 FORCE:
