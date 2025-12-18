@@ -9,9 +9,10 @@ use embassy_stm32::{
     gpio::{Level, Output, Pull, Speed},
     i2c::I2c,
     i2s::{self, I2S},
-    peripherals, Peri,
+    peripherals,
     time::Hertz,
     usart::{self, Config, DataBits, Parity, StopBits, Uart},
+    Peri,
 };
 use embassy_time::Delay;
 use embedded_hal::delay::DelayNs;
@@ -200,29 +201,6 @@ impl<'a, I: I2cTrait> Wm8960Codec<'a, I> {
 }
 
 // WM8960 Register infrastructure
-trait ToFromU16 {
-    fn from_u16(x: u16) -> Self;
-    fn into_u16(self) -> u16;
-}
-
-impl ToFromU16 for bool {
-    fn from_u16(x: u16) -> Self {
-        x != 0
-    }
-    fn into_u16(self) -> u16 {
-        if self { 1 } else { 0 }
-    }
-}
-
-impl ToFromU16 for u8 {
-    fn from_u16(x: u16) -> Self {
-        x as Self
-    }
-    fn into_u16(self) -> u16 {
-        self.into()
-    }
-}
-
 type RegAddr = u8;
 
 struct Wm8960Registers {
@@ -232,25 +210,62 @@ struct Wm8960Registers {
 impl Default for Wm8960Registers {
     fn default() -> Self {
         let init: [(u8, u16); 56] = [
-            (0x00, 0b0_1001_0111), (0x01, 0b0_1001_0111), (0x02, 0b0_0000_0000),
-            (0x03, 0b0_0000_0000), (0x04, 0b0_0000_0000), (0x05, 0b0_0000_1000),
-            (0x06, 0b0_0000_0000), (0x07, 0b0_0000_1010), (0x08, 0b1_1100_0000),
-            (0x09, 0b0_0000_0000), (0x0A, 0b0_1111_1111), (0x0B, 0b0_1111_1111),
-            (0x0C, 0b0_0000_0000), (0x0D, 0b0_0000_0000), (0x0E, 0b0_0000_0000),
-            (0x0F, 0b0_0000_0000), (0x10, 0b0_0000_0000), (0x11, 0b0_0111_1011),
-            (0x12, 0b1_0000_0000), (0x13, 0b0_0011_0010), (0x14, 0b0_0000_0000),
-            (0x15, 0b0_1100_0011), (0x16, 0b0_1100_0011), (0x17, 0b1_1100_0000),
-            (0x18, 0b0_0000_0000), (0x19, 0b0_0000_0000), (0x1A, 0b0_0000_0000),
-            (0x1B, 0b0_0000_0000), (0x1C, 0b0_0000_0000), (0x1D, 0b0_0000_0000),
-            (0x1E, 0b0_0000_0000), (0x1F, 0b0_0000_0000), (0x20, 0b1_0000_0000),
-            (0x21, 0b1_0000_0000), (0x22, 0b0_0101_0000), (0x23, 0b0_0101_0000),
-            (0x24, 0b0_0101_0000), (0x25, 0b0_0101_0000), (0x26, 0b0_0000_0000),
-            (0x27, 0b0_0000_0000), (0x28, 0b0_0000_0000), (0x29, 0b0_0000_0000),
-            (0x2A, 0b0_0100_0000), (0x2B, 0b0_0000_0000), (0x2C, 0b0_0000_0000),
-            (0x2D, 0b0_0101_0000), (0x2E, 0b0_0101_0000), (0x2F, 0b0_0000_0000),
-            (0x30, 0b0_0000_0010), (0x31, 0b0_0011_0111), (0x32, 0b0_0100_1101),
-            (0x33, 0b0_1000_0000), (0x34, 0b0_0000_1000), (0x35, 0b0_0011_0001),
-            (0x36, 0b0_0010_0110), (0x37, 0b0_1110_1001),
+            (0x00, 0b0_1001_0111),
+            (0x01, 0b0_1001_0111),
+            (0x02, 0b0_0000_0000),
+            (0x03, 0b0_0000_0000),
+            (0x04, 0b0_0000_0000),
+            (0x05, 0b0_0000_1000),
+            (0x06, 0b0_0000_0000),
+            (0x07, 0b0_0000_1010),
+            (0x08, 0b1_1100_0000),
+            (0x09, 0b0_0000_0000),
+            (0x0A, 0b0_1111_1111),
+            (0x0B, 0b0_1111_1111),
+            (0x0C, 0b0_0000_0000),
+            (0x0D, 0b0_0000_0000),
+            (0x0E, 0b0_0000_0000),
+            (0x0F, 0b0_0000_0000),
+            (0x10, 0b0_0000_0000),
+            (0x11, 0b0_0111_1011),
+            (0x12, 0b1_0000_0000),
+            (0x13, 0b0_0011_0010),
+            (0x14, 0b0_0000_0000),
+            (0x15, 0b0_1100_0011),
+            (0x16, 0b0_1100_0011),
+            (0x17, 0b1_1100_0000),
+            (0x18, 0b0_0000_0000),
+            (0x19, 0b0_0000_0000),
+            (0x1A, 0b0_0000_0000),
+            (0x1B, 0b0_0000_0000),
+            (0x1C, 0b0_0000_0000),
+            (0x1D, 0b0_0000_0000),
+            (0x1E, 0b0_0000_0000),
+            (0x1F, 0b0_0000_0000),
+            (0x20, 0b1_0000_0000),
+            (0x21, 0b1_0000_0000),
+            (0x22, 0b0_0101_0000),
+            (0x23, 0b0_0101_0000),
+            (0x24, 0b0_0101_0000),
+            (0x25, 0b0_0101_0000),
+            (0x26, 0b0_0000_0000),
+            (0x27, 0b0_0000_0000),
+            (0x28, 0b0_0000_0000),
+            (0x29, 0b0_0000_0000),
+            (0x2A, 0b0_0100_0000),
+            (0x2B, 0b0_0000_0000),
+            (0x2C, 0b0_0000_0000),
+            (0x2D, 0b0_0101_0000),
+            (0x2E, 0b0_0101_0000),
+            (0x2F, 0b0_0000_0000),
+            (0x30, 0b0_0000_0010),
+            (0x31, 0b0_0011_0111),
+            (0x32, 0b0_0100_1101),
+            (0x33, 0b0_1000_0000),
+            (0x34, 0b0_0000_1000),
+            (0x35, 0b0_0011_0001),
+            (0x36, 0b0_0010_0110),
+            (0x37, 0b0_1110_1001),
         ];
         let mut regs = [0u16; 56];
         for (i, (addr, val)) in init.iter().enumerate() {
@@ -268,7 +283,12 @@ impl Wm8960Registers {
     {
         let mut r = RegisterView::new(&mut self.regs);
         f(&mut r);
-        for i in r.modified.iter().enumerate().filter_map(|(i, m)| m.then_some(i)) {
+        for i in r
+            .modified
+            .iter()
+            .enumerate()
+            .filter_map(|(i, m)| m.then_some(i))
+        {
             let _ = i2c.write(WM8960_I2C_ADDR, &self.regs[i].to_be_bytes());
         }
     }
@@ -281,7 +301,10 @@ struct RegisterView<'a> {
 
 impl<'a> RegisterView<'a> {
     const fn new(regs: &'a mut [u16; 56]) -> Self {
-        Self { regs, modified: [false; 56] }
+        Self {
+            regs,
+            modified: [false; 56],
+        }
     }
 
     fn set<F: FieldAccess>(&mut self, val: F) {
@@ -299,7 +322,6 @@ trait FieldAccess {
     const ADDR: RegAddr;
     const OFFSET: u8;
     const WIDTH: u8;
-    const MAX: u16 = (1 << Self::WIDTH) - 1;
     type Value;
     fn set(&self, regval: u16) -> u16;
 }
@@ -314,7 +336,7 @@ macro_rules! define_field {
             type Value = $val;
             #[inline]
             fn set(&self, regval: u16) -> u16 {
-                let val = self.0.into_u16();
+                let val: u16 = self.0.into();
                 let mask = ((1u16 << Self::WIDTH) - 1) << Self::OFFSET;
                 (regval & !mask) | ((val << Self::OFFSET) & mask)
             }
@@ -532,9 +554,7 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
         config.clock_polarity = i2s::ClockPolarity::IdleLow;
 
         let i2s = I2S::new_full_duplex(
-            p.spi, p.ws, p.ck, p.sd_tx, p.sd_rx,
-            p.dma_tx, p.tx_buf, p.dma_rx, p.rx_buf,
-            config,
+            p.spi, p.ws, p.ck, p.sd_tx, p.sd_rx, p.dma_tx, p.tx_buf, p.dma_rx, p.rx_buf, config,
         );
 
         self.state = AudioState::Ready(i2s);
@@ -694,15 +714,7 @@ async fn main(_spawner: Spawner) {
     // Audio system with DEFERRED I2S construction
     // Peripherals are held until init() configures codec and then constructs I2S
     let audio_system = BoardAudioSystem::new(
-        p.SPI3,
-        p.PA15,
-        p.PC10,
-        p.PB5,
-        p.PB4,
-        p.DMA1_CH7,
-        i2s_tx_buf,
-        p.DMA1_CH0,
-        i2s_rx_buf,
+        p.SPI3, p.PA15, p.PC10, p.PB5, p.PB4, p.DMA1_CH7, i2s_tx_buf, p.DMA1_CH0, i2s_rx_buf,
     );
 
     link::ui::App::new(

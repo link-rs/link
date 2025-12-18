@@ -123,9 +123,9 @@ pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot,
     mut from_net: R,
     led_a: (RA, GA, BA),
     led_b: (RB, GB, BB),
-    ui_reset_pins: UiResetPins<UiBoot0, UiBoot1, UiRst>,
-    net_reset_pins: NetResetPins<NetBoot, NetRst>,
-    delay: D,
+    mut ui_reset_pins: UiResetPins<UiBoot0, UiBoot1, UiRst>,
+    mut net_reset_pins: NetResetPins<NetBoot, NetRst>,
+    mut delay: D,
 ) -> !
 where
     W: Write,
@@ -152,6 +152,13 @@ where
     let mut led_b = Led::new(led_b.0, led_b.1, led_b.2);
     led_a.set(Color::Green);
     led_b.set(Color::Red);
+
+    // UI and NET chips are held in reset at boot (RST low).
+    // Wait for MGMT clocks to stabilize, then release them to boot.
+    delay.delay_ms(50).await;
+    info!("mgmt: releasing UI and NET from reset");
+    let _ = ui_reset_pins.rst.set_high();
+    let _ = net_reset_pins.rst.set_high();
 
     let to_ctl: Mutex<NoopRawMutex, _> = Mutex::new(to_ctl);
     let reset_state: Mutex<NoopRawMutex, _> = Mutex::new((ui_reset_pins, net_reset_pins, delay));

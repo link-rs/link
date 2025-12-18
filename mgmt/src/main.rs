@@ -135,10 +135,11 @@ async fn main(_spawner: Spawner) {
 
     // UI chip reset control pins
     // PA15 -> UI BOOT0, PB8 -> UI BOOT1, PB3 -> UI RST
-    // Normal state: BOOT0=0, BOOT1=1, RST high
+    // Boot mode for normal operation: BOOT0=0, BOOT1=1
+    // RST starts low to hold UI in reset until MGMT clocks are stable
     let ui_boot0 = Output::new(p.PA15, Level::Low, Speed::Low);
     let ui_boot1 = Output::new(p.PB8, Level::High, Speed::Low);
-    let ui_rst = Output::new(p.PB3, Level::High, Speed::Low);
+    let ui_rst = Output::new(p.PB3, Level::Low, Speed::Low);
     let ui_reset_pins = link::mgmt::UiResetPins::new(ui_boot0, ui_boot1, ui_rst);
 
     // NET chip reset control pins
@@ -146,9 +147,9 @@ async fn main(_spawner: Spawner) {
     // NET chip boot mode is inverted from UI chip:
     //   BOOT high = boot from flash (normal)
     //   BOOT low = boot from bootloader
-    // Normal state: BOOT high, RST high
+    // RST starts low to hold NET in reset until MGMT clocks are stable
     let net_boot = Output::new(p.PB5, Level::High, Speed::Low);
-    let net_rst = Output::new(p.PB4, Level::High, Speed::Low);
+    let net_rst = Output::new(p.PB4, Level::Low, Speed::Low);
     let net_reset_pins = link::mgmt::NetResetPins::new(net_boot, net_rst);
 
     link::mgmt::run(
