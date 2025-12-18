@@ -4,7 +4,7 @@ mod audio;
 mod eeprom;
 mod sframe;
 
-pub use audio::{AudioCodec, AudioControl, AudioError, AudioStream, Frame, FRAME_SIZE};
+pub use audio::{AudioError, AudioSystem, Frame, FRAME_SIZE};
 pub use eeprom::Eeprom;
 
 use crate::info;
@@ -44,7 +44,7 @@ pub struct App<W, R, LR, LG, LB, BA, BB, BM, I, D, AS> {
     button_mic: BM,
     i2c: I,
     delay: D,
-    audio_stream: AS,
+    audio_system: AS,
 }
 
 impl<W, R, LR, LG, LB, BA, BB, BM, I, D, AS> App<W, R, LR, LG, LB, BA, BB, BM, I, D, AS>
@@ -59,7 +59,7 @@ where
     BM: Wait,
     I: I2c,
     D: DelayNs,
-    AS: AudioStream,
+    AS: AudioSystem,
 {
     pub fn new(
         to_mgmt: W,
@@ -72,7 +72,7 @@ where
         button_mic: BM,
         i2c: I,
         delay: D,
-        audio_stream: AS,
+        audio_system: AS,
     ) -> Self {
         Self {
             to_mgmt,
@@ -85,24 +85,16 @@ where
             button_mic,
             i2c,
             delay,
-            audio_stream,
+            audio_system,
         }
-    }
-
-    /// Initialize the audio codec using the shared I2C bus.
-    pub fn init_audio(&mut self) {
-        let mut audio = AudioControl::new(&mut self.i2c);
-        audio.init(&mut self.delay);
-        audio.enable_input(true);
-        audio.enable_output(true);
     }
 
     #[allow(unreachable_code)]
     pub async fn run(mut self) -> ! {
         info!("ui: starting");
 
-        // Initialize audio codec before starting
-        self.init_audio();
+        // Initialize the audio subsystem (codec config + I2S construction)
+        self.audio_system.init(&mut self.i2c, &mut self.delay);
 
         let Self {
             mut to_mgmt,
@@ -115,7 +107,7 @@ where
             button_mic,
             mut i2c,
             mut delay,
-            mut audio_stream,
+            mut audio_system,
         } = self;
 
         // Initialize LED
@@ -180,7 +172,7 @@ where
 
         // Audio I/O task: reads from microphone, writes queued playback frames
         let audio_task = async {
-            audio_stream.start().await;
+            audio_system.start().await;
 
             // Play a 400Hz stereo square wave for one second
             let tone_frame = Frame(core::array::from_fn(|i| {
@@ -190,7 +182,7 @@ where
             }));
             let mut zero = Frame::default();
             for _i in 0..50 {
-                let _ = audio_stream.read_write(&tone_frame, &mut zero).await;
+                let _ = audio_system.read_write(&tone_frame, &mut zero).await;
             }
 
             loop {
@@ -199,7 +191,7 @@ where
                 let mut rx_frame = Frame::default();
 
                 // Do the I2S read/write cycle
-                if audio_stream
+                if audio_system
                     .read_write(&tx_frame, &mut rx_frame)
                     .await
                     .is_ok()

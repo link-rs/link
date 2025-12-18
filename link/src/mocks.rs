@@ -418,27 +418,38 @@ impl Default for MockAudioStream {
     }
 }
 
-impl crate::ui::AudioStream for MockAudioStream {
+impl crate::ui::AudioSystem for MockAudioStream {
+    fn init<I: embedded_hal::i2c::I2c, D: embedded_hal::delay::DelayNs>(
+        &mut self,
+        _i2c: &mut I,
+        _delay: &mut D,
+    ) {
+        // No-op for mock
+    }
+
+    fn set_input_enabled<I: embedded_hal::i2c::I2c>(&mut self, _i2c: &mut I, _enable: bool) {
+        // No-op for mock
+    }
+
+    fn set_output_enabled<I: embedded_hal::i2c::I2c>(&mut self, _i2c: &mut I, _enable: bool) {
+        // No-op for mock
+    }
+
     async fn start(&mut self) {}
     async fn stop(&mut self) {}
-    async fn read(&mut self) -> crate::ui::Frame {
-        // Simulate real audio timing (20ms per frame at 16kHz, 320 samples)
-        // Use shorter delay in tests to speed them up while still allowing scheduler to run
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
-        // Create a frame with a unique identifier in the first sample
-        let mut frame = crate::ui::Frame::default();
-        frame.0[0] = self.frame_counter;
-        self.frame_counter = self.frame_counter.wrapping_add(1);
-        frame
-    }
-    async fn write(&mut self, _frame: &crate::ui::Frame) {}
     async fn read_write(
         &mut self,
         _tx: &crate::ui::Frame,
         rx: &mut crate::ui::Frame,
     ) -> Result<(), crate::ui::AudioError> {
-        *rx = self.read().await;
+        // Simulate real audio timing (20ms per frame at 16kHz, 320 samples)
+        // Use shorter delay in tests to speed them up while still allowing scheduler to run
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // Create a frame with a unique identifier in the first sample
+        rx.0[0] = self.frame_counter;
+        self.frame_counter = self.frame_counter.wrapping_add(1);
         Ok(())
     }
 }
@@ -462,20 +473,26 @@ impl CapturingAudioStream {
     }
 }
 
-impl crate::ui::AudioStream for CapturingAudioStream {
+impl crate::ui::AudioSystem for CapturingAudioStream {
+    fn init<I: embedded_hal::i2c::I2c, D: embedded_hal::delay::DelayNs>(
+        &mut self,
+        _i2c: &mut I,
+        _delay: &mut D,
+    ) {
+        // No-op for mock
+    }
+
+    fn set_input_enabled<I: embedded_hal::i2c::I2c>(&mut self, _i2c: &mut I, _enable: bool) {
+        // No-op for mock
+    }
+
+    fn set_output_enabled<I: embedded_hal::i2c::I2c>(&mut self, _i2c: &mut I, _enable: bool) {
+        // No-op for mock
+    }
+
     async fn start(&mut self) {}
     async fn stop(&mut self) {}
-    async fn read(&mut self) -> crate::ui::Frame {
-        // Simulate real audio timing (5ms per frame for faster tests)
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        let mut frame = crate::ui::Frame::default();
-        frame.0[0] = self.frame_counter;
-        self.frame_counter = self.frame_counter.wrapping_add(1);
-        frame
-    }
-    async fn write(&mut self, frame: &crate::ui::Frame) {
-        self.written_frames.lock().unwrap().push(frame.clone());
-    }
+
     async fn read_write(
         &mut self,
         tx: &crate::ui::Frame,
@@ -485,7 +502,10 @@ impl crate::ui::AudioStream for CapturingAudioStream {
         if tx.0.iter().any(|&s| s != 0) {
             self.written_frames.lock().unwrap().push(tx.clone());
         }
-        *rx = self.read().await;
+        // Simulate real audio timing (5ms per frame for faster tests)
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        rx.0[0] = self.frame_counter;
+        self.frame_counter = self.frame_counter.wrapping_add(1);
         Ok(())
     }
 }
