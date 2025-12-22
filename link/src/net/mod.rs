@@ -186,6 +186,7 @@ where
         #[cfg(feature = "audio-buffer")]
         let handle_task = async {
             let mut ws_mode = WsMode::Normal;
+            let mut loopback = false;
             let mut audio_buffer: JitterBuffer<MAX_VALUE_SIZE> = JitterBuffer::new();
             let mut ticker = Ticker::every(Duration::from_millis(20));
             info!("net: ready to handle events (audio buffering enabled)");
@@ -200,11 +201,17 @@ where
                                 &mut storage,
                                 &ws_cmd_tx,
                                 &mut ws_mode,
+                                &mut loopback,
                             )
                             .await
                         }
                         Event::Ui(tlv) => {
-                            handle_ui(tlv, &mut to_mgmt, &mut to_ui, &ws_cmd_tx).await
+                            if let Some(audio) = handle_ui(tlv, &mut to_mgmt, &ws_cmd_tx, loopback).await {
+                                // Loopback: push to jitter buffer
+                                if !audio_buffer.push(&audio) {
+                                    info!("net: audio buffer overrun (loopback)");
+                                }
+                            }
                         }
                         Event::Ws(event) => {
                             handle_ws_buffered(
@@ -241,6 +248,7 @@ where
         #[cfg(not(feature = "audio-buffer"))]
         let handle_task = async {
             let mut ws_mode = WsMode::Normal;
+            let mut loopback = false;
             info!("net: ready to handle events");
             loop {
                 match channel.receive().await {
@@ -252,10 +260,16 @@ where
                             &mut storage,
                             &ws_cmd_tx,
                             &mut ws_mode,
+                            &mut loopback,
                         )
                         .await
                     }
-                    Event::Ui(tlv) => handle_ui(tlv, &mut to_mgmt, &mut to_ui, &ws_cmd_tx).await,
+                    Event::Ui(tlv) => {
+                        if let Some(audio) = handle_ui(tlv, &mut to_mgmt, &ws_cmd_tx, loopback).await {
+                            // Loopback: send directly to UI
+                            to_ui.must_write_tlv(NetToUi::AudioFrame, &audio).await;
+                        }
+                    }
                     Event::Ws(event) => {
                         handle_ws(event, &mut to_mgmt, &mut to_ui, &mut led, &mut ws_mode).await
                     }
@@ -275,6 +289,7 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
     storage: &mut NetStorage<F>,
     ws_cmd_tx: &Sender<'a, RM, WsCommand, N>,
     ws_mode: &mut WsMode,
+    loopback: &mut bool,
 ) where
     M: WriteTlv<NetToMgmt>,
     U: WriteTlv<NetToUi>,
@@ -381,17 +396,23 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             info!("net: ws echo test requested");
             ws_cmd_tx.send(WsCommand::EchoTest).await;
         }
+        MgmtToNet::SetLoopback => {
+            let enabled = tlv.value.first().copied().unwrap_or(0) != 0;
+            info!("net: set loopback = {}", enabled);
+            *loopback = enabled;
+            to_mgmt.must_write_tlv(NetToMgmt::Ack, &[]).await;
+        }
     }
 }
 
-async fn handle_ui<'a, M, U, RM: RawMutex, const N: usize>(
+async fn handle_ui<'a, M, RM: RawMutex, const N: usize>(
     tlv: Tlv<UiToNet>,
     to_mgmt: &mut M,
-    to_ui: &mut U,
     ws_cmd_tx: &Sender<'a, RM, WsCommand, N>,
-) where
+    loopback: bool,
+) -> Option<heapless::Vec<u8, MAX_WS_PAYLOAD>>
+where
     M: WriteTlv<NetToMgmt>,
-    U: WriteTlv<NetToUi>,
 {
     match tlv.tlv_type {
         UiToNet::CircularPing => {
@@ -399,6 +420,7 @@ async fn handle_ui<'a, M, U, RM: RawMutex, const N: usize>(
             to_mgmt
                 .must_write_tlv(NetToMgmt::CircularPing, &tlv.value)
                 .await;
+            None
         }
         UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
             let energy: u32 = tlv
@@ -413,19 +435,19 @@ async fn handle_ui<'a, M, U, RM: RawMutex, const N: usize>(
                 tlv.value.as_slice()
             );
 
-            // XXX Loopback
-            to_ui
-                .write_tlv(NetToUi::AudioFrame, &tlv.value)
-                .await
-                .unwrap();
-
-            /*
-            let Ok(payload) = Vec::try_from(tlv.value.as_slice()) else {
-                info!("net: ws payload too large");
-                return;
+            let Ok(payload) = heapless::Vec::try_from(tlv.value.as_slice()) else {
+                info!("net: audio payload too large");
+                return None;
             };
-            ws_cmd_tx.send(WsCommand::Send(payload)).await;
-            */
+
+            if loopback {
+                // Return audio data for loopback to jitter buffer
+                Some(payload)
+            } else {
+                // Send to WebSocket
+                ws_cmd_tx.send(WsCommand::Send(payload)).await;
+                None
+            }
         }
     }
 }

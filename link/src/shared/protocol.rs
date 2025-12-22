@@ -44,6 +44,8 @@ pub enum MgmtToUi {
     SetVersion,
     GetSFrameKey,
     SetSFrameKey,
+    /// Set loopback mode (1 byte: 0=off, 1=on)
+    SetLoopback,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -70,6 +72,8 @@ pub enum MgmtToNet {
     WsSend,
     /// Start WebSocket echo test
     WsEchoTest,
+    /// Set loopback mode (1 byte: 0=off, 1=on)
+    SetLoopback,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

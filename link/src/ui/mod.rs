@@ -133,11 +133,13 @@ where
 
             // Track which button is currently held (if any)
             let mut active_button: Option<Button> = None;
+            // Loopback mode: mic audio goes directly to speaker instead of NET
+            let mut loopback = false;
 
             loop {
                 match channel.receive().await {
                     Event::Mgmt(tlv) => {
-                        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await
+                        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await
                     }
                     Event::Net(tlv) => {
                         if let Some(frame) = handle_net(tlv, &mut to_mgmt).await {
@@ -157,16 +159,19 @@ where
                         }
                     }
                     Event::AudioFrame(frame) => {
-                        // XXX Audio frame read from microphone - loopback
-                        // playback_channel.send(frame).await;
-
-                        // Audio frame read from microphone - send if button is held
+                        // Audio frame read from microphone
                         if let Some(button) = active_button {
-                            let tlv_type = match button {
-                                Button::A => UiToNet::AudioFrameA,
-                                Button::B => UiToNet::AudioFrameB,
-                            };
-                            to_net.must_write_tlv(tlv_type, &frame.as_bytes()).await;
+                            if loopback {
+                                // Loopback: send directly to speaker
+                                playback_channel.send(frame).await;
+                            } else {
+                                // Normal: send to NET
+                                let tlv_type = match button {
+                                    Button::A => UiToNet::AudioFrameA,
+                                    Button::B => UiToNet::AudioFrameB,
+                                };
+                                to_net.must_write_tlv(tlv_type, &frame.as_bytes()).await;
+                            }
                         }
                     }
                 }
@@ -248,6 +253,7 @@ async fn handle_mgmt<M, N, I, D>(
     to_net: &mut N,
     i2c: &mut I,
     delay: &mut D,
+    loopback: &mut bool,
 ) where
     M: WriteTlv<UiToMgmt>,
     N: WriteTlv<UiToNet>,
@@ -316,6 +322,12 @@ async fn handle_mgmt<M, N, I, D>(
                 to_mgmt.must_write_tlv(UiToMgmt::Error, b"eeprom").await;
                 return;
             }
+            to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
+        }
+        MgmtToUi::SetLoopback => {
+            let enabled = tlv.value.first().copied().unwrap_or(0) != 0;
+            info!("ui: set loopback = {}", enabled);
+            *loopback = enabled;
             to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
         }
     }
