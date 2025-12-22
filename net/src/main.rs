@@ -6,13 +6,13 @@ extern crate alloc;
 use defmt::{info, warn};
 use embassy_executor::Spawner;
 use embassy_net::{tcp::TcpSocket, Runner, StackResources};
+use embassy_futures::select::{select, Either};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use embedded_tls::{Aes128GcmSha256, NoVerify, TlsConfig, TlsConnection, TlsContext};
-use embedded_websocket_embedded_io::framer_async::{FramerError, ReadResult};
 use embedded_websocket_embedded_io::{
-    framer_async::Framer, WebSocketClient, WebSocketCloseStatusCode, WebSocketOptions,
-    WebSocketSendMessageType,
+    framer_async::{Framer, FramerError, ReadResult},
+    WebSocketClient, WebSocketCloseStatusCode, WebSocketOptions, WebSocketSendMessageType,
 };
 use esp_bootloader_esp_idf::partitions;
 use esp_hal::{
@@ -31,7 +31,9 @@ use esp_radio::wifi::{
 };
 use esp_storage::FlashStorage;
 use heapless::Vec;
-use link::net::{NetStorage, WsCommand, WsEvent, MAX_RELAY_URL_LEN};
+use link::net::{
+    EchoTestResult, NetStorage, WsCommand, WsEvent, ECHO_TEST_PACKET_COUNT, MAX_RELAY_URL_LEN,
+};
 use rand_core::{CryptoRng, RngCore};
 use static_cell::StaticCell;
 
@@ -326,6 +328,20 @@ async fn ws_task(
                     WsCommand::Send(_) => {
                         info!("ws: ignoring send while disconnected");
                     }
+                    WsCommand::EchoTest => {
+                        info!("ws: ignoring echo test while disconnected");
+                        // Send empty result to indicate test couldn't run
+                        event_tx
+                            .send(WsEvent::EchoTestResult(EchoTestResult {
+                                sent: 0,
+                                received: 0,
+                                buffered_output: 0,
+                                raw_jitter_us: Vec::new(),
+                                buffered_jitter_us: Vec::new(),
+                                underruns: 0,
+                            }))
+                            .await;
+                    }
                 }
             }
             Timer::after(Duration::from_millis(100)).await;
@@ -347,6 +363,20 @@ async fn ws_task(
                     }
                     WsCommand::Send(_) => {
                         info!("ws: ignoring send without URL");
+                    }
+                    WsCommand::EchoTest => {
+                        info!("ws: ignoring echo test without URL");
+                        // Send empty result to indicate test couldn't run
+                        event_tx
+                            .send(WsEvent::EchoTestResult(EchoTestResult {
+                                sent: 0,
+                                received: 0,
+                                buffered_output: 0,
+                                raw_jitter_us: Vec::new(),
+                                buffered_jitter_us: Vec::new(),
+                                underruns: 0,
+                            }))
+                            .await;
                     }
                 }
             }
@@ -454,143 +484,371 @@ async fn ws_task(
         info!("ws: connected");
         event_tx.send(WsEvent::Connected).await;
 
-        // Main WebSocket loop - handle commands and incoming data
+        // Main WebSocket loop using select! for concurrent read/write
         let mut should_reconnect = false;
+        let mut connection_broken = false;
+
         loop {
-            // Check for commands (non-blocking)
-            if let Ok(cmd) = cmd_rx.try_receive() {
-                match cmd {
-                    WsCommand::Connect(url) => {
-                        info!("ws: received new URL, reconnecting");
-                        current_url = url;
-                        should_reconnect = true;
-                        break;
-                    }
-                    WsCommand::Send(data) => {
-                        info!("ws: sending {} bytes", data.len());
-                        match framer
-                            .write(
-                                &mut tls,
-                                &mut ws_buf,
-                                WebSocketSendMessageType::Binary,
-                                true,
-                                &data,
-                            )
-                            .await
-                        {
-                            Ok(_) => {}
-                            Err(e) => {
-                                match e {
-                                    FramerError::Io(_) => warn!("ws: write failed: I/O error"),
-                                    FramerError::FrameTooLarge(size) => {
-                                        warn!("ws: write failed: frame too large ({})", size)
-                                    }
-                                    FramerError::Utf8(_) => warn!("ws: write failed: UTF-8 error"),
-                                    FramerError::HttpHeader(_) => {
-                                        warn!("ws: write failed: HTTP header error")
-                                    }
-                                    FramerError::WebSocket(_) => {
-                                        warn!("ws: write failed: WebSocket protocol error")
-                                    }
-                                    FramerError::Disconnected => warn!("ws: write failed: disconnected"),
-                                    FramerError::RxBufferTooSmall(size) => {
-                                        warn!("ws: write failed: buffer too small (need {})", size)
-                                    }
+            match select(framer.read(&mut tls, &mut ws_buf), cmd_rx.receive()).await {
+                Either::First(read_result) => {
+                    // Frame received from server (or None if more data needed)
+                    match read_result {
+                        Some(Ok(ReadResult::Binary(data))) => {
+                            info!("ws: received {} bytes", data.len());
+                            if let Ok(payload) = Vec::try_from(data) {
+                                event_tx.send(WsEvent::Received(payload)).await;
+                            }
+                        }
+                        Some(Ok(ReadResult::Text(text))) => {
+                            info!("ws: received text: {}", text);
+                            if let Ok(payload) = Vec::try_from(text.as_bytes()) {
+                                event_tx.send(WsEvent::Received(payload)).await;
+                            }
+                        }
+                        Some(Ok(ReadResult::Close(close_msg))) => {
+                            let code = match close_msg.status_code {
+                                WebSocketCloseStatusCode::NormalClosure => 1000,
+                                WebSocketCloseStatusCode::EndpointUnavailable => 1001,
+                                WebSocketCloseStatusCode::ProtocolError => 1002,
+                                WebSocketCloseStatusCode::InvalidMessageType => 1003,
+                                WebSocketCloseStatusCode::Reserved => 1004,
+                                WebSocketCloseStatusCode::Empty => 1005,
+                                WebSocketCloseStatusCode::InvalidPayloadData => 1007,
+                                WebSocketCloseStatusCode::PolicyViolation => 1008,
+                                WebSocketCloseStatusCode::MessageTooBig => 1009,
+                                WebSocketCloseStatusCode::MandatoryExtension => 1010,
+                                WebSocketCloseStatusCode::InternalServerError => 1011,
+                                WebSocketCloseStatusCode::TlsHandshake => 1015,
+                                WebSocketCloseStatusCode::Custom(v) => v,
+                            };
+                            if let Ok(reason) = core::str::from_utf8(close_msg.reason) {
+                                warn!("ws: received close frame: code={}, reason={}", code, reason);
+                            } else {
+                                warn!("ws: received close frame: code={}", code);
+                            }
+                            // Framer automatically sends close reply
+                            break;
+                        }
+                        Some(Ok(ReadResult::Ping(_))) | Some(Ok(ReadResult::Pong(_))) => {
+                            // Ping/Pong handled automatically by framer
+                        }
+                        Some(Err(e)) => {
+                            match e {
+                                FramerError::Io(_) => warn!("ws: read error: I/O error"),
+                                FramerError::FrameTooLarge(size) => {
+                                    warn!("ws: read error: frame too large ({})", size)
                                 }
+                                FramerError::Utf8(_) => warn!("ws: read error: UTF-8 decode error"),
+                                FramerError::HttpHeader(_) => {
+                                    warn!("ws: read error: HTTP header error")
+                                }
+                                FramerError::WebSocket(_) => {
+                                    warn!("ws: read error: WebSocket protocol error")
+                                }
+                                FramerError::Disconnected => warn!("ws: read error: disconnected"),
+                                FramerError::RxBufferTooSmall(size) => {
+                                    warn!("ws: read error: rx buffer too small (need {})", size)
+                                }
+                            }
+                            connection_broken = true;
+                            break;
+                        }
+                        None => {
+                            // Connection closed or need more data
+                        }
+                    }
+                }
+                Either::Second(cmd) => {
+                    // Command received from application
+                    match cmd {
+                        WsCommand::Connect(url) => {
+                            info!("ws: received new URL, reconnecting");
+                            current_url = url;
+                            should_reconnect = true;
+                            break;
+                        }
+                        WsCommand::Send(data) => {
+                            info!("ws: sending {} bytes", data.len());
+                            match framer
+                                .write(
+                                    &mut tls,
+                                    &mut ws_buf,
+                                    WebSocketSendMessageType::Binary,
+                                    true,
+                                    &data,
+                                )
+                                .await
+                            {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    match e {
+                                        FramerError::Io(_) => warn!("ws: write failed: I/O error"),
+                                        FramerError::FrameTooLarge(size) => {
+                                            warn!("ws: write failed: frame too large ({})", size)
+                                        }
+                                        FramerError::Utf8(_) => {
+                                            warn!("ws: write failed: UTF-8 error")
+                                        }
+                                        FramerError::HttpHeader(_) => {
+                                            warn!("ws: write failed: HTTP header error")
+                                        }
+                                        FramerError::WebSocket(_) => {
+                                            warn!("ws: write failed: WebSocket protocol error")
+                                        }
+                                        FramerError::Disconnected => {
+                                            warn!("ws: write failed: disconnected")
+                                        }
+                                        FramerError::RxBufferTooSmall(size) => {
+                                            warn!("ws: write failed: buffer too small (need {})", size)
+                                        }
+                                    }
+                                    connection_broken = true;
+                                    break;
+                                }
+                            }
+                        }
+                        WsCommand::EchoTest => {
+                            info!("ws: starting echo test");
+                            let (result, connection_ok) =
+                                run_echo_test(&mut framer, &mut tls, &mut ws_buf).await;
+                            info!(
+                                "ws: echo test complete: sent={}, received={}",
+                                result.sent, result.received
+                            );
+                            event_tx.send(WsEvent::EchoTestResult(result)).await;
+                            if !connection_ok {
+                                warn!("ws: connection failed during echo test, reconnecting");
+                                connection_broken = true;
                                 break;
                             }
                         }
                     }
                 }
             }
-
-            // Try to read data (with short timeout to allow command checking)
-            // Note: This is a simplified approach; ideally we'd use select! or similar
-            match embassy_time::with_timeout(
-                Duration::from_millis(100),
-                framer.read(&mut tls, &mut ws_buf),
-            )
-            .await
-            {
-                Ok(Some(Ok(ReadResult::Binary(data)))) => {
-                    info!("ws: received {} bytes", data.len());
-                    if let Ok(payload) = Vec::try_from(data) {
-                        event_tx.send(WsEvent::Received(payload)).await;
-                    }
-                }
-                Ok(Some(Ok(ReadResult::Text(text)))) => {
-                    info!("ws: received text: {}", text);
-                    if let Ok(payload) = Vec::try_from(text.as_bytes()) {
-                        event_tx.send(WsEvent::Received(payload)).await;
-                    }
-                }
-                Ok(Some(Ok(ReadResult::Close(close_msg)))) => {
-                    let code = match close_msg.status_code {
-                        WebSocketCloseStatusCode::NormalClosure => 1000,
-                        WebSocketCloseStatusCode::EndpointUnavailable => 1001,
-                        WebSocketCloseStatusCode::ProtocolError => 1002,
-                        WebSocketCloseStatusCode::InvalidMessageType => 1003,
-                        WebSocketCloseStatusCode::Reserved => 1004,
-                        WebSocketCloseStatusCode::Empty => 1005,
-                        WebSocketCloseStatusCode::InvalidPayloadData => 1007,
-                        WebSocketCloseStatusCode::PolicyViolation => 1008,
-                        WebSocketCloseStatusCode::MessageTooBig => 1009,
-                        WebSocketCloseStatusCode::MandatoryExtension => 1010,
-                        WebSocketCloseStatusCode::InternalServerError => 1011,
-                        WebSocketCloseStatusCode::TlsHandshake => 1015,
-                        WebSocketCloseStatusCode::Custom(v) => v,
-                    };
-                    if let Ok(reason) = core::str::from_utf8(close_msg.reason) {
-                        warn!("ws: received close frame: code={}, reason={}", code, reason);
-                    } else {
-                        warn!("ws: received close frame: code={}", code);
-                    }
-                    break;
-                }
-                Ok(Some(Ok(ReadResult::Ping(_)))) | Ok(Some(Ok(ReadResult::Pong(_)))) => {
-                    // Ping/Pong handled automatically by framer
-                }
-                Ok(Some(Err(e))) => {
-                    match e {
-                        FramerError::Io(_) => warn!("ws: read error: I/O error"),
-                        FramerError::FrameTooLarge(size) => {
-                            warn!("ws: read error: frame too large ({})", size)
-                        }
-                        FramerError::Utf8(_) => warn!("ws: read error: UTF-8 decode error"),
-                        FramerError::HttpHeader(_) => warn!("ws: read error: HTTP header error"),
-                        FramerError::WebSocket(_) => warn!("ws: read error: WebSocket protocol error"),
-                        FramerError::Disconnected => warn!("ws: read error: disconnected"),
-                        FramerError::RxBufferTooSmall(size) => {
-                            warn!("ws: read error: rx buffer too small (need {})", size)
-                        }
-                    }
-                    break;
-                }
-                Ok(None) => {
-                    // No data available, yield briefly
-                    Timer::after(Duration::from_millis(50)).await;
-                }
-                Err(_) => {
-                    // Timeout - continue loop to check commands
-                }
-            }
         }
 
-        // Clean up
-        let _ = framer
-            .close(
-                &mut tls,
-                &mut ws_buf,
-                WebSocketCloseStatusCode::NormalClosure,
-                None,
-            )
-            .await;
+        // Clean up - only try to close if connection is still healthy
+        // (the framer library panics on I/O errors in close)
+        if !connection_broken {
+            let _ = framer
+                .close(
+                    &mut tls,
+                    &mut ws_buf,
+                    WebSocketCloseStatusCode::NormalClosure,
+                    None,
+                )
+                .await;
+        }
 
         if !should_reconnect {
             event_tx.send(WsEvent::Disconnected).await;
             Timer::after(Duration::from_secs(5)).await;
         }
     }
+}
+
+/// Run the WebSocket echo test with jitter buffer analysis.
+///
+/// Sends ECHO_TEST_PACKET_COUNT packets (640 bytes each) at 20ms intervals (50 fps),
+/// receives echoed packets through a jitter buffer, and records:
+/// - Raw jitter: inter-arrival times before the buffer
+/// - Buffered jitter: inter-departure times after the buffer
+///
+/// Returns (result, connection_ok). If connection_ok is false, the caller
+/// should break out of the main loop to trigger reconnection.
+async fn run_echo_test<'a, S>(
+    framer: &mut Framer<&'a mut EspRng, embedded_websocket_embedded_io::Client>,
+    tls: &mut TlsConnection<'_, S, Aes128GcmSha256>,
+    ws_buf: &mut [u8],
+) -> (EchoTestResult, bool)
+where
+    S: embedded_io_async::Read + embedded_io_async::Write + Unpin,
+{
+    use embassy_time::Instant;
+    use link::net::JitterBuffer;
+
+    // Packet payload: 640 bytes (FRAME_SIZE equivalent)
+    const PACKET_SIZE: usize = 640;
+    let packet = [0xAAu8; PACKET_SIZE];
+
+    let mut sent: u8 = 0;
+    let mut received: u8 = 0;
+    let mut raw_jitter_us: Vec<u32, ECHO_TEST_PACKET_COUNT> = Vec::new();
+    let mut last_recv_time: Option<Instant> = None;
+    let mut connection_ok = true;
+
+    // Jitter buffer for smoothing output
+    let mut jitter_buffer: JitterBuffer<PACKET_SIZE> = JitterBuffer::new();
+
+    // Phase 1: Send packets at 20ms intervals (50 fps) while also receiving
+    let mut next_send_time = Instant::now();
+    let send_interval = Duration::from_millis(20);
+
+    info!("ws: echo test phase 1 - sending {} packets", ECHO_TEST_PACKET_COUNT);
+
+    while (sent as usize) < ECHO_TEST_PACKET_COUNT {
+        // Time to send next packet?
+        if Instant::now() >= next_send_time {
+            match framer
+                .write(tls, ws_buf, WebSocketSendMessageType::Binary, true, &packet)
+                .await
+            {
+                Ok(_) => {
+                    sent += 1;
+                    if sent == 1 || sent % 10 == 0 {
+                        info!("ws: echo test sent {} packets", sent);
+                    }
+                    next_send_time = Instant::now() + send_interval;
+                }
+                Err(_) => {
+                    warn!("ws: echo test send failed at packet {}", sent);
+                    connection_ok = false;
+                    break;
+                }
+            }
+        }
+
+        // Drain all available packets until next send time
+        loop {
+            let now = Instant::now();
+            if now >= next_send_time {
+                break; // Time to send again
+            }
+            let timeout = next_send_time.saturating_duration_since(now);
+            match embassy_time::with_timeout(timeout, framer.read(tls, ws_buf)).await {
+                Ok(Some(Ok(ReadResult::Binary(data)))) => {
+                    let recv_time = Instant::now();
+                    // Record raw jitter (before buffer)
+                    if let Some(last) = last_recv_time {
+                        let delta_us = recv_time.duration_since(last).as_micros() as u32;
+                        let _ = raw_jitter_us.push(delta_us);
+                    }
+                    last_recv_time = Some(recv_time);
+                    received += 1;
+                    // Push into jitter buffer
+                    jitter_buffer.push(data);
+                }
+                Ok(Some(Ok(_))) => {
+                    // Other frame types, ignore but keep draining
+                }
+                Ok(Some(Err(_))) => {
+                    warn!("ws: echo test receive error");
+                    connection_ok = false;
+                    break;
+                }
+                Ok(None) => {
+                    // Framer needs more data, keep reading
+                }
+                Err(_) => {
+                    // Timeout - time to send next packet
+                    break;
+                }
+            }
+        }
+        if !connection_ok {
+            break;
+        }
+    }
+
+    // Phase 2: Wait for remaining responses (up to 2 seconds) - only if connection still ok
+    if connection_ok {
+        info!("ws: echo test phase 2 - waiting for remaining packets");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while (received as usize) < (sent as usize) && Instant::now() < deadline {
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            match embassy_time::with_timeout(timeout, framer.read(tls, ws_buf)).await {
+                Ok(Some(Ok(ReadResult::Binary(data)))) => {
+                    let recv_time = Instant::now();
+                    // Record raw jitter (before buffer)
+                    if let Some(last) = last_recv_time {
+                        let delta_us = recv_time.duration_since(last).as_micros() as u32;
+                        let _ = raw_jitter_us.push(delta_us);
+                    }
+                    last_recv_time = Some(recv_time);
+                    received += 1;
+                    // Push into jitter buffer
+                    jitter_buffer.push(data);
+                }
+                Ok(Some(Ok(_))) => {
+                    // Other frame types, ignore but keep waiting
+                }
+                Ok(Some(Err(_))) => {
+                    warn!("ws: echo test phase 2 receive error");
+                    connection_ok = false;
+                    break;
+                }
+                Ok(None) => {
+                    // Framer needs more data, keep reading
+                }
+                Err(_) => {
+                    // Timeout expired
+                    info!("ws: echo test phase 2 timeout, received {}/{}", received, sent);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Phase 3: Simulate playback - pop from buffer at 20ms intervals and measure jitter
+    info!("ws: echo test phase 3 - measuring buffered jitter");
+    let mut buffered_jitter_us: Vec<u32, ECHO_TEST_PACKET_COUNT> = Vec::new();
+    let mut buffered_output: u8 = 0;
+    let mut last_pop_time: Option<Instant> = None;
+    let mut next_pop_time = Instant::now();
+    let pop_interval = Duration::from_millis(20);
+
+    // Pop all frames from buffer at steady 20ms rate
+    loop {
+        // Wait until next pop time
+        let now = Instant::now();
+        if now < next_pop_time {
+            Timer::after(next_pop_time - now).await;
+        }
+
+        match jitter_buffer.pop() {
+            Some(_frame) => {
+                let pop_time = Instant::now();
+                if let Some(last) = last_pop_time {
+                    let delta_us = pop_time.duration_since(last).as_micros() as u32;
+                    let _ = buffered_jitter_us.push(delta_us);
+                }
+                last_pop_time = Some(pop_time);
+                buffered_output += 1;
+                next_pop_time = Instant::now() + pop_interval;
+            }
+            None => {
+                // Buffer empty or still buffering
+                if jitter_buffer.level() == 0 && buffered_output > 0 {
+                    // Buffer drained, we're done
+                    break;
+                }
+                // Still buffering or underrun, wait a bit and retry
+                Timer::after(Duration::from_millis(5)).await;
+                // Safety: don't wait forever if nothing received
+                if buffered_output == 0 && received == 0 {
+                    break;
+                }
+            }
+        }
+    }
+
+    let stats = jitter_buffer.stats();
+    info!(
+        "ws: echo test complete - raw received: {}, buffered output: {}, underruns: {}",
+        received, buffered_output, stats.underruns
+    );
+
+    (
+        EchoTestResult {
+            sent,
+            received,
+            buffered_output,
+            raw_jitter_us,
+            buffered_jitter_us,
+            underruns: stats.underruns as u8,
+        },
+        connection_ok,
+    )
 }
 
 /// Parse a wss:// URL into (host, port, path)

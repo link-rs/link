@@ -18,6 +18,8 @@ pub enum CtlToMgmt {
     ResetNetToUser,
     /// Hello handshake for device detection (4 bytes, XOR'd with b"LINK")
     Hello,
+    /// Start WebSocket echo test: send packets, measure inter-arrival times
+    WsEchoTest,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -29,6 +31,8 @@ pub enum MgmtToCtl {
     Ack,
     /// Hello response (4 bytes XOR'd with b"LINK")
     Hello,
+    /// WebSocket echo test results
+    WsEchoTestResult,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -64,6 +68,8 @@ pub enum MgmtToNet {
     GetRelayUrl,
     SetRelayUrl,
     WsSend,
+    /// Start WebSocket echo test
+    WsEchoTest,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -78,6 +84,8 @@ pub enum NetToMgmt {
     WsReceived,
     WsConnected,
     WsDisconnected,
+    /// WebSocket echo test results
+    WsEchoTestResult,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

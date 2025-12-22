@@ -16,6 +16,7 @@ default = ["defmt"]
 defmt = ["dep:defmt", "heapless/defmt"]
 trace-tlv = ["defmt"]  # Verbose TLV read/write logging - easy to disable
 std = ["dep:bootloader", "dep:md-5", "dep:miniz_oxide"]  # Enable std/alloc library support (required for ctl module)
+audio-buffer = ["dep:embassy-time"]  # Enable jitter buffering for audio playback
 
 [dependencies]
 defmt = { version = "1", optional = true }
@@ -34,6 +35,7 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
 hkdf = { version = "0.12", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 embassy-futures = "0.1.2"
+embassy-time = { version = "0.4", optional = true }
 bootloader = { path = "../bootloader", optional = true }
 md-5 = { version = "0.10", optional = true, default-features = false }
 miniz_oxide = { version = "0.8", optional = true, default-features = false, features = ["with-alloc"] }

@@ -287,5 +287,9 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
             }
             to_ctl.must_write_tlv(MgmtToCtl::Hello, &response).await;
         }
+        CtlToMgmt::WsEchoTest => {
+            info!("mgmt: forwarding ws echo test to net");
+            to_net.must_write_tlv(MgmtToNet::WsEchoTest, &[]).await;
+        }
     }
 }

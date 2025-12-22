@@ -1,6 +1,9 @@
 //! NET (Network) chip - handles network communication.
 
+mod jitter_buffer;
 mod storage;
+
+pub use jitter_buffer::{JitterBuffer, JitterState, JitterStats, BUFFER_FRAMES, MIN_START_LEVEL};
 pub use storage::{
     NetStorage, WifiSsid, MAX_PASSWORD_LEN, MAX_RELAY_URL_LEN, MAX_SSID_LEN, MAX_WIFI_SSIDS,
 };
@@ -10,6 +13,12 @@ use crate::shared::{
     read_tlv_loop, Channel, Color, CriticalSectionRawMutex, Led, MgmtToNet, NetToMgmt, NetToUi,
     RawMutex, Receiver, Sender, Tlv, UiToNet, WriteTlv,
 };
+#[cfg(feature = "audio-buffer")]
+use crate::shared::MAX_VALUE_SIZE;
+#[cfg(feature = "audio-buffer")]
+use embassy_futures::select::{select, Either};
+#[cfg(feature = "audio-buffer")]
+use embassy_time::{Duration, Ticker};
 use embedded_hal::digital::StatefulOutputPin;
 use embedded_io_async::{Read, Write};
 use embedded_storage::{ReadStorage, Storage};
@@ -17,6 +26,22 @@ use heapless::{String, Vec};
 
 /// Maximum size for WebSocket message payload.
 pub const MAX_WS_PAYLOAD: usize = 640;
+
+/// Number of packets to send in echo test (1 second at 20ms interval = 50 fps).
+pub const ECHO_TEST_PACKET_COUNT: usize = 50;
+
+/// WebSocket routing mode.
+///
+/// Determines where received WebSocket data should be routed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum WsMode {
+    /// Normal operation: route received data to UI for audio playback.
+    #[default]
+    Normal,
+    /// Ping mode: route received data to MGMT (for ws-ping command).
+    Ping,
+}
 
 /// Commands sent to the WebSocket task.
 #[derive(Clone)]
@@ -26,6 +51,28 @@ pub enum WsCommand {
     Send(Vec<u8, MAX_WS_PAYLOAD>),
     /// Connect/reconnect to the relay with the given URL.
     Connect(String<MAX_RELAY_URL_LEN>),
+    /// Run echo test: send packets, measure inter-arrival times of responses.
+    EchoTest,
+}
+
+/// Result of the WebSocket echo test.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct EchoTestResult {
+    /// Number of packets sent.
+    pub sent: u8,
+    /// Number of packets received (before buffer).
+    pub received: u8,
+    /// Number of packets output from buffer.
+    pub buffered_output: u8,
+    /// Raw inter-arrival times in microseconds (before jitter buffer).
+    /// Shows actual network jitter.
+    pub raw_jitter_us: Vec<u32, ECHO_TEST_PACKET_COUNT>,
+    /// Buffered inter-departure times in microseconds (after jitter buffer).
+    /// Should be close to 20000us (20ms) if buffer is working.
+    pub buffered_jitter_us: Vec<u32, ECHO_TEST_PACKET_COUNT>,
+    /// Number of buffer underruns during the test.
+    pub underruns: u8,
 }
 
 /// Events received from the WebSocket task.
@@ -38,6 +85,8 @@ pub enum WsEvent {
     Disconnected,
     /// Data received from WebSocket.
     Received(Vec<u8, MAX_WS_PAYLOAD>),
+    /// Echo test completed.
+    EchoTestResult(EchoTestResult),
 }
 
 enum Event {
@@ -133,15 +182,47 @@ where
             }
         };
 
+        // Event handling task - with or without audio jitter buffer
+        #[cfg(feature = "audio-buffer")]
         let handle_task = async {
+            let mut ws_mode = WsMode::Normal;
+            let mut audio_buffer: JitterBuffer<MAX_VALUE_SIZE> = JitterBuffer::new();
+            let mut ticker = Ticker::every(Duration::from_millis(20));
+            info!("net: ready to handle events (audio buffering enabled)");
+            loop {
+                match select(channel.receive(), ticker.next()).await {
+                    Either::First(event) => match event {
+                        Event::Mgmt(tlv) => {
+                            handle_mgmt(tlv, &mut to_mgmt, &mut to_ui, &mut storage, &ws_cmd_tx, &mut ws_mode).await
+                        }
+                        Event::Ui(tlv) => handle_ui(tlv, &mut to_mgmt, &mut to_ui, &ws_cmd_tx).await,
+                        Event::Ws(event) => {
+                            handle_ws_buffered(event, &mut to_mgmt, &mut led, &mut ws_mode, &mut audio_buffer).await
+                        }
+                    },
+                    Either::Second(_) => {
+                        // Timer tick - pop from buffer if playing
+                        if audio_buffer.state() == JitterState::Playing || audio_buffer.level() >= 5 {
+                            if let Some(frame) = audio_buffer.pop() {
+                                to_ui.must_write_tlv(NetToUi::AudioFrame, &frame).await;
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        #[cfg(not(feature = "audio-buffer"))]
+        let handle_task = async {
+            let mut ws_mode = WsMode::Normal;
             info!("net: ready to handle events");
             loop {
                 match channel.receive().await {
                     Event::Mgmt(tlv) => {
-                        handle_mgmt(tlv, &mut to_mgmt, &mut to_ui, &mut storage, &ws_cmd_tx).await
+                        handle_mgmt(tlv, &mut to_mgmt, &mut to_ui, &mut storage, &ws_cmd_tx, &mut ws_mode).await
                     }
                     Event::Ui(tlv) => handle_ui(tlv, &mut to_mgmt, &mut to_ui, &ws_cmd_tx).await,
-                    Event::Ws(event) => handle_ws(event, &mut to_mgmt, &mut to_ui, &mut led).await,
+                    Event::Ws(event) => handle_ws(event, &mut to_mgmt, &mut to_ui, &mut led, &mut ws_mode).await,
                 }
             }
         };
@@ -157,6 +238,7 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
     to_ui: &mut U,
     storage: &mut NetStorage<F>,
     ws_cmd_tx: &Sender<'a, RM, WsCommand, N>,
+    ws_mode: &mut WsMode,
 ) where
     M: WriteTlv<NetToMgmt>,
     U: WriteTlv<NetToUi>,
@@ -250,12 +332,18 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
         }
         MgmtToNet::WsSend => {
             info!("net: ws send ({} bytes)", tlv.value.len());
+            // Set mode to Ping so response is routed to MGMT
+            *ws_mode = WsMode::Ping;
             let Ok(payload) = Vec::try_from(tlv.value.as_slice()) else {
                 info!("net: ws payload too large");
                 to_mgmt.must_write_tlv(NetToMgmt::Error, b"size").await;
                 return;
             };
             ws_cmd_tx.send(WsCommand::Send(payload)).await;
+        }
+        MgmtToNet::WsEchoTest => {
+            info!("net: ws echo test requested");
+            ws_cmd_tx.send(WsCommand::EchoTest).await;
         }
     }
 }
@@ -277,25 +365,22 @@ async fn handle_ui<'a, M, U, RM: RawMutex, const N: usize>(
                 .await;
         }
         UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
-            // XXX Audio loopback to UI
-            to_ui.must_write_tlv(NetToUi::AudioFrame, &tlv.value).await;
-
-            /*
             let Ok(payload) = Vec::try_from(tlv.value.as_slice()) else {
                 info!("net: ws payload too large");
                 return;
             };
             ws_cmd_tx.send(WsCommand::Send(payload)).await;
-            */
         }
     }
 }
 
+#[cfg_attr(feature = "audio-buffer", allow(dead_code))]
 async fn handle_ws<M, U, LR, LG, LB>(
     event: WsEvent,
     to_mgmt: &mut M,
     to_ui: &mut U,
     led: &mut Led<LR, LG, LB>,
+    ws_mode: &mut WsMode,
 ) where
     M: WriteTlv<NetToMgmt>,
     U: WriteTlv<NetToUi>,
@@ -312,11 +397,137 @@ async fn handle_ws<M, U, LR, LG, LB>(
         WsEvent::Disconnected => {
             info!("net: ws disconnected");
             led.set(Color::Red);
+            // Reset to Normal mode on disconnect
+            *ws_mode = WsMode::Normal;
             to_mgmt.must_write_tlv(NetToMgmt::WsDisconnected, &[]).await;
         }
         WsEvent::Received(data) => {
             info!("net: ws received {} bytes", data.len());
-            to_ui.must_write_tlv(NetToUi::AudioFrame, &data).await;
+            match *ws_mode {
+                WsMode::Normal => {
+                    // Route to UI for audio playback
+                    to_ui.must_write_tlv(NetToUi::AudioFrame, &data).await;
+                }
+                WsMode::Ping => {
+                    // Route to MGMT for ws-ping response
+                    to_mgmt.must_write_tlv(NetToMgmt::WsReceived, &data).await;
+                    // Reset to Normal after handling ping response
+                    *ws_mode = WsMode::Normal;
+                }
+            }
+        }
+        WsEvent::EchoTestResult(result) => {
+            info!(
+                "net: ws echo test complete: sent={}, received={}, buffered={}",
+                result.sent, result.received, result.buffered_output
+            );
+            // Serialize result:
+            // - sent (1 byte)
+            // - received (1 byte)
+            // - buffered_output (1 byte)
+            // - underruns (1 byte)
+            // - raw_jitter_count (1 byte)
+            // - raw_jitter_us (4 bytes each)
+            // - buffered_jitter_count (1 byte)
+            // - buffered_jitter_us (4 bytes each)
+            let mut buf = [0u8; 6 + ECHO_TEST_PACKET_COUNT * 8];
+            buf[0] = result.sent;
+            buf[1] = result.received;
+            buf[2] = result.buffered_output;
+            buf[3] = result.underruns;
+            buf[4] = result.raw_jitter_us.len() as u8;
+            let mut offset = 5;
+            for &time_us in result.raw_jitter_us.iter() {
+                buf[offset..offset + 4].copy_from_slice(&time_us.to_le_bytes());
+                offset += 4;
+            }
+            buf[offset] = result.buffered_jitter_us.len() as u8;
+            offset += 1;
+            for &time_us in result.buffered_jitter_us.iter() {
+                buf[offset..offset + 4].copy_from_slice(&time_us.to_le_bytes());
+                offset += 4;
+            }
+            to_mgmt
+                .must_write_tlv(NetToMgmt::WsEchoTestResult, &buf[..offset])
+                .await;
+        }
+    }
+}
+
+/// Handle WebSocket events with audio buffering.
+/// Audio frames are pushed to the jitter buffer instead of being sent directly to UI.
+#[cfg(feature = "audio-buffer")]
+async fn handle_ws_buffered<M, LR, LG, LB, const N: usize>(
+    event: WsEvent,
+    to_mgmt: &mut M,
+    led: &mut Led<LR, LG, LB>,
+    ws_mode: &mut WsMode,
+    audio_buffer: &mut JitterBuffer<N>,
+) where
+    M: WriteTlv<NetToMgmt>,
+    LR: StatefulOutputPin,
+    LG: StatefulOutputPin,
+    LB: StatefulOutputPin,
+{
+    match event {
+        WsEvent::Connected => {
+            info!("net: ws connected");
+            led.set(Color::Green);
+            // Reset audio buffer on new connection
+            audio_buffer.reset();
+            to_mgmt.must_write_tlv(NetToMgmt::WsConnected, &[]).await;
+        }
+        WsEvent::Disconnected => {
+            info!("net: ws disconnected");
+            led.set(Color::Red);
+            // Reset to Normal mode and clear buffer on disconnect
+            *ws_mode = WsMode::Normal;
+            audio_buffer.reset();
+            to_mgmt.must_write_tlv(NetToMgmt::WsDisconnected, &[]).await;
+        }
+        WsEvent::Received(data) => {
+            info!("net: ws received {} bytes", data.len());
+            match *ws_mode {
+                WsMode::Normal => {
+                    // Push audio to jitter buffer instead of sending directly
+                    if !audio_buffer.push(&data) {
+                        info!("net: audio buffer overrun");
+                    }
+                }
+                WsMode::Ping => {
+                    // Route to MGMT for ws-ping response (not buffered)
+                    to_mgmt.must_write_tlv(NetToMgmt::WsReceived, &data).await;
+                    // Reset to Normal after handling ping response
+                    *ws_mode = WsMode::Normal;
+                }
+            }
+        }
+        WsEvent::EchoTestResult(result) => {
+            info!(
+                "net: ws echo test complete: sent={}, received={}, buffered={}",
+                result.sent, result.received, result.buffered_output
+            );
+            // Serialize result (same as non-buffered version)
+            let mut buf = [0u8; 6 + ECHO_TEST_PACKET_COUNT * 8];
+            buf[0] = result.sent;
+            buf[1] = result.received;
+            buf[2] = result.buffered_output;
+            buf[3] = result.underruns;
+            buf[4] = result.raw_jitter_us.len() as u8;
+            let mut offset = 5;
+            for &time_us in result.raw_jitter_us.iter() {
+                buf[offset..offset + 4].copy_from_slice(&time_us.to_le_bytes());
+                offset += 4;
+            }
+            buf[offset] = result.buffered_jitter_us.len() as u8;
+            offset += 1;
+            for &time_us in result.buffered_jitter_us.iter() {
+                buf[offset..offset + 4].copy_from_slice(&time_us.to_le_bytes());
+                offset += 4;
+            }
+            to_mgmt
+                .must_write_tlv(NetToMgmt::WsEchoTestResult, &buf[..offset])
+                .await;
         }
     }
 }
@@ -384,8 +595,9 @@ mod tests {
         let mut to_mgmt = MockMgmtWriter::new();
         let mut to_ui = MockUiWriter::new();
         let mut led = mock_led();
+        let mut ws_mode = WsMode::Normal;
 
-        handle_ws(WsEvent::Connected, &mut to_mgmt, &mut to_ui, &mut led).await;
+        handle_ws(WsEvent::Connected, &mut to_mgmt, &mut to_ui, &mut led, &mut ws_mode).await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, NetToMgmt::WsConnected);
@@ -397,8 +609,9 @@ mod tests {
         let mut to_mgmt = MockMgmtWriter::new();
         let mut to_ui = MockUiWriter::new();
         let mut led = mock_led();
+        let mut ws_mode = WsMode::Normal;
 
-        handle_ws(WsEvent::Disconnected, &mut to_mgmt, &mut to_ui, &mut led).await;
+        handle_ws(WsEvent::Disconnected, &mut to_mgmt, &mut to_ui, &mut led, &mut ws_mode).await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, NetToMgmt::WsDisconnected);
@@ -406,10 +619,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_ws_received_forwards_audio_to_ui() {
+    async fn handle_ws_disconnected_resets_mode() {
         let mut to_mgmt = MockMgmtWriter::new();
         let mut to_ui = MockUiWriter::new();
         let mut led = mock_led();
+        let mut ws_mode = WsMode::Ping; // Start in Ping mode
+
+        handle_ws(WsEvent::Disconnected, &mut to_mgmt, &mut to_ui, &mut led, &mut ws_mode).await;
+
+        // Mode should be reset to Normal on disconnect
+        assert_eq!(ws_mode, WsMode::Normal);
+    }
+
+    #[tokio::test]
+    async fn handle_ws_received_forwards_audio_to_ui_in_normal_mode() {
+        let mut to_mgmt = MockMgmtWriter::new();
+        let mut to_ui = MockUiWriter::new();
+        let mut led = mock_led();
+        let mut ws_mode = WsMode::Normal;
 
         // Simulate receiving audio data from WebSocket
         let audio_data: Vec<u8, MAX_WS_PAYLOAD> =
@@ -419,6 +646,7 @@ mod tests {
             &mut to_mgmt,
             &mut to_ui,
             &mut led,
+            &mut ws_mode,
         )
         .await;
 
@@ -426,13 +654,45 @@ mod tests {
         assert_eq!(to_ui.written.len(), 1);
         assert_eq!(to_ui.written[0].0, NetToUi::AudioFrame);
         assert_eq!(to_ui.written[0].1, &[0x01, 0x02, 0x03, 0x04]);
+        // Should NOT send to MGMT
+        assert!(to_mgmt.written.is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_ws_received_forwards_to_mgmt_in_ping_mode() {
+        let mut to_mgmt = MockMgmtWriter::new();
+        let mut to_ui = MockUiWriter::new();
+        let mut led = mock_led();
+        let mut ws_mode = WsMode::Ping;
+
+        // Simulate receiving ping response from WebSocket
+        let ping_data: Vec<u8, MAX_WS_PAYLOAD> =
+            Vec::from_slice(&[0x01, 0x02, 0x03, 0x04]).unwrap();
+        handle_ws(
+            WsEvent::Received(ping_data),
+            &mut to_mgmt,
+            &mut to_ui,
+            &mut led,
+            &mut ws_mode,
+        )
+        .await;
+
+        // Should forward to MGMT as WsReceived
+        assert_eq!(to_mgmt.written.len(), 1);
+        assert_eq!(to_mgmt.written[0].0, NetToMgmt::WsReceived);
+        assert_eq!(to_mgmt.written[0].1, &[0x01, 0x02, 0x03, 0x04]);
+        // Should NOT send to UI
+        assert!(to_ui.written.is_empty());
+        // Mode should be reset to Normal
+        assert_eq!(ws_mode, WsMode::Normal);
     }
 
     // ==================== handle_ui Audio Tests ====================
 
     #[tokio::test]
-    async fn handle_ui_audio_frame_a_sends_to_websocket() {
+    async fn handle_ui_audio_frame_loops_back_to_ui() {
         let mut to_mgmt = MockMgmtWriter::new();
+        let mut to_ui = MockUiWriter::new();
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
 
         // Simulate audio frame from UI (button A)
@@ -443,22 +703,18 @@ mod tests {
             value: audio_data,
         };
 
-        handle_ui(tlv, &mut to_mgmt, &channel.sender()).await;
+        handle_ui(tlv, &mut to_mgmt, &mut to_ui, &channel.sender()).await;
 
-        // Should queue a WsCommand::Send with the audio data
-        let cmd = channel.receiver().try_receive().unwrap();
-        match cmd {
-            WsCommand::Send(data) => {
-                assert_eq!(data.len(), 640);
-                assert!(data.iter().all(|&b| b == 0xAA));
-            }
-            _ => panic!("Expected WsCommand::Send"),
-        }
+        // Audio is currently looped back to UI (XXX comment in code)
+        assert_eq!(to_ui.written.len(), 1);
+        assert_eq!(to_ui.written[0].0, NetToUi::AudioFrame);
+        assert_eq!(to_ui.written[0].1.len(), 640);
     }
 
     #[tokio::test]
-    async fn handle_ui_audio_frame_b_sends_to_websocket() {
+    async fn handle_ui_audio_frame_b_loops_back_to_ui() {
         let mut to_mgmt = MockMgmtWriter::new();
+        let mut to_ui = MockUiWriter::new();
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
 
         // Simulate audio frame from UI (button B)
@@ -469,17 +725,12 @@ mod tests {
             value: audio_data,
         };
 
-        handle_ui(tlv, &mut to_mgmt, &channel.sender()).await;
+        handle_ui(tlv, &mut to_mgmt, &mut to_ui, &channel.sender()).await;
 
-        // Should queue a WsCommand::Send with the audio data
-        let cmd = channel.receiver().try_receive().unwrap();
-        match cmd {
-            WsCommand::Send(data) => {
-                assert_eq!(data.len(), 640);
-                assert!(data.iter().all(|&b| b == 0xBB));
-            }
-            _ => panic!("Expected WsCommand::Send"),
-        }
+        // Audio is currently looped back to UI (XXX comment in code)
+        assert_eq!(to_ui.written.len(), 1);
+        assert_eq!(to_ui.written[0].0, NetToUi::AudioFrame);
+        assert_eq!(to_ui.written[0].1.len(), 640);
     }
 
     // ==================== handle_mgmt Tests ====================
@@ -490,6 +741,7 @@ mod tests {
         let mut to_ui = MockUiWriter::new();
         let mut storage = NetStorage::new(MockFlash::new(), 0);
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
+        let mut ws_mode = WsMode::Normal;
 
         let tlv = Tlv {
             tlv_type: MgmtToNet::Ping,
@@ -502,6 +754,7 @@ mod tests {
             &mut to_ui,
             &mut storage,
             &channel.sender(),
+            &mut ws_mode,
         )
         .await;
 
@@ -511,11 +764,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_mgmt_ws_send_queues_command() {
+    async fn handle_mgmt_ws_send_queues_command_and_sets_ping_mode() {
         let mut to_mgmt = MockMgmtWriter::new();
         let mut to_ui = MockUiWriter::new();
         let mut storage = NetStorage::new(MockFlash::new(), 0);
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
+        let mut ws_mode = WsMode::Normal;
 
         let tlv = Tlv {
             tlv_type: MgmtToNet::WsSend,
@@ -528,6 +782,7 @@ mod tests {
             &mut to_ui,
             &mut storage,
             &channel.sender(),
+            &mut ws_mode,
         )
         .await;
 
@@ -539,6 +794,9 @@ mod tests {
             }
             _ => panic!("Expected WsCommand::Send"),
         }
+
+        // Mode should be set to Ping
+        assert_eq!(ws_mode, WsMode::Ping);
     }
 
     #[tokio::test]
@@ -547,6 +805,7 @@ mod tests {
         let mut to_ui = MockUiWriter::new();
         let mut storage = NetStorage::new(MockFlash::new(), 0);
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
+        let mut ws_mode = WsMode::Normal;
 
         let tlv = Tlv {
             tlv_type: MgmtToNet::SetRelayUrl,
@@ -559,6 +818,7 @@ mod tests {
             &mut to_ui,
             &mut storage,
             &channel.sender(),
+            &mut ws_mode,
         )
         .await;
 
@@ -585,6 +845,7 @@ mod tests {
         let mut storage = NetStorage::new(MockFlash::new(), 0);
         storage.set_relay_url("wss://test.relay").unwrap();
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
+        let mut ws_mode = WsMode::Normal;
 
         let tlv = Tlv {
             tlv_type: MgmtToNet::GetRelayUrl,
@@ -597,6 +858,7 @@ mod tests {
             &mut to_ui,
             &mut storage,
             &channel.sender(),
+            &mut ws_mode,
         )
         .await;
 

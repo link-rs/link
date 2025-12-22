@@ -22,6 +22,25 @@ const VERIFY_CHUNK_SIZE: usize = 256;
 /// Maximum size for ESP32 boot message line buffer.
 const LINE_BUFFER_SIZE: usize = 128;
 
+/// Results from the WebSocket echo test.
+#[derive(Debug, Clone, Default)]
+pub struct EchoTestResults {
+    /// Number of packets sent.
+    pub sent: u8,
+    /// Number of packets received (before jitter buffer).
+    pub received: u8,
+    /// Number of packets output from jitter buffer.
+    pub buffered_output: u8,
+    /// Number of buffer underruns during the test.
+    pub underruns: u8,
+    /// Raw inter-arrival times in microseconds (before jitter buffer).
+    /// Shows actual network jitter.
+    pub raw_jitter_us: heapless::Vec<u32, 50>,
+    /// Buffered inter-departure times in microseconds (after jitter buffer).
+    /// Should be close to 20000us (20ms) if buffer is working.
+    pub buffered_jitter_us: heapless::Vec<u32, 50>,
+}
+
 /// Information retrieved from the MGMT chip when it's in bootloader mode.
 #[derive(Debug, Clone, Default)]
 pub struct MgmtBootloaderInfo {
@@ -519,6 +538,82 @@ where
         let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, NetToMgmt::WsReceived);
         assert_eq!(&tlv.value, data);
+    }
+
+    /// Run WebSocket echo test to measure bidirectional throughput.
+    ///
+    /// This test:
+    /// 1. Sends 50 packets (640 bytes each) at 20ms intervals (50 fps)
+    /// 2. Expects the echo server to return each packet
+    /// 3. Measures jitter before and after the jitter buffer
+    ///
+    /// Returns EchoTestResults with raw and buffered jitter measurements.
+    pub async fn ws_echo_test(&mut self) -> EchoTestResults {
+        // Tunnel through MGMT to NET (like ws_ping does)
+        self.writer
+            .net()
+            .must_write_tlv(MgmtToNet::WsEchoTest, &[])
+            .await;
+
+        // Wait for result from NET (tunneled through MGMT as FromNet)
+        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, NetToMgmt::WsEchoTestResult);
+
+        // Parse result:
+        // - sent (1 byte)
+        // - received (1 byte)
+        // - buffered_output (1 byte)
+        // - underruns (1 byte)
+        // - raw_jitter_count (1 byte)
+        // - raw_jitter_us (4 bytes each)
+        // - buffered_jitter_count (1 byte)
+        // - buffered_jitter_us (4 bytes each)
+        let sent = tlv.value.get(0).copied().unwrap_or(0);
+        let received = tlv.value.get(1).copied().unwrap_or(0);
+        let buffered_output = tlv.value.get(2).copied().unwrap_or(0);
+        let underruns = tlv.value.get(3).copied().unwrap_or(0);
+        let raw_count = tlv.value.get(4).copied().unwrap_or(0) as usize;
+
+        let mut offset = 5;
+        let mut raw_jitter_us: heapless::Vec<u32, 50> = heapless::Vec::new();
+        for _ in 0..raw_count {
+            if offset + 4 <= tlv.value.len() {
+                let time_us = u32::from_le_bytes([
+                    tlv.value[offset],
+                    tlv.value[offset + 1],
+                    tlv.value[offset + 2],
+                    tlv.value[offset + 3],
+                ]);
+                let _ = raw_jitter_us.push(time_us);
+                offset += 4;
+            }
+        }
+
+        let buffered_count = tlv.value.get(offset).copied().unwrap_or(0) as usize;
+        offset += 1;
+
+        let mut buffered_jitter_us: heapless::Vec<u32, 50> = heapless::Vec::new();
+        for _ in 0..buffered_count {
+            if offset + 4 <= tlv.value.len() {
+                let time_us = u32::from_le_bytes([
+                    tlv.value[offset],
+                    tlv.value[offset + 1],
+                    tlv.value[offset + 2],
+                    tlv.value[offset + 3],
+                ]);
+                let _ = buffered_jitter_us.push(time_us);
+                offset += 4;
+            }
+        }
+
+        EchoTestResults {
+            sent,
+            received,
+            buffered_output,
+            underruns,
+            raw_jitter_us,
+            buffered_jitter_us,
+        }
     }
 
     /// Get bootloader information from the MGMT chip.

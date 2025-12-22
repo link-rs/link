@@ -447,6 +447,12 @@ enum NetAction {
         #[arg(default_value = "hello from hactar")]
         data: String,
     },
+    /// Run WebSocket echo test to measure bidirectional throughput
+    ///
+    /// Sends 50 packets (640 bytes each) at 20ms intervals (50 fps) and measures
+    /// inter-arrival times of echoed responses. Requires an echo server.
+    #[command(name = "ws-echo-test")]
+    WsEchoTest,
 }
 
 /// Known STM32 product IDs
@@ -864,6 +870,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Sending WebSocket ping with data: {}", data);
                 app.ws_ping(data.as_bytes()).await;
                 println!("Received echo response!");
+            }
+            NetAction::WsEchoTest => {
+                println!("Running WebSocket echo test...");
+                println!("  Sending 50 packets (640 bytes each) at 20ms intervals (50 fps)\n");
+
+                let results = app.ws_echo_test().await;
+
+                println!("Results:");
+                println!("  Packets sent:           {}", results.sent);
+                println!("  Packets received (raw): {}", results.received);
+                println!("  Packets output (buf):   {}", results.buffered_output);
+                println!("  Buffer underruns:       {}", results.underruns);
+
+                if results.received > 0 {
+                    let loss_pct = if results.sent > 0 {
+                        ((results.sent - results.received) as f64 / results.sent as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    println!("  Packet loss:            {:.1}%", loss_pct);
+                }
+
+                // Helper to print jitter stats
+                fn print_jitter_stats(label: &str, timings: &[u32]) {
+                    if timings.is_empty() {
+                        println!("\n{}: No data", label);
+                        return;
+                    }
+
+                    let min = timings.iter().min().copied().unwrap_or(0);
+                    let max = timings.iter().max().copied().unwrap_or(0);
+                    let sum: u64 = timings.iter().map(|&x| x as u64).sum();
+                    let avg = sum / timings.len() as u64;
+
+                    println!("\n{}:", label);
+                    println!("  Min: {:>6} µs ({:>5.1} ms)", min, min as f64 / 1000.0);
+                    println!("  Max: {:>6} µs ({:>5.1} ms)", max, max as f64 / 1000.0);
+                    println!("  Avg: {:>6} µs ({:>5.1} ms)", avg, avg as f64 / 1000.0);
+
+                    // Target is 20ms (20000µs) between packets
+                    let target_us = 20000i64;
+                    let jitter: i64 = timings
+                        .iter()
+                        .map(|&x| (x as i64 - target_us).abs())
+                        .sum::<i64>()
+                        / timings.len() as i64;
+                    println!("  Avg deviation from 20ms: {:>6} µs ({:>5.1} ms)", jitter, jitter as f64 / 1000.0);
+                }
+
+                print_jitter_stats("Raw jitter (before buffer)", results.raw_jitter_us.as_slice());
+                print_jitter_stats("Buffered jitter (after buffer)", results.buffered_jitter_us.as_slice());
+
+                if !results.raw_jitter_us.is_empty() {
+                    println!("\nRaw timings (µs): {:?}", results.raw_jitter_us.as_slice());
+                }
+                if !results.buffered_jitter_us.is_empty() {
+                    println!("Buffered timings (µs): {:?}", results.buffered_jitter_us.as_slice());
+                }
             }
         },
         Command::CircularPing { reverse, data } => {
