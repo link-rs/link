@@ -9,7 +9,7 @@ use embassy_net::{tcp::TcpSocket, Runner, StackResources};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use embedded_tls::{Aes128GcmSha256, NoVerify, TlsConfig, TlsConnection, TlsContext};
-use embedded_websocket_embedded_io::framer_async::ReadResult;
+use embedded_websocket_embedded_io::framer_async::{FramerError, ReadResult};
 use embedded_websocket_embedded_io::{
     framer_async::Framer, WebSocketClient, WebSocketCloseStatusCode, WebSocketOptions,
     WebSocketSendMessageType,
@@ -468,7 +468,7 @@ async fn ws_task(
                     }
                     WsCommand::Send(data) => {
                         info!("ws: sending {} bytes", data.len());
-                        if framer
+                        match framer
                             .write(
                                 &mut tls,
                                 &mut ws_buf,
@@ -477,10 +477,28 @@ async fn ws_task(
                                 &data,
                             )
                             .await
-                            .is_err()
                         {
-                            warn!("ws: write failed");
-                            break;
+                            Ok(_) => {}
+                            Err(e) => {
+                                match e {
+                                    FramerError::Io(_) => warn!("ws: write failed: I/O error"),
+                                    FramerError::FrameTooLarge(size) => {
+                                        warn!("ws: write failed: frame too large ({})", size)
+                                    }
+                                    FramerError::Utf8(_) => warn!("ws: write failed: UTF-8 error"),
+                                    FramerError::HttpHeader(_) => {
+                                        warn!("ws: write failed: HTTP header error")
+                                    }
+                                    FramerError::WebSocket(_) => {
+                                        warn!("ws: write failed: WebSocket protocol error")
+                                    }
+                                    FramerError::Disconnected => warn!("ws: write failed: disconnected"),
+                                    FramerError::RxBufferTooSmall(size) => {
+                                        warn!("ws: write failed: buffer too small (need {})", size)
+                                    }
+                                }
+                                break;
+                            }
                         }
                     }
                 }
@@ -506,21 +524,51 @@ async fn ws_task(
                         event_tx.send(WsEvent::Received(payload)).await;
                     }
                 }
-                Ok(Some(Ok(ReadResult::Close(_)))) => {
-                    info!("ws: received close");
+                Ok(Some(Ok(ReadResult::Close(close_msg)))) => {
+                    let code = match close_msg.status_code {
+                        WebSocketCloseStatusCode::NormalClosure => 1000,
+                        WebSocketCloseStatusCode::EndpointUnavailable => 1001,
+                        WebSocketCloseStatusCode::ProtocolError => 1002,
+                        WebSocketCloseStatusCode::InvalidMessageType => 1003,
+                        WebSocketCloseStatusCode::Reserved => 1004,
+                        WebSocketCloseStatusCode::Empty => 1005,
+                        WebSocketCloseStatusCode::InvalidPayloadData => 1007,
+                        WebSocketCloseStatusCode::PolicyViolation => 1008,
+                        WebSocketCloseStatusCode::MessageTooBig => 1009,
+                        WebSocketCloseStatusCode::MandatoryExtension => 1010,
+                        WebSocketCloseStatusCode::InternalServerError => 1011,
+                        WebSocketCloseStatusCode::TlsHandshake => 1015,
+                        WebSocketCloseStatusCode::Custom(v) => v,
+                    };
+                    if let Ok(reason) = core::str::from_utf8(close_msg.reason) {
+                        warn!("ws: received close frame: code={}, reason={}", code, reason);
+                    } else {
+                        warn!("ws: received close frame: code={}", code);
+                    }
                     break;
                 }
                 Ok(Some(Ok(ReadResult::Ping(_)))) | Ok(Some(Ok(ReadResult::Pong(_)))) => {
                     // Ping/Pong handled automatically by framer
                 }
-                Ok(Some(Err(_))) => {
-                    warn!("ws: read error");
+                Ok(Some(Err(e))) => {
+                    match e {
+                        FramerError::Io(_) => warn!("ws: read error: I/O error"),
+                        FramerError::FrameTooLarge(size) => {
+                            warn!("ws: read error: frame too large ({})", size)
+                        }
+                        FramerError::Utf8(_) => warn!("ws: read error: UTF-8 decode error"),
+                        FramerError::HttpHeader(_) => warn!("ws: read error: HTTP header error"),
+                        FramerError::WebSocket(_) => warn!("ws: read error: WebSocket protocol error"),
+                        FramerError::Disconnected => warn!("ws: read error: disconnected"),
+                        FramerError::RxBufferTooSmall(size) => {
+                            warn!("ws: read error: rx buffer too small (need {})", size)
+                        }
+                    }
                     break;
                 }
                 Ok(None) => {
-                    // Connection closed
-                    info!("ws: connection closed");
-                    break;
+                    // No data available, yield briefly
+                    Timer::after(Duration::from_millis(50)).await;
                 }
                 Err(_) => {
                     // Timeout - continue loop to check commands

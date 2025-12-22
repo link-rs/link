@@ -157,10 +157,9 @@ where
                         }
                     }
                     Event::AudioFrame(frame) => {
-                        // Audio frame read from microphone -
-                        playback_channel.send(frame).await;
+                        // XXX Audio frame read from microphone - loopback
+                        // playback_channel.send(frame).await;
 
-                        /*
                         // Audio frame read from microphone - send if button is held
                         if let Some(button) = active_button {
                             let tlv_type = match button {
@@ -169,7 +168,6 @@ where
                             };
                             to_net.must_write_tlv(tlv_type, &frame.as_bytes()).await;
                         }
-                        */
                     }
                 }
             }

@@ -101,7 +101,7 @@ impl<'a, I: I2cTrait> Wm8960Codec<'a, I> {
             r.set(LeftInputToBoost(true));
             r.set(LeftInputAnalogMute(false));
             r.set(Linput2Boost(0b000));
-            r.set(LeftBoostGain(0b00));
+            r.set(LeftBoostGain(0b10));
             r.set(InputPgaVolumeUpdate(true));
             r.set(LeftPgaVolume(0b01_0111));
         });

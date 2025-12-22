@@ -140,7 +140,7 @@ where
                     Event::Mgmt(tlv) => {
                         handle_mgmt(tlv, &mut to_mgmt, &mut to_ui, &mut storage, &ws_cmd_tx).await
                     }
-                    Event::Ui(tlv) => handle_ui(tlv, &mut to_mgmt, &ws_cmd_tx).await,
+                    Event::Ui(tlv) => handle_ui(tlv, &mut to_mgmt, &mut to_ui, &ws_cmd_tx).await,
                     Event::Ws(event) => handle_ws(event, &mut to_mgmt, &mut to_ui, &mut led).await,
                 }
             }
@@ -260,12 +260,14 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
     }
 }
 
-async fn handle_ui<'a, M, RM: RawMutex, const N: usize>(
+async fn handle_ui<'a, M, U, RM: RawMutex, const N: usize>(
     tlv: Tlv<UiToNet>,
     to_mgmt: &mut M,
+    to_ui: &mut U,
     ws_cmd_tx: &Sender<'a, RM, WsCommand, N>,
 ) where
     M: WriteTlv<NetToMgmt>,
+    U: WriteTlv<NetToUi>,
 {
     match tlv.tlv_type {
         UiToNet::CircularPing => {
@@ -275,11 +277,16 @@ async fn handle_ui<'a, M, RM: RawMutex, const N: usize>(
                 .await;
         }
         UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
+            // XXX Audio loopback to UI
+            to_ui.must_write_tlv(NetToUi::AudioFrame, &tlv.value).await;
+
+            /*
             let Ok(payload) = Vec::try_from(tlv.value.as_slice()) else {
                 info!("net: ws payload too large");
                 return;
             };
             ws_cmd_tx.send(WsCommand::Send(payload)).await;
+            */
         }
     }
 }
@@ -405,8 +412,15 @@ mod tests {
         let mut led = mock_led();
 
         // Simulate receiving audio data from WebSocket
-        let audio_data: Vec<u8, MAX_WS_PAYLOAD> = Vec::from_slice(&[0x01, 0x02, 0x03, 0x04]).unwrap();
-        handle_ws(WsEvent::Received(audio_data), &mut to_mgmt, &mut to_ui, &mut led).await;
+        let audio_data: Vec<u8, MAX_WS_PAYLOAD> =
+            Vec::from_slice(&[0x01, 0x02, 0x03, 0x04]).unwrap();
+        handle_ws(
+            WsEvent::Received(audio_data),
+            &mut to_mgmt,
+            &mut to_ui,
+            &mut led,
+        )
+        .await;
 
         // Should forward to UI as AudioFrame
         assert_eq!(to_ui.written.len(), 1);
