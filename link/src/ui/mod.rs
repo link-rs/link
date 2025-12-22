@@ -124,7 +124,7 @@ where
         let button_mic_task = button_monitor(button_mic, Button::A, true, channel.sender());
 
         // Queue for playback frames (from NET)
-        const PLAYBACK_QUEUE_SIZE: usize = 4;
+        const PLAYBACK_QUEUE_SIZE: usize = 10;
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, PLAYBACK_QUEUE_SIZE> =
             Channel::new();
 

@@ -325,9 +325,7 @@ async fn ws_task(
                         info!("ws: received URL while waiting for WiFi");
                         current_url = url;
                     }
-                    WsCommand::Send(_) => {
-                        info!("ws: ignoring send while disconnected");
-                    }
+                    WsCommand::Send(_) => {}  // Drop audio before connected
                     WsCommand::EchoTest => {
                         info!("ws: ignoring echo test while disconnected");
                         // Send empty result to indicate test couldn't run
@@ -361,9 +359,7 @@ async fn ws_task(
                         current_url = url;
                         break;
                     }
-                    WsCommand::Send(_) => {
-                        info!("ws: ignoring send without URL");
-                    }
+                    WsCommand::Send(_) => {}  // Drop audio before connected
                     WsCommand::EchoTest => {
                         info!("ws: ignoring echo test without URL");
                         // Send empty result to indicate test couldn't run

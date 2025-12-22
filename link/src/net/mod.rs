@@ -9,12 +9,12 @@ pub use storage::{
 };
 
 use crate::info;
+#[cfg(feature = "audio-buffer")]
+use crate::shared::MAX_VALUE_SIZE;
 use crate::shared::{
     read_tlv_loop, Channel, Color, CriticalSectionRawMutex, Led, MgmtToNet, NetToMgmt, NetToUi,
     RawMutex, Receiver, Sender, Tlv, UiToNet, WriteTlv,
 };
-#[cfg(feature = "audio-buffer")]
-use crate::shared::MAX_VALUE_SIZE;
 #[cfg(feature = "audio-buffer")]
 use embassy_futures::select::{select, Either};
 #[cfg(feature = "audio-buffer")]
@@ -193,17 +193,43 @@ where
                 match select(channel.receive(), ticker.next()).await {
                     Either::First(event) => match event {
                         Event::Mgmt(tlv) => {
-                            handle_mgmt(tlv, &mut to_mgmt, &mut to_ui, &mut storage, &ws_cmd_tx, &mut ws_mode).await
+                            handle_mgmt(
+                                tlv,
+                                &mut to_mgmt,
+                                &mut to_ui,
+                                &mut storage,
+                                &ws_cmd_tx,
+                                &mut ws_mode,
+                            )
+                            .await
                         }
-                        Event::Ui(tlv) => handle_ui(tlv, &mut to_mgmt, &mut to_ui, &ws_cmd_tx).await,
+                        Event::Ui(tlv) => {
+                            handle_ui(tlv, &mut to_mgmt, &mut to_ui, &ws_cmd_tx).await
+                        }
                         Event::Ws(event) => {
-                            handle_ws_buffered(event, &mut to_mgmt, &mut led, &mut ws_mode, &mut audio_buffer).await
+                            handle_ws_buffered(
+                                event,
+                                &mut to_mgmt,
+                                &mut led,
+                                &mut ws_mode,
+                                &mut audio_buffer,
+                            )
+                            .await
                         }
                     },
                     Either::Second(_) => {
                         // Timer tick - pop from buffer if playing
-                        if audio_buffer.state() == JitterState::Playing || audio_buffer.level() >= 5 {
+                        if audio_buffer.state() == JitterState::Playing || audio_buffer.level() >= 5
+                        {
                             if let Some(frame) = audio_buffer.pop() {
+                                let energy: u32 =
+                                    frame.iter().map(|&b| (b as i8).unsigned_abs() as u32).sum();
+                                info!(
+                                    "net: output {} bytes, energy={}, data={:02x}",
+                                    frame.len(),
+                                    energy,
+                                    frame.as_slice()
+                                );
                                 to_ui.must_write_tlv(NetToUi::AudioFrame, &frame).await;
                             }
                         }
@@ -219,10 +245,20 @@ where
             loop {
                 match channel.receive().await {
                     Event::Mgmt(tlv) => {
-                        handle_mgmt(tlv, &mut to_mgmt, &mut to_ui, &mut storage, &ws_cmd_tx, &mut ws_mode).await
+                        handle_mgmt(
+                            tlv,
+                            &mut to_mgmt,
+                            &mut to_ui,
+                            &mut storage,
+                            &ws_cmd_tx,
+                            &mut ws_mode,
+                        )
+                        .await
                     }
                     Event::Ui(tlv) => handle_ui(tlv, &mut to_mgmt, &mut to_ui, &ws_cmd_tx).await,
-                    Event::Ws(event) => handle_ws(event, &mut to_mgmt, &mut to_ui, &mut led, &mut ws_mode).await,
+                    Event::Ws(event) => {
+                        handle_ws(event, &mut to_mgmt, &mut to_ui, &mut led, &mut ws_mode).await
+                    }
                 }
             }
         };
@@ -365,11 +401,31 @@ async fn handle_ui<'a, M, U, RM: RawMutex, const N: usize>(
                 .await;
         }
         UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
+            let energy: u32 = tlv
+                .value
+                .iter()
+                .map(|&b| (b as i8).unsigned_abs() as u32)
+                .sum();
+            info!(
+                "net: ui audio {} bytes, energy={}, data={:02x}",
+                tlv.value.len(),
+                energy,
+                tlv.value.as_slice()
+            );
+
+            // XXX Loopback
+            to_ui
+                .write_tlv(NetToUi::AudioFrame, &tlv.value)
+                .await
+                .unwrap();
+
+            /*
             let Ok(payload) = Vec::try_from(tlv.value.as_slice()) else {
                 info!("net: ws payload too large");
                 return;
             };
             ws_cmd_tx.send(WsCommand::Send(payload)).await;
+            */
         }
     }
 }
@@ -486,7 +542,13 @@ async fn handle_ws_buffered<M, LR, LG, LB, const N: usize>(
             to_mgmt.must_write_tlv(NetToMgmt::WsDisconnected, &[]).await;
         }
         WsEvent::Received(data) => {
-            info!("net: ws received {} bytes", data.len());
+            let energy: u32 = data.iter().map(|&b| (b as i8).unsigned_abs() as u32).sum();
+            info!(
+                "net: ws received {} bytes, energy={}, data={:02x}",
+                data.len(),
+                energy,
+                data.as_slice()
+            );
             match *ws_mode {
                 WsMode::Normal => {
                     // Push audio to jitter buffer instead of sending directly
@@ -597,7 +659,14 @@ mod tests {
         let mut led = mock_led();
         let mut ws_mode = WsMode::Normal;
 
-        handle_ws(WsEvent::Connected, &mut to_mgmt, &mut to_ui, &mut led, &mut ws_mode).await;
+        handle_ws(
+            WsEvent::Connected,
+            &mut to_mgmt,
+            &mut to_ui,
+            &mut led,
+            &mut ws_mode,
+        )
+        .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, NetToMgmt::WsConnected);
@@ -611,7 +680,14 @@ mod tests {
         let mut led = mock_led();
         let mut ws_mode = WsMode::Normal;
 
-        handle_ws(WsEvent::Disconnected, &mut to_mgmt, &mut to_ui, &mut led, &mut ws_mode).await;
+        handle_ws(
+            WsEvent::Disconnected,
+            &mut to_mgmt,
+            &mut to_ui,
+            &mut led,
+            &mut ws_mode,
+        )
+        .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, NetToMgmt::WsDisconnected);
@@ -625,7 +701,14 @@ mod tests {
         let mut led = mock_led();
         let mut ws_mode = WsMode::Ping; // Start in Ping mode
 
-        handle_ws(WsEvent::Disconnected, &mut to_mgmt, &mut to_ui, &mut led, &mut ws_mode).await;
+        handle_ws(
+            WsEvent::Disconnected,
+            &mut to_mgmt,
+            &mut to_ui,
+            &mut led,
+            &mut ws_mode,
+        )
+        .await;
 
         // Mode should be reset to Normal on disconnect
         assert_eq!(ws_mode, WsMode::Normal);
@@ -703,7 +786,7 @@ mod tests {
             value: audio_data,
         };
 
-        handle_ui(tlv, &mut to_mgmt, &mut to_ui, &channel.sender()).await;
+        handle_ui(tlv, &mut to_mgmt, &channel.sender()).await;
 
         // Audio is currently looped back to UI (XXX comment in code)
         assert_eq!(to_ui.written.len(), 1);
@@ -725,7 +808,7 @@ mod tests {
             value: audio_data,
         };
 
-        handle_ui(tlv, &mut to_mgmt, &mut to_ui, &channel.sender()).await;
+        handle_ui(tlv, &mut to_mgmt, &channel.sender()).await;
 
         // Audio is currently looped back to UI (XXX comment in code)
         assert_eq!(to_ui.written.len(), 1);
