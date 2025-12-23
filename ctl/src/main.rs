@@ -8,18 +8,6 @@ use std::io::Write;
 use std::time::Duration;
 use tokio_serial::SerialPortBuilderExt;
 
-/// Parse a boolean value from string ("true"/"false", "1"/"0", "on"/"off")
-fn parse_bool(s: &str) -> Result<bool, String> {
-    match s.to_lowercase().as_str() {
-        "true" | "1" | "on" => Ok(true),
-        "false" | "0" | "off" => Ok(false),
-        _ => Err(format!(
-            "Invalid boolean value '{}'. Use true/false, 1/0, or on/off",
-            s
-        )),
-    }
-}
-
 #[derive(Parser)]
 #[command(name = "ctl")]
 #[command(about = "Control interface for the link device", long_about = None)]
@@ -407,11 +395,10 @@ enum UiAction {
         /// SFrame key as 32-character hex string (e.g., "5b9f37b1546b61f914da9f557a8fe215")
         key: String,
     },
-    /// Set loopback mode (mic audio goes directly to speaker)
+    /// Enable loopback mode (mic audio goes directly to speaker)
     Loopback {
-        /// Enable or disable loopback
-        #[arg(value_parser = parse_bool)]
-        enabled: bool,
+        /// Specify "off" to disable loopback
+        off: Option<String>,
     },
 }
 
@@ -471,11 +458,10 @@ enum NetAction {
     /// inter-arrival times of echoed responses. Requires an echo server.
     #[command(name = "ws-echo-test")]
     WsEchoTest,
-    /// Set loopback mode (audio from UI goes back to UI through jitter buffer)
+    /// Enable loopback mode (audio from UI goes back to UI through jitter buffer)
     Loopback {
-        /// Enable or disable loopback
-        #[arg(value_parser = parse_bool)]
-        enabled: bool,
+        /// Specify "off" to disable loopback
+        off: Option<String>,
     },
 }
 
@@ -723,7 +709,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.set_sframe_key(&key_array).await;
                 println!("SFrame key set to {}", key);
             }
-            UiAction::Loopback { enabled } => {
+            UiAction::Loopback { off } => {
+                let enabled = off.as_deref() != Some("off");
                 app.ui_set_loopback(enabled).await;
                 println!("UI loopback {}", if enabled { "enabled" } else { "disabled" });
             }
@@ -957,7 +944,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Buffered timings (µs): {:?}", results.buffered_jitter_us.as_slice());
                 }
             }
-            NetAction::Loopback { enabled } => {
+            NetAction::Loopback { off } => {
+                let enabled = off.as_deref() != Some("off");
                 app.net_set_loopback(enabled).await;
                 println!("NET loopback {}", if enabled { "enabled" } else { "disabled" });
             }

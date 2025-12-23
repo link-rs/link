@@ -414,7 +414,8 @@ mod tests {
             value: Value::new(),
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await;
+        let mut loopback = false;
+        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, UiToMgmt::Version);
@@ -436,7 +437,8 @@ mod tests {
             value,
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await;
+        let mut loopback = false;
+        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await;
 
         // Verify version was set and Ack was sent
         assert_eq!(to_mgmt.written.len(), 1);
@@ -465,7 +467,8 @@ mod tests {
             value: Value::new(),
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await;
+        let mut loopback = false;
+        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, UiToMgmt::SFrameKey);
@@ -491,7 +494,8 @@ mod tests {
             value,
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await;
+        let mut loopback = false;
+        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await;
 
         // Verify key was set and Ack was sent
         assert_eq!(to_mgmt.written.len(), 1);
@@ -515,7 +519,8 @@ mod tests {
             value,
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await;
+        let mut loopback = false;
+        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await;
 
         // Version should remain default (0xffffffff) and Error should be sent
         assert_eq!(to_mgmt.written.len(), 1);
@@ -539,7 +544,8 @@ mod tests {
             value,
         };
 
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay).await;
+        let mut loopback = false;
+        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await;
 
         // Key should remain default (0xff) and Error should be sent
         assert_eq!(to_mgmt.written.len(), 1);

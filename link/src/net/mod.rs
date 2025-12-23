@@ -79,6 +79,10 @@ pub struct EchoTestResult {
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum WsEvent {
+    /// WiFi connected.
+    WifiConnected,
+    /// WiFi disconnected.
+    WifiDisconnected,
     /// WebSocket connected to relay.
     Connected,
     /// WebSocket disconnected from relay.
@@ -155,9 +159,9 @@ where
             ws_event_rx,
         } = self;
 
-        // Initialize LED
+        // Initialize LED - Red indicates WiFi not connected
         let mut led = Led::new(led.0, led.1, led.2);
-        led.set(Color::Blue);
+        led.set(Color::Red);
 
         // Send initial relay URL to ws_task (if configured)
         let relay_url = storage.get_relay_url();
@@ -187,6 +191,8 @@ where
         let handle_task = async {
             let mut ws_mode = WsMode::Normal;
             let mut loopback = false;
+            let mut wifi_connected = false;
+            let mut ws_connected = false;
             let mut audio_buffer: JitterBuffer<MAX_VALUE_SIZE> = JitterBuffer::new();
             let mut ticker = Ticker::every(Duration::from_millis(20));
             info!("net: ready to handle events (audio buffering enabled)");
@@ -206,7 +212,9 @@ where
                             .await
                         }
                         Event::Ui(tlv) => {
-                            if let Some(audio) = handle_ui(tlv, &mut to_mgmt, &ws_cmd_tx, loopback).await {
+                            if let Some(audio) =
+                                handle_ui(tlv, &mut to_mgmt, &ws_cmd_tx, loopback).await
+                            {
                                 // Loopback: push to jitter buffer
                                 if !audio_buffer.push(&audio) {
                                     info!("net: audio buffer overrun (loopback)");
@@ -220,6 +228,8 @@ where
                                 &mut led,
                                 &mut ws_mode,
                                 &mut audio_buffer,
+                                &mut wifi_connected,
+                                &mut ws_connected,
                             )
                             .await
                         }
@@ -229,6 +239,7 @@ where
                         if audio_buffer.state() == JitterState::Playing || audio_buffer.level() >= 5
                         {
                             if let Some(frame) = audio_buffer.pop() {
+                                /*
                                 let energy: u32 =
                                     frame.iter().map(|&b| (b as i8).unsigned_abs() as u32).sum();
                                 info!(
@@ -237,6 +248,7 @@ where
                                     energy,
                                     frame.as_slice()
                                 );
+                                */
                                 to_ui.must_write_tlv(NetToUi::AudioFrame, &frame).await;
                             }
                         }
@@ -249,6 +261,8 @@ where
         let handle_task = async {
             let mut ws_mode = WsMode::Normal;
             let mut loopback = false;
+            let mut wifi_connected = false;
+            let mut ws_connected = false;
             info!("net: ready to handle events");
             loop {
                 match channel.receive().await {
@@ -265,13 +279,24 @@ where
                         .await
                     }
                     Event::Ui(tlv) => {
-                        if let Some(audio) = handle_ui(tlv, &mut to_mgmt, &ws_cmd_tx, loopback).await {
+                        if let Some(audio) =
+                            handle_ui(tlv, &mut to_mgmt, &ws_cmd_tx, loopback).await
+                        {
                             // Loopback: send directly to UI
                             to_ui.must_write_tlv(NetToUi::AudioFrame, &audio).await;
                         }
                     }
                     Event::Ws(event) => {
-                        handle_ws(event, &mut to_mgmt, &mut to_ui, &mut led, &mut ws_mode).await
+                        handle_ws(
+                            event,
+                            &mut to_mgmt,
+                            &mut to_ui,
+                            &mut led,
+                            &mut ws_mode,
+                            &mut wifi_connected,
+                            &mut ws_connected,
+                        )
+                        .await
                     }
                 }
             }
@@ -423,6 +448,7 @@ where
             None
         }
         UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
+            /* XXX
             let energy: u32 = tlv
                 .value
                 .iter()
@@ -434,6 +460,7 @@ where
                 energy,
                 tlv.value.as_slice()
             );
+            */
 
             let Ok(payload) = heapless::Vec::try_from(tlv.value.as_slice()) else {
                 info!("net: audio payload too large");
@@ -452,6 +479,25 @@ where
     }
 }
 
+/// Update LED based on WiFi and WebSocket connection status.
+/// RED - WiFi not connected
+/// YELLOW - WiFi connected, WS not connected
+/// GREEN - WS connected
+fn update_led<LR, LG, LB>(led: &mut Led<LR, LG, LB>, wifi_connected: bool, ws_connected: bool)
+where
+    LR: StatefulOutputPin,
+    LG: StatefulOutputPin,
+    LB: StatefulOutputPin,
+{
+    if ws_connected {
+        led.set(Color::Green);
+    } else if wifi_connected {
+        led.set(Color::Yellow);
+    } else {
+        led.set(Color::Red);
+    }
+}
+
 #[cfg_attr(feature = "audio-buffer", allow(dead_code))]
 async fn handle_ws<M, U, LR, LG, LB>(
     event: WsEvent,
@@ -459,6 +505,8 @@ async fn handle_ws<M, U, LR, LG, LB>(
     to_ui: &mut U,
     led: &mut Led<LR, LG, LB>,
     ws_mode: &mut WsMode,
+    wifi_connected: &mut bool,
+    ws_connected: &mut bool,
 ) where
     M: WriteTlv<NetToMgmt>,
     U: WriteTlv<NetToUi>,
@@ -467,14 +515,27 @@ async fn handle_ws<M, U, LR, LG, LB>(
     LB: StatefulOutputPin,
 {
     match event {
+        WsEvent::WifiConnected => {
+            info!("net: wifi connected");
+            *wifi_connected = true;
+            update_led(led, *wifi_connected, *ws_connected);
+        }
+        WsEvent::WifiDisconnected => {
+            info!("net: wifi disconnected");
+            *wifi_connected = false;
+            *ws_connected = false; // WS can't be connected without WiFi
+            update_led(led, *wifi_connected, *ws_connected);
+        }
         WsEvent::Connected => {
             info!("net: ws connected");
-            led.set(Color::Green);
+            *ws_connected = true;
+            update_led(led, *wifi_connected, *ws_connected);
             to_mgmt.must_write_tlv(NetToMgmt::WsConnected, &[]).await;
         }
         WsEvent::Disconnected => {
             info!("net: ws disconnected");
-            led.set(Color::Red);
+            *ws_connected = false;
+            update_led(led, *wifi_connected, *ws_connected);
             // Reset to Normal mode on disconnect
             *ws_mode = WsMode::Normal;
             to_mgmt.must_write_tlv(NetToMgmt::WsDisconnected, &[]).await;
@@ -541,6 +602,8 @@ async fn handle_ws_buffered<M, LR, LG, LB, const N: usize>(
     led: &mut Led<LR, LG, LB>,
     ws_mode: &mut WsMode,
     audio_buffer: &mut JitterBuffer<N>,
+    wifi_connected: &mut bool,
+    ws_connected: &mut bool,
 ) where
     M: WriteTlv<NetToMgmt>,
     LR: StatefulOutputPin,
@@ -548,16 +611,30 @@ async fn handle_ws_buffered<M, LR, LG, LB, const N: usize>(
     LB: StatefulOutputPin,
 {
     match event {
+        WsEvent::WifiConnected => {
+            info!("net: wifi connected");
+            *wifi_connected = true;
+            update_led(led, *wifi_connected, *ws_connected);
+        }
+        WsEvent::WifiDisconnected => {
+            info!("net: wifi disconnected");
+            *wifi_connected = false;
+            *ws_connected = false; // WS can't be connected without WiFi
+            audio_buffer.reset();
+            update_led(led, *wifi_connected, *ws_connected);
+        }
         WsEvent::Connected => {
             info!("net: ws connected");
-            led.set(Color::Green);
+            *ws_connected = true;
+            update_led(led, *wifi_connected, *ws_connected);
             // Reset audio buffer on new connection
             audio_buffer.reset();
             to_mgmt.must_write_tlv(NetToMgmt::WsConnected, &[]).await;
         }
         WsEvent::Disconnected => {
             info!("net: ws disconnected");
-            led.set(Color::Red);
+            *ws_connected = false;
+            update_led(led, *wifi_connected, *ws_connected);
             // Reset to Normal mode and clear buffer on disconnect
             *ws_mode = WsMode::Normal;
             audio_buffer.reset();
@@ -680,6 +757,8 @@ mod tests {
         let mut to_ui = MockUiWriter::new();
         let mut led = mock_led();
         let mut ws_mode = WsMode::Normal;
+        let mut wifi_connected = true;
+        let mut ws_connected = false;
 
         handle_ws(
             WsEvent::Connected,
@@ -687,12 +766,15 @@ mod tests {
             &mut to_ui,
             &mut led,
             &mut ws_mode,
+            &mut wifi_connected,
+            &mut ws_connected,
         )
         .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, NetToMgmt::WsConnected);
         assert!(to_mgmt.written[0].1.is_empty());
+        assert!(ws_connected);
     }
 
     #[tokio::test]
@@ -701,6 +783,8 @@ mod tests {
         let mut to_ui = MockUiWriter::new();
         let mut led = mock_led();
         let mut ws_mode = WsMode::Normal;
+        let mut wifi_connected = true;
+        let mut ws_connected = true;
 
         handle_ws(
             WsEvent::Disconnected,
@@ -708,12 +792,15 @@ mod tests {
             &mut to_ui,
             &mut led,
             &mut ws_mode,
+            &mut wifi_connected,
+            &mut ws_connected,
         )
         .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, NetToMgmt::WsDisconnected);
         assert!(to_mgmt.written[0].1.is_empty());
+        assert!(!ws_connected);
     }
 
     #[tokio::test]
@@ -722,6 +809,8 @@ mod tests {
         let mut to_ui = MockUiWriter::new();
         let mut led = mock_led();
         let mut ws_mode = WsMode::Ping; // Start in Ping mode
+        let mut wifi_connected = true;
+        let mut ws_connected = true;
 
         handle_ws(
             WsEvent::Disconnected,
@@ -729,6 +818,8 @@ mod tests {
             &mut to_ui,
             &mut led,
             &mut ws_mode,
+            &mut wifi_connected,
+            &mut ws_connected,
         )
         .await;
 
@@ -742,6 +833,8 @@ mod tests {
         let mut to_ui = MockUiWriter::new();
         let mut led = mock_led();
         let mut ws_mode = WsMode::Normal;
+        let mut wifi_connected = true;
+        let mut ws_connected = true;
 
         // Simulate receiving audio data from WebSocket
         let audio_data: Vec<u8, MAX_WS_PAYLOAD> =
@@ -752,6 +845,8 @@ mod tests {
             &mut to_ui,
             &mut led,
             &mut ws_mode,
+            &mut wifi_connected,
+            &mut ws_connected,
         )
         .await;
 
@@ -769,6 +864,8 @@ mod tests {
         let mut to_ui = MockUiWriter::new();
         let mut led = mock_led();
         let mut ws_mode = WsMode::Ping;
+        let mut wifi_connected = true;
+        let mut ws_connected = true;
 
         // Simulate receiving ping response from WebSocket
         let ping_data: Vec<u8, MAX_WS_PAYLOAD> =
@@ -779,6 +876,8 @@ mod tests {
             &mut to_ui,
             &mut led,
             &mut ws_mode,
+            &mut wifi_connected,
+            &mut ws_connected,
         )
         .await;
 
@@ -795,12 +894,11 @@ mod tests {
     // ==================== handle_ui Audio Tests ====================
 
     #[tokio::test]
-    async fn handle_ui_audio_frame_loops_back_to_ui() {
+    async fn handle_ui_audio_frame_sends_to_ws() {
         let mut to_mgmt = MockMgmtWriter::new();
-        let mut to_ui = MockUiWriter::new();
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
 
-        // Simulate audio frame from UI (button A)
+        // Simulate audio frame from UI (button A) with loopback disabled
         let audio_data: heapless::Vec<u8, { crate::shared::MAX_VALUE_SIZE }> =
             heapless::Vec::from_slice(&[0xAA; 640]).unwrap();
         let tlv = Tlv {
@@ -808,34 +906,38 @@ mod tests {
             value: audio_data,
         };
 
-        handle_ui(tlv, &mut to_mgmt, &channel.sender()).await;
+        let result = handle_ui(tlv, &mut to_mgmt, &channel.sender(), false).await;
 
-        // Audio is currently looped back to UI (XXX comment in code)
-        assert_eq!(to_ui.written.len(), 1);
-        assert_eq!(to_ui.written[0].0, NetToUi::AudioFrame);
-        assert_eq!(to_ui.written[0].1.len(), 640);
+        // Should not return loopback audio when loopback is disabled
+        assert!(result.is_none());
+        // Should have queued a WsCommand::Send
+        let cmd = channel.receiver().try_receive().unwrap();
+        match cmd {
+            WsCommand::Send(data) => assert_eq!(data.len(), 640),
+            _ => panic!("Expected WsCommand::Send"),
+        }
     }
 
     #[tokio::test]
-    async fn handle_ui_audio_frame_b_loops_back_to_ui() {
+    async fn handle_ui_audio_frame_loopback() {
         let mut to_mgmt = MockMgmtWriter::new();
-        let mut to_ui = MockUiWriter::new();
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
 
-        // Simulate audio frame from UI (button B)
+        // Simulate audio frame from UI (button A) with loopback enabled
         let audio_data: heapless::Vec<u8, { crate::shared::MAX_VALUE_SIZE }> =
-            heapless::Vec::from_slice(&[0xBB; 640]).unwrap();
+            heapless::Vec::from_slice(&[0xAA; 640]).unwrap();
         let tlv = Tlv {
-            tlv_type: UiToNet::AudioFrameB,
+            tlv_type: UiToNet::AudioFrameA,
             value: audio_data,
         };
 
-        handle_ui(tlv, &mut to_mgmt, &channel.sender()).await;
+        let result = handle_ui(tlv, &mut to_mgmt, &channel.sender(), true).await;
 
-        // Audio is currently looped back to UI (XXX comment in code)
-        assert_eq!(to_ui.written.len(), 1);
-        assert_eq!(to_ui.written[0].0, NetToUi::AudioFrame);
-        assert_eq!(to_ui.written[0].1.len(), 640);
+        // Should return loopback audio when loopback is enabled
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 640);
+        // Should NOT have queued a WsCommand
+        assert!(channel.receiver().try_receive().is_err());
     }
 
     // ==================== handle_mgmt Tests ====================
@@ -847,6 +949,7 @@ mod tests {
         let mut storage = NetStorage::new(MockFlash::new(), 0);
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
         let mut ws_mode = WsMode::Normal;
+        let mut loopback = false;
 
         let tlv = Tlv {
             tlv_type: MgmtToNet::Ping,
@@ -860,6 +963,7 @@ mod tests {
             &mut storage,
             &channel.sender(),
             &mut ws_mode,
+            &mut loopback,
         )
         .await;
 
@@ -875,6 +979,7 @@ mod tests {
         let mut storage = NetStorage::new(MockFlash::new(), 0);
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
         let mut ws_mode = WsMode::Normal;
+        let mut loopback = false;
 
         let tlv = Tlv {
             tlv_type: MgmtToNet::WsSend,
@@ -888,6 +993,7 @@ mod tests {
             &mut storage,
             &channel.sender(),
             &mut ws_mode,
+            &mut loopback,
         )
         .await;
 
@@ -911,6 +1017,7 @@ mod tests {
         let mut storage = NetStorage::new(MockFlash::new(), 0);
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
         let mut ws_mode = WsMode::Normal;
+        let mut loopback = false;
 
         let tlv = Tlv {
             tlv_type: MgmtToNet::SetRelayUrl,
@@ -924,6 +1031,7 @@ mod tests {
             &mut storage,
             &channel.sender(),
             &mut ws_mode,
+            &mut loopback,
         )
         .await;
 
@@ -951,6 +1059,7 @@ mod tests {
         storage.set_relay_url("wss://test.relay").unwrap();
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
         let mut ws_mode = WsMode::Normal;
+        let mut loopback = false;
 
         let tlv = Tlv {
             tlv_type: MgmtToNet::GetRelayUrl,
@@ -964,6 +1073,7 @@ mod tests {
             &mut storage,
             &channel.sender(),
             &mut ws_mode,
+            &mut loopback,
         )
         .await;
 

@@ -314,10 +314,16 @@ async fn ws_task(
 
     // Current relay URL (empty until we receive a Connect command)
     let mut current_url: heapless::String<MAX_RELAY_URL_LEN> = heapless::String::new();
+    let mut wifi_was_connected = false;
 
     loop {
         // Wait for WiFi to be ready
         while !stack.is_link_up() {
+            // Send WiFi disconnected event if we were previously connected
+            if wifi_was_connected {
+                wifi_was_connected = false;
+                event_tx.send(WsEvent::WifiDisconnected).await;
+            }
             // Check for commands while waiting
             if let Ok(cmd) = cmd_rx.try_receive() {
                 match cmd {
@@ -348,6 +354,12 @@ async fn ws_task(
         // Wait for DHCP
         while stack.config_v4().is_none() {
             Timer::after(Duration::from_millis(100)).await;
+        }
+
+        // Send WiFi connected event
+        if !wifi_was_connected {
+            wifi_was_connected = true;
+            event_tx.send(WsEvent::WifiConnected).await;
         }
 
         // If no URL configured, wait for one
@@ -456,7 +468,9 @@ async fn ws_task(
         info!("ws: TLS connected");
 
         // WebSocket handshake
-        let mut ws_buf = [0u8; 1024];
+        // Use separate buffers for read and write to avoid corruption
+        let mut ws_read_buf = [0u8; 1024];
+        let mut ws_write_buf = [0u8; 1024];
         let websocket = WebSocketClient::new_client(&mut rng);
         let mut framer = Framer::new(websocket);
         let options = WebSocketOptions {
@@ -467,7 +481,7 @@ async fn ws_task(
             additional_headers: None,
         };
         if framer
-            .connect(&mut tls, &mut ws_buf, &options)
+            .connect(&mut tls, &mut ws_write_buf, &options)
             .await
             .is_err()
         {
@@ -485,7 +499,7 @@ async fn ws_task(
         let mut connection_broken = false;
 
         loop {
-            match select(framer.read(&mut tls, &mut ws_buf), cmd_rx.receive()).await {
+            match select(framer.read(&mut tls, &mut ws_read_buf), cmd_rx.receive()).await {
                 Either::First(read_result) => {
                     // Frame received from server (or None if more data needed)
                     match read_result {
@@ -568,7 +582,7 @@ async fn ws_task(
                             match framer
                                 .write(
                                     &mut tls,
-                                    &mut ws_buf,
+                                    &mut ws_write_buf,
                                     WebSocketSendMessageType::Binary,
                                     true,
                                     &data,
@@ -606,7 +620,7 @@ async fn ws_task(
                         WsCommand::EchoTest => {
                             info!("ws: starting echo test");
                             let (result, connection_ok) =
-                                run_echo_test(&mut framer, &mut tls, &mut ws_buf).await;
+                                run_echo_test(&mut framer, &mut tls, &mut ws_read_buf, &mut ws_write_buf).await;
                             info!(
                                 "ws: echo test complete: sent={}, received={}",
                                 result.sent, result.received
@@ -629,7 +643,7 @@ async fn ws_task(
             let _ = framer
                 .close(
                     &mut tls,
-                    &mut ws_buf,
+                    &mut ws_write_buf,
                     WebSocketCloseStatusCode::NormalClosure,
                     None,
                 )
@@ -655,7 +669,8 @@ async fn ws_task(
 async fn run_echo_test<'a, S>(
     framer: &mut Framer<&'a mut EspRng, embedded_websocket_embedded_io::Client>,
     tls: &mut TlsConnection<'_, S, Aes128GcmSha256>,
-    ws_buf: &mut [u8],
+    ws_read_buf: &mut [u8],
+    ws_write_buf: &mut [u8],
 ) -> (EchoTestResult, bool)
 where
     S: embedded_io_async::Read + embedded_io_async::Write + Unpin,
@@ -686,7 +701,7 @@ where
         // Time to send next packet?
         if Instant::now() >= next_send_time {
             match framer
-                .write(tls, ws_buf, WebSocketSendMessageType::Binary, true, &packet)
+                .write(tls, ws_write_buf, WebSocketSendMessageType::Binary, true, &packet)
                 .await
             {
                 Ok(_) => {
@@ -711,7 +726,7 @@ where
                 break; // Time to send again
             }
             let timeout = next_send_time.saturating_duration_since(now);
-            match embassy_time::with_timeout(timeout, framer.read(tls, ws_buf)).await {
+            match embassy_time::with_timeout(timeout, framer.read(tls, ws_read_buf)).await {
                 Ok(Some(Ok(ReadResult::Binary(data)))) => {
                     let recv_time = Instant::now();
                     // Record raw jitter (before buffer)
@@ -752,7 +767,7 @@ where
         let deadline = Instant::now() + Duration::from_secs(2);
         while (received as usize) < (sent as usize) && Instant::now() < deadline {
             let timeout = deadline.saturating_duration_since(Instant::now());
-            match embassy_time::with_timeout(timeout, framer.read(tls, ws_buf)).await {
+            match embassy_time::with_timeout(timeout, framer.read(tls, ws_read_buf)).await {
                 Ok(Some(Ok(ReadResult::Binary(data)))) => {
                     let recv_time = Instant::now();
                     // Record raw jitter (before buffer)
