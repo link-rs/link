@@ -789,6 +789,18 @@ where
         assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
     }
 
+    /// Hold the UI chip in reset.
+    ///
+    /// Sends a command to MGMT to assert the RST pin low, keeping the
+    /// UI chip in reset until released.
+    pub async fn hold_ui_reset(&mut self) {
+        self.writer
+            .must_write_tlv(CtlToMgmt::HoldUiReset, &[])
+            .await;
+        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+    }
+
     /// Reset the NET chip into bootloader mode.
     ///
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins

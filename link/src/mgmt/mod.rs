@@ -60,6 +60,16 @@ where
         delay.delay_ms(10).await;
         let _ = self.rst.set_high();
     }
+
+    /// Hold UI chip in reset (RST low).
+    pub fn hold_reset(&mut self) {
+        let _ = self.rst.set_low();
+    }
+
+    /// Release UI chip from reset (RST high).
+    pub fn release_reset(&mut self) {
+        let _ = self.rst.set_high();
+    }
 }
 
 /// Holds the GPIO pins used to control the NET chip's reset behavior.
@@ -290,6 +300,11 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
         CtlToMgmt::WsEchoTest => {
             info!("mgmt: forwarding ws echo test to net");
             to_net.must_write_tlv(MgmtToNet::WsEchoTest, &[]).await;
+        }
+        CtlToMgmt::HoldUiReset => {
+            info!("mgmt: holding UI in reset");
+            ui_reset_pins.hold_reset();
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
         }
     }
 }

@@ -400,6 +400,11 @@ enum UiAction {
         /// Specify "off" to disable loopback
         off: Option<String>,
     },
+    /// Reset UI chip (or "hold"/"release" to control reset pin)
+    Reset {
+        /// "hold" to hold in reset, "release" to release from reset
+        action: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -713,6 +718,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let enabled = off.as_deref() != Some("off");
                 app.ui_set_loopback(enabled).await;
                 println!("UI loopback {}", if enabled { "enabled" } else { "disabled" });
+            }
+            UiAction::Reset { action } => {
+                match action.as_deref() {
+                    Some("hold") => {
+                        app.hold_ui_reset().await;
+                        println!("UI chip held in reset");
+                    }
+                    Some("release") => {
+                        app.reset_ui_to_user().await;
+                        println!("UI chip released from reset");
+                    }
+                    _ => {
+                        app.reset_ui_to_user().await;
+                        println!("UI chip reset");
+                    }
+                }
             }
         },
         Command::Net { action } => match action {

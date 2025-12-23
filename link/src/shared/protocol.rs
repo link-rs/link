@@ -20,6 +20,8 @@ pub enum CtlToMgmt {
     Hello,
     /// Start WebSocket echo test: send packets, measure inter-arrival times
     WsEchoTest,
+    /// Hold UI chip in reset
+    HoldUiReset,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

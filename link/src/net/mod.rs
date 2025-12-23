@@ -541,7 +541,6 @@ async fn handle_ws<M, U, LR, LG, LB>(
             to_mgmt.must_write_tlv(NetToMgmt::WsDisconnected, &[]).await;
         }
         WsEvent::Received(data) => {
-            info!("net: ws received {} bytes", data.len());
             match *ws_mode {
                 WsMode::Normal => {
                     // Route to UI for audio playback
@@ -641,13 +640,6 @@ async fn handle_ws_buffered<M, LR, LG, LB, const N: usize>(
             to_mgmt.must_write_tlv(NetToMgmt::WsDisconnected, &[]).await;
         }
         WsEvent::Received(data) => {
-            let energy: u32 = data.iter().map(|&b| (b as i8).unsigned_abs() as u32).sum();
-            info!(
-                "net: ws received {} bytes, energy={}, data={:02x}",
-                data.len(),
-                energy,
-                data.as_slice()
-            );
             match *ws_mode {
                 WsMode::Normal => {
                     // Push audio to jitter buffer instead of sending directly

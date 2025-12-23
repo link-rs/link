@@ -124,7 +124,7 @@ where
         let button_mic_task = button_monitor(button_mic, Button::A, true, channel.sender());
 
         // Queue for playback frames (from NET)
-        const PLAYBACK_QUEUE_SIZE: usize = 10;
+        const PLAYBACK_QUEUE_SIZE: usize = 50;
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, PLAYBACK_QUEUE_SIZE> =
             Channel::new();
 
@@ -139,7 +139,15 @@ where
             loop {
                 match channel.receive().await {
                     Event::Mgmt(tlv) => {
-                        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await
+                        handle_mgmt(
+                            tlv,
+                            &mut to_mgmt,
+                            &mut to_net,
+                            &mut i2c,
+                            &mut delay,
+                            &mut loopback,
+                        )
+                        .await
                     }
                     Event::Net(tlv) => {
                         if let Some(frame) = handle_net(tlv, &mut to_mgmt).await {
@@ -193,9 +201,22 @@ where
                 let _ = audio_system.read_write(&tone_frame, &mut zero).await;
             }
 
+            let mut was_playing = false;
             loop {
                 // Get a frame to play (or silence if queue is empty)
-                let tx_frame = playback_channel.try_receive().unwrap_or_default();
+                let tx_frame = match playback_channel.try_receive() {
+                    Ok(frame) => {
+                        was_playing = true;
+                        frame
+                    }
+                    Err(_) => {
+                        if was_playing {
+                            info!("ui: playout gap (buffer underrun)");
+                            was_playing = false;
+                        }
+                        Frame::default()
+                    }
+                };
                 let mut rx_frame = Frame::default();
 
                 // Do the I2S read/write cycle
@@ -415,7 +436,15 @@ mod tests {
         };
 
         let mut loopback = false;
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await;
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_net,
+            &mut i2c,
+            &mut delay,
+            &mut loopback,
+        )
+        .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, UiToMgmt::Version);
@@ -438,7 +467,15 @@ mod tests {
         };
 
         let mut loopback = false;
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await;
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_net,
+            &mut i2c,
+            &mut delay,
+            &mut loopback,
+        )
+        .await;
 
         // Verify version was set and Ack was sent
         assert_eq!(to_mgmt.written.len(), 1);
@@ -468,7 +505,15 @@ mod tests {
         };
 
         let mut loopback = false;
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await;
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_net,
+            &mut i2c,
+            &mut delay,
+            &mut loopback,
+        )
+        .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, UiToMgmt::SFrameKey);
@@ -495,7 +540,15 @@ mod tests {
         };
 
         let mut loopback = false;
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await;
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_net,
+            &mut i2c,
+            &mut delay,
+            &mut loopback,
+        )
+        .await;
 
         // Verify key was set and Ack was sent
         assert_eq!(to_mgmt.written.len(), 1);
@@ -520,7 +573,15 @@ mod tests {
         };
 
         let mut loopback = false;
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await;
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_net,
+            &mut i2c,
+            &mut delay,
+            &mut loopback,
+        )
+        .await;
 
         // Version should remain default (0xffffffff) and Error should be sent
         assert_eq!(to_mgmt.written.len(), 1);
@@ -545,7 +606,15 @@ mod tests {
         };
 
         let mut loopback = false;
-        handle_mgmt(tlv, &mut to_mgmt, &mut to_net, &mut i2c, &mut delay, &mut loopback).await;
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_net,
+            &mut i2c,
+            &mut delay,
+            &mut loopback,
+        )
+        .await;
 
         // Key should remain default (0xff) and Error should be sent
         assert_eq!(to_mgmt.written.len(), 1);
