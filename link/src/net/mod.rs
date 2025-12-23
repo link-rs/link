@@ -53,6 +53,8 @@ pub enum WsCommand {
     Connect(String<MAX_RELAY_URL_LEN>),
     /// Run echo test: send packets, measure inter-arrival times of responses.
     EchoTest,
+    /// Run speed test: blast packets as fast as possible, then read responses.
+    SpeedTest,
 }
 
 /// Result of the WebSocket echo test.
@@ -75,6 +77,20 @@ pub struct EchoTestResult {
     pub underruns: u8,
 }
 
+/// Result of the WebSocket speed test.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SpeedTestResult {
+    /// Number of packets sent.
+    pub sent: u8,
+    /// Number of packets received.
+    pub received: u8,
+    /// Time to send all packets in milliseconds.
+    pub send_time_ms: u32,
+    /// Time to receive all responses in milliseconds (or timeout).
+    pub recv_time_ms: u32,
+}
+
 /// Events received from the WebSocket task.
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -91,6 +107,8 @@ pub enum WsEvent {
     Received(Vec<u8, MAX_WS_PAYLOAD>),
     /// Echo test completed.
     EchoTestResult(EchoTestResult),
+    /// Speed test completed.
+    SpeedTestResult(SpeedTestResult),
 }
 
 enum Event {
@@ -419,6 +437,10 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             info!("net: ws echo test requested");
             ws_cmd_tx.send(WsCommand::EchoTest).await;
         }
+        MgmtToNet::WsSpeedTest => {
+            info!("net: ws speed test requested");
+            ws_cmd_tx.send(WsCommand::SpeedTest).await;
+        }
         MgmtToNet::SetLoopback => {
             let enabled = tlv.value.first().copied().unwrap_or(0) != 0;
             info!("net: set loopback = {}", enabled);
@@ -587,6 +609,21 @@ async fn handle_ws<M, U, LR, LG, LB>(
                 .must_write_tlv(NetToMgmt::WsEchoTestResult, &buf[..offset])
                 .await;
         }
+        WsEvent::SpeedTestResult(result) => {
+            info!(
+                "net: ws speed test complete: sent={}, received={}, send_time={}ms, recv_time={}ms",
+                result.sent, result.received, result.send_time_ms, result.recv_time_ms
+            );
+            // Serialize result: sent (1), received (1), send_time_ms (4), recv_time_ms (4)
+            let mut buf = [0u8; 10];
+            buf[0] = result.sent;
+            buf[1] = result.received;
+            buf[2..6].copy_from_slice(&result.send_time_ms.to_le_bytes());
+            buf[6..10].copy_from_slice(&result.recv_time_ms.to_le_bytes());
+            to_mgmt
+                .must_write_tlv(NetToMgmt::WsSpeedTestResult, &buf)
+                .await;
+        }
     }
 }
 
@@ -678,6 +715,21 @@ async fn handle_ws_buffered<M, LR, LG, LB, const N: usize>(
             }
             to_mgmt
                 .must_write_tlv(NetToMgmt::WsEchoTestResult, &buf[..offset])
+                .await;
+        }
+        WsEvent::SpeedTestResult(result) => {
+            info!(
+                "net: ws speed test complete: sent={}, received={}, send_time={}ms, recv_time={}ms",
+                result.sent, result.received, result.send_time_ms, result.recv_time_ms
+            );
+            // Serialize result: sent (1), received (1), send_time_ms (4), recv_time_ms (4)
+            let mut buf = [0u8; 10];
+            buf[0] = result.sent;
+            buf[1] = result.received;
+            buf[2..6].copy_from_slice(&result.send_time_ms.to_le_bytes());
+            buf[6..10].copy_from_slice(&result.recv_time_ms.to_le_bytes());
+            to_mgmt
+                .must_write_tlv(NetToMgmt::WsSpeedTestResult, &buf)
                 .await;
         }
     }

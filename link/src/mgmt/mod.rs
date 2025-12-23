@@ -301,6 +301,10 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
             info!("mgmt: forwarding ws echo test to net");
             to_net.must_write_tlv(MgmtToNet::WsEchoTest, &[]).await;
         }
+        CtlToMgmt::WsSpeedTest => {
+            info!("mgmt: forwarding ws speed test to net");
+            to_net.must_write_tlv(MgmtToNet::WsSpeedTest, &[]).await;
+        }
         CtlToMgmt::HoldUiReset => {
             info!("mgmt: holding UI in reset");
             ui_reset_pins.hold_reset();

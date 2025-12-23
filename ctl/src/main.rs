@@ -463,6 +463,12 @@ enum NetAction {
     /// inter-arrival times of echoed responses. Requires an echo server.
     #[command(name = "ws-echo-test")]
     WsEchoTest,
+    /// Run WebSocket speed test to measure maximum send rate
+    ///
+    /// Sends 50 packets (640 bytes each) as fast as possible (no delays),
+    /// then waits up to 2 seconds to receive responses. Requires an echo server.
+    #[command(name = "ws-speed-test")]
+    WsSpeedTest,
     /// Enable loopback mode (audio from UI goes back to UI through jitter buffer)
     Loopback {
         /// Specify "off" to disable loopback
@@ -963,6 +969,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if !results.buffered_jitter_us.is_empty() {
                     println!("Buffered timings (µs): {:?}", results.buffered_jitter_us.as_slice());
+                }
+            }
+            NetAction::WsSpeedTest => {
+                println!("Running WebSocket speed test...");
+                println!("  Sending 50 packets (640 bytes each) as fast as possible\n");
+
+                let results = app.ws_speed_test().await;
+
+                println!("Results:");
+                println!("  Packets sent:     {}", results.sent);
+                println!("  Packets received: {}", results.received);
+                println!("  Send time:        {} ms", results.send_time_ms);
+                println!("  Receive time:     {} ms", results.recv_time_ms);
+
+                if results.sent > 0 {
+                    let send_rate = (results.sent as f64 * 640.0) / (results.send_time_ms as f64 / 1000.0) / 1024.0;
+                    println!("  Send rate:        {:.1} KB/s", send_rate);
+                    let fps = results.sent as f64 / (results.send_time_ms as f64 / 1000.0);
+                    println!("  Send FPS:         {:.1}", fps);
+                }
+
+                if results.received > 0 && results.sent > 0 {
+                    let loss_pct = ((results.sent - results.received) as f64 / results.sent as f64) * 100.0;
+                    println!("  Packet loss:      {:.1}%", loss_pct);
                 }
             }
             NetAction::Loopback { off } => {

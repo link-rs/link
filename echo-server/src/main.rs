@@ -53,6 +53,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn handle_connection(stream: TcpStream, addr: SocketAddr, acceptor: TlsAcceptor) {
+    use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+    use tokio::time::{interval, Duration};
+
     println!("[{}] New connection", addr);
 
     // TLS handshake
@@ -77,23 +80,75 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, acceptor: TlsAcc
 
     println!("[{}] WebSocket connected", addr);
 
+    // Stats counters
+    let frames_received = Arc::new(AtomicU64::new(0));
+    let bytes_received = Arc::new(AtomicU64::new(0));
+    let frames_sent = Arc::new(AtomicU64::new(0));
+    let bytes_sent = Arc::new(AtomicU64::new(0));
+    let running = Arc::new(AtomicBool::new(true));
+
+    // Spawn stats reporter task
+    let stats_task = {
+        let frames_received = frames_received.clone();
+        let bytes_received = bytes_received.clone();
+        let frames_sent = frames_sent.clone();
+        let bytes_sent = bytes_sent.clone();
+        let running = running.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(1));
+            let mut last_frames_rx = 0u64;
+            let mut last_bytes_rx = 0u64;
+            let mut last_frames_tx = 0u64;
+            let mut last_bytes_tx = 0u64;
+            while running.load(Ordering::Relaxed) {
+                ticker.tick().await;
+                let fr = frames_received.load(Ordering::Relaxed);
+                let br = bytes_received.load(Ordering::Relaxed);
+                let ft = frames_sent.load(Ordering::Relaxed);
+                let bt = bytes_sent.load(Ordering::Relaxed);
+                let delta_fr = fr - last_frames_rx;
+                let delta_br = br - last_bytes_rx;
+                let delta_ft = ft - last_frames_tx;
+                let delta_bt = bt - last_bytes_tx;
+                if delta_fr > 0 || delta_ft > 0 {
+                    println!(
+                        "[{}] Stats: RX {} frames/{} bytes, TX {} frames/{} bytes (total: RX {}/{}, TX {}/{})",
+                        addr, delta_fr, delta_br, delta_ft, delta_bt, fr, br, ft, bt
+                    );
+                }
+                last_frames_rx = fr;
+                last_bytes_rx = br;
+                last_frames_tx = ft;
+                last_bytes_tx = bt;
+            }
+        })
+    };
+
     let (mut write, mut read) = ws_stream.split();
 
     while let Some(msg) = read.next().await {
         match msg {
             Ok(Message::Binary(data)) => {
-                println!("[{}] Received {} bytes, echoing", addr, data.len());
+                let len = data.len();
+                frames_received.fetch_add(1, Ordering::Relaxed);
+                bytes_received.fetch_add(len as u64, Ordering::Relaxed);
                 if let Err(e) = write.send(Message::Binary(data)).await {
                     eprintln!("[{}] Send error: {}", addr, e);
                     break;
                 }
+                frames_sent.fetch_add(1, Ordering::Relaxed);
+                bytes_sent.fetch_add(len as u64, Ordering::Relaxed);
             }
             Ok(Message::Text(text)) => {
-                println!("[{}] Received text: {}", addr, text);
+                let len = text.len();
+                frames_received.fetch_add(1, Ordering::Relaxed);
+                bytes_received.fetch_add(len as u64, Ordering::Relaxed);
                 if let Err(e) = write.send(Message::Text(text)).await {
                     eprintln!("[{}] Send error: {}", addr, e);
                     break;
                 }
+                frames_sent.fetch_add(1, Ordering::Relaxed);
+                bytes_sent.fetch_add(len as u64, Ordering::Relaxed);
             }
             Ok(Message::Ping(data)) => {
                 println!("[{}] Ping", addr);
@@ -116,6 +171,10 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, acceptor: TlsAcc
             }
         }
     }
+
+    // Stop stats task
+    running.store(false, Ordering::Relaxed);
+    let _ = stats_task.await;
 
     println!("[{}] Disconnected", addr);
 }

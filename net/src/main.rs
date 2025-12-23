@@ -32,7 +32,8 @@ use esp_radio::wifi::{
 use esp_storage::FlashStorage;
 use heapless::Vec;
 use link::net::{
-    EchoTestResult, NetStorage, WsCommand, WsEvent, ECHO_TEST_PACKET_COUNT, MAX_RELAY_URL_LEN,
+    EchoTestResult, NetStorage, SpeedTestResult, WsCommand, WsEvent, ECHO_TEST_PACKET_COUNT,
+    MAX_RELAY_URL_LEN,
 };
 use rand_core::{CryptoRng, RngCore};
 use static_cell::StaticCell;
@@ -53,11 +54,13 @@ macro_rules! mk_static {
 }
 
 /// Channel for sending commands to the WebSocket task.
-static WS_CMD_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, WsCommand, 4>> =
+/// Sized for ~320ms of audio at 50fps (16 frames)
+static WS_CMD_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, WsCommand, 16>> =
     StaticCell::new();
 
 /// Channel for receiving events from the WebSocket task.
-static WS_EVENT_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, WsEvent, 4>> =
+/// Sized for ~320ms of audio at 50fps (16 frames)
+static WS_EVENT_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, WsEvent, 16>> =
     StaticCell::new();
 
 #[esp_rtos::main]
@@ -306,8 +309,8 @@ async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
 #[embassy_executor::task]
 async fn ws_task(
     stack: embassy_net::Stack<'static>,
-    cmd_rx: embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, WsCommand, 4>,
-    event_tx: embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, WsEvent, 4>,
+    cmd_rx: embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, WsCommand, 16>,
+    event_tx: embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, WsEvent, 16>,
     mut rng: EspRng,
 ) {
     info!("ws: task started, waiting for URL");
@@ -343,6 +346,17 @@ async fn ws_task(
                                 raw_jitter_us: Vec::new(),
                                 buffered_jitter_us: Vec::new(),
                                 underruns: 0,
+                            }))
+                            .await;
+                    }
+                    WsCommand::SpeedTest => {
+                        info!("ws: ignoring speed test while disconnected");
+                        event_tx
+                            .send(WsEvent::SpeedTestResult(SpeedTestResult {
+                                sent: 0,
+                                received: 0,
+                                send_time_ms: 0,
+                                recv_time_ms: 0,
                             }))
                             .await;
                     }
@@ -383,6 +397,17 @@ async fn ws_task(
                                 raw_jitter_us: Vec::new(),
                                 buffered_jitter_us: Vec::new(),
                                 underruns: 0,
+                            }))
+                            .await;
+                    }
+                    WsCommand::SpeedTest => {
+                        info!("ws: ignoring speed test without URL");
+                        event_tx
+                            .send(WsEvent::SpeedTestResult(SpeedTestResult {
+                                sent: 0,
+                                received: 0,
+                                send_time_ms: 0,
+                                recv_time_ms: 0,
                             }))
                             .await;
                     }
@@ -469,7 +494,7 @@ async fn ws_task(
 
         // WebSocket handshake
         // Use separate buffers for read and write to avoid corruption
-        let mut ws_read_buf = [0u8; 1024];
+        let mut ws_read_buf = [0u8; 2048];
         let mut ws_write_buf = [0u8; 1024];
         let websocket = WebSocketClient::new_client(&mut rng);
         let mut framer = Framer::new(websocket);
@@ -628,6 +653,21 @@ async fn ws_task(
                             event_tx.send(WsEvent::EchoTestResult(result)).await;
                             if !connection_ok {
                                 warn!("ws: connection failed during echo test, reconnecting");
+                                connection_broken = true;
+                                break;
+                            }
+                        }
+                        WsCommand::SpeedTest => {
+                            info!("ws: starting speed test");
+                            let (result, connection_ok) =
+                                run_speed_test(&mut framer, &mut tls, &mut ws_read_buf, &mut ws_write_buf).await;
+                            info!(
+                                "ws: speed test complete: sent={}, received={}, send_time={}ms, recv_time={}ms",
+                                result.sent, result.received, result.send_time_ms, result.recv_time_ms
+                            );
+                            event_tx.send(WsEvent::SpeedTestResult(result)).await;
+                            if !connection_ok {
+                                warn!("ws: connection failed during speed test, reconnecting");
                                 connection_broken = true;
                                 break;
                             }
@@ -857,6 +897,109 @@ where
             raw_jitter_us,
             buffered_jitter_us,
             underruns: stats.underruns as u8,
+        },
+        connection_ok,
+    )
+}
+
+/// Run the WebSocket speed test.
+///
+/// Sends 50 packets as fast as possible (no delays), then waits up to 2 seconds
+/// to receive responses. Returns timing information.
+async fn run_speed_test<'a, S>(
+    framer: &mut Framer<&'a mut EspRng, embedded_websocket_embedded_io::Client>,
+    tls: &mut TlsConnection<'_, S, Aes128GcmSha256>,
+    ws_read_buf: &mut [u8],
+    ws_write_buf: &mut [u8],
+) -> (SpeedTestResult, bool)
+where
+    S: embedded_io_async::Read + embedded_io_async::Write + Unpin,
+{
+    use embassy_time::Instant;
+
+    const PACKET_COUNT: usize = 50;
+    const PACKET_SIZE: usize = 640;
+    let packet = [0xBBu8; PACKET_SIZE];
+
+    let mut sent: u8 = 0;
+    let mut received: u8 = 0;
+    let mut connection_ok = true;
+
+    // Phase 1: Send all packets as fast as possible
+    info!("ws: speed test - sending {} packets", PACKET_COUNT);
+    let send_start = Instant::now();
+
+    for i in 0..PACKET_COUNT {
+        match framer
+            .write(tls, ws_write_buf, WebSocketSendMessageType::Binary, true, &packet)
+            .await
+        {
+            Ok(_) => {
+                sent += 1;
+                if (i + 1) % 10 == 0 {
+                    info!("ws: speed test sent {} packets", i + 1);
+                }
+            }
+            Err(_) => {
+                warn!("ws: speed test send failed at packet {}", i);
+                connection_ok = false;
+                break;
+            }
+        }
+    }
+
+    let send_time = Instant::now().duration_since(send_start);
+    let send_time_ms = send_time.as_millis() as u32;
+    info!("ws: speed test sent {} packets in {}ms", sent, send_time_ms);
+
+    // Phase 2: Receive responses (up to 2 seconds or all packets received)
+    let recv_start = Instant::now();
+    let deadline = recv_start + Duration::from_secs(2);
+
+    if connection_ok {
+        info!("ws: speed test - waiting for responses");
+        while (received as usize) < (sent as usize) && Instant::now() < deadline {
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            match embassy_time::with_timeout(timeout, framer.read(tls, ws_read_buf)).await {
+                Ok(Some(Ok(ReadResult::Binary(_data)))) => {
+                    received += 1;
+                    if received % 10 == 0 {
+                        info!("ws: speed test received {} packets", received);
+                    }
+                }
+                Ok(Some(Ok(_))) => {
+                    // Other frame types, ignore
+                }
+                Ok(Some(Err(_))) => {
+                    warn!("ws: speed test receive error");
+                    connection_ok = false;
+                    break;
+                }
+                Ok(None) => {
+                    // Framer needs more data, keep reading
+                }
+                Err(_) => {
+                    // Timeout expired
+                    info!("ws: speed test timeout, received {}/{}", received, sent);
+                    break;
+                }
+            }
+        }
+    }
+
+    let recv_time = Instant::now().duration_since(recv_start);
+    let recv_time_ms = recv_time.as_millis() as u32;
+    info!(
+        "ws: speed test received {} packets in {}ms",
+        received, recv_time_ms
+    );
+
+    (
+        SpeedTestResult {
+            sent,
+            received,
+            send_time_ms,
+            recv_time_ms,
         },
         connection_ok,
     )

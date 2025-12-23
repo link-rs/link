@@ -41,6 +41,19 @@ pub struct EchoTestResults {
     pub buffered_jitter_us: heapless::Vec<u32, 50>,
 }
 
+/// Results from the WebSocket speed test.
+#[derive(Debug, Clone, Default)]
+pub struct SpeedTestResults {
+    /// Number of packets sent.
+    pub sent: u8,
+    /// Number of packets received.
+    pub received: u8,
+    /// Time to send all packets in milliseconds.
+    pub send_time_ms: u32,
+    /// Time to receive all responses in milliseconds.
+    pub recv_time_ms: u32,
+}
+
 /// Information retrieved from the MGMT chip when it's in bootloader mode.
 #[derive(Debug, Clone, Default)]
 pub struct MgmtBootloaderInfo {
@@ -635,6 +648,55 @@ where
             underruns,
             raw_jitter_us,
             buffered_jitter_us,
+        }
+    }
+
+    /// Run a WebSocket speed test.
+    ///
+    /// This sends 50 packets as fast as possible (no delay between sends),
+    /// then waits up to 2 seconds to receive responses.
+    ///
+    /// Returns SpeedTestResults with timing information.
+    pub async fn ws_speed_test(&mut self) -> SpeedTestResults {
+        // Tunnel through MGMT to NET
+        self.writer
+            .net()
+            .must_write_tlv(MgmtToNet::WsSpeedTest, &[])
+            .await;
+
+        // Wait for result from NET (tunneled through MGMT as FromNet)
+        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, NetToMgmt::WsSpeedTestResult);
+
+        // Parse result: sent (1), received (1), send_time_ms (4), recv_time_ms (4)
+        let sent = tlv.value.get(0).copied().unwrap_or(0);
+        let received = tlv.value.get(1).copied().unwrap_or(0);
+        let send_time_ms = if tlv.value.len() >= 6 {
+            u32::from_le_bytes([
+                tlv.value[2],
+                tlv.value[3],
+                tlv.value[4],
+                tlv.value[5],
+            ])
+        } else {
+            0
+        };
+        let recv_time_ms = if tlv.value.len() >= 10 {
+            u32::from_le_bytes([
+                tlv.value[6],
+                tlv.value[7],
+                tlv.value[8],
+                tlv.value[9],
+            ])
+        } else {
+            0
+        };
+
+        SpeedTestResults {
+            sent,
+            received,
+            send_time_ms,
+            recv_time_ms,
         }
     }
 

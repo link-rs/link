@@ -22,6 +22,8 @@ pub enum CtlToMgmt {
     WsEchoTest,
     /// Hold UI chip in reset
     HoldUiReset,
+    /// Start WebSocket speed test: blast frames as fast as possible
+    WsSpeedTest,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -35,6 +37,8 @@ pub enum MgmtToCtl {
     Hello,
     /// WebSocket echo test results
     WsEchoTestResult,
+    /// WebSocket speed test results
+    WsSpeedTestResult,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -76,6 +80,8 @@ pub enum MgmtToNet {
     WsEchoTest,
     /// Set loopback mode (1 byte: 0=off, 1=on)
     SetLoopback,
+    /// Start WebSocket speed test
+    WsSpeedTest,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -92,6 +98,8 @@ pub enum NetToMgmt {
     WsDisconnected,
     /// WebSocket echo test results
     WsEchoTestResult,
+    /// WebSocket speed test results
+    WsSpeedTestResult,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
