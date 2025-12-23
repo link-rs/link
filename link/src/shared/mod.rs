@@ -1,9 +1,11 @@
 //! Shared types and utilities used across all chips.
 
+pub mod jitter_buffer;
 pub mod led;
 pub mod protocol;
 pub mod tlv;
 
+pub use jitter_buffer::{JitterBuffer, JitterState, JitterStats, BUFFER_FRAMES, MIN_START_LEVEL};
 pub use led::{Color, InvertedPin, Led};
 pub use protocol::*;
 pub use tlv::{ReadTlv, Tlv, Value, WriteTlv, MAX_VALUE_SIZE, SYNC_WORD};

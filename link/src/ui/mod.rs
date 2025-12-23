@@ -9,8 +9,8 @@ pub use eeprom::Eeprom;
 
 use crate::info;
 use crate::shared::{
-    read_tlv_loop, Channel, Color, CriticalSectionRawMutex, Led, MgmtToUi, NetToUi, Sender, Tlv,
-    UiToMgmt, UiToNet, WriteTlv,
+    read_tlv_loop, Channel, Color, CriticalSectionRawMutex, JitterBuffer, JitterState, Led,
+    MgmtToUi, NetToUi, Sender, Tlv, UiToMgmt, UiToNet, WriteTlv,
 };
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::StatefulOutputPin;
@@ -201,22 +201,32 @@ where
                 let _ = audio_system.read_write(&tone_frame, &mut zero).await;
             }
 
-            let mut was_playing = false;
+            // Jitter buffer for smoothing playback from NET
+            const FRAME_BYTES: usize = FRAME_SIZE * 2;
+            let mut jitter_buffer: JitterBuffer<FRAME_BYTES> = JitterBuffer::new();
+
             loop {
-                // Get a frame to play (or silence if queue is empty)
-                let tx_frame = match playback_channel.try_receive() {
-                    Ok(frame) => {
-                        was_playing = true;
-                        frame
+                // Drain any pending frames from channel into jitter buffer
+                while let Ok(frame) = playback_channel.try_receive() {
+                    if !jitter_buffer.push(&frame.as_bytes()) {
+                        info!("ui: jitter buffer overrun");
                     }
-                    Err(_) => {
-                        if was_playing {
+                }
+
+                // Get a frame to play from jitter buffer
+                let tx_frame =
+                    if jitter_buffer.state() == JitterState::Playing || jitter_buffer.level() > 0 {
+                        if let Some(bytes) = jitter_buffer.pop() {
+                            Frame::from_bytes(&bytes).unwrap_or_default()
+                        } else {
                             info!("ui: playout gap (buffer underrun)");
-                            was_playing = false;
+                            Frame::default()
                         }
+                    } else {
+                        // Still buffering, play silence
                         Frame::default()
-                    }
-                };
+                    };
+
                 let mut rx_frame = Frame::default();
 
                 // Do the I2S read/write cycle
@@ -1037,7 +1047,7 @@ mod audio_streaming_tests {
     #[tokio::test]
     async fn net_audio_frame_plays_out() {
         use crate::mocks::CapturingAudioStream;
-        use crate::shared::WriteTlv;
+        use crate::shared::{WriteTlv, MIN_START_LEVEL};
 
         let (ui_to_mgmt, _mgmt_from_ui) = channel();
         let (_mgmt_to_ui, ui_from_mgmt) = channel();
@@ -1066,6 +1076,15 @@ mod audio_streaming_tests {
                 // Wait for startup tone to complete (50 frames × 5ms = 250ms)
                 tokio::time::sleep(Duration::from_millis(300)).await;
 
+                // Send enough frames to fill jitter buffer past MIN_START_LEVEL
+                for _ in 0..MIN_START_LEVEL {
+                    let padding_frame = crate::ui::Frame::default();
+                    net_to_ui
+                        .write_tlv(crate::shared::NetToUi::AudioFrame, &padding_frame.as_bytes())
+                        .await
+                        .unwrap();
+                }
+
                 // Create a test frame with known data
                 let mut test_frame = crate::ui::Frame::default();
                 test_frame.0[0] = 0x1234;
@@ -1078,8 +1097,8 @@ mod audio_streaming_tests {
                     .await
                     .unwrap();
 
-                // Wait for the frame to be processed and played
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Wait for the frames to be processed and played
+                tokio::time::sleep(Duration::from_millis(200)).await;
             } => {}
         }
 
@@ -1101,7 +1120,7 @@ mod audio_streaming_tests {
     #[tokio::test]
     async fn multiple_net_audio_frames_play_in_order() {
         use crate::mocks::CapturingAudioStream;
-        use crate::shared::WriteTlv;
+        use crate::shared::{WriteTlv, MIN_START_LEVEL};
 
         let (ui_to_mgmt, _mgmt_from_ui) = channel();
         let (_mgmt_to_ui, ui_from_mgmt) = channel();
@@ -1130,6 +1149,15 @@ mod audio_streaming_tests {
                 // Wait for startup tone to complete (50 frames × 5ms = 250ms)
                 tokio::time::sleep(Duration::from_millis(300)).await;
 
+                // Send padding frames to fill jitter buffer past MIN_START_LEVEL
+                for _ in 0..MIN_START_LEVEL {
+                    let padding_frame = crate::ui::Frame::default();
+                    net_to_ui
+                        .write_tlv(crate::shared::NetToUi::AudioFrame, &padding_frame.as_bytes())
+                        .await
+                        .unwrap();
+                }
+
                 // Send multiple frames with sequence numbers
                 for i in 0u16..3 {
                     let mut frame = crate::ui::Frame::default();
@@ -1143,7 +1171,7 @@ mod audio_streaming_tests {
                 }
 
                 // Wait for all frames to be processed
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
             } => {}
         }
 

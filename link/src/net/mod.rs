@@ -1,9 +1,9 @@
 //! NET (Network) chip - handles network communication.
 
-mod jitter_buffer;
 mod storage;
 
-pub use jitter_buffer::{JitterBuffer, JitterState, JitterStats, BUFFER_FRAMES, MIN_START_LEVEL};
+// Re-export jitter buffer from shared for backwards compatibility
+pub use crate::shared::{JitterBuffer, JitterState, JitterStats, BUFFER_FRAMES, MIN_START_LEVEL};
 pub use storage::{
     NetStorage, WifiSsid, MAX_PASSWORD_LEN, MAX_RELAY_URL_LEN, MAX_SSID_LEN, MAX_WIFI_SSIDS,
 };
@@ -215,10 +215,8 @@ where
                             if let Some(audio) =
                                 handle_ui(tlv, &mut to_mgmt, &ws_cmd_tx, loopback).await
                             {
-                                // Loopback: push to jitter buffer
-                                if !audio_buffer.push(&audio) {
-                                    info!("net: audio buffer overrun (loopback)");
-                                }
+                                // Loopback: send directly to UI (bypass jitter buffer)
+                                to_ui.must_write_tlv(NetToUi::AudioFrame, &audio).await;
                             }
                         }
                         Event::Ws(event) => {
