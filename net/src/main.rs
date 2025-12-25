@@ -9,11 +9,10 @@ use embassy_net::{tcp::TcpSocket, Runner, StackResources};
 use embassy_futures::select::{select, Either};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
+use embedded_io_async::Write as AsyncWrite;
 use embedded_tls::{Aes128GcmSha256, NoVerify, TlsConfig, TlsConnection, TlsContext};
-use embedded_websocket_embedded_io::{
-    framer_async::{Framer, FramerError, ReadResult},
-    WebSocketClient, WebSocketCloseStatusCode, WebSocketOptions, WebSocketSendMessageType,
-};
+use edge_http::ws as http_ws;
+use edge_ws::FrameType;
 use esp_bootloader_esp_idf::partitions;
 use esp_hal::{
     clock::CpuClock,
@@ -492,25 +491,169 @@ async fn ws_task(
         }
         info!("ws: TLS connected");
 
-        // WebSocket handshake
-        // Use separate buffers for read and write to avoid corruption
+        // WebSocket handshake - manually perform HTTP upgrade using edge-http
         let mut ws_read_buf = [0u8; 2048];
-        let mut ws_write_buf = [0u8; 1024];
-        let websocket = WebSocketClient::new_client(&mut rng);
-        let mut framer = Framer::new(websocket);
-        let options = WebSocketOptions {
-            path: path.as_str(),
-            host: host.as_str(),
-            origin: host.as_str(),
-            sub_protocols: None,
-            additional_headers: None,
+
+        // Generate 16-byte nonce for WebSocket key
+        let mut nonce = [0u8; http_ws::NONCE_LEN];
+        rng.fill_bytes(&mut nonce);
+
+        // Get upgrade headers
+        let mut key_buf = [0u8; http_ws::MAX_BASE64_KEY_LEN];
+        let headers = http_ws::upgrade_request_headers(
+            Some(host.as_str()),
+            Some(host.as_str()),
+            None,  // Use default version "13"
+            &nonce,
+            &mut key_buf,
+        );
+
+        // Build and send HTTP upgrade request
+        // Format: "GET {path} HTTP/1.1\r\n{headers}\r\n"
+        let mut request_buf = [0u8; 512];
+        let mut request_len = 0;
+
+        // Request line
+        let req_line = b"GET ";
+        request_buf[request_len..request_len + req_line.len()].copy_from_slice(req_line);
+        request_len += req_line.len();
+        let path_bytes = path.as_bytes();
+        request_buf[request_len..request_len + path_bytes.len()].copy_from_slice(path_bytes);
+        request_len += path_bytes.len();
+        let http_ver = b" HTTP/1.1\r\n";
+        request_buf[request_len..request_len + http_ver.len()].copy_from_slice(http_ver);
+        request_len += http_ver.len();
+
+        // Add headers (skip empty ones)
+        for (name, value) in &headers {
+            if !name.is_empty() {
+                let name_bytes = name.as_bytes();
+                let value_bytes = value.as_bytes();
+                request_buf[request_len..request_len + name_bytes.len()].copy_from_slice(name_bytes);
+                request_len += name_bytes.len();
+                request_buf[request_len..request_len + 2].copy_from_slice(b": ");
+                request_len += 2;
+                request_buf[request_len..request_len + value_bytes.len()].copy_from_slice(value_bytes);
+                request_len += value_bytes.len();
+                request_buf[request_len..request_len + 2].copy_from_slice(b"\r\n");
+                request_len += 2;
+            }
+        }
+        // Final CRLF
+        request_buf[request_len..request_len + 2].copy_from_slice(b"\r\n");
+        request_len += 2;
+
+        if tls.write_all(&request_buf[..request_len]).await.is_err() {
+            warn!("ws: failed to send upgrade request");
+            event_tx.send(WsEvent::Disconnected).await;
+            Timer::after(Duration::from_secs(5)).await;
+            continue;
+        }
+        if tls.flush().await.is_err() {
+            warn!("ws: failed to flush upgrade request");
+            event_tx.send(WsEvent::Disconnected).await;
+            Timer::after(Duration::from_secs(5)).await;
+            continue;
+        }
+        info!("ws: sent upgrade request ({} bytes)", request_len);
+
+        // Read HTTP response
+        let mut response_buf = [0u8; 1024];
+        let mut response_len = 0;
+        loop {
+            if response_len >= response_buf.len() {
+                warn!("ws: response too large");
+                event_tx.send(WsEvent::Disconnected).await;
+                Timer::after(Duration::from_secs(5)).await;
+                break;
+            }
+            match tls.read(&mut response_buf[response_len..response_len + 1]).await {
+                Ok(0) => {
+                    warn!("ws: connection closed during handshake");
+                    event_tx.send(WsEvent::Disconnected).await;
+                    Timer::after(Duration::from_secs(5)).await;
+                    break;
+                }
+                Ok(_) => {
+                    response_len += 1;
+                    // Check for end of headers (CRLFCRLF)
+                    if response_len >= 4 && &response_buf[response_len - 4..response_len] == b"\r\n\r\n" {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    warn!("ws: failed to read response");
+                    event_tx.send(WsEvent::Disconnected).await;
+                    Timer::after(Duration::from_secs(5)).await;
+                    break;
+                }
+            }
+        }
+        // Check if we broke out due to error
+        if response_len < 4 || &response_buf[response_len - 4..response_len] != b"\r\n\r\n" {
+            continue;
+        }
+        info!("ws: received response ({} bytes)", response_len);
+
+        // Parse HTTP response - extract status code and headers
+        let response_str = match core::str::from_utf8(&response_buf[..response_len]) {
+            Ok(s) => s,
+            Err(_) => {
+                warn!("ws: invalid UTF-8 in response");
+                event_tx.send(WsEvent::Disconnected).await;
+                Timer::after(Duration::from_secs(5)).await;
+                continue;
+            }
         };
-        if framer
-            .connect(&mut tls, &mut ws_write_buf, &options)
-            .await
-            .is_err()
-        {
-            warn!("ws: WebSocket connect failed");
+        info!("ws: response: {}", response_str);
+
+        // Parse status line: "HTTP/1.1 101 Switching Protocols\r\n"
+        let mut lines = response_str.lines();
+        let status_line = match lines.next() {
+            Some(line) => line,
+            None => {
+                warn!("ws: empty response");
+                event_tx.send(WsEvent::Disconnected).await;
+                Timer::after(Duration::from_secs(5)).await;
+                continue;
+            }
+        };
+        let status_code: u16 = {
+            let parts: heapless::Vec<&str, 3> = status_line.splitn(3, ' ').collect();
+            if parts.len() < 2 {
+                warn!("ws: invalid status line");
+                event_tx.send(WsEvent::Disconnected).await;
+                Timer::after(Duration::from_secs(5)).await;
+                continue;
+            }
+            match parts[1].parse() {
+                Ok(code) => code,
+                Err(_) => {
+                    warn!("ws: invalid status code");
+                    event_tx.send(WsEvent::Disconnected).await;
+                    Timer::after(Duration::from_secs(5)).await;
+                    continue;
+                }
+            }
+        };
+
+        // Parse headers into a vec of (name, value) tuples
+        let mut response_headers: heapless::Vec<(&str, &str), 16> = heapless::Vec::new();
+        for line in lines {
+            if line.is_empty() {
+                break;
+            }
+            if let Some(colon_idx) = line.find(':') {
+                let name = line[..colon_idx].trim();
+                let value = line[colon_idx + 1..].trim();
+                let _ = response_headers.push((name, value));
+            }
+        }
+
+        // Validate WebSocket upgrade
+        let mut accept_buf = [0u8; http_ws::MAX_BASE64_KEY_RESPONSE_LEN];
+        if !http_ws::is_upgrade_accepted(status_code, response_headers.iter().copied(), &nonce, &mut accept_buf) {
+            warn!("ws: WebSocket upgrade not accepted (status={})", status_code);
             event_tx.send(WsEvent::Disconnected).await;
             Timer::after(Duration::from_secs(5)).await;
             continue;
@@ -524,72 +667,64 @@ async fn ws_task(
         let mut connection_broken = false;
 
         loop {
-            match select(framer.read(&mut tls, &mut ws_read_buf), cmd_rx.receive()).await {
+            match select(edge_ws::io::recv(&mut tls, &mut ws_read_buf), cmd_rx.receive()).await {
                 Either::First(read_result) => {
-                    // Frame received from server (or None if more data needed)
+                    // Frame received from server
                     match read_result {
-                        Some(Ok(ReadResult::Binary(data))) => {
-                            info!("ws: received {} bytes", data.len());
-                            if let Ok(payload) = Vec::try_from(data) {
+                        Ok((FrameType::Binary(_fragmented), len)) => {
+                            info!("ws: received {} bytes", len);
+                            if let Ok(payload) = Vec::try_from(&ws_read_buf[..len]) {
                                 event_tx.send(WsEvent::Received(payload)).await;
                             }
                         }
-                        Some(Ok(ReadResult::Text(text))) => {
-                            info!("ws: received text: {}", text);
-                            if let Ok(payload) = Vec::try_from(text.as_bytes()) {
+                        Ok((FrameType::Text(_fragmented), len)) => {
+                            if let Ok(text) = core::str::from_utf8(&ws_read_buf[..len]) {
+                                info!("ws: received text: {}", text);
+                            }
+                            if let Ok(payload) = Vec::try_from(&ws_read_buf[..len]) {
                                 event_tx.send(WsEvent::Received(payload)).await;
                             }
                         }
-                        Some(Ok(ReadResult::Close(close_msg))) => {
-                            let code = match close_msg.status_code {
-                                WebSocketCloseStatusCode::NormalClosure => 1000,
-                                WebSocketCloseStatusCode::EndpointUnavailable => 1001,
-                                WebSocketCloseStatusCode::ProtocolError => 1002,
-                                WebSocketCloseStatusCode::InvalidMessageType => 1003,
-                                WebSocketCloseStatusCode::Reserved => 1004,
-                                WebSocketCloseStatusCode::Empty => 1005,
-                                WebSocketCloseStatusCode::InvalidPayloadData => 1007,
-                                WebSocketCloseStatusCode::PolicyViolation => 1008,
-                                WebSocketCloseStatusCode::MessageTooBig => 1009,
-                                WebSocketCloseStatusCode::MandatoryExtension => 1010,
-                                WebSocketCloseStatusCode::InternalServerError => 1011,
-                                WebSocketCloseStatusCode::TlsHandshake => 1015,
-                                WebSocketCloseStatusCode::Custom(v) => v,
+                        Ok((FrameType::Close, len)) => {
+                            // Parse close code if present
+                            let code = if len >= 2 {
+                                u16::from_be_bytes([ws_read_buf[0], ws_read_buf[1]])
+                            } else {
+                                1000
                             };
-                            if let Ok(reason) = core::str::from_utf8(close_msg.reason) {
-                                warn!("ws: received close frame: code={}, reason={}", code, reason);
+                            if len > 2 {
+                                if let Ok(reason) = core::str::from_utf8(&ws_read_buf[2..len]) {
+                                    warn!("ws: received close frame: code={}, reason={}", code, reason);
+                                } else {
+                                    warn!("ws: received close frame: code={}", code);
+                                }
                             } else {
                                 warn!("ws: received close frame: code={}", code);
                             }
-                            // Framer automatically sends close reply
+                            // Send close frame back
+                            let _ = edge_ws::io::send(&mut tls, FrameType::Close, Some(rng.next_u32()), &ws_read_buf[..len]).await;
+                            let _ = tls.flush().await;
                             break;
                         }
-                        Some(Ok(ReadResult::Ping(_))) | Some(Ok(ReadResult::Pong(_))) => {
-                            // Ping/Pong handled automatically by framer
-                        }
-                        Some(Err(e)) => {
-                            match e {
-                                FramerError::Io(_) => warn!("ws: read error: I/O error"),
-                                FramerError::FrameTooLarge(size) => {
-                                    warn!("ws: read error: frame too large ({})", size)
-                                }
-                                FramerError::Utf8(_) => warn!("ws: read error: UTF-8 decode error"),
-                                FramerError::HttpHeader(_) => {
-                                    warn!("ws: read error: HTTP header error")
-                                }
-                                FramerError::WebSocket(_) => {
-                                    warn!("ws: read error: WebSocket protocol error")
-                                }
-                                FramerError::Disconnected => warn!("ws: read error: disconnected"),
-                                FramerError::RxBufferTooSmall(size) => {
-                                    warn!("ws: read error: rx buffer too small (need {})", size)
-                                }
+                        Ok((FrameType::Ping, len)) => {
+                            // Respond with Pong containing the same payload
+                            if edge_ws::io::send(&mut tls, FrameType::Pong, Some(rng.next_u32()), &ws_read_buf[..len]).await.is_err() {
+                                warn!("ws: failed to send pong");
+                                connection_broken = true;
+                                break;
                             }
+                            let _ = tls.flush().await;
+                        }
+                        Ok((FrameType::Pong, _)) => {
+                            // Ignore pong frames
+                        }
+                        Ok((FrameType::Continue(_), _)) => {
+                            // Continuation frames - we don't handle fragmentation currently
+                        }
+                        Err(e) => {
+                            warn!("ws: read error: {:?}", e);
                             connection_broken = true;
                             break;
-                        }
-                        None => {
-                            // Connection closed or need more data
                         }
                     }
                 }
@@ -604,39 +739,16 @@ async fn ws_task(
                         }
                         WsCommand::Send(data) => {
                             info!("ws: sending {} bytes", data.len());
-                            match framer
-                                .write(
-                                    &mut tls,
-                                    &mut ws_write_buf,
-                                    WebSocketSendMessageType::Binary,
-                                    true,
-                                    &data,
-                                )
-                                .await
-                            {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    match e {
-                                        FramerError::Io(_) => warn!("ws: write failed: I/O error"),
-                                        FramerError::FrameTooLarge(size) => {
-                                            warn!("ws: write failed: frame too large ({})", size)
-                                        }
-                                        FramerError::Utf8(_) => {
-                                            warn!("ws: write failed: UTF-8 error")
-                                        }
-                                        FramerError::HttpHeader(_) => {
-                                            warn!("ws: write failed: HTTP header error")
-                                        }
-                                        FramerError::WebSocket(_) => {
-                                            warn!("ws: write failed: WebSocket protocol error")
-                                        }
-                                        FramerError::Disconnected => {
-                                            warn!("ws: write failed: disconnected")
-                                        }
-                                        FramerError::RxBufferTooSmall(size) => {
-                                            warn!("ws: write failed: buffer too small (need {})", size)
-                                        }
+                            match edge_ws::io::send(&mut tls, FrameType::Binary(false), Some(rng.next_u32()), &data).await {
+                                Ok(_) => {
+                                    if tls.flush().await.is_err() {
+                                        warn!("ws: flush failed");
+                                        connection_broken = true;
+                                        break;
                                     }
+                                }
+                                Err(e) => {
+                                    warn!("ws: write failed: {:?}", e);
                                     connection_broken = true;
                                     break;
                                 }
@@ -645,7 +757,7 @@ async fn ws_task(
                         WsCommand::EchoTest => {
                             info!("ws: starting echo test");
                             let (result, connection_ok) =
-                                run_echo_test(&mut framer, &mut tls, &mut ws_read_buf, &mut ws_write_buf).await;
+                                run_echo_test(&mut tls, &mut ws_read_buf, &mut rng).await;
                             info!(
                                 "ws: echo test complete: sent={}, received={}",
                                 result.sent, result.received
@@ -660,7 +772,7 @@ async fn ws_task(
                         WsCommand::SpeedTest => {
                             info!("ws: starting speed test");
                             let (result, connection_ok) =
-                                run_speed_test(&mut framer, &mut tls, &mut ws_read_buf, &mut ws_write_buf).await;
+                                run_speed_test(&mut tls, &mut ws_read_buf, &mut rng).await;
                             info!(
                                 "ws: speed test complete: sent={}, received={}, send_time={}ms, recv_time={}ms",
                                 result.sent, result.received, result.send_time_ms, result.recv_time_ms
@@ -678,16 +790,10 @@ async fn ws_task(
         }
 
         // Clean up - only try to close if connection is still healthy
-        // (the framer library panics on I/O errors in close)
         if !connection_broken {
-            let _ = framer
-                .close(
-                    &mut tls,
-                    &mut ws_write_buf,
-                    WebSocketCloseStatusCode::NormalClosure,
-                    None,
-                )
-                .await;
+            // Send close frame with normal closure code (1000)
+            let close_payload = 1000u16.to_be_bytes();
+            let _ = edge_ws::io::send(&mut tls, FrameType::Close, Some(rng.next_u32()), &close_payload).await;
         }
 
         if !should_reconnect {
@@ -706,11 +812,10 @@ async fn ws_task(
 ///
 /// Returns (result, connection_ok). If connection_ok is false, the caller
 /// should break out of the main loop to trigger reconnection.
-async fn run_echo_test<'a, S>(
-    framer: &mut Framer<&'a mut EspRng, embedded_websocket_embedded_io::Client>,
+async fn run_echo_test<S>(
     tls: &mut TlsConnection<'_, S, Aes128GcmSha256>,
     ws_read_buf: &mut [u8],
-    ws_write_buf: &mut [u8],
+    rng: &mut EspRng,
 ) -> (EchoTestResult, bool)
 where
     S: embedded_io_async::Read + embedded_io_async::Write + Unpin,
@@ -740,11 +845,13 @@ where
     while (sent as usize) < ECHO_TEST_PACKET_COUNT {
         // Time to send next packet?
         if Instant::now() >= next_send_time {
-            match framer
-                .write(tls, ws_write_buf, WebSocketSendMessageType::Binary, true, &packet)
-                .await
-            {
+            match edge_ws::io::send(&mut *tls, FrameType::Binary(false), Some(rng.next_u32()), &packet).await {
                 Ok(_) => {
+                    if tls.flush().await.is_err() {
+                        warn!("ws: echo test flush failed at packet {}", sent);
+                        connection_ok = false;
+                        break;
+                    }
                     sent += 1;
                     if sent == 1 || sent % 10 == 0 {
                         info!("ws: echo test sent {} packets", sent);
@@ -766,8 +873,8 @@ where
                 break; // Time to send again
             }
             let timeout = next_send_time.saturating_duration_since(now);
-            match embassy_time::with_timeout(timeout, framer.read(tls, ws_read_buf)).await {
-                Ok(Some(Ok(ReadResult::Binary(data)))) => {
+            match embassy_time::with_timeout(timeout, edge_ws::io::recv(&mut *tls, ws_read_buf)).await {
+                Ok(Ok((FrameType::Binary(_), len))) => {
                     let recv_time = Instant::now();
                     // Record raw jitter (before buffer)
                     if let Some(last) = last_recv_time {
@@ -777,18 +884,15 @@ where
                     last_recv_time = Some(recv_time);
                     received += 1;
                     // Push into jitter buffer
-                    jitter_buffer.push(data);
+                    jitter_buffer.push(&ws_read_buf[..len]);
                 }
-                Ok(Some(Ok(_))) => {
+                Ok(Ok(_)) => {
                     // Other frame types, ignore but keep draining
                 }
-                Ok(Some(Err(_))) => {
+                Ok(Err(_)) => {
                     warn!("ws: echo test receive error");
                     connection_ok = false;
                     break;
-                }
-                Ok(None) => {
-                    // Framer needs more data, keep reading
                 }
                 Err(_) => {
                     // Timeout - time to send next packet
@@ -807,8 +911,8 @@ where
         let deadline = Instant::now() + Duration::from_secs(2);
         while (received as usize) < (sent as usize) && Instant::now() < deadline {
             let timeout = deadline.saturating_duration_since(Instant::now());
-            match embassy_time::with_timeout(timeout, framer.read(tls, ws_read_buf)).await {
-                Ok(Some(Ok(ReadResult::Binary(data)))) => {
+            match embassy_time::with_timeout(timeout, edge_ws::io::recv(&mut *tls, ws_read_buf)).await {
+                Ok(Ok((FrameType::Binary(_), len))) => {
                     let recv_time = Instant::now();
                     // Record raw jitter (before buffer)
                     if let Some(last) = last_recv_time {
@@ -818,18 +922,15 @@ where
                     last_recv_time = Some(recv_time);
                     received += 1;
                     // Push into jitter buffer
-                    jitter_buffer.push(data);
+                    jitter_buffer.push(&ws_read_buf[..len]);
                 }
-                Ok(Some(Ok(_))) => {
+                Ok(Ok(_)) => {
                     // Other frame types, ignore but keep waiting
                 }
-                Ok(Some(Err(_))) => {
+                Ok(Err(_)) => {
                     warn!("ws: echo test phase 2 receive error");
                     connection_ok = false;
                     break;
-                }
-                Ok(None) => {
-                    // Framer needs more data, keep reading
                 }
                 Err(_) => {
                     // Timeout expired
@@ -906,11 +1007,10 @@ where
 ///
 /// Sends 50 packets as fast as possible (no delays), then waits up to 2 seconds
 /// to receive responses. Returns timing information.
-async fn run_speed_test<'a, S>(
-    framer: &mut Framer<&'a mut EspRng, embedded_websocket_embedded_io::Client>,
+async fn run_speed_test<S>(
     tls: &mut TlsConnection<'_, S, Aes128GcmSha256>,
     ws_read_buf: &mut [u8],
-    ws_write_buf: &mut [u8],
+    rng: &mut EspRng,
 ) -> (SpeedTestResult, bool)
 where
     S: embedded_io_async::Read + embedded_io_async::Write + Unpin,
@@ -930,11 +1030,13 @@ where
     let send_start = Instant::now();
 
     for i in 0..PACKET_COUNT {
-        match framer
-            .write(tls, ws_write_buf, WebSocketSendMessageType::Binary, true, &packet)
-            .await
-        {
+        match edge_ws::io::send(&mut *tls, FrameType::Binary(false), Some(rng.next_u32()), &packet).await {
             Ok(_) => {
+                if tls.flush().await.is_err() {
+                    warn!("ws: speed test flush failed at packet {}", i);
+                    connection_ok = false;
+                    break;
+                }
                 sent += 1;
                 if (i + 1) % 10 == 0 {
                     info!("ws: speed test sent {} packets", i + 1);
@@ -960,23 +1062,20 @@ where
         info!("ws: speed test - waiting for responses");
         while (received as usize) < (sent as usize) && Instant::now() < deadline {
             let timeout = deadline.saturating_duration_since(Instant::now());
-            match embassy_time::with_timeout(timeout, framer.read(tls, ws_read_buf)).await {
-                Ok(Some(Ok(ReadResult::Binary(_data)))) => {
+            match embassy_time::with_timeout(timeout, edge_ws::io::recv(&mut *tls, ws_read_buf)).await {
+                Ok(Ok((FrameType::Binary(_), _len))) => {
                     received += 1;
                     if received % 10 == 0 {
                         info!("ws: speed test received {} packets", received);
                     }
                 }
-                Ok(Some(Ok(_))) => {
+                Ok(Ok(_)) => {
                     // Other frame types, ignore
                 }
-                Ok(Some(Err(_))) => {
+                Ok(Err(_)) => {
                     warn!("ws: speed test receive error");
                     connection_ok = false;
                     break;
-                }
-                Ok(None) => {
-                    // Framer needs more data, keep reading
                 }
                 Err(_) => {
                     // Timeout expired

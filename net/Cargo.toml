@@ -22,7 +22,8 @@ embassy-net = { version = "0.7", features = ["defmt", "dhcpv4", "tcp", "dns"] }
 embassy-futures = "0.1"
 
 # WebSocket support
-embedded-websocket-embedded-io = { version = "0.1", default-features = false, features = ["embedded-io-async"] }
+edge-ws = { version = "0.5", default-features = false, features = ["io", "defmt"] }
+edge-http = { version = "0.6", default-features = false, features = ["defmt"] }
 
 # TLS support for WSS
 embedded-tls = { version = "0.17", default-features = false, features = ["defmt"] }

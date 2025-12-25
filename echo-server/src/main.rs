@@ -130,41 +130,48 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, acceptor: TlsAcc
         match msg {
             Ok(Message::Binary(data)) => {
                 let len = data.len();
+                println!("[{}] RX Binary: {} bytes", addr, len);
                 frames_received.fetch_add(1, Ordering::Relaxed);
                 bytes_received.fetch_add(len as u64, Ordering::Relaxed);
                 if let Err(e) = write.send(Message::Binary(data)).await {
                     eprintln!("[{}] Send error: {}", addr, e);
                     break;
                 }
+                println!("[{}] TX Binary: {} bytes", addr, len);
                 frames_sent.fetch_add(1, Ordering::Relaxed);
                 bytes_sent.fetch_add(len as u64, Ordering::Relaxed);
             }
             Ok(Message::Text(text)) => {
                 let len = text.len();
+                println!("[{}] RX Text: {} bytes: {:?}", addr, len, &text[..len.min(100)]);
                 frames_received.fetch_add(1, Ordering::Relaxed);
                 bytes_received.fetch_add(len as u64, Ordering::Relaxed);
                 if let Err(e) = write.send(Message::Text(text)).await {
                     eprintln!("[{}] Send error: {}", addr, e);
                     break;
                 }
+                println!("[{}] TX Text: {} bytes", addr, len);
                 frames_sent.fetch_add(1, Ordering::Relaxed);
                 bytes_sent.fetch_add(len as u64, Ordering::Relaxed);
             }
             Ok(Message::Ping(data)) => {
-                println!("[{}] Ping", addr);
+                println!("[{}] RX Ping: {} bytes", addr, data.len());
                 if let Err(e) = write.send(Message::Pong(data)).await {
                     eprintln!("[{}] Pong send error: {}", addr, e);
                     break;
                 }
+                println!("[{}] TX Pong", addr);
             }
-            Ok(Message::Pong(_)) => {
-                println!("[{}] Pong", addr);
+            Ok(Message::Pong(data)) => {
+                println!("[{}] RX Pong: {} bytes", addr, data.len());
             }
-            Ok(Message::Close(_)) => {
-                println!("[{}] Close requested", addr);
+            Ok(Message::Close(frame)) => {
+                println!("[{}] RX Close: {:?}", addr, frame);
                 break;
             }
-            Ok(Message::Frame(_)) => {}
+            Ok(Message::Frame(frame)) => {
+                println!("[{}] RX Frame: {:?}", addr, frame);
+            }
             Err(e) => {
                 eprintln!("[{}] Error: {}", addr, e);
                 break;
