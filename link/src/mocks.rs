@@ -440,28 +440,31 @@ impl crate::ui::AudioSystem for MockAudioStream {
 
     async fn read_write(
         &mut self,
-        _tx: &crate::ui::Frame,
-        rx: &mut crate::ui::Frame,
+        _tx: &crate::ui::StereoFrame,
+        rx: &mut crate::ui::StereoFrame,
     ) -> Result<(), crate::ui::AudioError> {
-        // Simulate real audio timing (20ms per frame at 16kHz, 320 samples)
+        // Simulate real audio timing (80ms per frame at 8kHz stereo with A-law)
         // Use shorter delay in tests to speed them up while still allowing scheduler to run
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        // Create a frame with a unique identifier in the first sample
+        // Create a stereo frame with a unique identifier in the first stereo pair
+        // Use frame counter as amplitude for both L and R channels
         rx.0[0] = self.frame_counter;
+        rx.0[1] = self.frame_counter;
         self.frame_counter = self.frame_counter.wrapping_add(1);
         Ok(())
     }
 }
 
 /// Mock audio stream that captures written frames for verification.
+/// Captures stereo frames that are sent to the audio hardware.
 pub struct CapturingAudioStream {
     frame_counter: u16,
-    written_frames: std::sync::Arc<std::sync::Mutex<Vec<crate::ui::Frame>>>,
+    written_frames: std::sync::Arc<std::sync::Mutex<Vec<crate::ui::StereoFrame>>>,
 }
 
 impl CapturingAudioStream {
-    pub fn new() -> (Self, std::sync::Arc<std::sync::Mutex<Vec<crate::ui::Frame>>>) {
+    pub fn new() -> (Self, std::sync::Arc<std::sync::Mutex<Vec<crate::ui::StereoFrame>>>) {
         let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         (
             Self {
@@ -495,16 +498,18 @@ impl crate::ui::AudioSystem for CapturingAudioStream {
 
     async fn read_write(
         &mut self,
-        tx: &crate::ui::Frame,
-        rx: &mut crate::ui::Frame,
+        tx: &crate::ui::StereoFrame,
+        rx: &mut crate::ui::StereoFrame,
     ) -> Result<(), crate::ui::AudioError> {
-        // Capture non-silent frames
+        // Capture non-silent stereo frames
         if tx.0.iter().any(|&s| s != 0) {
             self.written_frames.lock().unwrap().push(tx.clone());
         }
         // Simulate real audio timing (5ms per frame for faster tests)
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        // Put frame counter in the first stereo pair
         rx.0[0] = self.frame_counter;
+        rx.0[1] = self.frame_counter;
         self.frame_counter = self.frame_counter.wrapping_add(1);
         Ok(())
     }

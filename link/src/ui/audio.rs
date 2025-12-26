@@ -3,55 +3,120 @@
 //! This module defines the interface between the library and board-level
 //! audio implementations. The board is responsible for both codec control
 //! (e.g., WM8960 via I2C) and audio streaming (e.g., I2S).
+//!
+//! # Audio Format
+//!
+//! - I2S operates in stereo mode with interleaved L/R samples
+//! - Transmitted frames use A-law encoding (1 byte per mono sample)
+//! - Recording: stereo → mono (sum L+R) → A-law encode
+//! - Playback: A-law decode → mono → stereo (duplicate)
 
+use audio_codec_algorithms::{decode_alaw, encode_alaw};
 use embedded_hal::delay::DelayNs;
 use embedded_hal::i2c::I2c;
 
-/// Size of an audio frame in 16-bit samples.
-pub const FRAME_SIZE: usize = 320;
+/// Size of an encoded audio frame in bytes (A-law mono samples).
+/// This is the transmitted frame size over the network.
+pub const ENCODED_FRAME_SIZE: usize = 640;
 
-/// An audio frame containing PCM samples.
+/// Size of stereo I2S frame in 16-bit samples.
+/// Contains ENCODED_FRAME_SIZE stereo pairs (L/R interleaved).
+pub const STEREO_FRAME_SIZE: usize = ENCODED_FRAME_SIZE * 2;
+
+/// Legacy frame size constant for compatibility.
+/// Now refers to encoded frame size.
+pub const FRAME_SIZE: usize = ENCODED_FRAME_SIZE;
+
+/// Stereo PCM frame for I2S hardware.
+/// Contains interleaved left/right 16-bit samples: L0, R0, L1, R1, ...
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct Frame(pub [u16; FRAME_SIZE]);
+pub struct StereoFrame(pub [u16; STEREO_FRAME_SIZE]);
+
+impl Default for StereoFrame {
+    fn default() -> Self {
+        Self([0; STEREO_FRAME_SIZE])
+    }
+}
+
+impl StereoFrame {
+    /// Mix stereo to mono and A-law encode.
+    /// Takes interleaved L/R samples, sums each pair, and encodes to A-law.
+    pub fn encode(&self) -> Frame {
+        let mut encoded = Frame::default();
+        for i in 0..ENCODED_FRAME_SIZE {
+            // Sum left and right channels (with saturation to avoid overflow)
+            let left = self.0[i * 2] as i16;
+            let right = self.0[i * 2 + 1] as i16;
+            // Saturating add to prevent overflow, then encode
+            let mono = left.saturating_add(right);
+            encoded.0[i] = encode_alaw(mono);
+        }
+        encoded
+    }
+
+    /// Create from mono samples by duplicating to stereo.
+    pub fn from_mono(mono: &[i16; ENCODED_FRAME_SIZE]) -> Self {
+        let mut stereo = Self::default();
+        for i in 0..ENCODED_FRAME_SIZE {
+            let sample = mono[i] as u16;
+            stereo.0[i * 2] = sample;     // Left
+            stereo.0[i * 2 + 1] = sample; // Right
+        }
+        stereo
+    }
+}
+
+/// An encoded audio frame containing A-law compressed mono samples.
+/// This is the format used for network transmission.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Frame(pub [u8; ENCODED_FRAME_SIZE]);
 
 impl Default for Frame {
     fn default() -> Self {
-        Self([0; FRAME_SIZE])
+        // A-law silence is 0xD5 (encodes to 0)
+        Self([0xD5; ENCODED_FRAME_SIZE])
     }
 }
 
 impl Frame {
-    /// Convert frame samples to bytes (little-endian).
-    pub fn as_bytes(&self) -> [u8; FRAME_SIZE * 2] {
-        let mut bytes = [0u8; FRAME_SIZE * 2];
-        for (i, sample) in self.0.iter().enumerate() {
-            let le = sample.to_le_bytes();
-            bytes[i * 2] = le[0];
-            bytes[i * 2 + 1] = le[1];
-        }
-        bytes
+    /// Get the raw A-law encoded bytes.
+    pub fn as_bytes(&self) -> &[u8; ENCODED_FRAME_SIZE] {
+        &self.0
     }
 
-    /// Create a frame from bytes (little-endian).
-    /// Returns None if the slice is not exactly FRAME_SIZE * 2 bytes.
+    /// Create a frame from bytes.
+    /// Returns None if the slice is not exactly ENCODED_FRAME_SIZE bytes.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != FRAME_SIZE * 2 {
+        if bytes.len() != ENCODED_FRAME_SIZE {
             return None;
         }
         let mut frame = Self::default();
-        for (i, sample) in frame.0.iter_mut().enumerate() {
-            *sample = u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
-        }
+        frame.0.copy_from_slice(bytes);
         Some(frame)
     }
 
-    /// Calculate the energy of this frame.
-    /// Energy is the sum of absolute values of samples (treated as signed i16).
+    /// Decode A-law to mono PCM samples.
+    pub fn decode(&self) -> [i16; ENCODED_FRAME_SIZE] {
+        let mut mono = [0i16; ENCODED_FRAME_SIZE];
+        for i in 0..ENCODED_FRAME_SIZE {
+            mono[i] = decode_alaw(self.0[i]);
+        }
+        mono
+    }
+
+    /// Decode and expand to stereo frame for I2S playback.
+    pub fn decode_to_stereo(&self) -> StereoFrame {
+        StereoFrame::from_mono(&self.decode())
+    }
+
+    /// Calculate the energy of this frame (after decoding).
+    /// Energy is the sum of absolute values of decoded samples.
     pub fn energy(&self) -> u32 {
-        self.0
+        self.decode()
             .iter()
-            .map(|&s| (s as i16).unsigned_abs() as u32)
+            .map(|&s| s.unsigned_abs() as u32)
             .sum()
     }
 }
@@ -77,6 +142,12 @@ pub enum AudioError {
 /// The `init()` method MUST configure the codec before the audio transport
 /// becomes active. This ensures proper initialization order (codec configured
 /// before I2S clocks start).
+///
+/// # Audio Format
+///
+/// The `read_write` method operates on stereo I2S frames. The caller is
+/// responsible for encoding/decoding between stereo PCM and A-law mono
+/// using the `StereoFrame::encode()` and `Frame::decode_to_stereo()` methods.
 #[allow(async_fn_in_trait)]
 pub trait AudioSystem {
     /// Initialize the audio subsystem.
@@ -97,6 +168,8 @@ pub trait AudioSystem {
     /// Stop the audio stream.
     async fn stop(&mut self);
 
-    /// Perform a full-duplex audio frame transfer.
-    async fn read_write(&mut self, tx: &Frame, rx: &mut Frame) -> Result<(), AudioError>;
+    /// Perform a full-duplex stereo audio frame transfer.
+    /// - tx: stereo frame to send to DAC
+    /// - rx: stereo frame received from ADC
+    async fn read_write(&mut self, tx: &StereoFrame, rx: &mut StereoFrame) -> Result<(), AudioError>;
 }

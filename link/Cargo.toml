@@ -39,3 +39,4 @@ embassy-time = { version = "0.4", optional = true }
 bootloader = { path = "../bootloader", optional = true }
 md-5 = { version = "0.10", optional = true, default-features = false }
 miniz_oxide = { version = "0.8", optional = true, default-features = false, features = ["with-alloc"] }
+audio-codec-algorithms = { version = "0.7", default-features = false }

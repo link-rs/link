@@ -17,7 +17,7 @@ use embassy_stm32::{
 use embassy_time::Delay;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::i2c::I2c as I2cTrait;
-use link::ui::{AudioError, AudioSystem, Frame, FRAME_SIZE};
+use link::ui::{AudioError, AudioSystem, StereoFrame, STEREO_FRAME_SIZE};
 use {defmt_rtt as _, panic_probe as _};
 
 // =============================================================================
@@ -461,7 +461,7 @@ define_field!(PllKLsb, 0x37, 0, 8, u8);
 // Board Audio System
 // =============================================================================
 
-const I2S_BUF_SIZE: usize = FRAME_SIZE * 2;
+const I2S_BUF_SIZE: usize = STEREO_FRAME_SIZE * 2;
 
 /// Raw peripherals needed to construct I2S.
 struct I2sPeripherals<'d> {
@@ -576,7 +576,7 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
         self.i2s().stop().await;
     }
 
-    async fn read_write(&mut self, tx: &Frame, rx: &mut Frame) -> Result<(), AudioError> {
+    async fn read_write(&mut self, tx: &StereoFrame, rx: &mut StereoFrame) -> Result<(), AudioError> {
         match self.i2s().read_write(&tx.0, &mut rx.0).await {
             Ok(_) => Ok(()),
             Err(i2s::Error::Overrun) => Err(AudioError::Overrun),

@@ -4,7 +4,7 @@ mod audio;
 mod eeprom;
 mod sframe;
 
-pub use audio::{AudioError, AudioSystem, Frame, FRAME_SIZE};
+pub use audio::{AudioError, AudioSystem, Frame, StereoFrame, ENCODED_FRAME_SIZE, FRAME_SIZE, STEREO_FRAME_SIZE};
 pub use eeprom::Eeprom;
 
 use crate::info;
@@ -178,7 +178,7 @@ where
                                     Button::A => UiToNet::AudioFrameA,
                                     Button::B => UiToNet::AudioFrameB,
                                 };
-                                to_net.must_write_tlv(tlv_type, &frame.as_bytes()).await;
+                                to_net.must_write_tlv(tlv_type, frame.as_bytes()).await;
                             }
                         }
                     }
@@ -190,54 +190,59 @@ where
         let audio_task = async {
             audio_system.start().await;
 
-            // Play a 400Hz stereo square wave for one second
-            let tone_frame = Frame(core::array::from_fn(|i| {
+            // Play a 400Hz stereo square wave for startup
+            // Generate stereo tone (interleaved L/R samples)
+            let tone_stereo = StereoFrame(core::array::from_fn(|i| {
                 const AMPLITUDE: u16 = 0x1ff;
-                const FREQ: u16 = 20;
-                (((i as u16) / FREQ) % 2) * AMPLITUDE
+                const FREQ: u16 = 40; // Period in samples (doubled for stereo)
+                ((((i / 2) as u16) / (FREQ / 2)) % 2) * AMPLITUDE
             }));
-            let mut zero = Frame::default();
-            for _i in 0..50 {
-                let _ = audio_system.read_write(&tone_frame, &mut zero).await;
+            let mut zero_stereo = StereoFrame::default();
+            for _i in 0..25 {
+                // 25 frames at 80ms each = 2 seconds
+                let _ = audio_system.read_write(&tone_stereo, &mut zero_stereo).await;
             }
 
-            // Jitter buffer for smoothing playback from NET
-            const FRAME_BYTES: usize = FRAME_SIZE * 2;
-            let mut jitter_buffer: JitterBuffer<FRAME_BYTES> = JitterBuffer::new();
+            // Jitter buffer for smoothing playback from NET (uses encoded frame size)
+            let mut jitter_buffer: JitterBuffer<ENCODED_FRAME_SIZE> = JitterBuffer::new();
 
             loop {
                 // Drain any pending frames from channel into jitter buffer
                 while let Ok(frame) = playback_channel.try_receive() {
-                    if !jitter_buffer.push(&frame.as_bytes()) {
+                    if !jitter_buffer.push(frame.as_bytes()) {
                         info!("ui: jitter buffer overrun");
                     }
                 }
 
-                // Get a frame to play from jitter buffer
-                let tx_frame =
+                // Get a frame to play from jitter buffer, decode to stereo
+                let tx_stereo =
                     if jitter_buffer.state() == JitterState::Playing || jitter_buffer.level() > 0 {
                         if let Some(bytes) = jitter_buffer.pop() {
-                            Frame::from_bytes(&bytes).unwrap_or_default()
+                            Frame::from_bytes(&bytes)
+                                .map(|f| f.decode_to_stereo())
+                                .unwrap_or_default()
                         } else {
                             info!("ui: playout gap (buffer underrun)");
-                            Frame::default()
+                            StereoFrame::default()
                         }
                     } else {
                         // Still buffering, play silence
-                        Frame::default()
+                        StereoFrame::default()
                     };
 
-                let mut rx_frame = Frame::default();
+                let mut rx_stereo = StereoFrame::default();
 
                 // Do the I2S read/write cycle
                 if audio_system
-                    .read_write(&tx_frame, &mut rx_frame)
+                    .read_write(&tx_stereo, &mut rx_stereo)
                     .await
                     .is_ok()
                 {
+                    // Encode stereo to A-law mono for transmission
+                    let encoded_frame = rx_stereo.encode();
                     // Try to send the recorded frame - drop if channel is full
                     // This prevents blocking the audio task if event handler is slow
-                    let _ = channel.try_send(Event::AudioFrame(rx_frame.clone()));
+                    let _ = channel.try_send(Event::AudioFrame(encoded_frame));
                 }
             }
         };
@@ -1046,6 +1051,7 @@ mod audio_streaming_tests {
 
     #[tokio::test]
     async fn net_audio_frame_plays_out() {
+        use audio_codec_algorithms::{decode_alaw, encode_alaw};
         use crate::mocks::CapturingAudioStream;
         use crate::shared::{WriteTlv, MIN_START_LEVEL};
 
@@ -1080,20 +1086,21 @@ mod audio_streaming_tests {
                 for _ in 0..MIN_START_LEVEL {
                     let padding_frame = crate::ui::Frame::default();
                     net_to_ui
-                        .write_tlv(crate::shared::NetToUi::AudioFrame, &padding_frame.as_bytes())
+                        .write_tlv(crate::shared::NetToUi::AudioFrame, padding_frame.as_bytes())
                         .await
                         .unwrap();
                 }
 
-                // Create a test frame with known data
+                // Create a test frame with known A-law encoded data
+                // Use encode_alaw to get predictable decoded values
                 let mut test_frame = crate::ui::Frame::default();
-                test_frame.0[0] = 0x1234;
-                test_frame.0[1] = 0x5678;
-                test_frame.0[319] = 0xABCD;
+                test_frame.0[0] = encode_alaw(1000);  // Encode known PCM values
+                test_frame.0[1] = encode_alaw(2000);
+                test_frame.0[639] = encode_alaw(3000);
 
                 // Send the audio frame from NET to UI
                 net_to_ui
-                    .write_tlv(crate::shared::NetToUi::AudioFrame, &test_frame.as_bytes())
+                    .write_tlv(crate::shared::NetToUi::AudioFrame, test_frame.as_bytes())
                     .await
                     .unwrap();
 
@@ -1110,15 +1117,24 @@ mod audio_streaming_tests {
             frames.len()
         );
 
-        // Find our test frame
-        let found = frames
-            .iter()
-            .any(|f| f.0[0] == 0x1234 && f.0[1] == 0x5678 && f.0[319] == 0xABCD);
+        // After decode, stereo frame has L/R pairs: stereo[0]=L0, stereo[1]=R0, stereo[2]=L1, ...
+        // So frame.0[i] (A-law) -> stereo.0[i*2] and stereo.0[i*2+1] (both same decoded value)
+        let expected_0 = decode_alaw(encode_alaw(1000)) as u16;
+        let expected_1 = decode_alaw(encode_alaw(2000)) as u16;
+        let expected_last = decode_alaw(encode_alaw(3000)) as u16;
+
+        // Find our test frame (check stereo positions)
+        let found = frames.iter().any(|f| {
+            f.0[0] == expected_0
+                && f.0[2] == expected_1
+                && f.0[639 * 2] == expected_last
+        });
         assert!(found, "Test frame should have been played out");
     }
 
     #[tokio::test]
     async fn multiple_net_audio_frames_play_in_order() {
+        use audio_codec_algorithms::{decode_alaw, encode_alaw};
         use crate::mocks::CapturingAudioStream;
         use crate::shared::{WriteTlv, MIN_START_LEVEL};
 
@@ -1143,6 +1159,16 @@ mod audio_streaming_tests {
             audio_stream,
         );
 
+        // Pre-compute expected decoded values for markers 1000, 2000, 3000
+        let markers: Vec<(u8, u16)> = (0..3)
+            .map(|i| {
+                let pcm_value = 1000 + i * 1000;
+                let alaw = encode_alaw(pcm_value);
+                let decoded = decode_alaw(alaw) as u16;
+                (alaw, decoded)
+            })
+            .collect();
+
         tokio::select! {
             _ = ui_app.run() => unreachable!(),
             _ = async {
@@ -1153,17 +1179,17 @@ mod audio_streaming_tests {
                 for _ in 0..MIN_START_LEVEL {
                     let padding_frame = crate::ui::Frame::default();
                     net_to_ui
-                        .write_tlv(crate::shared::NetToUi::AudioFrame, &padding_frame.as_bytes())
+                        .write_tlv(crate::shared::NetToUi::AudioFrame, padding_frame.as_bytes())
                         .await
                         .unwrap();
                 }
 
-                // Send multiple frames with sequence numbers
-                for i in 0u16..3 {
+                // Send multiple frames with distinct A-law markers
+                for (alaw, _) in &markers {
                     let mut frame = crate::ui::Frame::default();
-                    frame.0[0] = i + 100; // Use 100, 101, 102 as markers
+                    frame.0[0] = *alaw;
                     net_to_ui
-                        .write_tlv(crate::shared::NetToUi::AudioFrame, &frame.as_bytes())
+                        .write_tlv(crate::shared::NetToUi::AudioFrame, frame.as_bytes())
                         .await
                         .unwrap();
                     // Small delay between sends
@@ -1178,10 +1204,14 @@ mod audio_streaming_tests {
         // Verify frames were played
         let frames = written_frames.lock().unwrap();
 
-        // Find our test frames (filter out zeros)
+        // Get expected decoded values
+        let expected_values: Vec<u16> = markers.iter().map(|(_, decoded)| *decoded).collect();
+
+        // Find our test frames (filter by matching any of our expected decoded values)
+        // Check stereo.0[0] which is the left channel of the first sample
         let test_frames: Vec<_> = frames
             .iter()
-            .filter(|f| f.0[0] >= 100 && f.0[0] <= 102)
+            .filter(|f| expected_values.contains(&f.0[0]))
             .collect();
 
         assert!(
@@ -1194,10 +1224,10 @@ mod audio_streaming_tests {
         for (i, frame) in test_frames.iter().enumerate() {
             assert_eq!(
                 frame.0[0],
-                100 + i as u16,
-                "Frame {} should have marker {}, got {}",
+                expected_values[i],
+                "Frame {} should have decoded value {}, got {}",
                 i,
-                100 + i,
+                expected_values[i],
                 frame.0[0]
             );
         }
