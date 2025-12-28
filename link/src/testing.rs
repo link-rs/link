@@ -311,12 +311,15 @@ async fn reset_ui_to_bootloader_gpio_sequence() {
         ctl.reset_ui_to_bootloader().await;
 
         let ops = gpio_ops.lock().unwrap();
-        // UI bootloader sequence: BOOT0=1, BOOT1=0, then RST low -> (delay) -> RST high
-        assert_eq!(ops.len(), 4);
-        assert_eq!(ops[0], ("UI_BOOT0", GpioOp::SetHigh));
-        assert_eq!(ops[1], ("UI_BOOT1", GpioOp::SetLow));
-        assert_eq!(ops[2], ("UI_RST", GpioOp::SetLow));
-        assert_eq!(ops[3], ("UI_RST", GpioOp::SetHigh));
+        // First 2 ops are MGMT startup releasing both chips from reset
+        // Then UI bootloader sequence: BOOT0=1, BOOT1=0, then RST low -> (delay) -> RST high
+        assert_eq!(ops.len(), 6);
+        assert_eq!(ops[0], ("UI_RST", GpioOp::SetHigh));   // MGMT startup
+        assert_eq!(ops[1], ("NET_RST", GpioOp::SetHigh));  // MGMT startup
+        assert_eq!(ops[2], ("UI_BOOT0", GpioOp::SetHigh));
+        assert_eq!(ops[3], ("UI_BOOT1", GpioOp::SetLow));
+        assert_eq!(ops[4], ("UI_RST", GpioOp::SetLow));
+        assert_eq!(ops[5], ("UI_RST", GpioOp::SetHigh));
     })
     .await;
 }
@@ -327,12 +330,15 @@ async fn reset_ui_to_user_gpio_sequence() {
         ctl.reset_ui_to_user().await;
 
         let ops = gpio_ops.lock().unwrap();
-        // UI user mode sequence: BOOT0=0, BOOT1=1, then RST low -> (delay) -> RST high
-        assert_eq!(ops.len(), 4);
-        assert_eq!(ops[0], ("UI_BOOT0", GpioOp::SetLow));
-        assert_eq!(ops[1], ("UI_BOOT1", GpioOp::SetHigh));
-        assert_eq!(ops[2], ("UI_RST", GpioOp::SetLow));
-        assert_eq!(ops[3], ("UI_RST", GpioOp::SetHigh));
+        // First 2 ops are MGMT startup releasing both chips from reset
+        // Then UI user mode sequence: BOOT0=0, BOOT1=1, then RST low -> (delay) -> RST high
+        assert_eq!(ops.len(), 6);
+        assert_eq!(ops[0], ("UI_RST", GpioOp::SetHigh));   // MGMT startup
+        assert_eq!(ops[1], ("NET_RST", GpioOp::SetHigh));  // MGMT startup
+        assert_eq!(ops[2], ("UI_BOOT0", GpioOp::SetLow));
+        assert_eq!(ops[3], ("UI_BOOT1", GpioOp::SetHigh));
+        assert_eq!(ops[4], ("UI_RST", GpioOp::SetLow));
+        assert_eq!(ops[5], ("UI_RST", GpioOp::SetHigh));
     })
     .await;
 }
@@ -343,16 +349,19 @@ async fn reset_net_to_bootloader_gpio_sequence() {
         ctl.reset_net_to_bootloader().await;
 
         let ops = gpio_ops.lock().unwrap();
-        // NET bootloader sequence (matches C code):
+        // First 2 ops are MGMT startup releasing both chips from reset
+        // Then NET bootloader sequence (matches C code):
         // 1. First power cycle (clean slate)
         // 2. BOOT low
         // 3. Second power cycle (ESP32 samples BOOT when RST goes high)
-        assert_eq!(ops.len(), 5);
-        assert_eq!(ops[0], ("NET_RST", GpioOp::SetLow));
-        assert_eq!(ops[1], ("NET_RST", GpioOp::SetHigh));
-        assert_eq!(ops[2], ("NET_BOOT", GpioOp::SetLow));
-        assert_eq!(ops[3], ("NET_RST", GpioOp::SetLow));
-        assert_eq!(ops[4], ("NET_RST", GpioOp::SetHigh));
+        assert_eq!(ops.len(), 7);
+        assert_eq!(ops[0], ("UI_RST", GpioOp::SetHigh));   // MGMT startup
+        assert_eq!(ops[1], ("NET_RST", GpioOp::SetHigh));  // MGMT startup
+        assert_eq!(ops[2], ("NET_RST", GpioOp::SetLow));
+        assert_eq!(ops[3], ("NET_RST", GpioOp::SetHigh));
+        assert_eq!(ops[4], ("NET_BOOT", GpioOp::SetLow));
+        assert_eq!(ops[5], ("NET_RST", GpioOp::SetLow));
+        assert_eq!(ops[6], ("NET_RST", GpioOp::SetHigh));
         // BOOT stays low (not set back to high)
     })
     .await;
@@ -364,11 +373,14 @@ async fn reset_net_to_user_gpio_sequence() {
         ctl.reset_net_to_user().await;
 
         let ops = gpio_ops.lock().unwrap();
-        // NET user mode sequence: BOOT high -> RST low -> (delay) -> RST high
-        assert_eq!(ops.len(), 3);
-        assert_eq!(ops[0], ("NET_BOOT", GpioOp::SetHigh));
-        assert_eq!(ops[1], ("NET_RST", GpioOp::SetLow));
-        assert_eq!(ops[2], ("NET_RST", GpioOp::SetHigh));
+        // First 2 ops are MGMT startup releasing both chips from reset
+        // Then NET user mode sequence: BOOT high -> RST low -> (delay) -> RST high
+        assert_eq!(ops.len(), 5);
+        assert_eq!(ops[0], ("UI_RST", GpioOp::SetHigh));   // MGMT startup
+        assert_eq!(ops[1], ("NET_RST", GpioOp::SetHigh));  // MGMT startup
+        assert_eq!(ops[2], ("NET_BOOT", GpioOp::SetHigh));
+        assert_eq!(ops[3], ("NET_RST", GpioOp::SetLow));
+        assert_eq!(ops[4], ("NET_RST", GpioOp::SetHigh));
     })
     .await;
 }
