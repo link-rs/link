@@ -40,17 +40,15 @@ impl Default for StereoFrame {
 }
 
 impl StereoFrame {
-    /// Mix stereo to mono and A-law encode.
-    /// Takes interleaved L/R samples, sums each pair, and encodes to A-law.
+    /// Extract the active input channel and A-law encode.
     pub fn encode(&self) -> Frame {
         let mut encoded = Frame::default();
         for i in 0..ENCODED_FRAME_SIZE {
-            // Sum left and right channels (with saturation to avoid overflow)
-            let left = self.0[i * 2] as i16;
-            let right = self.0[i * 2 + 1] as i16;
-            // Saturating add to prevent overflow, then encode
-            let mono = left.saturating_add(right);
-            encoded.0[i] = encode_alaw(mono);
+            // XXX: The codec's left input (the active mic) appears on odd indices
+            // (i * 2 + 1), which is the right channel position in I2S. This seems
+            // backwards but works. The even indices (i * 2) contain silence.
+            let sample = self.0[i * 2 + 1] as i16;
+            encoded.0[i] = encode_alaw(sample);
         }
         encoded
     }
