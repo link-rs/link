@@ -9,8 +9,8 @@ pub use eeprom::Eeprom;
 
 use crate::info;
 use crate::shared::{
-    read_tlv_loop, Channel, Color, CriticalSectionRawMutex, JitterBuffer, JitterState, Led,
-    MgmtToUi, NetToUi, Sender, Tlv, UiToMgmt, UiToNet, WriteTlv,
+    read_tlv_loop, Channel, Color, CriticalSectionRawMutex, Led, MgmtToUi, NetToUi, Sender, Tlv,
+    UiToMgmt, UiToNet, WriteTlv,
 };
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::StatefulOutputPin;
@@ -124,7 +124,7 @@ where
         let button_mic_task = button_monitor(button_mic, Button::A, true, channel.sender());
 
         // Queue for playback frames (from NET)
-        const PLAYBACK_QUEUE_SIZE: usize = 50;
+        const PLAYBACK_QUEUE_SIZE: usize = 4;
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, PLAYBACK_QUEUE_SIZE> =
             Channel::new();
 
@@ -203,32 +203,26 @@ where
                 let _ = audio_system.read_write(&tone_stereo, &mut zero_stereo).await;
             }
 
-            // Jitter buffer for smoothing playback from NET (uses encoded frame size)
-            let mut jitter_buffer: JitterBuffer<ENCODED_FRAME_SIZE> = JitterBuffer::new();
-
             loop {
-                // Drain any pending frames from channel into jitter buffer
-                while let Ok(frame) = playback_channel.try_receive() {
-                    if !jitter_buffer.push(frame.as_bytes()) {
-                        info!("ui: jitter buffer overrun");
+                // Wait for a frame with timeout (25% of 80ms frame time = 20ms)
+                // This gives frames a chance to arrive while limiting latency
+                #[cfg(feature = "audio-buffer")]
+                let tx_stereo = {
+                    use embassy_time::{with_timeout, Duration};
+                    match with_timeout(Duration::from_millis(20), playback_channel.receive()).await
+                    {
+                        Ok(frame) => frame.decode_to_stereo(),
+                        Err(_timeout) => StereoFrame::default(),
                     }
-                }
+                };
 
-                // Get a frame to play from jitter buffer, decode to stereo
-                let tx_stereo =
-                    if jitter_buffer.state() == JitterState::Playing || jitter_buffer.level() > 0 {
-                        if let Some(bytes) = jitter_buffer.pop() {
-                            Frame::from_bytes(&bytes)
-                                .map(|f| f.decode_to_stereo())
-                                .unwrap_or_default()
-                        } else {
-                            info!("ui: playout gap (buffer underrun)");
-                            StereoFrame::default()
-                        }
-                    } else {
-                        // Still buffering, play silence
-                        StereoFrame::default()
-                    };
+                // Fallback for tests (no embassy-time available)
+                #[cfg(not(feature = "audio-buffer"))]
+                let tx_stereo = if let Ok(frame) = playback_channel.try_receive() {
+                    frame.decode_to_stereo()
+                } else {
+                    StereoFrame::default()
+                };
 
                 let mut rx_stereo = StereoFrame::default();
 
