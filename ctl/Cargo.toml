@@ -19,3 +19,4 @@ hex = "0.4"
 indicatif = "0.17"
 rand = "0.9"
 futures = "0.3"
+reedline-repl-rs = { version = "1.3", features = ["async_derive"] }

@@ -360,7 +360,7 @@ where
     W: Write,
     R: Read,
 {
-    pub fn new(to_mgmt: W, from_mgmt: R) -> Self {
+    pub fn new(from_mgmt: R, to_mgmt: W) -> Self {
         Self {
             reader: MgmtReader::new(from_mgmt),
             writer: MgmtWriter::new(to_mgmt),
