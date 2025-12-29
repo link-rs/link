@@ -491,6 +491,17 @@ where
         assert_eq!(tlv.tlv_type, UiToMgmt::Ack);
     }
 
+    /// Get UI chip loopback mode.
+    pub async fn ui_get_loopback(&mut self) -> bool {
+        self.writer
+            .ui()
+            .must_write_tlv(MgmtToUi::GetLoopback, &[])
+            .await;
+        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, UiToMgmt::Loopback);
+        tlv.value.first().copied().unwrap_or(0) != 0
+    }
+
     /// Set NET chip loopback mode.
     /// When enabled, audio from UI goes back to UI through jitter buffer instead of to WebSocket.
     pub async fn net_set_loopback(&mut self, enabled: bool) {
@@ -500,6 +511,17 @@ where
             .await;
         let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+    }
+
+    /// Get NET chip loopback mode.
+    pub async fn net_get_loopback(&mut self) -> bool {
+        self.writer
+            .net()
+            .must_write_tlv(MgmtToNet::GetLoopback, &[])
+            .await;
+        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+        assert_eq!(tlv.tlv_type, NetToMgmt::Loopback);
+        tlv.value.first().copied().unwrap_or(0) != 0
     }
 
     /// Add a WiFi SSID and password pair to NET chip storage.

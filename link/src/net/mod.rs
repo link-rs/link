@@ -447,6 +447,12 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             *loopback = enabled;
             to_mgmt.must_write_tlv(NetToMgmt::Ack, &[]).await;
         }
+        MgmtToNet::GetLoopback => {
+            info!("net: get loopback = {}", *loopback);
+            to_mgmt
+                .must_write_tlv(NetToMgmt::Loopback, &[*loopback as u8])
+                .await;
+        }
     }
 }
 

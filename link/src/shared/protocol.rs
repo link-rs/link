@@ -52,6 +52,8 @@ pub enum MgmtToUi {
     SetSFrameKey,
     /// Set loopback mode (1 byte: 0=off, 1=on)
     SetLoopback,
+    /// Get loopback mode
+    GetLoopback,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -63,6 +65,8 @@ pub enum UiToMgmt {
     SFrameKey,
     Ack,
     Error,
+    /// Loopback mode status (1 byte: 0=off, 1=on)
+    Loopback,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -80,6 +84,8 @@ pub enum MgmtToNet {
     WsEchoTest,
     /// Set loopback mode (1 byte: 0=off, 1=on)
     SetLoopback,
+    /// Get loopback mode
+    GetLoopback,
     /// Start WebSocket speed test
     WsSpeedTest,
 }
@@ -100,6 +106,8 @@ pub enum NetToMgmt {
     WsEchoTestResult,
     /// WebSocket speed test results
     WsSpeedTestResult,
+    /// Loopback mode status (1 byte: 0=off, 1=on)
+    Loopback,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

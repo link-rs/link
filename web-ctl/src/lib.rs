@@ -492,6 +492,83 @@ impl LinkController {
         app.ws_ping(&data).await;
         Ok(())
     }
+
+    /// Get UI chip loopback mode.
+    #[wasm_bindgen]
+    pub async fn get_ui_loopback(&mut self) -> Result<bool, JsValue> {
+        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        Ok(app.ui_get_loopback().await)
+    }
+
+    /// Set UI chip loopback mode.
+    #[wasm_bindgen]
+    pub async fn set_ui_loopback(&mut self, enabled: bool) -> Result<(), JsValue> {
+        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        app.ui_set_loopback(enabled).await;
+        Ok(())
+    }
+
+    /// Get NET chip loopback mode.
+    #[wasm_bindgen]
+    pub async fn get_net_loopback(&mut self) -> Result<bool, JsValue> {
+        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        Ok(app.net_get_loopback().await)
+    }
+
+    /// Set NET chip loopback mode.
+    #[wasm_bindgen]
+    pub async fn set_net_loopback(&mut self, enabled: bool) -> Result<(), JsValue> {
+        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        app.net_set_loopback(enabled).await;
+        Ok(())
+    }
+
+    /// Get all state variables from all chips.
+    /// Returns a JSON object with all current device state.
+    #[wasm_bindgen]
+    pub async fn get_all_state(&mut self) -> Result<JsValue, JsValue> {
+        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+
+        let obj = js_sys::Object::new();
+
+        // UI chip state
+        let ui_obj = js_sys::Object::new();
+        let version = app.get_version().await;
+        js_sys::Reflect::set(&ui_obj, &"version".into(), &version.into())?;
+
+        let sframe_key = app.get_sframe_key().await;
+        js_sys::Reflect::set(&ui_obj, &"sframeKey".into(), &hex::encode(sframe_key).into())?;
+
+        let ui_loopback = app.ui_get_loopback().await;
+        js_sys::Reflect::set(&ui_obj, &"loopback".into(), &ui_loopback.into())?;
+
+        js_sys::Reflect::set(&obj, &"ui".into(), &ui_obj)?;
+
+        // NET chip state
+        let net_obj = js_sys::Object::new();
+        let relay_url = app.get_relay_url().await;
+        js_sys::Reflect::set(&net_obj, &"relayUrl".into(), &relay_url.to_string().into())?;
+
+        let ssids = app.get_wifi_ssids().await;
+        let networks: Vec<WifiNetwork> = ssids
+            .iter()
+            .map(|s| WifiNetwork {
+                ssid: s.ssid.to_string(),
+                password: s.password.to_string(),
+            })
+            .collect();
+        let networks_value = serde_wasm_bindgen::to_value(&networks).map_err(|e| {
+            JsValue::from_str(&format!("Serialization error: {}", e))
+        })?;
+        js_sys::Reflect::set(&net_obj, &"wifiNetworks".into(), &networks_value)?;
+
+        let net_loopback = app.net_get_loopback().await;
+        js_sys::Reflect::set(&net_obj, &"loopback".into(), &net_loopback.into())?;
+
+        js_sys::Reflect::set(&obj, &"net".into(), &net_obj)?;
+
+        Ok(obj.into())
+    }
 }
 
 impl Default for LinkController {

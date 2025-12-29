@@ -660,6 +660,16 @@
                 </div>
 
                 <div class="card-section">
+                    <h3>Audio Loopback</h3>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="uiLoopbackCheck" style="width: 18px; height: 18px; accent-color: var(--ui-color); margin-right: 0.5rem;">
+                            Enable UI Loopback (mic audio goes directly to speaker)
+                        </label>
+                    </div>
+                </div>
+
+                <div class="card-section">
                     <h3>Chip Control</h3>
                     <div class="btn-group">
                         <button class="btn-secondary" id="resetUiBootloaderBtn">Reset to Bootloader</button>
@@ -749,6 +759,16 @@
                         </div>
                         <button class="btn-secondary" id="getRelayUrlBtn">Read URL</button>
                         <button class="btn-primary" id="setRelayUrlBtn">Write URL</button>
+                    </div>
+                </div>
+
+                <div class="card-section">
+                    <h3>Audio Loopback</h3>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="netLoopbackCheck" style="width: 18px; height: 18px; accent-color: var(--net-color); margin-right: 0.5rem;">
+                            Enable NET Loopback (audio from UI goes back to UI via jitter buffer)
+                        </label>
                     </div>
                 </div>
 
@@ -995,6 +1015,8 @@
                             helloStatus.className = 'status-icon success';
                             updateStatus(true);
                             log('Connected - device responded correctly', 'success');
+                            // Auto-populate all state variables
+                            await populateAllState();
                         } else {
                             helloStatus.textContent = '\u2717';
                             helloStatus.className = 'status-icon error';
@@ -1487,6 +1509,89 @@
                 btn.disabled = false;
             }
         });
+
+        // ==================== LOOPBACK CONTROLS ====================
+
+        // UI Loopback checkbox
+        document.getElementById('uiLoopbackCheck').addEventListener('change', async (e) => {
+            try {
+                await controller.set_ui_loopback(e.target.checked);
+                log(`UI loopback ${e.target.checked ? 'enabled' : 'disabled'}`, 'success');
+            } catch (err) {
+                log(`Set UI loopback error: ${err}`, 'error');
+                // Revert checkbox on error
+                e.target.checked = !e.target.checked;
+            }
+        });
+
+        // NET Loopback checkbox
+        document.getElementById('netLoopbackCheck').addEventListener('change', async (e) => {
+            try {
+                await controller.set_net_loopback(e.target.checked);
+                log(`NET loopback ${e.target.checked ? 'enabled' : 'disabled'}`, 'success');
+            } catch (err) {
+                log(`Set NET loopback error: ${err}`, 'error');
+                // Revert checkbox on error
+                e.target.checked = !e.target.checked;
+            }
+        });
+
+        // ==================== AUTO-POPULATE STATE ====================
+
+        async function populateAllState() {
+            log('Fetching device state...', 'info');
+            try {
+                const state = await controller.get_all_state();
+
+                // UI chip state
+                if (state.ui) {
+                    // Version
+                    const version = state.ui.version;
+                    document.getElementById('versionInput').value = '0x' + version.toString(16).padStart(8, '0');
+                    log(`  UI version: 0x${version.toString(16).padStart(8, '0')}`, 'info');
+
+                    // SFrame key
+                    document.getElementById('sframeKeyInput').value = state.ui.sframeKey;
+                    log(`  UI SFrame key: ${state.ui.sframeKey}`, 'info');
+
+                    // Loopback
+                    document.getElementById('uiLoopbackCheck').checked = state.ui.loopback;
+                    log(`  UI loopback: ${state.ui.loopback}`, 'info');
+                }
+
+                // NET chip state
+                if (state.net) {
+                    // Relay URL
+                    document.getElementById('relayUrlInput').value = state.net.relayUrl;
+                    log(`  NET relay URL: ${state.net.relayUrl || '(empty)'}`, 'info');
+
+                    // WiFi networks
+                    const networks = state.net.wifiNetworks;
+                    const wifiList = document.getElementById('wifiList');
+                    if (networks.length === 0) {
+                        wifiList.innerHTML = '<div class="empty-state">No networks configured</div>';
+                    } else {
+                        wifiList.innerHTML = networks.map(n => `
+                            <div class="wifi-item">
+                                <div>
+                                    <div class="ssid">${escapeHtml(n.ssid)}</div>
+                                    <div class="password">${'*'.repeat(n.password.length)}</div>
+                                </div>
+                            </div>
+                        `).join('');
+                    }
+                    log(`  NET WiFi networks: ${networks.length} configured`, 'info');
+
+                    // Loopback
+                    document.getElementById('netLoopbackCheck').checked = state.net.loopback;
+                    log(`  NET loopback: ${state.net.loopback}`, 'info');
+                }
+
+                log('Device state loaded successfully', 'success');
+            } catch (e) {
+                log(`Failed to fetch device state: ${e}`, 'error');
+            }
+        }
 
         // Clear log
         document.getElementById('clearLogBtn').addEventListener('click', () => {

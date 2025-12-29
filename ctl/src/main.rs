@@ -114,28 +114,47 @@ enum UiAction {
         /// Path to binary file to flash
         file: std::path::PathBuf,
     },
-    GetVersion,
-    SetVersion {
-        /// Version number (base 10)
-        version: u32,
+    /// Get or set version (usage: version [set <value>])
+    Version {
+        #[command(subcommand)]
+        action: Option<GetSetU32>,
     },
-    #[command(name = "get-sframe-key")]
-    GetSFrameKey,
-    #[command(name = "set-sframe-key")]
-    SetSFrameKey {
-        /// SFrame key as 32-character hex string (e.g., "5b9f37b1546b61f914da9f557a8fe215")
-        key: String,
+    /// Get or set SFrame key (usage: sframe-key [set <hex>])
+    #[command(name = "sframe-key")]
+    SFrameKey {
+        #[command(subcommand)]
+        action: Option<GetSetHex>,
     },
-    /// Enable loopback mode (mic audio goes directly to speaker)
+    /// Get or set loopback mode (usage: loopback [set true/false])
     Loopback {
-        /// Specify "off" to disable loopback
-        off: Option<String>,
+        #[command(subcommand)]
+        action: Option<GetSetBool>,
     },
     /// Reset UI chip (or "hold"/"release" to control reset pin)
     Reset {
         /// "hold" to hold in reset, "release" to release from reset
         action: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum GetSetU32 {
+    Set { value: u32 },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum GetSetHex {
+    Set { value: String },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum GetSetBool {
+    Set { value: bool },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum GetSetString {
+    Set { value: String },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -164,23 +183,16 @@ enum NetAction {
         #[arg(long)]
         no_verify: bool,
     },
-    #[command(name = "add-wifi")]
-    AddWifi {
-        /// WiFi network SSID
-        ssid: String,
-        /// WiFi network password
-        password: String,
+    /// Manage WiFi networks (usage: wifi [add <ssid> <password> | clear])
+    Wifi {
+        #[command(subcommand)]
+        action: Option<WifiAction>,
     },
-    #[command(name = "get-wifi")]
-    GetWifi,
-    #[command(name = "clear-wifi")]
-    ClearWifi,
-    #[command(name = "get-relay-url")]
-    GetRelayUrl,
-    #[command(name = "set-relay-url")]
-    SetRelayUrl {
-        /// Relay server URL (wss://...)
-        url: String,
+    /// Get or set relay URL (usage: relay-url [set <url>])
+    #[command(name = "relay-url")]
+    RelayUrl {
+        #[command(subcommand)]
+        action: Option<GetSetString>,
     },
     #[command(name = "ws-ping")]
     WsPing {
@@ -194,11 +206,22 @@ enum NetAction {
     /// Run WebSocket speed test to measure maximum send rate
     #[command(name = "ws-speed-test")]
     WsSpeedTest,
-    /// Enable loopback mode (audio from UI goes back to UI through jitter buffer)
+    /// Get or set loopback mode (usage: loopback [set true/false])
     Loopback {
-        /// Specify "off" to disable loopback
-        off: Option<String>,
+        #[command(subcommand)]
+        action: Option<GetSetBool>,
     },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum WifiAction {
+    /// Add a WiFi network
+    Add {
+        ssid: String,
+        password: String,
+    },
+    /// Clear all WiFi networks
+    Clear,
 }
 
 // ============================================================================
@@ -528,32 +551,47 @@ async fn handle_ui(action: UiAction, app: &mut App) -> Result<Option<String>, Bo
                 Err(e) => Err(format!("Flash failed: {:?}", e).into()),
             }
         }
-        UiAction::GetVersion => {
-            let version = app.get_version().await;
-            Ok(Some(format!("{}", version)))
-        }
-        UiAction::SetVersion { version } => {
-            app.set_version(version).await;
-            Ok(Some(format!("Version set to {}", version)))
-        }
-        UiAction::GetSFrameKey => {
-            let key = app.get_sframe_key().await;
-            Ok(Some(hex::encode(key)))
-        }
-        UiAction::SetSFrameKey { key } => {
-            let key_bytes = hex::decode(&key).map_err(|_| "Invalid hex string")?;
-            if key_bytes.len() != 16 {
-                return Err("SFrame key must be exactly 32 hex characters (16 bytes)".into());
+        UiAction::Version { action } => {
+            match action {
+                None => {
+                    let version = app.get_version().await;
+                    Ok(Some(format!("{}", version)))
+                }
+                Some(GetSetU32::Set { value }) => {
+                    app.set_version(value).await;
+                    Ok(Some(format!("Version set to {}", value)))
+                }
             }
-            let mut key_array = [0u8; 16];
-            key_array.copy_from_slice(&key_bytes);
-            app.set_sframe_key(&key_array).await;
-            Ok(Some(format!("SFrame key set to {}", key)))
         }
-        UiAction::Loopback { off } => {
-            let enabled = off.as_deref() != Some("off");
-            app.ui_set_loopback(enabled).await;
-            Ok(Some(format!("UI loopback {}", if enabled { "enabled" } else { "disabled" })))
+        UiAction::SFrameKey { action } => {
+            match action {
+                None => {
+                    let key = app.get_sframe_key().await;
+                    Ok(Some(hex::encode(key)))
+                }
+                Some(GetSetHex::Set { value }) => {
+                    let key_bytes = hex::decode(&value).map_err(|_| "Invalid hex string")?;
+                    if key_bytes.len() != 16 {
+                        return Err("SFrame key must be exactly 32 hex characters (16 bytes)".into());
+                    }
+                    let mut key_array = [0u8; 16];
+                    key_array.copy_from_slice(&key_bytes);
+                    app.set_sframe_key(&key_array).await;
+                    Ok(Some(format!("SFrame key set to {}", value)))
+                }
+            }
+        }
+        UiAction::Loopback { action } => {
+            match action {
+                None => {
+                    let enabled = app.ui_get_loopback().await;
+                    Ok(Some(format!("{}", enabled)))
+                }
+                Some(GetSetBool::Set { value }) => {
+                    app.ui_set_loopback(value).await;
+                    Ok(Some(format!("UI loopback set to {}", value)))
+                }
+            }
         }
         UiAction::Reset { action } => {
             match action.as_deref() {
@@ -601,6 +639,42 @@ async fn handle_net(action: NetAction, app: &mut App) -> Result<Option<String>, 
             );
 
             Ok(Some("NET chip reset back to user mode.\nDone!".to_string()))
+        }
+        NetAction::Wifi { action } => {
+            match action {
+                None => {
+                    let ssids = app.get_wifi_ssids().await;
+                    if ssids.is_empty() {
+                        Ok(Some("No WiFi networks configured".to_string()))
+                    } else {
+                        let mut output = String::new();
+                        for wifi in ssids {
+                            output.push_str(&format!("{}\t{}\n", wifi.ssid, wifi.password));
+                        }
+                        Ok(Some(output.trim_end().to_string()))
+                    }
+                }
+                Some(WifiAction::Add { ssid, password }) => {
+                    app.add_wifi_ssid(&ssid, &password).await;
+                    Ok(Some(format!("Added WiFi network: {}", ssid)))
+                }
+                Some(WifiAction::Clear) => {
+                    app.clear_wifi_ssids().await;
+                    Ok(Some("Cleared all WiFi networks".to_string()))
+                }
+            }
+        }
+        NetAction::RelayUrl { action } => {
+            match action {
+                None => {
+                    let url = app.get_relay_url().await;
+                    Ok(Some(url.to_string()))
+                }
+                Some(GetSetString::Set { value }) => {
+                    app.set_relay_url(&value).await;
+                    Ok(Some(format!("Relay URL set to {}", value)))
+                }
+            }
         }
         NetAction::Flash { file, address, compress, no_verify } => {
             println!("NET Flash (ESP32)");
@@ -678,34 +752,6 @@ async fn handle_net(action: NetAction, app: &mut App) -> Result<Option<String>, 
                 Ok(()) => Ok(Some("Flash complete!\nNET chip reset back to user mode.".to_string())),
                 Err(e) => Err(format!("Flash failed: {:?}", e).into()),
             }
-        }
-        NetAction::AddWifi { ssid, password } => {
-            app.add_wifi_ssid(&ssid, &password).await;
-            Ok(Some(format!("Added WiFi network: {}", ssid)))
-        }
-        NetAction::GetWifi => {
-            let ssids = app.get_wifi_ssids().await;
-            if ssids.is_empty() {
-                Ok(Some("No WiFi networks configured".to_string()))
-            } else {
-                let mut output = String::new();
-                for wifi in ssids {
-                    output.push_str(&format!("{}\t{}\n", wifi.ssid, wifi.password));
-                }
-                Ok(Some(output.trim_end().to_string()))
-            }
-        }
-        NetAction::ClearWifi => {
-            app.clear_wifi_ssids().await;
-            Ok(Some("Cleared all WiFi networks".to_string()))
-        }
-        NetAction::GetRelayUrl => {
-            let url = app.get_relay_url().await;
-            Ok(Some(url.to_string()))
-        }
-        NetAction::SetRelayUrl { url } => {
-            app.set_relay_url(&url).await;
-            Ok(Some(format!("Relay URL set to {}", url)))
         }
         NetAction::WsPing { data } => {
             println!("Sending WebSocket ping with data: {}", data);
@@ -791,10 +837,17 @@ async fn handle_net(action: NetAction, app: &mut App) -> Result<Option<String>, 
 
             Ok(Some(output))
         }
-        NetAction::Loopback { off } => {
-            let enabled = off.as_deref() != Some("off");
-            app.net_set_loopback(enabled).await;
-            Ok(Some(format!("NET loopback {}", if enabled { "enabled" } else { "disabled" })))
+        NetAction::Loopback { action } => {
+            match action {
+                None => {
+                    let enabled = app.net_get_loopback().await;
+                    Ok(Some(format!("{}", enabled)))
+                }
+                Some(GetSetBool::Set { value }) => {
+                    app.net_set_loopback(value).await;
+                    Ok(Some(format!("NET loopback set to {}", value)))
+                }
+            }
         }
     }
 }

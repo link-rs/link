@@ -37,7 +37,7 @@ where
     let (net_to_ui, ui_from_net) = channel();
     let (ui_to_net, net_from_ui) = channel();
 
-    let ctl_app = ctl::App::new(ctl_to_mgmt, ctl_from_mgmt);
+    let ctl_app = ctl::App::new(ctl_from_mgmt, ctl_to_mgmt);
     let ui_reset_pins = mgmt::UiResetPins::new(MockPin::new(), MockPin::new(), MockPin::new());
     let net_reset_pins = mgmt::NetResetPins::new(MockPin::new(), MockPin::new());
     let mgmt_task = mgmt::run(
@@ -108,7 +108,7 @@ where
     let (net_to_ui, ui_from_net) = channel();
     let (ui_to_net, net_from_ui) = channel();
 
-    let ctl_app = ctl::App::new(ctl_to_mgmt, ctl_from_mgmt);
+    let ctl_app = ctl::App::new(ctl_from_mgmt, ctl_to_mgmt);
 
     // Create tracking pins for UI and NET reset
     let gpio_ops: Arc<Mutex<Vec<(&'static str, GpioOp)>>> = Arc::new(Mutex::new(Vec::new()));

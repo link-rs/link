@@ -360,6 +360,12 @@ async fn handle_mgmt<M, N, I, D>(
             *loopback = enabled;
             to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
         }
+        MgmtToUi::GetLoopback => {
+            info!("ui: get loopback = {}", *loopback);
+            to_mgmt
+                .must_write_tlv(UiToMgmt::Loopback, &[*loopback as u8])
+                .await;
+        }
     }
 }
 
