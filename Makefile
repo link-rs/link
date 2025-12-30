@@ -58,7 +58,7 @@ web-ctl: $(UI_BIN) $(MGMT_BIN) $(NET_BIN)
 web-ctl-quick:
 	cd web-ctl && wasm-pack build --target web --out-dir www/pkg
 
-serve-web: web-ctl
+serve-ctl: web-ctl
 	@echo "Serving at http://localhost:8080"
 	cd web-ctl/www && python3 -m http.server 8080
 
