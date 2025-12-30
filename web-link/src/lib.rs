@@ -2,11 +2,15 @@
 //!
 //! This crate provides a browser-based simulation of the Link device,
 //! with all three chips (MGMT, UI, NET) running as async tasks.
+//!
+//! The device supports the same TLV protocol as the real hardware, allowing
+//! CTL operations to control state variables (version, sframe key, loopback,
+//! WiFi networks, relay URL).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_channel::{Receiver, Sender};
 use futures::future::select;
@@ -20,6 +24,46 @@ use link::shared::led::Color;
 use link::shared::protocol::*;
 
 mod channel_io;
+
+/// WiFi credentials stored in virtual device.
+#[derive(Clone, Debug, Default)]
+pub struct WifiCredential {
+    pub ssid: String,
+    pub password: String,
+}
+
+/// Shared state for UI chip (version, sframe key, loopback).
+#[derive(Debug)]
+struct UiState {
+    version: u32,
+    sframe_key: [u8; 16],
+    loopback: bool,
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            version: 0xffffffff,          // Default: unset
+            sframe_key: *b"sixteen byte key", // Default: "sixteen byte key"
+            loopback: false,
+        }
+    }
+}
+
+/// Shared state for NET chip (WiFi, relay URL, loopback).
+#[derive(Debug, Default)]
+struct NetState {
+    wifi_ssids: Vec<WifiCredential>,
+    relay_url: String,
+    loopback: bool,
+}
+
+/// Combined device state accessible from all chips and JavaScript.
+#[derive(Debug, Default)]
+struct DeviceState {
+    ui: Mutex<UiState>,
+    net: Mutex<NetState>,
+}
 
 /// Log a message to the browser console.
 macro_rules! log {
@@ -136,6 +180,7 @@ pub enum NetCommand {
 #[wasm_bindgen]
 pub struct WebLink {
     led_state: Arc<LedState>,
+    device_state: Arc<DeviceState>,
     button_tx: Sender<ButtonEvent>,
     audio_tx: Sender<AudioEvent>,
     ws_event_tx: Sender<WsEvent>,
@@ -154,6 +199,7 @@ impl WebLink {
         console_error_panic_hook::set_once();
 
         let led_state = Arc::new(LedState::new());
+        let device_state = Arc::new(DeviceState::default());
         let (button_tx, button_rx) = async_channel::unbounded();
         let (audio_tx, audio_rx) = async_channel::unbounded();
         let (ws_event_tx, ws_event_rx) = async_channel::unbounded();
@@ -189,9 +235,11 @@ impl WebLink {
 
         // Start UI chip task
         let ui_led_state = led_state.clone();
+        let ui_device_state = device_state.clone();
         spawn_local(async move {
             run_ui(
                 ui_led_state,
+                ui_device_state,
                 button_rx,
                 audio_rx,
                 playback_tx,
@@ -205,9 +253,11 @@ impl WebLink {
 
         // Start NET chip task
         let net_led_state = led_state.clone();
+        let net_device_state = device_state.clone();
         spawn_local(async move {
             run_net(
                 net_led_state,
+                net_device_state,
                 net_to_mgmt_tx,
                 mgmt_to_net_rx,
                 net_to_ui_tx,
@@ -266,6 +316,7 @@ impl WebLink {
 
         Self {
             led_state,
+            device_state,
             button_tx,
             audio_tx,
             ws_event_tx,
@@ -395,6 +446,157 @@ impl WebLink {
         samples.copy_to(&mut data);
         let _ = self.audio_tx.try_send(AudioEvent::MicFrame(AudioFrame(data)));
     }
+
+    // ========================================
+    // CTL-like state variable accessors
+    // ========================================
+
+    // UI chip state
+
+    /// Get UI firmware version.
+    #[wasm_bindgen(js_name = getUiVersion)]
+    pub fn get_ui_version(&self) -> u32 {
+        self.device_state.ui.lock().unwrap().version
+    }
+
+    /// Set UI firmware version.
+    #[wasm_bindgen(js_name = setUiVersion)]
+    pub fn set_ui_version(&self, version: u32) {
+        log!("Setting UI version to {}", version);
+        self.device_state.ui.lock().unwrap().version = version;
+    }
+
+    /// Get UI SFrame encryption key as hex string.
+    #[wasm_bindgen(js_name = getUiSframeKey)]
+    pub fn get_ui_sframe_key(&self) -> String {
+        let key = self.device_state.ui.lock().unwrap().sframe_key;
+        hex::encode(key)
+    }
+
+    /// Set UI SFrame encryption key from hex string.
+    #[wasm_bindgen(js_name = setUiSframeKey)]
+    pub fn set_ui_sframe_key(&self, hex_key: &str) -> Result<(), JsValue> {
+        let bytes = hex::decode(hex_key)
+            .map_err(|e| JsValue::from_str(&format!("Invalid hex: {}", e)))?;
+        if bytes.len() != 16 {
+            return Err(JsValue::from_str("Key must be exactly 16 bytes (32 hex chars)"));
+        }
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&bytes);
+        log!("Setting UI SFrame key");
+        self.device_state.ui.lock().unwrap().sframe_key = key;
+        Ok(())
+    }
+
+    /// Get UI loopback mode.
+    #[wasm_bindgen(js_name = getUiLoopback)]
+    pub fn get_ui_loopback(&self) -> bool {
+        self.device_state.ui.lock().unwrap().loopback
+    }
+
+    /// Set UI loopback mode.
+    #[wasm_bindgen(js_name = setUiLoopback)]
+    pub fn set_ui_loopback(&self, enabled: bool) {
+        log!("Setting UI loopback to {}", enabled);
+        self.device_state.ui.lock().unwrap().loopback = enabled;
+    }
+
+    // NET chip state
+
+    /// Get NET relay URL.
+    #[wasm_bindgen(js_name = getNetRelayUrl)]
+    pub fn get_net_relay_url(&self) -> String {
+        self.device_state.net.lock().unwrap().relay_url.clone()
+    }
+
+    /// Set NET relay URL (also triggers connection).
+    #[wasm_bindgen(js_name = setNetRelayUrl)]
+    pub fn set_net_relay_url(&self, url: &str) {
+        // Store in state
+        self.device_state.net.lock().unwrap().relay_url = url.to_string();
+        // Trigger connection via NET chip
+        self.set_relay_url(url);
+    }
+
+    /// Get WiFi SSIDs as JSON array.
+    #[wasm_bindgen(js_name = getWifiSsids)]
+    pub fn get_wifi_ssids(&self) -> JsValue {
+        let ssids = &self.device_state.net.lock().unwrap().wifi_ssids;
+        let arr = js_sys::Array::new();
+        for cred in ssids {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"ssid".into(), &cred.ssid.clone().into()).unwrap();
+            js_sys::Reflect::set(&obj, &"password".into(), &cred.password.clone().into()).unwrap();
+            arr.push(&obj);
+        }
+        arr.into()
+    }
+
+    /// Add a WiFi SSID.
+    #[wasm_bindgen(js_name = addWifiSsid)]
+    pub fn add_wifi_ssid(&self, ssid: &str, password: &str) {
+        log!("Adding WiFi SSID: {}", ssid);
+        self.device_state.net.lock().unwrap().wifi_ssids.push(WifiCredential {
+            ssid: ssid.to_string(),
+            password: password.to_string(),
+        });
+    }
+
+    /// Clear all WiFi SSIDs.
+    #[wasm_bindgen(js_name = clearWifiSsids)]
+    pub fn clear_wifi_ssids(&self) {
+        log!("Clearing all WiFi SSIDs");
+        self.device_state.net.lock().unwrap().wifi_ssids.clear();
+    }
+
+    /// Get NET loopback mode.
+    #[wasm_bindgen(js_name = getNetLoopback)]
+    pub fn get_net_loopback(&self) -> bool {
+        self.device_state.net.lock().unwrap().loopback
+    }
+
+    /// Set NET loopback mode.
+    #[wasm_bindgen(js_name = setNetLoopback)]
+    pub fn set_net_loopback(&self, enabled: bool) {
+        log!("Setting NET loopback to {}", enabled);
+        self.device_state.net.lock().unwrap().loopback = enabled;
+    }
+
+    /// Get all state as a JSON object.
+    #[wasm_bindgen(js_name = getAllState)]
+    pub fn get_all_state(&self) -> JsValue {
+        let obj = js_sys::Object::new();
+
+        // UI state
+        let ui_obj = js_sys::Object::new();
+        {
+            let ui = self.device_state.ui.lock().unwrap();
+            js_sys::Reflect::set(&ui_obj, &"version".into(), &ui.version.into()).unwrap();
+            js_sys::Reflect::set(&ui_obj, &"sframeKey".into(), &hex::encode(ui.sframe_key).into()).unwrap();
+            js_sys::Reflect::set(&ui_obj, &"loopback".into(), &ui.loopback.into()).unwrap();
+        }
+        js_sys::Reflect::set(&obj, &"ui".into(), &ui_obj).unwrap();
+
+        // NET state
+        let net_obj = js_sys::Object::new();
+        {
+            let net = self.device_state.net.lock().unwrap();
+            js_sys::Reflect::set(&net_obj, &"relayUrl".into(), &net.relay_url.clone().into()).unwrap();
+            js_sys::Reflect::set(&net_obj, &"loopback".into(), &net.loopback.into()).unwrap();
+            // WiFi SSIDs
+            let arr = js_sys::Array::new();
+            for cred in &net.wifi_ssids {
+                let cred_obj = js_sys::Object::new();
+                js_sys::Reflect::set(&cred_obj, &"ssid".into(), &cred.ssid.clone().into()).unwrap();
+                js_sys::Reflect::set(&cred_obj, &"password".into(), &cred.password.clone().into()).unwrap();
+                arr.push(&cred_obj);
+            }
+            js_sys::Reflect::set(&net_obj, &"wifiSsids".into(), &arr).unwrap();
+        }
+        js_sys::Reflect::set(&obj, &"net".into(), &net_obj).unwrap();
+
+        obj.into()
+    }
 }
 
 impl Default for WebLink {
@@ -413,9 +615,9 @@ async fn run_mgmt(
 ) {
     log!("MGMT chip started");
 
-    // Set initial LED colors
-    led_state.mgmt_a.store(color_to_u8(Color::Blue), Ordering::Relaxed);
-    led_state.mgmt_b.store(color_to_u8(Color::Green), Ordering::Relaxed);
+    // Set initial LED colors (matches real firmware)
+    led_state.mgmt_a.store(color_to_u8(Color::Green), Ordering::Relaxed);
+    led_state.mgmt_b.store(color_to_u8(Color::Red), Ordering::Relaxed);
 
     loop {
         // Wait for messages from UI or NET
@@ -456,6 +658,7 @@ enum ActiveButton {
 /// Run the UI chip simulation.
 async fn run_ui(
     led_state: Arc<LedState>,
+    device_state: Arc<DeviceState>,
     button_rx: Receiver<ButtonEvent>,
     audio_rx: Receiver<AudioEvent>,
     playback_tx: Sender<AudioFrame>,
@@ -466,8 +669,8 @@ async fn run_ui(
 ) {
     log!("UI chip started");
 
-    // Set initial LED color
-    led_state.ui.store(color_to_u8(Color::Cyan), Ordering::Relaxed);
+    // Set initial LED color (matches real firmware)
+    led_state.ui.store(color_to_u8(Color::Green), Ordering::Relaxed);
 
     // Track which button is currently held
     let mut active_button = ActiveButton::None;
@@ -503,21 +706,21 @@ async fn run_ui(
                     ButtonEvent::AReleased => {
                         if active_button == ActiveButton::A {
                             active_button = ActiveButton::None;
-                            led_state.ui.store(color_to_u8(Color::Cyan), Ordering::Relaxed);
+                            led_state.ui.store(color_to_u8(Color::Green), Ordering::Relaxed);
                             log!("UI: Button A released");
                         }
                     }
                     ButtonEvent::BPressed => {
                         if active_button == ActiveButton::None {
                             active_button = ActiveButton::B;
-                            led_state.ui.store(color_to_u8(Color::Green), Ordering::Relaxed);
+                            led_state.ui.store(color_to_u8(Color::Blue), Ordering::Relaxed);
                             log!("UI: Button B pressed - recording");
                         }
                     }
                     ButtonEvent::BReleased => {
                         if active_button == ActiveButton::B {
                             active_button = ActiveButton::None;
-                            led_state.ui.store(color_to_u8(Color::Cyan), Ordering::Relaxed);
+                            led_state.ui.store(color_to_u8(Color::Green), Ordering::Relaxed);
                             log!("UI: Button B released");
                         }
                     }
@@ -531,7 +734,7 @@ async fn run_ui(
                     ButtonEvent::MicReleased => {
                         if active_button == ActiveButton::Mic {
                             active_button = ActiveButton::None;
-                            led_state.ui.store(color_to_u8(Color::Cyan), Ordering::Relaxed);
+                            led_state.ui.store(color_to_u8(Color::Green), Ordering::Relaxed);
                             log!("UI: Mic button released");
                         }
                     }
@@ -542,21 +745,36 @@ async fn run_ui(
                 // Only forward audio if a button is held
                 match active_button {
                     ActiveButton::A | ActiveButton::Mic => {
-                        // Convert i16 samples to bytes (little-endian) for transmission
-                        let mut bytes = Vec::with_capacity(frame.0.len() * 2 + 1);
-                        bytes.push(UiToNet::AudioFrameA as u8);
-                        for sample in &frame.0 {
-                            bytes.extend_from_slice(&sample.to_le_bytes());
+                        // Check for UI loopback mode
+                        let ui_loopback = device_state.ui.lock().unwrap().loopback;
+                        if ui_loopback {
+                            // Loopback: send directly to playback
+                            let _ = playback_tx.send(frame).await;
+                        } else {
+                            // Normal: send to NET chip
+                            let mut bytes = Vec::with_capacity(frame.0.len() * 2 + 1);
+                            bytes.push(UiToNet::AudioFrameA as u8);
+                            for sample in &frame.0 {
+                                bytes.extend_from_slice(&sample.to_le_bytes());
+                            }
+                            let _ = to_net.send(bytes).await;
                         }
-                        let _ = to_net.send(bytes).await;
                     }
                     ActiveButton::B => {
-                        let mut bytes = Vec::with_capacity(frame.0.len() * 2 + 1);
-                        bytes.push(UiToNet::AudioFrameB as u8);
-                        for sample in &frame.0 {
-                            bytes.extend_from_slice(&sample.to_le_bytes());
+                        // Check for UI loopback mode
+                        let ui_loopback = device_state.ui.lock().unwrap().loopback;
+                        if ui_loopback {
+                            // Loopback: send directly to playback
+                            let _ = playback_tx.send(frame).await;
+                        } else {
+                            // Normal: send to NET chip
+                            let mut bytes = Vec::with_capacity(frame.0.len() * 2 + 1);
+                            bytes.push(UiToNet::AudioFrameB as u8);
+                            for sample in &frame.0 {
+                                bytes.extend_from_slice(&sample.to_le_bytes());
+                            }
+                            let _ = to_net.send(bytes).await;
                         }
-                        let _ = to_net.send(bytes).await;
                     }
                     ActiveButton::None => {
                         // No button held, discard audio
@@ -606,6 +824,7 @@ async fn run_ui(
 /// Run the NET chip simulation.
 async fn run_net(
     led_state: Arc<LedState>,
+    device_state: Arc<DeviceState>,
     _to_mgmt: Sender<Vec<u8>>,
     from_mgmt: Receiver<Vec<u8>>,
     to_ui: Sender<Vec<u8>>,
@@ -616,8 +835,8 @@ async fn run_net(
 ) {
     log!("NET chip started");
 
-    // Set initial LED color (no relay configured = blue)
-    led_state.net.store(color_to_u8(Color::Blue), Ordering::Relaxed);
+    // Set initial LED color (no WiFi/relay = red, matches real firmware)
+    led_state.net.store(color_to_u8(Color::Red), Ordering::Relaxed);
 
     let mut relay_url: Option<String> = None;
     let mut ws_connected = false;
@@ -643,8 +862,15 @@ async fn run_net(
                 log!("NET received from MGMT: {} bytes", msg.len());
             }
             futures::future::Either::Left((futures::future::Either::Right((Ok(msg), _)), _)) => {
-                // Forward audio to WebSocket if connected
-                if ws_connected && !msg.is_empty() {
+                // Check for NET loopback mode
+                let net_loopback = device_state.net.lock().unwrap().loopback;
+                if net_loopback {
+                    // Loopback: send audio directly back to UI
+                    if !msg.is_empty() {
+                        let _ = to_ui.send(msg).await;
+                    }
+                } else if ws_connected && !msg.is_empty() {
+                    // Normal: forward audio to WebSocket
                     let _ = ws_cmd_tx.send(WsCommand::Send(msg)).await;
                 }
             }
@@ -659,12 +885,8 @@ async fn run_net(
                     WsEvent::Disconnected => {
                         log!("NET: WebSocket disconnected");
                         ws_connected = false;
-                        // Show red if we have a URL but disconnected, blue if no URL
-                        if relay_url.is_some() {
-                            led_state.net.store(color_to_u8(Color::Red), Ordering::Relaxed);
-                        } else {
-                            led_state.net.store(color_to_u8(Color::Blue), Ordering::Relaxed);
-                        }
+                        // Show red when disconnected (matches real firmware)
+                        led_state.net.store(color_to_u8(Color::Red), Ordering::Relaxed);
                     }
                     WsEvent::Received(data) => {
                         log!("NET: WebSocket received {} bytes", data.len());
@@ -684,7 +906,7 @@ async fn run_net(
                             if ws_connected {
                                 let _ = ws_cmd_tx.send(WsCommand::Disconnect).await;
                             }
-                            led_state.net.store(color_to_u8(Color::Blue), Ordering::Relaxed);
+                            led_state.net.store(color_to_u8(Color::Red), Ordering::Relaxed);
                         } else {
                             log!("NET: Setting relay URL to {}", url);
                             relay_url = Some(url.clone());

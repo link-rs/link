@@ -192,6 +192,11 @@
             background: #1a1a2e;
             color: #eee;
             font-size: 14px;
+            cursor: text;
+        }
+        .config-input:focus {
+            border-color: #3498db;
+            outline: none;
         }
         .config-btn {
             padding: 10px 20px;
@@ -253,6 +258,46 @@
         .log-entry.audio {
             color: #e67e22;
         }
+        /* Toggle switch */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #555;
+            transition: 0.3s;
+            border-radius: 24px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: 0.3s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: #2ecc71;
+        }
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
     </style>
 </head>
 <body>
@@ -304,15 +349,41 @@
         </div>
 
         <div class="config-section">
-            <div class="config-title">Relay</div>
+            <div class="config-title">UI Chip Settings</div>
             <div class="config-row">
-                <input type="text" class="config-input" id="relay-url" placeholder="Relay URL (e.g., wss://relay.example.com)">
+                <label style="min-width: 80px;">SFrame Key:</label>
+                <input type="text" class="config-input" id="ui-sframe-key" placeholder="32 hex characters" maxlength="32" style="font-family: 'Monaco', 'Consolas', monospace;">
+                <button class="config-btn" id="set-ui-sframe-key">Set</button>
+            </div>
+            <div class="config-row">
+                <label style="min-width: 80px;">Loopback:</label>
+                <label class="switch">
+                    <input type="checkbox" id="ui-loopback">
+                    <span class="slider"></span>
+                </label>
+                <span id="ui-loopback-label" style="margin-left: 10px; color: #888;">Off</span>
+            </div>
+        </div>
+
+        <div class="config-section">
+            <div class="config-title">NET Chip Settings</div>
+            <div class="config-row">
+                <label style="min-width: 80px;">Relay URL:</label>
+                <input type="text" class="config-input" id="relay-url" placeholder="wss://relay.example.com">
                 <button class="config-btn" id="set-relay">Save</button>
                 <button class="config-btn" id="clear-relay" style="background: #e74c3c;">Clear</button>
             </div>
             <div class="status-row">
                 <div class="status-indicator" id="ws-indicator"></div>
                 <span id="ws-status">Not configured</span>
+            </div>
+            <div class="config-row" style="margin-top: 15px;">
+                <label style="min-width: 80px;">Loopback:</label>
+                <label class="switch">
+                    <input type="checkbox" id="net-loopback">
+                    <span class="slider"></span>
+                </label>
+                <span id="net-loopback-label" style="margin-left: 10px; color: #888;">Off</span>
             </div>
         </div>
 
@@ -478,9 +549,6 @@
                         device.audioCapture(samples);
                     } else if (event.data.type === 'ready') {
                         audioLog('Audio worklet ready');
-                    } else if (event.data.type === 'diag') {
-                        const d = event.data;
-                        audioLog(`DIAG: rate=${d.sampleRate} ratio=${d.resampleRatio.toFixed(2)} input=[${d.inputMin.toFixed(4)}, ${d.inputMax.toFixed(4)}] output=[${d.outputMin}, ${d.outputMax}] buf=${d.outputBufferLen}`);
                     }
                 };
 
@@ -663,12 +731,14 @@
             const setRelayBtn = document.getElementById('set-relay');
             const clearRelayBtn = document.getElementById('clear-relay');
 
-            // Load stored relay URL
+            // Load stored relay URL from localStorage, or use device default
             const storedUrl = getStoredRelayUrl();
-            if (storedUrl) {
-                relayInput.value = storedUrl;
-                // Tell NET chip about the stored URL - it will auto-connect
-                device.setRelayUrl(storedUrl);
+            const deviceUrl = device.getNetRelayUrl();
+            const initialUrl = storedUrl || deviceUrl;
+            if (initialUrl) {
+                relayInput.value = initialUrl;
+                // Tell NET chip about the URL - it will auto-connect
+                device.setRelayUrl(initialUrl);
             }
 
             setRelayBtn.addEventListener('click', () => {
@@ -689,6 +759,50 @@
                 if (e.key === 'Enter') {
                     setRelayBtn.click();
                 }
+            });
+
+            // UI chip settings
+            const uiSframeKeyInput = document.getElementById('ui-sframe-key');
+            const setUiSframeKeyBtn = document.getElementById('set-ui-sframe-key');
+            const uiLoopbackCheckbox = document.getElementById('ui-loopback');
+            const uiLoopbackLabel = document.getElementById('ui-loopback-label');
+
+            // Initialize UI chip state from device
+            const initialSframeKey = device.getUiSframeKey();
+            const initialUiLoopback = device.getUiLoopback();
+            console.log('Initial state:', { sframeKey: initialSframeKey, uiLoopback: initialUiLoopback });
+            uiSframeKeyInput.value = initialSframeKey;
+            uiLoopbackCheckbox.checked = initialUiLoopback;
+            uiLoopbackLabel.textContent = uiLoopbackCheckbox.checked ? 'On' : 'Off';
+
+            setUiSframeKeyBtn.addEventListener('click', () => {
+                const key = uiSframeKeyInput.value.trim();
+                if (key.length === 32 && /^[0-9a-fA-F]+$/.test(key)) {
+                    try {
+                        device.setUiSframeKey(key);
+                    } catch (e) {
+                        console.error('Failed to set SFrame key:', e);
+                    }
+                } else {
+                    console.error('Invalid SFrame key: must be exactly 32 hex characters');
+                }
+            });
+
+            uiLoopbackCheckbox.addEventListener('change', () => {
+                device.setUiLoopback(uiLoopbackCheckbox.checked);
+                uiLoopbackLabel.textContent = uiLoopbackCheckbox.checked ? 'On' : 'Off';
+            });
+
+            // NET loopback
+            const netLoopbackCheckbox = document.getElementById('net-loopback');
+            const netLoopbackLabel = document.getElementById('net-loopback-label');
+
+            netLoopbackCheckbox.checked = device.getNetLoopback();
+            netLoopbackLabel.textContent = netLoopbackCheckbox.checked ? 'On' : 'Off';
+
+            netLoopbackCheckbox.addEventListener('change', () => {
+                device.setNetLoopback(netLoopbackCheckbox.checked);
+                netLoopbackLabel.textContent = netLoopbackCheckbox.checked ? 'On' : 'Off';
             });
         }
 
