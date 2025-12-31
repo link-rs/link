@@ -15,6 +15,7 @@ use embassy_stm32::{
 use embassy_time::{Duration, Timer};
 use {defmt_rtt as _, panic_probe as _};
 
+// CLAUDE Why are we using this instead of embedded_hal_async::delay::DelayNs?
 /// Async delay implementation using embassy_time::Timer.
 struct EmbassyDelay;
 
@@ -75,6 +76,18 @@ async fn main(_spawner: Spawner) {
     mco_config.speed = Speed::Low;
     let _mco = Mco::new(p.MCO, p.PA8, McoSource::PLL, mco_config);
 
+    // CLAUDE Instead of defining UART configs in each firmware and hoping they line up, let's
+    // define them centrally in some `link` module, say `link::shared::uart_config`.  Define a `struct Config`
+    // there, and `From<Config>` implementations for the HAL-specific UART config types.  Then make
+    // constants that reflect the configs for the various UART interfaces.  So here we would just
+    // have:
+    //
+    // let mut ctl_config = Config::from(uart_config::CTL_MGMT);
+    // let mut ui_config = Config::from(uart_config::MGMT_UI);
+    // let mut net_config = Config::from(uart_config::MGMT_NET);
+    //
+    // Or consider inlining as Uart::new(..., uart_config::CTL_MGMT.into())
+
     // UART config for CTL and UI (even parity for STM32 bootloader compatibility)
     let mut stm_config = Config::default();
     stm_config.baudrate = 115200;
@@ -134,8 +147,6 @@ async fn main(_spawner: Spawner) {
     );
 
     // UI chip reset control pins
-    // PA15 -> UI BOOT0, PB8 -> UI BOOT1, PB3 -> UI RST
-    // Boot mode for normal operation: BOOT0=0, BOOT1=1
     // RST starts low to hold UI in reset until MGMT clocks are stable
     let ui_boot0 = Output::new(p.PA15, Level::Low, Speed::Low);
     let ui_boot1 = Output::new(p.PB8, Level::High, Speed::Low);
@@ -143,10 +154,6 @@ async fn main(_spawner: Spawner) {
     let ui_reset_pins = link::mgmt::UiResetPins::new(ui_boot0, ui_boot1, ui_rst);
 
     // NET chip reset control pins
-    // PB5 -> NET BOOT, PB4 -> NET RST
-    // NET chip boot mode is inverted from UI chip:
-    //   BOOT high = boot from flash (normal)
-    //   BOOT low = boot from bootloader
     // RST starts low to hold NET in reset until MGMT clocks are stable
     let net_boot = Output::new(p.PB5, Level::High, Speed::Low);
     let net_rst = Output::new(p.PB4, Level::Low, Speed::Low);

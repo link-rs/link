@@ -26,15 +26,10 @@ type AppWriter = FromTokio<WriteHalf<SerialStream>>;
 type AppReader = FromTokio<ReadHalf<SerialStream>>;
 type App = link::ctl::App<AppReader, AppWriter>;
 
-// ============================================================================
-// CLI structures
-// ============================================================================
-
 #[derive(Parser)]
 #[command(name = "ctl")]
 #[command(about = "Control interface for the link device", long_about = None)]
 struct Cli {
-    /// Serial port to use (auto-detected if not specified)
     #[arg(short, long)]
     port: Option<String>,
 
@@ -45,17 +40,12 @@ struct Cli {
     command: Option<Command>,
 }
 
-/// Commands for REPL mode (command is required)
 #[derive(Debug, Parser)]
 #[command(name = "")]
 struct ReplCli {
     #[command(subcommand)]
     command: Command,
 }
-
-// ============================================================================
-// Command definitions (shared between CLI and REPL)
-// ============================================================================
 
 #[derive(Debug, Clone, Subcommand)]
 enum Command {
@@ -82,7 +72,6 @@ enum Command {
         data: String,
     },
 
-    /// Exit the REPL
     Exit,
 }
 
@@ -92,11 +81,8 @@ enum MgmtAction {
         #[arg(default_value = "hello")]
         data: String,
     },
-    /// Get bootloader information from MGMT chip (requires bootloader mode)
     Info,
-    /// Flash firmware to MGMT chip (requires bootloader mode)
     Flash {
-        /// Path to binary file to flash
         file: std::path::PathBuf,
     },
 }
@@ -107,36 +93,36 @@ enum UiAction {
         #[arg(default_value = "hello")]
         data: String,
     },
-    /// Get bootloader information from UI chip (auto-resets chip)
+
     Info,
-    /// Flash firmware to UI chip (auto-resets chip)
+
     Flash {
-        /// Path to binary file to flash
         file: std::path::PathBuf,
     },
-    /// Get or set version (usage: version [set <value>])
+
     Version {
         #[command(subcommand)]
         action: Option<GetSetU32>,
     },
-    /// Get or set SFrame key (usage: sframe-key [set <hex>])
+
     #[command(name = "sframe-key")]
     SFrameKey {
         #[command(subcommand)]
         action: Option<GetSetHex>,
     },
-    /// Get or set loopback mode (usage: loopback [set true/false])
+
     Loopback {
         #[command(subcommand)]
         action: Option<GetSetBool>,
     },
-    /// Reset UI chip (or "hold"/"release" to control reset pin)
+
     Reset {
-        /// "hold" to hold in reset, "release" to release from reset
         action: Option<String>,
     },
 }
 
+// CLAUDE Instead of using Option<GetSetX>, could we have the GetSetX types have a Get variant that
+// is the default?  And then have the #[command] fill in the default if not present.
 #[derive(Debug, Clone, Subcommand)]
 enum GetSetU32 {
     Set { value: u32 },
@@ -163,50 +149,45 @@ enum NetAction {
         #[arg(default_value = "hello")]
         data: String,
     },
-    /// Get bootloader information from NET chip (ESP32, auto-resets chip)
+
     Info,
-    /// Flash firmware to NET chip (ESP32, auto-resets chip)
-    ///
-    /// WARNING: Currently assumes standard ESP-IDF partition layout with app at 0x10000.
-    /// This may not work for custom partition tables. A future version should parse
-    /// flasher_args.json from the build directory to determine correct addresses.
+
     Flash {
-        /// Path to binary file to flash
         file: std::path::PathBuf,
-        /// Flash address offset (default: 0x10000 for standard ESP-IDF app partition)
+
         #[arg(short, long, default_value = "0x10000")]
         address: String,
-        /// Use compressed transfer (faster for large files)
+
         #[arg(short, long)]
         compress: bool,
-        /// Skip MD5 verification after flashing (faster for large files)
+
         #[arg(long)]
         no_verify: bool,
     },
-    /// Manage WiFi networks (usage: wifi [add <ssid> <password> | clear])
+
     Wifi {
         #[command(subcommand)]
         action: Option<WifiAction>,
     },
-    /// Get or set relay URL (usage: relay-url [set <url>])
+
     #[command(name = "relay-url")]
     RelayUrl {
         #[command(subcommand)]
         action: Option<GetSetString>,
     },
+
     #[command(name = "ws-ping")]
     WsPing {
-        /// Data to send (will be echoed back by server)
         #[arg(default_value = "hello from hactar")]
         data: String,
     },
-    /// Run WebSocket echo test to measure bidirectional throughput
+
     #[command(name = "ws-echo-test")]
     WsEchoTest,
-    /// Run WebSocket speed test to measure maximum send rate
+
     #[command(name = "ws-speed-test")]
     WsSpeedTest,
-    /// Get or set loopback mode (usage: loopback [set true/false])
+
     Loopback {
         #[command(subcommand)]
         action: Option<GetSetBool>,
@@ -215,27 +196,28 @@ enum NetAction {
 
 #[derive(Debug, Clone, Subcommand)]
 enum WifiAction {
-    /// Add a WiFi network
-    Add {
-        ssid: String,
-        password: String,
-    },
-    /// Clear all WiFi networks
+    Add { ssid: String, password: String },
     Clear,
 }
 
-// ============================================================================
-// REPL Context
-// ============================================================================
-
+// CLAUDE Is there a reason for this wrapper struct?  Couldn't we just use App wherever we use
+// Context?
 struct Context {
     app: App,
 }
 
-// ============================================================================
-// Helper functions
-// ============================================================================
-
+// CLAUDE This method overlaps a lot with `async fn connect()`, and in fact you're opening the
+// successful port twice: Once when you test it, and once after it's selected.  You should refactor
+// select_port to return an App (or Option or Result) and have the following form:
+//
+//      if let Ok(app) = find_link_device(specified, baud) {
+//          return app;
+//      }
+//
+//      return manually_select_port(specified, baud);
+//
+// Also, you should not automatically pick the only available port; you should test whether it's a
+// Link device first, and prompt the user if it doesn't seem to be one.
 /// Test if a serial port has a valid Link device connected.
 async fn test_link_device(port_name: &str, baud: u32) -> bool {
     let port = match tokio_serial::new(port_name, baud)
@@ -332,7 +314,10 @@ async fn select_port(specified: Option<String>, baud: u32) -> Result<String, Str
             };
 
             if choice < 1 || choice > ports.len() {
-                return Err(format!("Please select a number between 1 and {}", ports.len()));
+                return Err(format!(
+                    "Please select a number between 1 and {}",
+                    ports.len()
+                ));
             }
 
             Ok(ports[choice - 1].clone())
@@ -341,7 +326,10 @@ async fn select_port(specified: Option<String>, baud: u32) -> Result<String, Str
 }
 
 /// Open a connection to the device
-async fn connect(port: Option<String>, baud: u32) -> Result<(App, String), Box<dyn std::error::Error>> {
+async fn connect(
+    port: Option<String>,
+    baud: u32,
+) -> Result<(App, String), Box<dyn std::error::Error>> {
     let port_name = select_port(port, baud).await?;
     let serial_port = tokio_serial::new(&port_name, baud)
         .parity(tokio_serial::Parity::Even)
@@ -354,6 +342,7 @@ async fn connect(port: Option<String>, baud: u32) -> Result<(App, String), Box<d
     Ok((link::ctl::App::new(reader, writer), port_name))
 }
 
+// CLAUDE This method should move to bootloader::stm
 fn chip_name(product_id: u16) -> &'static str {
     match product_id {
         0x410 => "STM32F1 Medium-density",
@@ -381,6 +370,7 @@ fn chip_name(product_id: u16) -> &'static str {
     }
 }
 
+// CLAUDE This method should move to bootloader::stm
 fn command_name(code: u8) -> &'static str {
     match code {
         0x00 => "Get",
@@ -399,11 +389,15 @@ fn command_name(code: u8) -> &'static str {
     }
 }
 
+// CLAUDE I find these ====== comments annoying.  Please delete them everywhere
 // ============================================================================
 // Command dispatch (shared between CLI and REPL)
 // ============================================================================
 
-async fn dispatch(cmd: Command, app: &mut App) -> Result<Option<String>, Box<dyn std::error::Error>> {
+async fn dispatch(
+    cmd: Command,
+    app: &mut App,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     match cmd {
         Command::Mgmt { action } => handle_mgmt(action, app).await,
         Command::Ui { action } => handle_ui(action, app).await,
@@ -424,7 +418,17 @@ async fn dispatch(cmd: Command, app: &mut App) -> Result<Option<String>, Box<dyn
     }
 }
 
-async fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<Option<String>, Box<dyn std::error::Error>> {
+// CLAUDE I don't like the level of nesting in these handle_x functions.  Let's make some modules
+// `mgmt`, `ui`, `net`; put the specific handler logic in free functions there, and call the
+// those functions from the handler functions.
+
+// CLAUDE There's a mix in here between the handler function returning the string to print vs just
+// calling println itself.  Let's normalize on the latter, and return Result<(), Box<dyn Error>>.
+
+async fn handle_mgmt(
+    action: MgmtAction,
+    app: &mut App,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     match action {
         MgmtAction::Ping { data } => {
             println!("Sending MGMT ping with data: {}", data);
@@ -440,7 +444,10 @@ async fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<Option<String>
     }
 }
 
-async fn handle_ui(action: UiAction, app: &mut App) -> Result<Option<String>, Box<dyn std::error::Error>> {
+async fn handle_ui(
+    action: UiAction,
+    app: &mut App,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     match action {
         UiAction::Ping { data } => {
             println!("Sending UI ping with data: {}", data);
@@ -453,13 +460,22 @@ async fn handle_ui(action: UiAction, app: &mut App) -> Result<Option<String>, Bo
             println!("Resetting UI chip to bootloader mode...");
 
             let delay = |ms| tokio::time::sleep(std::time::Duration::from_millis(ms));
-            let info = app.get_ui_bootloader_info(delay).await
+            let info = app
+                .get_ui_bootloader_info(delay)
+                .await
                 .map_err(|_| "Failed to get bootloader info")?;
 
             let major = info.bootloader_version >> 4;
             let minor = info.bootloader_version & 0x0F;
-            println!("Bootloader Version: {}.{} (0x{:02X})", major, minor, info.bootloader_version);
-            println!("Chip ID: 0x{:04X} ({})", info.chip_id, chip_name(info.chip_id));
+            println!(
+                "Bootloader Version: {}.{} (0x{:02X})",
+                major, minor, info.bootloader_version
+            );
+            println!(
+                "Chip ID: 0x{:04X} ({})",
+                info.chip_id,
+                chip_name(info.chip_id)
+            );
 
             println!("\nSupported Commands ({}):", info.command_count);
             for i in 0..info.command_count {
@@ -547,72 +563,69 @@ async fn handle_ui(action: UiAction, app: &mut App) -> Result<Option<String>, Bo
             pb.finish_and_clear();
 
             match result {
-                Ok(()) => Ok(Some("Flash complete!\nUI chip reset back to user mode.".to_string())),
+                Ok(()) => Ok(Some(
+                    "Flash complete!\nUI chip reset back to user mode.".to_string(),
+                )),
                 Err(e) => Err(format!("Flash failed: {:?}", e).into()),
             }
         }
-        UiAction::Version { action } => {
-            match action {
-                None => {
-                    let version = app.get_version().await;
-                    Ok(Some(format!("{}", version)))
-                }
-                Some(GetSetU32::Set { value }) => {
-                    app.set_version(value).await;
-                    Ok(Some(format!("Version set to {}", value)))
-                }
+        UiAction::Version { action } => match action {
+            None => {
+                let version = app.get_version().await;
+                Ok(Some(format!("{}", version)))
             }
-        }
-        UiAction::SFrameKey { action } => {
-            match action {
-                None => {
-                    let key = app.get_sframe_key().await;
-                    Ok(Some(hex::encode(key)))
-                }
-                Some(GetSetHex::Set { value }) => {
-                    let key_bytes = hex::decode(&value).map_err(|_| "Invalid hex string")?;
-                    if key_bytes.len() != 16 {
-                        return Err("SFrame key must be exactly 32 hex characters (16 bytes)".into());
-                    }
-                    let mut key_array = [0u8; 16];
-                    key_array.copy_from_slice(&key_bytes);
-                    app.set_sframe_key(&key_array).await;
-                    Ok(Some(format!("SFrame key set to {}", value)))
-                }
+            Some(GetSetU32::Set { value }) => {
+                app.set_version(value).await;
+                Ok(Some(format!("Version set to {}", value)))
             }
-        }
-        UiAction::Loopback { action } => {
-            match action {
-                None => {
-                    let enabled = app.ui_get_loopback().await;
-                    Ok(Some(format!("{}", enabled)))
-                }
-                Some(GetSetBool::Set { value }) => {
-                    app.ui_set_loopback(value).await;
-                    Ok(Some(format!("UI loopback set to {}", value)))
-                }
+        },
+        UiAction::SFrameKey { action } => match action {
+            None => {
+                let key = app.get_sframe_key().await;
+                Ok(Some(hex::encode(key)))
             }
-        }
-        UiAction::Reset { action } => {
-            match action.as_deref() {
-                Some("hold") => {
-                    app.hold_ui_reset().await;
-                    Ok(Some("UI chip held in reset".to_string()))
+            Some(GetSetHex::Set { value }) => {
+                let key_bytes = hex::decode(&value).map_err(|_| "Invalid hex string")?;
+                if key_bytes.len() != 16 {
+                    return Err("SFrame key must be exactly 32 hex characters (16 bytes)".into());
                 }
-                Some("release") => {
-                    app.reset_ui_to_user().await;
-                    Ok(Some("UI chip released from reset".to_string()))
-                }
-                _ => {
-                    app.reset_ui_to_user().await;
-                    Ok(Some("UI chip reset".to_string()))
-                }
+                let mut key_array = [0u8; 16];
+                key_array.copy_from_slice(&key_bytes);
+                app.set_sframe_key(&key_array).await;
+                Ok(Some(format!("SFrame key set to {}", value)))
             }
-        }
+        },
+        UiAction::Loopback { action } => match action {
+            None => {
+                let enabled = app.ui_get_loopback().await;
+                Ok(Some(format!("{}", enabled)))
+            }
+            Some(GetSetBool::Set { value }) => {
+                app.ui_set_loopback(value).await;
+                Ok(Some(format!("UI loopback set to {}", value)))
+            }
+        },
+        UiAction::Reset { action } => match action.as_deref() {
+            Some("hold") => {
+                app.hold_ui_reset().await;
+                Ok(Some("UI chip held in reset".to_string()))
+            }
+            Some("release") => {
+                app.reset_ui_to_user().await;
+                Ok(Some("UI chip released from reset".to_string()))
+            }
+            _ => {
+                app.reset_ui_to_user().await;
+                Ok(Some("UI chip reset".to_string()))
+            }
+        },
     }
 }
 
-async fn handle_net(action: NetAction, app: &mut App) -> Result<Option<String>, Box<dyn std::error::Error>> {
+async fn handle_net(
+    action: NetAction,
+    app: &mut App,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     match action {
         NetAction::Ping { data } => {
             println!("Sending NET ping with data: {}", data);
@@ -621,7 +634,9 @@ async fn handle_net(action: NetAction, app: &mut App) -> Result<Option<String>, 
         }
         NetAction::Info => {
             println!("Resetting NET chip to bootloader mode...");
-            let info = app.get_net_bootloader_info().await
+            let info = app
+                .get_net_bootloader_info()
+                .await
                 .map_err(|e| format!("Failed to get bootloader info: {:?}", e))?;
 
             let sec = &info.security_info;
@@ -633,50 +648,55 @@ async fn handle_net(action: NetAction, app: &mut App) -> Result<Option<String>, 
             println!("Flash Crypt Count: {}", sec.flash_crypt_cnt);
             println!(
                 "Key Purposes:      {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                sec.key_purposes[0], sec.key_purposes[1], sec.key_purposes[2],
-                sec.key_purposes[3], sec.key_purposes[4], sec.key_purposes[5],
+                sec.key_purposes[0],
+                sec.key_purposes[1],
+                sec.key_purposes[2],
+                sec.key_purposes[3],
+                sec.key_purposes[4],
+                sec.key_purposes[5],
                 sec.key_purposes[6]
             );
 
             Ok(Some("NET chip reset back to user mode.\nDone!".to_string()))
         }
-        NetAction::Wifi { action } => {
-            match action {
-                None => {
-                    let ssids = app.get_wifi_ssids().await;
-                    if ssids.is_empty() {
-                        Ok(Some("No WiFi networks configured".to_string()))
-                    } else {
-                        let mut output = String::new();
-                        for wifi in ssids {
-                            output.push_str(&format!("{}\t{}\n", wifi.ssid, wifi.password));
-                        }
-                        Ok(Some(output.trim_end().to_string()))
+        NetAction::Wifi { action } => match action {
+            None => {
+                let ssids = app.get_wifi_ssids().await;
+                if ssids.is_empty() {
+                    Ok(Some("No WiFi networks configured".to_string()))
+                } else {
+                    let mut output = String::new();
+                    for wifi in ssids {
+                        output.push_str(&format!("{}\t{}\n", wifi.ssid, wifi.password));
                     }
-                }
-                Some(WifiAction::Add { ssid, password }) => {
-                    app.add_wifi_ssid(&ssid, &password).await;
-                    Ok(Some(format!("Added WiFi network: {}", ssid)))
-                }
-                Some(WifiAction::Clear) => {
-                    app.clear_wifi_ssids().await;
-                    Ok(Some("Cleared all WiFi networks".to_string()))
+                    Ok(Some(output.trim_end().to_string()))
                 }
             }
-        }
-        NetAction::RelayUrl { action } => {
-            match action {
-                None => {
-                    let url = app.get_relay_url().await;
-                    Ok(Some(url.to_string()))
-                }
-                Some(GetSetString::Set { value }) => {
-                    app.set_relay_url(&value).await;
-                    Ok(Some(format!("Relay URL set to {}", value)))
-                }
+            Some(WifiAction::Add { ssid, password }) => {
+                app.add_wifi_ssid(&ssid, &password).await;
+                Ok(Some(format!("Added WiFi network: {}", ssid)))
             }
-        }
-        NetAction::Flash { file, address, compress, no_verify } => {
+            Some(WifiAction::Clear) => {
+                app.clear_wifi_ssids().await;
+                Ok(Some("Cleared all WiFi networks".to_string()))
+            }
+        },
+        NetAction::RelayUrl { action } => match action {
+            None => {
+                let url = app.get_relay_url().await;
+                Ok(Some(url.to_string()))
+            }
+            Some(GetSetString::Set { value }) => {
+                app.set_relay_url(&value).await;
+                Ok(Some(format!("Relay URL set to {}", value)))
+            }
+        },
+        NetAction::Flash {
+            file,
+            address,
+            compress,
+            no_verify,
+        } => {
             println!("NET Flash (ESP32)");
             println!("=================\n");
 
@@ -718,38 +738,46 @@ async fn handle_net(action: NetAction, app: &mut App) -> Result<Option<String>, 
             let mut current_phase = None;
             let verify = !no_verify;
             let result = app
-                .flash_net(&firmware, address, compress, verify, |phase, progress, total| {
-                    if current_phase != Some(phase) {
-                        current_phase = Some(phase);
-                        match phase {
-                            FlashPhase::Compressing => {
-                                pb.set_style(bytes_style.clone());
-                                pb.set_prefix("Compressing");
+                .flash_net(
+                    &firmware,
+                    address,
+                    compress,
+                    verify,
+                    |phase, progress, total| {
+                        if current_phase != Some(phase) {
+                            current_phase = Some(phase);
+                            match phase {
+                                FlashPhase::Compressing => {
+                                    pb.set_style(bytes_style.clone());
+                                    pb.set_prefix("Compressing");
+                                }
+                                FlashPhase::Erasing => {
+                                    pb.set_style(erase_style.clone());
+                                    pb.set_prefix("Erasing");
+                                }
+                                FlashPhase::Writing => {
+                                    pb.set_style(bytes_style.clone());
+                                    pb.set_prefix("Writing");
+                                }
+                                FlashPhase::Verifying => {
+                                    pb.set_style(bytes_style.clone());
+                                    pb.set_prefix("Verifying");
+                                }
                             }
-                            FlashPhase::Erasing => {
-                                pb.set_style(erase_style.clone());
-                                pb.set_prefix("Erasing");
-                            }
-                            FlashPhase::Writing => {
-                                pb.set_style(bytes_style.clone());
-                                pb.set_prefix("Writing");
-                            }
-                            FlashPhase::Verifying => {
-                                pb.set_style(bytes_style.clone());
-                                pb.set_prefix("Verifying");
-                            }
+                            pb.set_length(total as u64);
+                            pb.set_position(0);
                         }
-                        pb.set_length(total as u64);
-                        pb.set_position(0);
-                    }
-                    pb.set_position(progress as u64);
-                })
+                        pb.set_position(progress as u64);
+                    },
+                )
                 .await;
 
             pb.finish_and_clear();
 
             match result {
-                Ok(()) => Ok(Some("Flash complete!\nNET chip reset back to user mode.".to_string())),
+                Ok(()) => Ok(Some(
+                    "Flash complete!\nNET chip reset back to user mode.".to_string(),
+                )),
                 Err(e) => Err(format!("Flash failed: {:?}", e).into()),
             }
         }
@@ -768,11 +796,18 @@ async fn handle_net(action: NetAction, app: &mut App) -> Result<Option<String>, 
             output.push_str("Results:\n");
             output.push_str(&format!("  Packets sent:           {}\n", results.sent));
             output.push_str(&format!("  Packets received (raw): {}\n", results.received));
-            output.push_str(&format!("  Packets output (buf):   {}\n", results.buffered_output));
-            output.push_str(&format!("  Buffer underruns:       {}\n", results.underruns));
+            output.push_str(&format!(
+                "  Packets output (buf):   {}\n",
+                results.buffered_output
+            ));
+            output.push_str(&format!(
+                "  Buffer underruns:       {}\n",
+                results.underruns
+            ));
 
             if results.received > 0 && results.sent > 0 {
-                let loss_pct = ((results.sent - results.received) as f64 / results.sent as f64) * 100.0;
+                let loss_pct =
+                    ((results.sent - results.received) as f64 / results.sent as f64) * 100.0;
                 output.push_str(&format!("  Packet loss:            {:.1}%\n", loss_pct));
             }
 
@@ -786,26 +821,56 @@ async fn handle_net(action: NetAction, app: &mut App) -> Result<Option<String>, 
                 let avg = sum / timings.len() as u64;
 
                 let mut s = format!("\n{}:\n", label);
-                s.push_str(&format!("  Min: {:>6} µs ({:>5.1} ms)\n", min, min as f64 / 1000.0));
-                s.push_str(&format!("  Max: {:>6} µs ({:>5.1} ms)\n", max, max as f64 / 1000.0));
-                s.push_str(&format!("  Avg: {:>6} µs ({:>5.1} ms)\n", avg, avg as f64 / 1000.0));
+                s.push_str(&format!(
+                    "  Min: {:>6} µs ({:>5.1} ms)\n",
+                    min,
+                    min as f64 / 1000.0
+                ));
+                s.push_str(&format!(
+                    "  Max: {:>6} µs ({:>5.1} ms)\n",
+                    max,
+                    max as f64 / 1000.0
+                ));
+                s.push_str(&format!(
+                    "  Avg: {:>6} µs ({:>5.1} ms)\n",
+                    avg,
+                    avg as f64 / 1000.0
+                ));
 
                 let target_us = 20000i64;
-                let jitter: i64 = timings.iter()
+                let jitter: i64 = timings
+                    .iter()
                     .map(|&x| (x as i64 - target_us).abs())
-                    .sum::<i64>() / timings.len() as i64;
-                s.push_str(&format!("  Avg deviation from 20ms: {:>6} µs ({:>5.1} ms)\n", jitter, jitter as f64 / 1000.0));
+                    .sum::<i64>()
+                    / timings.len() as i64;
+                s.push_str(&format!(
+                    "  Avg deviation from 20ms: {:>6} µs ({:>5.1} ms)\n",
+                    jitter,
+                    jitter as f64 / 1000.0
+                ));
                 s
             }
 
-            output.push_str(&format_jitter_stats("Raw jitter (before buffer)", results.raw_jitter_us.as_slice()));
-            output.push_str(&format_jitter_stats("Buffered jitter (after buffer)", results.buffered_jitter_us.as_slice()));
+            output.push_str(&format_jitter_stats(
+                "Raw jitter (before buffer)",
+                results.raw_jitter_us.as_slice(),
+            ));
+            output.push_str(&format_jitter_stats(
+                "Buffered jitter (after buffer)",
+                results.buffered_jitter_us.as_slice(),
+            ));
 
             if !results.raw_jitter_us.is_empty() {
-                output.push_str(&format!("\nRaw timings (µs): {:?}\n", results.raw_jitter_us.as_slice()));
+                output.push_str(&format!(
+                    "\nRaw timings (µs): {:?}\n",
+                    results.raw_jitter_us.as_slice()
+                ));
             }
             if !results.buffered_jitter_us.is_empty() {
-                output.push_str(&format!("Buffered timings (µs): {:?}", results.buffered_jitter_us.as_slice()));
+                output.push_str(&format!(
+                    "Buffered timings (µs): {:?}",
+                    results.buffered_jitter_us.as_slice()
+                ));
             }
 
             Ok(Some(output))
@@ -820,41 +885,50 @@ async fn handle_net(action: NetAction, app: &mut App) -> Result<Option<String>, 
             output.push_str("Results:\n");
             output.push_str(&format!("  Packets sent:     {}\n", results.sent));
             output.push_str(&format!("  Packets received: {}\n", results.received));
-            output.push_str(&format!("  Send time:        {} ms\n", results.send_time_ms));
-            output.push_str(&format!("  Receive time:     {} ms\n", results.recv_time_ms));
+            output.push_str(&format!(
+                "  Send time:        {} ms\n",
+                results.send_time_ms
+            ));
+            output.push_str(&format!(
+                "  Receive time:     {} ms\n",
+                results.recv_time_ms
+            ));
 
             if results.sent > 0 {
-                let send_rate = (results.sent as f64 * 640.0) / (results.send_time_ms as f64 / 1000.0) / 1024.0;
+                let send_rate =
+                    (results.sent as f64 * 640.0) / (results.send_time_ms as f64 / 1000.0) / 1024.0;
                 output.push_str(&format!("  Send rate:        {:.1} KB/s\n", send_rate));
                 let fps = results.sent as f64 / (results.send_time_ms as f64 / 1000.0);
                 output.push_str(&format!("  Send FPS:         {:.1}\n", fps));
             }
 
             if results.received > 0 && results.sent > 0 {
-                let loss_pct = ((results.sent - results.received) as f64 / results.sent as f64) * 100.0;
+                let loss_pct =
+                    ((results.sent - results.received) as f64 / results.sent as f64) * 100.0;
                 output.push_str(&format!("  Packet loss:      {:.1}%", loss_pct));
             }
 
             Ok(Some(output))
         }
-        NetAction::Loopback { action } => {
-            match action {
-                None => {
-                    let enabled = app.net_get_loopback().await;
-                    Ok(Some(format!("{}", enabled)))
-                }
-                Some(GetSetBool::Set { value }) => {
-                    app.net_set_loopback(value).await;
-                    Ok(Some(format!("NET loopback set to {}", value)))
-                }
+        NetAction::Loopback { action } => match action {
+            None => {
+                let enabled = app.net_get_loopback().await;
+                Ok(Some(format!("{}", enabled)))
             }
-        }
+            Some(GetSetBool::Set { value }) => {
+                app.net_set_loopback(value).await;
+                Ok(Some(format!("NET loopback set to {}", value)))
+            }
+        },
     }
 }
 
 // ============================================================================
 // Special bootloader handlers (create their own connection)
 // ============================================================================
+
+// CLAUDE I don't think these need to make their own serial connections.  The port configuration is
+// the same in bootloader or non-bootloader mode.  Move these into the normal mgmt handler.
 
 async fn handle_mgmt_info(port: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     println!("MGMT Bootloader Info");
@@ -896,8 +970,15 @@ async fn handle_mgmt_info(port: Option<String>) -> Result<(), Box<dyn std::error
 
     let major = info.bootloader_version >> 4;
     let minor = info.bootloader_version & 0x0F;
-    println!("Bootloader Version: {}.{} (0x{:02X})", major, minor, info.bootloader_version);
-    println!("Chip ID: 0x{:04X} ({})", info.chip_id, chip_name(info.chip_id));
+    println!(
+        "Bootloader Version: {}.{} (0x{:02X})",
+        major, minor, info.bootloader_version
+    );
+    println!(
+        "Chip ID: 0x{:04X} ({})",
+        info.chip_id,
+        chip_name(info.chip_id)
+    );
 
     println!("\nSupported Commands ({}):", info.command_count);
     for i in 0..info.command_count {
@@ -937,7 +1018,10 @@ async fn handle_mgmt_info(port: Option<String>) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-async fn handle_mgmt_flash(port: Option<String>, file: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_mgmt_flash(
+    port: Option<String>,
+    file: std::path::PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("MGMT Flash");
     println!("==========\n");
 
@@ -1077,10 +1161,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Handle special bootloader commands (they create their own connection)
-    if let Some(Command::Mgmt { action: MgmtAction::Info }) = &cli.command {
+    if let Some(Command::Mgmt {
+        action: MgmtAction::Info,
+    }) = &cli.command
+    {
         return handle_mgmt_info(cli.port).await;
     }
-    if let Some(Command::Mgmt { action: MgmtAction::Flash { file } }) = &cli.command {
+    if let Some(Command::Mgmt {
+        action: MgmtAction::Flash { file },
+    }) = &cli.command
+    {
         return handle_mgmt_flash(cli.port, file.clone()).await;
     }
 

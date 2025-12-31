@@ -20,6 +20,10 @@ use embedded_hal::i2c::I2c as I2cTrait;
 use link::ui::{AudioError, AudioSystem, StereoFrame, STEREO_FRAME_SIZE};
 use {defmt_rtt as _, panic_probe as _};
 
+// CLAUDE Move the WM8960 control code to a new file wm8960.rs.  Remove all the "Wm8960" prefixes.
+// E.g., WM8960_I2C_ADDR should just be I2C_ADDR, and Wm8960Codec should just be codec (or
+// wm8960::Codec).  That should also allow you to refer to the `I2c` trait directly, not renamed.
+
 // =============================================================================
 // WM8960 Codec Control
 // =============================================================================
@@ -32,6 +36,10 @@ struct Wm8960Codec<'a, I> {
     regs: Wm8960Registers,
 }
 
+// TODO(RLB)
+// * Determine empirically whether the various delays below can be removed
+// * Add mute/unmute
+// * Add volume updates
 impl<'a, I: I2cTrait> Wm8960Codec<'a, I> {
     fn new(i2c: &'a mut I) -> Self {
         Self {
@@ -40,6 +48,7 @@ impl<'a, I: I2cTrait> Wm8960Codec<'a, I> {
         }
     }
 
+    // TODO(RLB) Determine whether these delays can be removed
     /// Initialize the audio codec with default settings.
     fn init(&mut self, delay: &mut impl DelayNs) {
         self.power_on(delay);
@@ -482,6 +491,12 @@ enum AudioState<'d> {
     Ready(I2S<'d, u16>),
 }
 
+// CLAUDE We can simplify this scheme some.  We don't need to delegate initialization to
+// `link::ui::App`, so we can go ahead and actually initialize everything in
+// `BoardAudioSystem::new` and remove the `init` method from `AudioSystem`.  That also means that
+// we will never be in the `Uninitialized` state, so we can stop holding the peripherals and
+// tracking state -- we can delete I2sPeripherals and AudioState.
+
 /// Board-level audio system with deferred I2S construction.
 ///
 /// The I2S peripheral is constructed lazily in `init()`, ensuring the
@@ -534,17 +549,15 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
         };
 
         // 1. Configure WM8960 codec FIRST (while I2S doesn't exist yet)
-        {
-            let mut codec = Wm8960Codec::new(i2c);
-            codec.init(delay);
-            codec.enable_input(true);
-            codec.enable_output(true);
-        }
+        let mut codec = Wm8960Codec::new(i2c);
+        codec.init(delay);
+        codec.enable_input(true);
+        codec.enable_output(true);
 
-        // Allow codec to stabilize
+        // 2. Allow codec to stabilize
         delay.delay_ms(20);
 
-        // 2. NOW construct I2S (codec is ready, clocks are stable)
+        // 3. Construct I2S (codec is ready, clocks are stable)
         let mut config = i2s::Config::default();
         config.mode = i2s::Mode::Slave;
         config.standard = i2s::Standard::Philips;
@@ -576,7 +589,11 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
         self.i2s().stop().await;
     }
 
-    async fn read_write(&mut self, tx: &StereoFrame, rx: &mut StereoFrame) -> Result<(), AudioError> {
+    async fn read_write(
+        &mut self,
+        tx: &StereoFrame,
+        rx: &mut StereoFrame,
+    ) -> Result<(), AudioError> {
         match self.i2s().read_write(&tx.0, &mut rx.0).await {
             Ok(_) => Ok(()),
             Err(i2s::Error::Overrun) => Err(AudioError::Overrun),
@@ -590,6 +607,7 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
 // Main
 // =============================================================================
 
+// CLAUDE Where does this come from?  We should reference something, like say `MAX_VALUE_SIZE`.
 const DMA_BUF_SIZE: usize = 64;
 
 bind_interrupts!(struct Irqs {
@@ -599,7 +617,6 @@ bind_interrupts!(struct Irqs {
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    // Clock configuration for I2S support
     let config = {
         use embassy_stm32::{rcc::*, time::Hertz};
 
@@ -639,6 +656,8 @@ async fn main(_spawner: Spawner) {
         config
     };
     let p = embassy_stm32::init(config);
+
+    // CLAUDE Same comments on UART config here as for the MGMT chip (mgmt/src/main.rs)
 
     // UART config for MGMT (even parity for STM32 bootloader compatibility)
     let mut mgmt_config = Config::default();
@@ -684,14 +703,14 @@ async fn main(_spawner: Spawner) {
     .split();
     let from_net = from_net.into_ring_buffered(net_rx_buf);
 
-    // RGB LED (R, G, B pin tuple): R=PA6, G=PC5, B=PB3
+    // RGB LED (initially black)
     let led = (
-        Output::new(p.PA6, Level::Low, Speed::Low),
-        Output::new(p.PC5, Level::Low, Speed::Low),
-        Output::new(p.PB3, Level::Low, Speed::Low),
+        Output::new(p.PA6, Level::High, Speed::Low),
+        Output::new(p.PC5, Level::High, Speed::Low),
+        Output::new(p.PB3, Level::High, Speed::Low),
     );
 
-    // Buttons (active low with pull-up)
+    // Buttons
     let button_a = ExtiInput::new(p.PC0, p.EXTI0, Pull::Up);
     let button_b = ExtiInput::new(p.PC1, p.EXTI1, Pull::Up);
     let button_mic = ExtiInput::new(p.PA4, p.EXTI4, Pull::Up);
@@ -711,7 +730,7 @@ async fn main(_spawner: Spawner) {
     };
     let delay = Delay;
 
-    // Audio system with DEFERRED I2S construction
+    // Audio system with deferred I2S construction
     // Peripherals are held until init() configures codec and then constructs I2S
     let audio_system = BoardAudioSystem::new(
         p.SPI3, p.PA15, p.PC10, p.PB5, p.PB4, p.DMA1_CH7, i2s_tx_buf, p.DMA1_CH0, i2s_rx_buf,

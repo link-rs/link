@@ -1,6 +1,6 @@
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
-use rcgen::{CertifiedKey, generate_simple_self_signed};
+use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -12,10 +12,12 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 #[command(name = "echo-server")]
 #[command(about = "WebSocket echo server for testing (WSS with self-signed cert)")]
 struct Args {
+    // CLAUDE Just make this a port, and always bind to 0.0.0.0
     /// Address to bind to
     #[arg(short, long, default_value = "0.0.0.0:9001")]
     bind: SocketAddr,
 
+    // CLAUDEYou can remove this, and just always use `localhost`
     /// Subject alternative names for the certificate (can specify multiple)
     #[arg(long, default_values_t = vec!["localhost".to_string()])]
     san: Vec<String>,
@@ -38,11 +40,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_single_cert(vec![cert_der], key_der)?;
 
     let acceptor = TlsAcceptor::from(Arc::new(config));
-
     let listener = TcpListener::bind(&args.bind).await?;
     println!("WebSocket echo server listening on wss://{}", args.bind);
-    println!("Certificate SANs: {:?}", args.san);
-    println!("Note: Clients must disable certificate verification for self-signed certs");
 
     while let Ok((stream, addr)) = listener.accept().await {
         let acceptor = acceptor.clone();
@@ -53,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn handle_connection(stream: TcpStream, addr: SocketAddr, acceptor: TlsAcceptor) {
-    use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use tokio::time::{interval, Duration};
 
     println!("[{}] New connection", addr);
@@ -80,6 +79,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, acceptor: TlsAcc
 
     println!("[{}] WebSocket connected", addr);
 
+    // CLAUDE Please remove the stats reporting from this binary
     // Stats counters
     let frames_received = Arc::new(AtomicU64::new(0));
     let bytes_received = Arc::new(AtomicU64::new(0));
@@ -143,7 +143,12 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, acceptor: TlsAcc
             }
             Ok(Message::Text(text)) => {
                 let len = text.len();
-                println!("[{}] RX Text: {} bytes: {:?}", addr, len, &text[..len.min(100)]);
+                println!(
+                    "[{}] RX Text: {} bytes: {:?}",
+                    addr,
+                    len,
+                    &text[..len.min(100)]
+                );
                 frames_received.fetch_add(1, Ordering::Relaxed);
                 bytes_received.fetch_add(len as u64, Ordering::Relaxed);
                 if let Err(e) = write.send(Message::Text(text)).await {

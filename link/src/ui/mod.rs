@@ -4,7 +4,9 @@ mod audio;
 mod eeprom;
 mod sframe;
 
-pub use audio::{AudioError, AudioSystem, Frame, StereoFrame, ENCODED_FRAME_SIZE, FRAME_SIZE, STEREO_FRAME_SIZE};
+pub use audio::{
+    AudioError, AudioSystem, Frame, StereoFrame, ENCODED_FRAME_SIZE, FRAME_SIZE, STEREO_FRAME_SIZE,
+};
 pub use eeprom::Eeprom;
 
 use crate::info;
@@ -33,6 +35,8 @@ enum Event {
     AudioFrame(Frame),
 }
 
+// CLAUDE There's no reason to have separate new() and run() here.  It can just be a run() method,
+// like in mgmt.
 pub struct App<W, R, LR, LG, LB, BA, BB, BM, I, D, AS> {
     to_mgmt: W,
     to_net: W,
@@ -200,7 +204,9 @@ where
             let mut zero_stereo = StereoFrame::default();
             for _i in 0..25 {
                 // 25 frames at 80ms each = 2 seconds
-                let _ = audio_system.read_write(&tone_stereo, &mut zero_stereo).await;
+                let _ = audio_system
+                    .read_write(&tone_stereo, &mut zero_stereo)
+                    .await;
             }
 
             loop {
@@ -1051,9 +1057,9 @@ mod audio_streaming_tests {
 
     #[tokio::test]
     async fn net_audio_frame_plays_out() {
-        use audio_codec_algorithms::{decode_alaw, encode_alaw};
         use crate::mocks::CapturingAudioStream;
         use crate::shared::{WriteTlv, MIN_START_LEVEL};
+        use audio_codec_algorithms::{decode_alaw, encode_alaw};
 
         let (ui_to_mgmt, _mgmt_from_ui) = channel();
         let (_mgmt_to_ui, ui_from_mgmt) = channel();
@@ -1124,19 +1130,17 @@ mod audio_streaming_tests {
         let expected_last = decode_alaw(encode_alaw(3000)) as u16;
 
         // Find our test frame (check stereo positions)
-        let found = frames.iter().any(|f| {
-            f.0[0] == expected_0
-                && f.0[2] == expected_1
-                && f.0[639 * 2] == expected_last
-        });
+        let found = frames
+            .iter()
+            .any(|f| f.0[0] == expected_0 && f.0[2] == expected_1 && f.0[639 * 2] == expected_last);
         assert!(found, "Test frame should have been played out");
     }
 
     #[tokio::test]
     async fn multiple_net_audio_frames_play_in_order() {
-        use audio_codec_algorithms::{decode_alaw, encode_alaw};
         use crate::mocks::CapturingAudioStream;
         use crate::shared::{WriteTlv, MIN_START_LEVEL};
+        use audio_codec_algorithms::{decode_alaw, encode_alaw};
 
         let (ui_to_mgmt, _mgmt_from_ui) = channel();
         let (_mgmt_to_ui, ui_from_mgmt) = channel();
@@ -1223,12 +1227,9 @@ mod audio_streaming_tests {
         // Verify order (frames should arrive in sequence)
         for (i, frame) in test_frames.iter().enumerate() {
             assert_eq!(
-                frame.0[0],
-                expected_values[i],
+                frame.0[0], expected_values[i],
                 "Frame {} should have decoded value {}, got {}",
-                i,
-                expected_values[i],
-                frame.0[0]
+                i, expected_values[i], frame.0[0]
             );
         }
     }

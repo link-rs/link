@@ -4,15 +4,15 @@
 extern crate alloc;
 
 use defmt::{info, warn};
+use edge_http::ws as http_ws;
+use edge_ws::FrameType;
 use embassy_executor::Spawner;
-use embassy_net::{tcp::TcpSocket, Runner, StackResources};
 use embassy_futures::select::{select, Either};
+use embassy_net::{tcp::TcpSocket, Runner, StackResources};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::Write as AsyncWrite;
 use embedded_tls::{Aes128GcmSha256, NoVerify, TlsConfig, TlsConnection, TlsContext};
-use edge_http::ws as http_ws;
-use edge_ws::FrameType;
 use esp_bootloader_esp_idf::partitions;
 use esp_hal::{
     clock::CpuClock,
@@ -45,6 +45,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
+// CLAUDE I might call this `singleton`, in analogy to the STM32 macro of that name
 macro_rules! mk_static {
     ($t:ty, $val:expr) => {{
         static STATIC_CELL: StaticCell<$t> = StaticCell::new();
@@ -81,7 +82,9 @@ async fn main(spawner: Spawner) {
         rts: RtsConfig::Disabled,
     };
 
-    // UART to MGMT (UART0: GPIO43 TX, GPIO44 RX, 115200 8N1)
+    // CLAUDE Same comment here about UART configs as in mgmt, ui
+
+    // UART to MGMT
     let mgmt_config = Config::default()
         .with_baudrate(115200)
         .with_parity(Parity::None)
@@ -95,7 +98,7 @@ async fn main(spawner: Spawner) {
         .into_async();
     let (from_mgmt, to_mgmt) = mgmt_uart.split();
 
-    // UART to UI (UART1: GPIO17 TX, GPIO18 RX, 460800 8N2)
+    // UART to UI
     let ui_config = Config::default()
         .with_baudrate(460800)
         .with_stop_bits(StopBits::_2)
@@ -108,6 +111,7 @@ async fn main(spawner: Spawner) {
         .into_async();
     let (from_ui, to_ui) = ui_uart.split();
 
+    // CLAUDE Go ahead and delete these for now
     // Signal pins for MGMT synchronization (not yet used)
     let _signal_to_mgmt = Output::new(peripherals.GPIO15, Level::Low, OutputConfig::default());
     let _signal_from_mgmt = Input::new(
@@ -265,8 +269,11 @@ async fn wifi_task(mut controller: WifiController<'static>, flash_offset: u32) {
                         .map(|(_, _, rssi)| network.signal_strength <= rssi)
                         .unwrap_or(false);
                     if !dominated {
-                        best_match =
-                            Some((wifi.ssid.as_str(), wifi.password.as_str(), network.signal_strength));
+                        best_match = Some((
+                            wifi.ssid.as_str(),
+                            wifi.password.as_str(),
+                            network.signal_strength,
+                        ));
                     }
                 }
             }
@@ -333,9 +340,11 @@ async fn ws_task(
                         info!("ws: received URL while waiting for WiFi");
                         current_url = url;
                     }
-                    WsCommand::Send(_) => {}  // Drop audio before connected
+                    WsCommand::Send(_) => {} // Drop audio before connected
                     WsCommand::EchoTest => {
                         info!("ws: ignoring echo test while disconnected");
+                        // CLAUDE Instead of sending back empty results here and below, have the
+                        // event take Option, and send back None.
                         // Send empty result to indicate test couldn't run
                         event_tx
                             .send(WsEvent::EchoTestResult(EchoTestResult {
@@ -384,7 +393,7 @@ async fn ws_task(
                         current_url = url;
                         break;
                     }
-                    WsCommand::Send(_) => {}  // Drop audio before connected
+                    WsCommand::Send(_) => {} // Drop audio before connected
                     WsCommand::EchoTest => {
                         info!("ws: ignoring echo test without URL");
                         // Send empty result to indicate test couldn't run
@@ -503,10 +512,13 @@ async fn ws_task(
         let headers = http_ws::upgrade_request_headers(
             Some(host.as_str()),
             Some(host.as_str()),
-            None,  // Use default version "13"
+            None, // Use default version "13"
             &nonce,
             &mut key_buf,
         );
+
+        // CLAUDE Why are we building the HTTP request manually??  Isn't this something that
+        // edge-http or edge-ws provides?
 
         // Build and send HTTP upgrade request
         // Format: "GET {path} HTTP/1.1\r\n{headers}\r\n"
@@ -529,11 +541,13 @@ async fn ws_task(
             if !name.is_empty() {
                 let name_bytes = name.as_bytes();
                 let value_bytes = value.as_bytes();
-                request_buf[request_len..request_len + name_bytes.len()].copy_from_slice(name_bytes);
+                request_buf[request_len..request_len + name_bytes.len()]
+                    .copy_from_slice(name_bytes);
                 request_len += name_bytes.len();
                 request_buf[request_len..request_len + 2].copy_from_slice(b": ");
                 request_len += 2;
-                request_buf[request_len..request_len + value_bytes.len()].copy_from_slice(value_bytes);
+                request_buf[request_len..request_len + value_bytes.len()]
+                    .copy_from_slice(value_bytes);
                 request_len += value_bytes.len();
                 request_buf[request_len..request_len + 2].copy_from_slice(b"\r\n");
                 request_len += 2;
@@ -567,7 +581,10 @@ async fn ws_task(
                 Timer::after(Duration::from_secs(5)).await;
                 break;
             }
-            match tls.read(&mut response_buf[response_len..response_len + 1]).await {
+            match tls
+                .read(&mut response_buf[response_len..response_len + 1])
+                .await
+            {
                 Ok(0) => {
                     warn!("ws: connection closed during handshake");
                     event_tx.send(WsEvent::Disconnected).await;
@@ -577,7 +594,9 @@ async fn ws_task(
                 Ok(_) => {
                     response_len += 1;
                     // Check for end of headers (CRLFCRLF)
-                    if response_len >= 4 && &response_buf[response_len - 4..response_len] == b"\r\n\r\n" {
+                    if response_len >= 4
+                        && &response_buf[response_len - 4..response_len] == b"\r\n\r\n"
+                    {
                         break;
                     }
                 }
@@ -652,8 +671,16 @@ async fn ws_task(
 
         // Validate WebSocket upgrade
         let mut accept_buf = [0u8; http_ws::MAX_BASE64_KEY_RESPONSE_LEN];
-        if !http_ws::is_upgrade_accepted(status_code, response_headers.iter().copied(), &nonce, &mut accept_buf) {
-            warn!("ws: WebSocket upgrade not accepted (status={})", status_code);
+        if !http_ws::is_upgrade_accepted(
+            status_code,
+            response_headers.iter().copied(),
+            &nonce,
+            &mut accept_buf,
+        ) {
+            warn!(
+                "ws: WebSocket upgrade not accepted (status={})",
+                status_code
+            );
             event_tx.send(WsEvent::Disconnected).await;
             Timer::after(Duration::from_secs(5)).await;
             continue;
@@ -666,8 +693,19 @@ async fn ws_task(
         let mut should_reconnect = false;
         let mut connection_broken = false;
 
+        // CLAUDE Have you verified that edge_ws::io::recv is cancellation-safe?  Otherwise we
+        // might lose data.
+
+        // CLAUDE would it be cleaner to use the select! macro here?  The nesting is getting pretty
+        // deep.
+
         loop {
-            match select(edge_ws::io::recv(&mut tls, &mut ws_read_buf), cmd_rx.receive()).await {
+            match select(
+                edge_ws::io::recv(&mut tls, &mut ws_read_buf),
+                cmd_rx.receive(),
+            )
+            .await
+            {
                 Either::First(read_result) => {
                     // Frame received from server
                     match read_result {
@@ -694,7 +732,10 @@ async fn ws_task(
                             };
                             if len > 2 {
                                 if let Ok(reason) = core::str::from_utf8(&ws_read_buf[2..len]) {
-                                    warn!("ws: received close frame: code={}, reason={}", code, reason);
+                                    warn!(
+                                        "ws: received close frame: code={}, reason={}",
+                                        code, reason
+                                    );
                                 } else {
                                     warn!("ws: received close frame: code={}", code);
                                 }
@@ -702,13 +743,27 @@ async fn ws_task(
                                 warn!("ws: received close frame: code={}", code);
                             }
                             // Send close frame back
-                            let _ = edge_ws::io::send(&mut tls, FrameType::Close, Some(rng.next_u32()), &ws_read_buf[..len]).await;
+                            let _ = edge_ws::io::send(
+                                &mut tls,
+                                FrameType::Close,
+                                Some(rng.next_u32()),
+                                &ws_read_buf[..len],
+                            )
+                            .await;
                             let _ = tls.flush().await;
                             break;
                         }
                         Ok((FrameType::Ping, len)) => {
                             // Respond with Pong containing the same payload
-                            if edge_ws::io::send(&mut tls, FrameType::Pong, Some(rng.next_u32()), &ws_read_buf[..len]).await.is_err() {
+                            if edge_ws::io::send(
+                                &mut tls,
+                                FrameType::Pong,
+                                Some(rng.next_u32()),
+                                &ws_read_buf[..len],
+                            )
+                            .await
+                            .is_err()
+                            {
                                 warn!("ws: failed to send pong");
                                 connection_broken = true;
                                 break;
@@ -739,7 +794,14 @@ async fn ws_task(
                         }
                         WsCommand::Send(data) => {
                             info!("ws: sending {} bytes", data.len());
-                            match edge_ws::io::send(&mut tls, FrameType::Binary(false), Some(rng.next_u32()), &data).await {
+                            match edge_ws::io::send(
+                                &mut tls,
+                                FrameType::Binary(false),
+                                Some(rng.next_u32()),
+                                &data,
+                            )
+                            .await
+                            {
                                 Ok(_) => {
                                     if tls.flush().await.is_err() {
                                         warn!("ws: flush failed");
@@ -793,7 +855,13 @@ async fn ws_task(
         if !connection_broken {
             // Send close frame with normal closure code (1000)
             let close_payload = 1000u16.to_be_bytes();
-            let _ = edge_ws::io::send(&mut tls, FrameType::Close, Some(rng.next_u32()), &close_payload).await;
+            let _ = edge_ws::io::send(
+                &mut tls,
+                FrameType::Close,
+                Some(rng.next_u32()),
+                &close_payload,
+            )
+            .await;
         }
 
         if !should_reconnect {
@@ -802,6 +870,8 @@ async fn ws_task(
         }
     }
 }
+
+// CLAUDE Why do we have both echo test and speed test?  It seems like we can remove the echo test.
 
 /// Run the WebSocket echo test with jitter buffer analysis.
 ///
@@ -840,12 +910,22 @@ where
     let mut next_send_time = Instant::now();
     let send_interval = Duration::from_millis(20);
 
-    info!("ws: echo test phase 1 - sending {} packets", ECHO_TEST_PACKET_COUNT);
+    info!(
+        "ws: echo test phase 1 - sending {} packets",
+        ECHO_TEST_PACKET_COUNT
+    );
 
     while (sent as usize) < ECHO_TEST_PACKET_COUNT {
         // Time to send next packet?
         if Instant::now() >= next_send_time {
-            match edge_ws::io::send(&mut *tls, FrameType::Binary(false), Some(rng.next_u32()), &packet).await {
+            match edge_ws::io::send(
+                &mut *tls,
+                FrameType::Binary(false),
+                Some(rng.next_u32()),
+                &packet,
+            )
+            .await
+            {
                 Ok(_) => {
                     if tls.flush().await.is_err() {
                         warn!("ws: echo test flush failed at packet {}", sent);
@@ -873,7 +953,9 @@ where
                 break; // Time to send again
             }
             let timeout = next_send_time.saturating_duration_since(now);
-            match embassy_time::with_timeout(timeout, edge_ws::io::recv(&mut *tls, ws_read_buf)).await {
+            match embassy_time::with_timeout(timeout, edge_ws::io::recv(&mut *tls, ws_read_buf))
+                .await
+            {
                 Ok(Ok((FrameType::Binary(_), len))) => {
                     let recv_time = Instant::now();
                     // Record raw jitter (before buffer)
@@ -911,7 +993,9 @@ where
         let deadline = Instant::now() + Duration::from_secs(2);
         while (received as usize) < (sent as usize) && Instant::now() < deadline {
             let timeout = deadline.saturating_duration_since(Instant::now());
-            match embassy_time::with_timeout(timeout, edge_ws::io::recv(&mut *tls, ws_read_buf)).await {
+            match embassy_time::with_timeout(timeout, edge_ws::io::recv(&mut *tls, ws_read_buf))
+                .await
+            {
                 Ok(Ok((FrameType::Binary(_), len))) => {
                     let recv_time = Instant::now();
                     // Record raw jitter (before buffer)
@@ -934,7 +1018,10 @@ where
                 }
                 Err(_) => {
                     // Timeout expired
-                    info!("ws: echo test phase 2 timeout, received {}/{}", received, sent);
+                    info!(
+                        "ws: echo test phase 2 timeout, received {}/{}",
+                        received, sent
+                    );
                     break;
                 }
             }
@@ -1030,7 +1117,14 @@ where
     let send_start = Instant::now();
 
     for i in 0..PACKET_COUNT {
-        match edge_ws::io::send(&mut *tls, FrameType::Binary(false), Some(rng.next_u32()), &packet).await {
+        match edge_ws::io::send(
+            &mut *tls,
+            FrameType::Binary(false),
+            Some(rng.next_u32()),
+            &packet,
+        )
+        .await
+        {
             Ok(_) => {
                 if tls.flush().await.is_err() {
                     warn!("ws: speed test flush failed at packet {}", i);
@@ -1062,7 +1156,9 @@ where
         info!("ws: speed test - waiting for responses");
         while (received as usize) < (sent as usize) && Instant::now() < deadline {
             let timeout = deadline.saturating_duration_since(Instant::now());
-            match embassy_time::with_timeout(timeout, edge_ws::io::recv(&mut *tls, ws_read_buf)).await {
+            match embassy_time::with_timeout(timeout, edge_ws::io::recv(&mut *tls, ws_read_buf))
+                .await
+            {
                 Ok(Ok((FrameType::Binary(_), _len))) => {
                     received += 1;
                     if received % 10 == 0 {
@@ -1104,6 +1200,7 @@ where
     )
 }
 
+// CLAUDE Is there not some library we can use for this?
 /// Parse a wss:// URL into (host, port, path)
 fn parse_wss_url(url: &str) -> Option<(&str, u16, &str)> {
     let url = url

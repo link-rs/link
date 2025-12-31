@@ -1,3 +1,6 @@
+// CLAUDE This file doesn't need to be a separate crate.  Move into the `link::ctl` module and
+// delete `lib.rs`.
+
 //! Bootloader protocol implementations for embedded devices.
 //!
 //! This crate provides host-side implementations of bootloader protocols
@@ -6,7 +9,7 @@
 //! # Supported Protocols
 //!
 //! - **STM32 (AN3155)**: USART bootloader protocol for STM32 microcontrollers
-//! - **ESP32**: ROM bootloader protocol for ESP32 microcontrollers (coming soon)
+//! - **ESP32**: ROM bootloader protocol for ESP32 microcontrollers
 
 #![no_std]
 

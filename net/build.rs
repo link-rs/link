@@ -1,11 +1,12 @@
 fn main() {
-    linker_be_nice();
+    linker_suggestions();
     println!("cargo:rustc-link-arg=-Tdefmt.x");
+    // CLAUDE Is this comment necessary?  It doesn't look like we're using flip-link.
     // make sure linkall.x is the last linker script (otherwise might cause problems with flip-link)
     println!("cargo:rustc-link-arg=-Tlinkall.x");
 }
 
-fn linker_be_nice() {
+fn linker_suggestions() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
         let kind = &args[1];
