@@ -104,8 +104,7 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
 // Main
 // =============================================================================
 
-// CLAUDE Where does this come from?  We should reference something, like say `MAX_VALUE_SIZE`.
-const DMA_BUF_SIZE: usize = 64;
+const DMA_BUF_SIZE: usize = link::shared::MAX_VALUE_SIZE;
 
 bind_interrupts!(struct Irqs {
     USART1 => usart::InterruptHandler<peripherals::USART1>;
