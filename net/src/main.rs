@@ -342,30 +342,11 @@ async fn ws_task(
                     WsCommand::Send(_) => {} // Drop audio before connected
                     WsCommand::EchoTest => {
                         info!("ws: ignoring echo test while disconnected");
-                        // CLAUDE Instead of sending back empty results here and below, have the
-                        // event take Option, and send back None.
-                        // Send empty result to indicate test couldn't run
-                        event_tx
-                            .send(WsEvent::EchoTestResult(EchoTestResult {
-                                sent: 0,
-                                received: 0,
-                                buffered_output: 0,
-                                raw_jitter_us: Vec::new(),
-                                buffered_jitter_us: Vec::new(),
-                                underruns: 0,
-                            }))
-                            .await;
+                        event_tx.send(WsEvent::EchoTestResult(None)).await;
                     }
                     WsCommand::SpeedTest => {
                         info!("ws: ignoring speed test while disconnected");
-                        event_tx
-                            .send(WsEvent::SpeedTestResult(SpeedTestResult {
-                                sent: 0,
-                                received: 0,
-                                send_time_ms: 0,
-                                recv_time_ms: 0,
-                            }))
-                            .await;
+                        event_tx.send(WsEvent::SpeedTestResult(None)).await;
                     }
                 }
             }
@@ -395,28 +376,11 @@ async fn ws_task(
                     WsCommand::Send(_) => {} // Drop audio before connected
                     WsCommand::EchoTest => {
                         info!("ws: ignoring echo test without URL");
-                        // Send empty result to indicate test couldn't run
-                        event_tx
-                            .send(WsEvent::EchoTestResult(EchoTestResult {
-                                sent: 0,
-                                received: 0,
-                                buffered_output: 0,
-                                raw_jitter_us: Vec::new(),
-                                buffered_jitter_us: Vec::new(),
-                                underruns: 0,
-                            }))
-                            .await;
+                        event_tx.send(WsEvent::EchoTestResult(None)).await;
                     }
                     WsCommand::SpeedTest => {
                         info!("ws: ignoring speed test without URL");
-                        event_tx
-                            .send(WsEvent::SpeedTestResult(SpeedTestResult {
-                                sent: 0,
-                                received: 0,
-                                send_time_ms: 0,
-                                recv_time_ms: 0,
-                            }))
-                            .await;
+                        event_tx.send(WsEvent::SpeedTestResult(None)).await;
                     }
                 }
             }
@@ -820,7 +784,7 @@ async fn ws_task(
                                 "ws: echo test complete: sent={}, received={}",
                                 result.sent, result.received
                             );
-                            event_tx.send(WsEvent::EchoTestResult(result)).await;
+                            event_tx.send(WsEvent::EchoTestResult(Some(result))).await;
                             if !connection_ok {
                                 warn!("ws: connection failed during echo test, reconnecting");
                                 connection_broken = true;
@@ -835,7 +799,7 @@ async fn ws_task(
                                 "ws: speed test complete: sent={}, received={}, send_time={}ms, recv_time={}ms",
                                 result.sent, result.received, result.send_time_ms, result.recv_time_ms
                             );
-                            event_tx.send(WsEvent::SpeedTestResult(result)).await;
+                            event_tx.send(WsEvent::SpeedTestResult(Some(result))).await;
                             if !connection_ok {
                                 warn!("ws: connection failed during speed test, reconnecting");
                                 connection_broken = true;

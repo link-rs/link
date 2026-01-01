@@ -105,10 +105,10 @@ pub enum WsEvent {
     Disconnected,
     /// Data received from WebSocket.
     Received(Vec<u8, MAX_WS_PAYLOAD>),
-    /// Echo test completed.
-    EchoTestResult(EchoTestResult),
-    /// Speed test completed.
-    SpeedTestResult(SpeedTestResult),
+    /// Echo test completed. None if test couldn't run (not connected).
+    EchoTestResult(Option<EchoTestResult>),
+    /// Speed test completed. None if test couldn't run (not connected).
+    SpeedTestResult(Option<SpeedTestResult>),
 }
 
 enum Event {
@@ -533,6 +533,13 @@ async fn handle_ws<M, U, LR, LG, LB>(
             }
         }
         WsEvent::EchoTestResult(result) => {
+            let Some(result) = result else {
+                info!("net: ws echo test skipped (not connected)");
+                to_mgmt
+                    .must_write_tlv(NetToMgmt::WsEchoTestResult, &[])
+                    .await;
+                return;
+            };
             info!(
                 "net: ws echo test complete: sent={}, received={}, buffered={}",
                 result.sent, result.received, result.buffered_output
@@ -568,6 +575,13 @@ async fn handle_ws<M, U, LR, LG, LB>(
                 .await;
         }
         WsEvent::SpeedTestResult(result) => {
+            let Some(result) = result else {
+                info!("net: ws speed test skipped (not connected)");
+                to_mgmt
+                    .must_write_tlv(NetToMgmt::WsSpeedTestResult, &[])
+                    .await;
+                return;
+            };
             info!(
                 "net: ws speed test complete: sent={}, received={}, send_time={}ms, recv_time={}ms",
                 result.sent, result.received, result.send_time_ms, result.recv_time_ms
@@ -649,6 +663,13 @@ async fn handle_ws_buffered<M, LR, LG, LB, const N: usize>(
             }
         }
         WsEvent::EchoTestResult(result) => {
+            let Some(result) = result else {
+                info!("net: ws echo test skipped (not connected)");
+                to_mgmt
+                    .must_write_tlv(NetToMgmt::WsEchoTestResult, &[])
+                    .await;
+                return;
+            };
             info!(
                 "net: ws echo test complete: sent={}, received={}, buffered={}",
                 result.sent, result.received, result.buffered_output
@@ -676,6 +697,13 @@ async fn handle_ws_buffered<M, LR, LG, LB, const N: usize>(
                 .await;
         }
         WsEvent::SpeedTestResult(result) => {
+            let Some(result) = result else {
+                info!("net: ws speed test skipped (not connected)");
+                to_mgmt
+                    .must_write_tlv(NetToMgmt::WsSpeedTestResult, &[])
+                    .await;
+                return;
+            };
             info!(
                 "net: ws speed test complete: sent={}, received={}, send_time={}ms, recv_time={}ms",
                 result.sent, result.received, result.send_time_ms, result.recv_time_ms

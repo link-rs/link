@@ -12,6 +12,12 @@
 // Shared types and utilities
 pub mod shared;
 
+// Re-export commonly used types at the crate root for convenience
+pub use shared::{Color, InvertedPin, Led};
+
+// Re-export logging macros
+pub(crate) use shared::info;
+
 // CLAUDE We should feature-gate each chip's module, so that there are `mgmt`, `net`, `ui`, and
 // `ctl` features which enable the corresponding modules.  All of the modules should be enabled by
 // default, but each instantiation crate should only enable the feature it depends on.  We can then
@@ -40,22 +46,3 @@ pub mod ctl;
 pub(crate) mod mocks;
 #[cfg(test)]
 mod testing;
-
-// CLAUDE These re-exports should go near the `mod shared` declaration
-// Re-export commonly used types at the crate root for convenience
-pub use shared::{Color, InvertedPin, Led};
-
-// CLAUDE These logging macros should go under `shared` and get re-exported as above.
-// Conditional logging macros - use defmt when feature is enabled, otherwise no-op
-#[cfg(feature = "defmt")]
-macro_rules! info {
-    ($($arg:tt)*) => { defmt::info!($($arg)*) };
-}
-
-#[cfg(not(feature = "defmt"))]
-macro_rules! info {
-    ($($arg:tt)*) => {};
-}
-
-// Make info! macro available to submodules
-pub(crate) use info;
