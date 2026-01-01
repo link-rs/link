@@ -39,15 +39,10 @@ pub mod ui;
 #[cfg(any(test, feature = "std"))]
 pub mod ctl;
 
-// CLAUDE The mocks module should move to the `shared`, since it is used by the individual chip
-// modules.
-
 // CLAUDE The `testing` module should be `integration_tests`.  It should only cover systemic
 // behavior that involve two or more chips.  Tests that only involve one chip should go in the
 // individual chip modules (plus `ctl`).
 
-// Test utilities
-#[cfg(test)]
-pub(crate) mod mocks;
+// Integration tests
 #[cfg(test)]
 mod testing;

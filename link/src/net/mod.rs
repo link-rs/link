@@ -724,8 +724,8 @@ async fn handle_ws_buffered<M, LR, LG, LB, const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::{MockFlash, MockPin};
     use crate::shared::Tlv;
+    use crate::shared::mocks::{MockFlash, MockPin};
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
     use embassy_sync::channel::Channel;
 

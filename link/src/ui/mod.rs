@@ -349,7 +349,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::{MockDelay, mock_i2c_with_eeprom};
+    use crate::shared::mocks::{MockDelay, mock_i2c_with_eeprom};
     use crate::shared::{Tlv, Value};
 
     /// Mock writer that captures TLVs
@@ -596,11 +596,11 @@ mod tests {
 #[cfg(test)]
 mod audio_streaming_tests {
     use super::*;
-    use crate::mocks::{
+    use crate::shared::ReadTlv;
+    use crate::shared::mocks::{
         ControllableButton, MockAudioStream, MockButton, MockDelay, mock_i2c_with_eeprom,
         mock_led_pins,
     };
-    use crate::shared::ReadTlv;
     use embedded_io_adapters::futures_03::FromFutures;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -993,7 +993,7 @@ mod audio_streaming_tests {
 
     #[tokio::test]
     async fn net_audio_frame_plays_out() {
-        use crate::mocks::CapturingAudioStream;
+        use crate::shared::mocks::CapturingAudioStream;
         use crate::shared::{MIN_START_LEVEL, WriteTlv};
         use audio_codec_algorithms::{decode_alaw, encode_alaw};
 
@@ -1072,7 +1072,7 @@ mod audio_streaming_tests {
 
     #[tokio::test]
     async fn multiple_net_audio_frames_play_in_order() {
-        use crate::mocks::CapturingAudioStream;
+        use crate::shared::mocks::CapturingAudioStream;
         use crate::shared::{MIN_START_LEVEL, WriteTlv};
         use audio_codec_algorithms::{decode_alaw, encode_alaw};
 

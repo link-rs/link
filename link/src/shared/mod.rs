@@ -3,6 +3,8 @@
 pub mod jitter_buffer;
 pub mod led;
 mod logging;
+#[cfg(test)]
+pub mod mocks;
 pub mod protocol;
 pub mod tlv;
 pub mod uart_config;

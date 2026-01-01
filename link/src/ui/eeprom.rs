@@ -67,7 +67,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::{MockDelay, mock_i2c_with_eeprom};
+    use crate::shared::mocks::{MockDelay, mock_i2c_with_eeprom};
 
     #[test]
     fn get_version_default() {

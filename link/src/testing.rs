@@ -1,6 +1,6 @@
 //! Integration tests for the multi-chip system.
 
-use crate::mocks::{
+use crate::shared::mocks::{
     GpioOp, MockAsyncDelay, MockAudioStream, MockButton, MockDelay, MockFlash, MockPin,
     TrackingPin, mock_i2c_with_eeprom, mock_led_pins,
 };
