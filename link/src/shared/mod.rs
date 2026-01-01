@@ -5,10 +5,10 @@ pub mod led;
 pub mod protocol;
 pub mod tlv;
 
-pub use jitter_buffer::{JitterBuffer, JitterState, JitterStats, BUFFER_FRAMES, MIN_START_LEVEL};
+pub use jitter_buffer::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
 pub use led::{Color, InvertedPin, Led};
 pub use protocol::*;
-pub use tlv::{ReadTlv, Tlv, Value, WriteTlv, MAX_VALUE_SIZE, SYNC_WORD};
+pub use tlv::{MAX_VALUE_SIZE, ReadTlv, SYNC_WORD, Tlv, Value, WriteTlv};
 
 // Re-export embassy_sync types for use by chip modules
 pub use embassy_sync::{

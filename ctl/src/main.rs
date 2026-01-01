@@ -196,7 +196,6 @@ enum WifiAction {
     Clear,
 }
 
-
 // CLAUDE This method overlaps a lot with `async fn connect()`, and in fact you're opening the
 // successful port twice: Once when you test it, and once after it's selected.  You should refactor
 // select_port to return an App (or Option or Result) and have the following form:

@@ -5,8 +5,8 @@ use js_sys::{Object, Reflect, Uint8Array};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{ReadableStreamDefaultReader, SerialPort, WritableStreamDefaultWriter};
 
@@ -102,9 +102,9 @@ impl WebSerial {
         let writable = port.writable();
 
         let reader: ReadableStreamDefaultReader = readable.get_reader().unchecked_into();
-        let writer: WritableStreamDefaultWriter = writable.get_writer().map_err(|e| {
-            WebSerialError::JsError(format!("Failed to get writer: {:?}", e))
-        })?;
+        let writer: WritableStreamDefaultWriter = writable
+            .get_writer()
+            .map_err(|e| WebSerialError::JsError(format!("Failed to get writer: {:?}", e)))?;
 
         *self.state.borrow_mut() = Some(WebSerialState {
             port,

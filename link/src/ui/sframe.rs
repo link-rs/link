@@ -6,8 +6,8 @@
 #![allow(dead_code)] // TODO: Delete once used
 
 use aes_gcm::{
-    aead::{AeadInPlace, Buffer, KeyInit},
     Aes128Gcm, Nonce,
+    aead::{AeadInPlace, Buffer, KeyInit},
 };
 use heapless::Vec;
 use hkdf::Hkdf;

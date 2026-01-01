@@ -6,14 +6,14 @@
 extern crate alloc;
 
 use crate::net::WifiSsid;
-use core::future::Future;
 use crate::shared::{
-    CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt, WriteTlv,
-    MAX_VALUE_SIZE,
+    CtlToMgmt, MAX_VALUE_SIZE, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt,
+    WriteTlv,
 };
-use bootloader::esp::{self, Bootloader as EspBootloader, SecurityInfo};
 pub use bootloader::esp::ChipType as NetChipType;
+use bootloader::esp::{self, Bootloader as EspBootloader, SecurityInfo};
 use bootloader::stm::{self, Bootloader};
+use core::future::Future;
 use embedded_io_async::{ErrorType, Read, Write};
 
 /// Maximum size for verification error data (matches write chunk size).
@@ -169,7 +169,11 @@ struct TunnelReader<'a, R> {
 }
 
 impl<'a, R> TunnelReader<'a, R> {
-    fn new(tlv_type: MgmtToCtl, reader: &'a mut R, buffer: &'a mut heapless::Vec<u8, MAX_VALUE_SIZE>) -> Self {
+    fn new(
+        tlv_type: MgmtToCtl,
+        reader: &'a mut R,
+        buffer: &'a mut heapless::Vec<u8, MAX_VALUE_SIZE>,
+    ) -> Self {
         Self {
             tlv_type,
             reader,
@@ -381,7 +385,9 @@ where
     pub async fn hello(&mut self, challenge: &[u8; 4]) -> bool {
         const MAGIC: &[u8; 4] = b"LINK";
 
-        self.writer.must_write_tlv(CtlToMgmt::Hello, challenge).await;
+        self.writer
+            .must_write_tlv(CtlToMgmt::Hello, challenge)
+            .await;
         let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
 
         if tlv.tlv_type != MgmtToCtl::Hello || tlv.value.len() != 4 {
@@ -694,22 +700,12 @@ where
         let sent = tlv.value.get(0).copied().unwrap_or(0);
         let received = tlv.value.get(1).copied().unwrap_or(0);
         let send_time_ms = if tlv.value.len() >= 6 {
-            u32::from_le_bytes([
-                tlv.value[2],
-                tlv.value[3],
-                tlv.value[4],
-                tlv.value[5],
-            ])
+            u32::from_le_bytes([tlv.value[2], tlv.value[3], tlv.value[4], tlv.value[5]])
         } else {
             0
         };
         let recv_time_ms = if tlv.value.len() >= 10 {
-            u32::from_le_bytes([
-                tlv.value[6],
-                tlv.value[7],
-                tlv.value[8],
-                tlv.value[9],
-            ])
+            u32::from_le_bytes([tlv.value[6], tlv.value[7], tlv.value[8], tlv.value[9]])
         } else {
             0
         };

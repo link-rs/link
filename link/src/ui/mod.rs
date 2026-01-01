@@ -5,14 +5,14 @@ mod eeprom;
 mod sframe;
 
 pub use audio::{
-    AudioError, AudioSystem, Frame, StereoFrame, ENCODED_FRAME_SIZE, FRAME_SIZE, STEREO_FRAME_SIZE,
+    AudioError, AudioSystem, ENCODED_FRAME_SIZE, FRAME_SIZE, Frame, STEREO_FRAME_SIZE, StereoFrame,
 };
 pub use eeprom::Eeprom;
 
 use crate::info;
 use crate::shared::{
-    read_tlv_loop, Channel, Color, CriticalSectionRawMutex, Led, MgmtToUi, NetToUi, Sender, Tlv,
-    UiToMgmt, UiToNet, WriteTlv,
+    Channel, Color, CriticalSectionRawMutex, Led, MgmtToUi, NetToUi, Sender, Tlv, UiToMgmt,
+    UiToNet, WriteTlv, read_tlv_loop,
 };
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::StatefulOutputPin;
@@ -214,7 +214,7 @@ where
                 // This gives frames a chance to arrive while limiting latency
                 #[cfg(feature = "audio-buffer")]
                 let tx_stereo = {
-                    use embassy_time::{with_timeout, Duration};
+                    use embassy_time::{Duration, with_timeout};
                     match with_timeout(Duration::from_millis(20), playback_channel.receive()).await
                     {
                         Ok(frame) => frame.decode_to_stereo(),
@@ -401,7 +401,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::{mock_i2c_with_eeprom, MockDelay};
+    use crate::mocks::{MockDelay, mock_i2c_with_eeprom};
     use crate::shared::{Tlv, Value};
 
     /// Mock writer that captures TLVs
@@ -649,8 +649,8 @@ mod tests {
 mod audio_streaming_tests {
     use super::*;
     use crate::mocks::{
-        mock_i2c_with_eeprom, mock_led_pins, ControllableButton, MockAudioStream, MockButton,
-        MockDelay,
+        ControllableButton, MockAudioStream, MockButton, MockDelay, mock_i2c_with_eeprom,
+        mock_led_pins,
     };
     use crate::shared::ReadTlv;
     use embedded_io_adapters::futures_03::FromFutures;
@@ -1058,7 +1058,7 @@ mod audio_streaming_tests {
     #[tokio::test]
     async fn net_audio_frame_plays_out() {
         use crate::mocks::CapturingAudioStream;
-        use crate::shared::{WriteTlv, MIN_START_LEVEL};
+        use crate::shared::{MIN_START_LEVEL, WriteTlv};
         use audio_codec_algorithms::{decode_alaw, encode_alaw};
 
         let (ui_to_mgmt, _mgmt_from_ui) = channel();
@@ -1139,7 +1139,7 @@ mod audio_streaming_tests {
     #[tokio::test]
     async fn multiple_net_audio_frames_play_in_order() {
         use crate::mocks::CapturingAudioStream;
-        use crate::shared::{WriteTlv, MIN_START_LEVEL};
+        use crate::shared::{MIN_START_LEVEL, WriteTlv};
         use audio_codec_algorithms::{decode_alaw, encode_alaw};
 
         let (ui_to_mgmt, _mgmt_from_ui) = channel();

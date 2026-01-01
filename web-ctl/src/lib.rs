@@ -6,8 +6,8 @@
 mod serial;
 
 use link::ctl::{App, FlashPhase};
-use serial::WebSerial;
 use serde::Serialize;
+use serial::WebSerial;
 use wasm_bindgen::prelude::*;
 
 /// Initialize panic hook for better error messages.
@@ -58,9 +58,10 @@ impl LinkController {
     /// This will prompt the user to select a serial port.
     #[wasm_bindgen]
     pub async fn connect(&mut self, baud_rate: u32) -> Result<(), JsValue> {
-        self.serial.connect(baud_rate).await.map_err(|e| {
-            JsValue::from_str(&format!("{}", e))
-        })?;
+        self.serial
+            .connect(baud_rate)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
 
         // Create the CTL app with the serial transport
         self.app = Some(App::new(self.serial.clone(), self.serial.clone()));
@@ -79,9 +80,10 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn disconnect(&mut self) -> Result<(), JsValue> {
         self.app = None;
-        self.serial.disconnect().await.map_err(|e| {
-            JsValue::from_str(&format!("{}", e))
-        })?;
+        self.serial
+            .disconnect()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
         log("Disconnected from Link device");
         Ok(())
     }
@@ -90,7 +92,10 @@ impl LinkController {
     /// Returns true if the device responds correctly.
     #[wasm_bindgen]
     pub async fn hello(&mut self) -> Result<bool, JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
 
         // Generate a random challenge
         let challenge: [u8; 4] = [
@@ -107,14 +112,20 @@ impl LinkController {
     /// Get the firmware version stored in UI chip EEPROM.
     #[wasm_bindgen]
     pub async fn get_version(&mut self) -> Result<u32, JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         Ok(app.get_version().await)
     }
 
     /// Set the firmware version in UI chip EEPROM.
     #[wasm_bindgen]
     pub async fn set_version(&mut self, version: u32) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.set_version(version).await;
         Ok(())
     }
@@ -123,7 +134,10 @@ impl LinkController {
     /// Returns the key as a hex string.
     #[wasm_bindgen]
     pub async fn get_sframe_key(&mut self) -> Result<String, JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         let key = app.get_sframe_key().await;
         Ok(hex::encode(key))
     }
@@ -132,14 +146,18 @@ impl LinkController {
     /// Takes the key as a hex string (32 hex chars = 16 bytes).
     #[wasm_bindgen]
     pub async fn set_sframe_key(&mut self, key_hex: &str) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
 
-        let key_bytes = hex::decode(key_hex).map_err(|e| {
-            JsValue::from_str(&format!("Invalid hex string: {}", e))
-        })?;
+        let key_bytes = hex::decode(key_hex)
+            .map_err(|e| JsValue::from_str(&format!("Invalid hex string: {}", e)))?;
 
         if key_bytes.len() != 16 {
-            return Err(JsValue::from_str("SFrame key must be 16 bytes (32 hex chars)"));
+            return Err(JsValue::from_str(
+                "SFrame key must be 16 bytes (32 hex chars)",
+            ));
         }
 
         let mut key = [0u8; 16];
@@ -151,7 +169,10 @@ impl LinkController {
     /// Get the relay URL from NET chip storage.
     #[wasm_bindgen]
     pub async fn get_relay_url(&mut self) -> Result<String, JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         let url = app.get_relay_url().await;
         Ok(url.to_string())
     }
@@ -159,7 +180,10 @@ impl LinkController {
     /// Set the relay URL in NET chip storage.
     #[wasm_bindgen]
     pub async fn set_relay_url(&mut self, url: &str) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.set_relay_url(url).await;
         Ok(())
     }
@@ -168,7 +192,10 @@ impl LinkController {
     /// Returns a JSON array of {ssid, password} objects.
     #[wasm_bindgen]
     pub async fn get_wifi_networks(&mut self) -> Result<JsValue, JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         let ssids = app.get_wifi_ssids().await;
 
         let networks: Vec<WifiNetwork> = ssids
@@ -179,15 +206,17 @@ impl LinkController {
             })
             .collect();
 
-        serde_wasm_bindgen::to_value(&networks).map_err(|e| {
-            JsValue::from_str(&format!("Serialization error: {}", e))
-        })
+        serde_wasm_bindgen::to_value(&networks)
+            .map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
     }
 
     /// Add a WiFi network to NET chip storage.
     #[wasm_bindgen]
     pub async fn add_wifi_network(&mut self, ssid: &str, password: &str) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.add_wifi_ssid(ssid, password).await;
         Ok(())
     }
@@ -195,7 +224,10 @@ impl LinkController {
     /// Clear all WiFi networks from NET chip storage.
     #[wasm_bindgen]
     pub async fn clear_wifi_networks(&mut self) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.clear_wifi_ssids().await;
         Ok(())
     }
@@ -203,7 +235,10 @@ impl LinkController {
     /// Reset the UI chip into bootloader mode.
     #[wasm_bindgen]
     pub async fn reset_ui_to_bootloader(&mut self) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.reset_ui_to_bootloader().await;
         Ok(())
     }
@@ -211,7 +246,10 @@ impl LinkController {
     /// Reset the UI chip into user mode.
     #[wasm_bindgen]
     pub async fn reset_ui_to_user(&mut self) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.reset_ui_to_user().await;
         Ok(())
     }
@@ -219,7 +257,10 @@ impl LinkController {
     /// Reset the NET chip into bootloader mode.
     #[wasm_bindgen]
     pub async fn reset_net_to_bootloader(&mut self) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.reset_net_to_bootloader().await;
         Ok(())
     }
@@ -227,7 +268,10 @@ impl LinkController {
     /// Reset the NET chip into user mode.
     #[wasm_bindgen]
     pub async fn reset_net_to_user(&mut self) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.reset_net_to_user().await;
         Ok(())
     }
@@ -240,17 +284,17 @@ impl LinkController {
         firmware: Vec<u8>,
         progress_callback: js_sys::Function,
     ) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
 
         // Create a delay function using setTimeout
         let delay_ms = |ms: u64| async move {
             let promise = js_sys::Promise::new(&mut |resolve, _reject| {
                 let window = web_sys::window().unwrap();
                 window
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(
-                        &resolve,
-                        ms as i32,
-                    )
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32)
                     .unwrap();
             });
             wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
@@ -294,7 +338,10 @@ impl LinkController {
         verify: bool,
         progress_callback: js_sys::Function,
     ) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
 
         // Progress callback wrapper
         let progress = |phase: FlashPhase, current: usize, total: usize| {
@@ -327,30 +374,39 @@ impl LinkController {
     /// Returns JSON with {bootloader_version, chip_id, commands, flash_sample}.
     #[wasm_bindgen]
     pub async fn get_ui_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
 
         // Create a delay function
         let delay_ms = |ms: u64| async move {
             let promise = js_sys::Promise::new(&mut |resolve, _reject| {
                 let window = web_sys::window().unwrap();
                 window
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(
-                        &resolve,
-                        ms as i32,
-                    )
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32)
                     .unwrap();
             });
             wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
         };
 
-        let info = app.get_ui_bootloader_info(delay_ms).await.map_err(|e| {
-            JsValue::from_str(&format!("Failed to get bootloader info: {:?}", e))
-        })?;
+        let info = app
+            .get_ui_bootloader_info(delay_ms)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to get bootloader info: {:?}", e)))?;
 
         // Convert to a JS object
         let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"bootloaderVersion".into(), &(info.bootloader_version as u32).into())?;
-        js_sys::Reflect::set(&obj, &"chipId".into(), &format!("0x{:04X}", info.chip_id).into())?;
+        js_sys::Reflect::set(
+            &obj,
+            &"bootloaderVersion".into(),
+            &(info.bootloader_version as u32).into(),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &"chipId".into(),
+            &format!("0x{:04X}", info.chip_id).into(),
+        )?;
 
         let commands: Vec<String> = info.commands[..info.command_count]
             .iter()
@@ -373,19 +429,39 @@ impl LinkController {
     /// Returns JSON with security_info including chip type.
     #[wasm_bindgen]
     pub async fn get_net_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
 
-        let info = app.get_net_bootloader_info().await.map_err(|e| {
-            JsValue::from_str(&format!("Failed to get bootloader info: {:?}", e))
-        })?;
+        let info = app
+            .get_net_bootloader_info()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to get bootloader info: {:?}", e)))?;
 
         // Convert to a JS object
         let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"chipType".into(), &format!("{:?}", info.security_info.chip_type).into())?;
+        js_sys::Reflect::set(
+            &obj,
+            &"chipType".into(),
+            &format!("{:?}", info.security_info.chip_type).into(),
+        )?;
         js_sys::Reflect::set(&obj, &"flags".into(), &info.security_info.flags.into())?;
-        js_sys::Reflect::set(&obj, &"flashCryptCnt".into(), &info.security_info.flash_crypt_cnt.into())?;
-        js_sys::Reflect::set(&obj, &"chipId".into(), &format!("0x{:08X}", info.security_info.chip_id).into())?;
-        js_sys::Reflect::set(&obj, &"ecoVersion".into(), &info.security_info.eco_version.into())?;
+        js_sys::Reflect::set(
+            &obj,
+            &"flashCryptCnt".into(),
+            &info.security_info.flash_crypt_cnt.into(),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &"chipId".into(),
+            &format!("0x{:08X}", info.security_info.chip_id).into(),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &"ecoVersion".into(),
+            &info.security_info.eco_version.into(),
+        )?;
 
         Ok(obj.into())
     }
@@ -393,7 +469,10 @@ impl LinkController {
     /// Ping the MGMT chip.
     #[wasm_bindgen]
     pub async fn ping_mgmt(&mut self, data: Vec<u8>) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.mgmt_ping(&data).await;
         Ok(())
     }
@@ -401,7 +480,10 @@ impl LinkController {
     /// Ping the UI chip.
     #[wasm_bindgen]
     pub async fn ping_ui(&mut self, data: Vec<u8>) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.ui_ping(&data).await;
         Ok(())
     }
@@ -409,7 +491,10 @@ impl LinkController {
     /// Ping the NET chip.
     #[wasm_bindgen]
     pub async fn ping_net(&mut self, data: Vec<u8>) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.net_ping(&data).await;
         Ok(())
     }
@@ -419,16 +504,28 @@ impl LinkController {
     /// Returns JSON with {bootloaderVersion, chipId, commands, flashSample}.
     #[wasm_bindgen]
     pub async fn get_mgmt_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
 
-        let info = app.get_mgmt_bootloader_info().await.map_err(|e| {
-            JsValue::from_str(&format!("Failed to get bootloader info: {:?}", e))
-        })?;
+        let info = app
+            .get_mgmt_bootloader_info()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to get bootloader info: {:?}", e)))?;
 
         // Convert to a JS object
         let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"bootloaderVersion".into(), &(info.bootloader_version as u32).into())?;
-        js_sys::Reflect::set(&obj, &"chipId".into(), &format!("0x{:04X}", info.chip_id).into())?;
+        js_sys::Reflect::set(
+            &obj,
+            &"bootloaderVersion".into(),
+            &(info.bootloader_version as u32).into(),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &"chipId".into(),
+            &format!("0x{:04X}", info.chip_id).into(),
+        )?;
 
         let commands: Vec<String> = info.commands[..info.command_count]
             .iter()
@@ -456,7 +553,10 @@ impl LinkController {
         firmware: Vec<u8>,
         progress_callback: js_sys::Function,
     ) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
 
         // Progress callback wrapper
         let progress = |phase: FlashPhase, current: usize, total: usize| {
@@ -488,7 +588,10 @@ impl LinkController {
     /// Send a WebSocket ping through the NET chip.
     #[wasm_bindgen]
     pub async fn ws_ping(&mut self, data: Vec<u8>) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.ws_ping(&data).await;
         Ok(())
     }
@@ -496,14 +599,20 @@ impl LinkController {
     /// Get UI chip loopback mode.
     #[wasm_bindgen]
     pub async fn get_ui_loopback(&mut self) -> Result<bool, JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         Ok(app.ui_get_loopback().await)
     }
 
     /// Set UI chip loopback mode.
     #[wasm_bindgen]
     pub async fn set_ui_loopback(&mut self, enabled: bool) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.ui_set_loopback(enabled).await;
         Ok(())
     }
@@ -511,14 +620,20 @@ impl LinkController {
     /// Get NET chip loopback mode.
     #[wasm_bindgen]
     pub async fn get_net_loopback(&mut self) -> Result<bool, JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         Ok(app.net_get_loopback().await)
     }
 
     /// Set NET chip loopback mode.
     #[wasm_bindgen]
     pub async fn set_net_loopback(&mut self, enabled: bool) -> Result<(), JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
         app.net_set_loopback(enabled).await;
         Ok(())
     }
@@ -527,7 +642,10 @@ impl LinkController {
     /// Returns a JSON object with all current device state.
     #[wasm_bindgen]
     pub async fn get_all_state(&mut self) -> Result<JsValue, JsValue> {
-        let app = self.app.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))?;
+        let app = self
+            .app
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))?;
 
         let obj = js_sys::Object::new();
 
@@ -537,7 +655,11 @@ impl LinkController {
         js_sys::Reflect::set(&ui_obj, &"version".into(), &version.into())?;
 
         let sframe_key = app.get_sframe_key().await;
-        js_sys::Reflect::set(&ui_obj, &"sframeKey".into(), &hex::encode(sframe_key).into())?;
+        js_sys::Reflect::set(
+            &ui_obj,
+            &"sframeKey".into(),
+            &hex::encode(sframe_key).into(),
+        )?;
 
         let ui_loopback = app.ui_get_loopback().await;
         js_sys::Reflect::set(&ui_obj, &"loopback".into(), &ui_loopback.into())?;
@@ -557,9 +679,8 @@ impl LinkController {
                 password: s.password.to_string(),
             })
             .collect();
-        let networks_value = serde_wasm_bindgen::to_value(&networks).map_err(|e| {
-            JsValue::from_str(&format!("Serialization error: {}", e))
-        })?;
+        let networks_value = serde_wasm_bindgen::to_value(&networks)
+            .map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))?;
         js_sys::Reflect::set(&net_obj, &"wifiNetworks".into(), &networks_value)?;
 
         let net_loopback = app.net_get_loopback().await;

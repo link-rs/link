@@ -1,36 +1,46 @@
-.PHONY: flash-ui flash-mgmt flash-net clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export
+.PHONY: all preflight format flash-ui flash-mgmt flash-net clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl
 
-# UI chip (STM32F405RG - Cortex-M4F)
-UI_TARGET = thumbv7em-none-eabihf
-UI_ELF = ui/target/$(UI_TARGET)/release/ui
-UI_BIN = ui/target/$(UI_TARGET)/release/ui.bin
+CRATES = ui mgmt net ctl link web-ctl web-link bootloader echo-server
 
-# MGMT chip (STM32F072CB - Cortex-M0)
-MGMT_TARGET = thumbv6m-none-eabi
-MGMT_ELF = mgmt/target/$(MGMT_TARGET)/release/mgmt
-MGMT_BIN = mgmt/target/$(MGMT_TARGET)/release/mgmt.bin
+# Output paths (targets configured in each crate's .cargo/config.toml)
+UI_BIN = ui/target/thumbv7em-none-eabihf/debug/ui.bin
+MGMT_BIN = mgmt/target/thumbv6m-none-eabi/debug/mgmt.bin
+NET_BIN = net/target/xtensa-esp32s3-none-elf/debug/net
 
-# NET chip (ESP32-S3) - firmware built separately via ESP-IDF
-# Default path to NET firmware build directory
-NET_BUILD_DIR ?= ../hactar/firmware/net/build
-NET_BIN = $(NET_BUILD_DIR)/net.bin
+# Build everything: all firmwares, ctl, and web apps
+all: $(UI_BIN) $(MGMT_BIN) $(NET_BIN) ctl web-ctl web-link
+	@echo "Build complete."
 
-# ELF files (always rebuild via cargo)
-$(UI_ELF): FORCE
-	cd ui && cargo build --release --target $(UI_TARGET)
+# Preflight checks: build everything, run tests, check formatting
+preflight: all
+	cd link && cargo test
+	@for crate in $(CRATES); do \
+		echo "Checking format: $$crate"; \
+		(cd $$crate && cargo fmt --check) || exit 1; \
+	done
+	@echo "Preflight checks passed."
 
-$(MGMT_ELF): FORCE
-	cd mgmt && cargo build --release --target $(MGMT_TARGET)
+# Format all crates
+format:
+	@for crate in $(CRATES); do \
+		echo "Formatting: $$crate"; \
+		(cd $$crate && cargo fmt); \
+	done
+	@echo "Formatting complete."
 
-# Binary files
-$(UI_BIN): $(UI_ELF)
-	cd ui && cargo objcopy --release --target $(UI_TARGET) -- -O binary ../$(UI_BIN)
+# Firmware binaries
+$(UI_BIN): FORCE
+	cd ui && cargo objcopy -- -O binary target/thumbv7em-none-eabihf/debug/ui.bin
 
-$(MGMT_BIN): $(MGMT_ELF)
-	cd mgmt && cargo objcopy --release --target $(MGMT_TARGET) -- -O binary ../$(MGMT_BIN)
+$(MGMT_BIN): FORCE
+	cd mgmt && cargo objcopy -- -O binary target/thumbv6m-none-eabi/debug/mgmt.bin
 
 $(NET_BIN): FORCE
-	cd net && cargo build --release
+	cd net && cargo build
+
+# CTL program
+ctl: FORCE
+	cd ctl && cargo build
 
 # Flash targets
 flash-ui: $(UI_BIN)
@@ -40,10 +50,7 @@ flash-mgmt: $(MGMT_BIN)
 	cd ctl && cargo run -- mgmt flash ../$(MGMT_BIN)
 
 # Flash NET chip (ESP32-S3)
-# WARNING: Uses default app address 0x10000. Override NET_BUILD_DIR if needed.
-# Example: make flash-net NET_BUILD_DIR=/path/to/build
 flash-net: $(NET_BIN)
-	@test -f $(NET_BIN) || (echo "Error: $(NET_BIN) not found. Set NET_BUILD_DIR to your ESP-IDF build directory." && exit 1)
 	cd ctl && cargo run -- net flash $(abspath $(NET_BIN)) -c --no-verify
 
 # Web CTL (WASM)

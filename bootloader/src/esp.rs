@@ -665,11 +665,7 @@ where
     /// peripheral directly via READ_REG/WRITE_REG commands.
     ///
     /// For ESP32-S3, SPI1 is at base 0x60002000.
-    pub async fn read_flash(
-        &mut self,
-        address: u32,
-        data: &mut [u8],
-    ) -> Result<(), Error<R::Error>>
+    pub async fn read_flash(&mut self, address: u32, data: &mut [u8]) -> Result<(), Error<R::Error>>
     where
         W::Error: Into<R::Error>,
     {
@@ -696,24 +692,41 @@ where
             // Configure SPI for read operation
             // USER_REG: enable command, address, and data-in phases
             // Bit 27: USR_COMMAND, Bit 28: USR_ADDR, Bit 29: USR_MISO
-            self.write_reg(SPI1_USER_REG, (1 << 27) | (1 << 28) | (1 << 29), 0xFFFFFFFF, 0)
-                .await?;
+            self.write_reg(
+                SPI1_USER_REG,
+                (1 << 27) | (1 << 28) | (1 << 29),
+                0xFFFFFFFF,
+                0,
+            )
+            .await?;
 
             // USER1_REG: set address bit length (24 bits = 23 in the field)
             // Bits 26-31: USR_ADDR_BITLEN
-            self.write_reg(SPI1_USER1_REG, 23 << 26, 0xFFFFFFFF, 0).await?;
+            self.write_reg(SPI1_USER1_REG, 23 << 26, 0xFFFFFFFF, 0)
+                .await?;
 
             // USER2_REG: set command value and length
             // Bits 0-15: USR_COMMAND_VALUE, Bits 28-31: USR_COMMAND_BITLEN (7 = 8 bits)
-            self.write_reg(SPI1_USER2_REG, SPI_FLASH_READ_CMD | (7 << 28), 0xFFFFFFFF, 0)
-                .await?;
+            self.write_reg(
+                SPI1_USER2_REG,
+                SPI_FLASH_READ_CMD | (7 << 28),
+                0xFFFFFFFF,
+                0,
+            )
+            .await?;
 
             // ADDR_REG: set flash address (shifted for 24-bit addressing)
-            self.write_reg(SPI1_ADDR_REG, flash_addr << 8, 0xFFFFFFFF, 0).await?;
+            self.write_reg(SPI1_ADDR_REG, flash_addr << 8, 0xFFFFFFFF, 0)
+                .await?;
 
             // MISO_DLEN_REG: set read data bit length
-            self.write_reg(SPI1_MISO_DLEN_REG, (chunk_len as u32 * 8) - 1, 0xFFFFFFFF, 0)
-                .await?;
+            self.write_reg(
+                SPI1_MISO_DLEN_REG,
+                (chunk_len as u32 * 8) - 1,
+                0xFFFFFFFF,
+                0,
+            )
+            .await?;
 
             // CMD_REG: trigger the SPI transaction (bit 18: USR)
             self.write_reg(SPI1_CMD_REG, 1 << 18, 0xFFFFFFFF, 0).await?;
@@ -949,8 +962,8 @@ where
             if in_escape {
                 in_escape = false;
                 let decoded_byte = match b {
-                    SLIP_ESC_END => SLIP_END,   // 0xDC -> 0xC0
-                    SLIP_ESC_ESC => SLIP_ESC,   // 0xDD -> 0xDB
+                    SLIP_ESC_END => SLIP_END,          // 0xDC -> 0xC0
+                    SLIP_ESC_ESC => SLIP_ESC,          // 0xDD -> 0xDB
                     _ => return Err(Error::SlipError), // Invalid escape sequence
                 };
                 if decoded_pos >= decoded.len() {
@@ -986,7 +999,11 @@ where
         // Status bytes are at the end (last 2 bytes before any padding)
         // Data is between byte 8 and status bytes
         let (status, error, data_end) = if decoded_pos > 10 {
-            (decoded[decoded_pos - 2], decoded[decoded_pos - 1], decoded_pos - 2)
+            (
+                decoded[decoded_pos - 2],
+                decoded[decoded_pos - 1],
+                decoded_pos - 2,
+            )
         } else if decoded_pos > 8 {
             (decoded[decoded_pos - 2], decoded[decoded_pos - 1], 8)
         } else {

@@ -464,7 +464,10 @@ pub struct CapturingAudioStream {
 }
 
 impl CapturingAudioStream {
-    pub fn new() -> (Self, std::sync::Arc<std::sync::Mutex<Vec<crate::ui::StereoFrame>>>) {
+    pub fn new() -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<Vec<crate::ui::StereoFrame>>>,
+    ) {
         let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         (
             Self {

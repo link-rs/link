@@ -58,7 +58,7 @@ impl StereoFrame {
         let mut stereo = Self::default();
         for i in 0..ENCODED_FRAME_SIZE {
             let sample = mono[i] as u16;
-            stereo.0[i * 2] = sample;     // Left
+            stereo.0[i * 2] = sample; // Left
             stereo.0[i * 2 + 1] = sample; // Right
         }
         stereo
@@ -112,10 +112,7 @@ impl Frame {
     /// Calculate the energy of this frame (after decoding).
     /// Energy is the sum of absolute values of decoded samples.
     pub fn energy(&self) -> u32 {
-        self.decode()
-            .iter()
-            .map(|&s| s.unsigned_abs() as u32)
-            .sum()
+        self.decode().iter().map(|&s| s.unsigned_abs() as u32).sum()
     }
 }
 
@@ -169,5 +166,9 @@ pub trait AudioSystem {
     /// Perform a full-duplex stereo audio frame transfer.
     /// - tx: stereo frame to send to DAC
     /// - rx: stereo frame received from ADC
-    async fn read_write(&mut self, tx: &StereoFrame, rx: &mut StereoFrame) -> Result<(), AudioError>;
+    async fn read_write(
+        &mut self,
+        tx: &StereoFrame,
+        rx: &mut StereoFrame,
+    ) -> Result<(), AudioError>;
 }

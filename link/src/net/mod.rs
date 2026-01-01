@@ -3,20 +3,20 @@
 mod storage;
 
 // Re-export jitter buffer from shared for backwards compatibility
-pub use crate::shared::{JitterBuffer, JitterState, JitterStats, BUFFER_FRAMES, MIN_START_LEVEL};
+pub use crate::shared::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
 pub use storage::{
-    NetStorage, WifiSsid, MAX_PASSWORD_LEN, MAX_RELAY_URL_LEN, MAX_SSID_LEN, MAX_WIFI_SSIDS,
+    MAX_PASSWORD_LEN, MAX_RELAY_URL_LEN, MAX_SSID_LEN, MAX_WIFI_SSIDS, NetStorage, WifiSsid,
 };
 
 use crate::info;
 #[cfg(feature = "audio-buffer")]
 use crate::shared::MAX_VALUE_SIZE;
 use crate::shared::{
-    read_tlv_loop, Channel, Color, CriticalSectionRawMutex, Led, MgmtToNet, NetToMgmt, NetToUi,
-    RawMutex, Receiver, Sender, Tlv, UiToNet, WriteTlv,
+    Channel, Color, CriticalSectionRawMutex, Led, MgmtToNet, NetToMgmt, NetToUi, RawMutex,
+    Receiver, Sender, Tlv, UiToNet, WriteTlv, read_tlv_loop,
 };
 #[cfg(feature = "audio-buffer")]
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{Either, select};
 #[cfg(feature = "audio-buffer")]
 use embassy_time::{Duration, Ticker};
 use embedded_hal::digital::StatefulOutputPin;
