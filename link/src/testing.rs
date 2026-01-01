@@ -57,18 +57,6 @@ where
     let ws_cmd_channel: Channel<CriticalSectionRawMutex, net::WsCommand, 4> = Channel::new();
     let ws_event_channel: Channel<CriticalSectionRawMutex, net::WsEvent, 4> = Channel::new();
 
-    let net_app = net::App::new(
-        net_to_mgmt,
-        net_from_mgmt,
-        net_to_ui,
-        net_from_ui,
-        mock_led_pins(),
-        MockFlash::new(),
-        0,
-        ws_cmd_channel.sender(),
-        ws_event_channel.receiver(),
-    );
-
     tokio::select! {
         _ = test_fn(ctl_app) => {},
         _ = mgmt_task => {},
@@ -85,7 +73,17 @@ where
             MockDelay,
             MockAudioStream::new(),
         ) => {},
-        _ = net_app.run() => {},
+        _ = net::run(
+            net_to_mgmt,
+            net_from_mgmt,
+            net_to_ui,
+            net_from_ui,
+            mock_led_pins(),
+            MockFlash::new(),
+            0,
+            ws_cmd_channel.sender(),
+            ws_event_channel.receiver(),
+        ) => {},
     }
 }
 
@@ -137,18 +135,6 @@ where
     let ws_cmd_channel: Channel<CriticalSectionRawMutex, net::WsCommand, 4> = Channel::new();
     let ws_event_channel: Channel<CriticalSectionRawMutex, net::WsEvent, 4> = Channel::new();
 
-    let net_app = net::App::new(
-        net_to_mgmt,
-        net_from_mgmt,
-        net_to_ui,
-        net_from_ui,
-        mock_led_pins(),
-        MockFlash::new(),
-        0,
-        ws_cmd_channel.sender(),
-        ws_event_channel.receiver(),
-    );
-
     tokio::select! {
         _ = test_fn(ctl_app, gpio_ops) => {},
         _ = mgmt_task => {},
@@ -165,7 +151,17 @@ where
             MockDelay,
             MockAudioStream::new(),
         ) => {},
-        _ = net_app.run() => {},
+        _ = net::run(
+            net_to_mgmt,
+            net_from_mgmt,
+            net_to_ui,
+            net_from_ui,
+            mock_led_pins(),
+            MockFlash::new(),
+            0,
+            ws_cmd_channel.sender(),
+            ws_event_channel.receiver(),
+        ) => {},
     }
 }
 

@@ -117,19 +117,19 @@ enum Event {
     Ws(WsEvent),
 }
 
-pub struct App<'a, W, R, LR, LG, LB, F, M: RawMutex, const CMD_N: usize, const EVT_N: usize> {
-    to_mgmt: W,
-    to_ui: W,
+/// Run the NET chip event loop.
+#[allow(unreachable_code)]
+pub async fn run<'a, W, R, LR, LG, LB, F, M, const CMD_N: usize, const EVT_N: usize>(
+    mut to_mgmt: W,
     from_mgmt: R,
+    mut to_ui: W,
     from_ui: R,
     led: (LR, LG, LB),
-    storage: NetStorage<F>,
+    flash: F,
+    flash_offset: u32,
     ws_cmd_tx: Sender<'a, M, WsCommand, CMD_N>,
     ws_event_rx: Receiver<'a, M, WsEvent, EVT_N>,
-}
-
-impl<'a, W, R, LR, LG, LB, F, M, const CMD_N: usize, const EVT_N: usize>
-    App<'a, W, R, LR, LG, LB, F, M, CMD_N, EVT_N>
+) -> !
 where
     W: Write,
     R: Read,
@@ -139,149 +139,50 @@ where
     F: ReadStorage + Storage,
     M: RawMutex,
 {
-    pub fn new(
-        to_mgmt: W,
-        from_mgmt: R,
-        to_ui: W,
-        from_ui: R,
-        led: (LR, LG, LB),
-        flash: F,
-        flash_offset: u32,
-        ws_cmd_tx: Sender<'a, M, WsCommand, CMD_N>,
-        ws_event_rx: Receiver<'a, M, WsEvent, EVT_N>,
-    ) -> Self {
-        Self {
-            to_mgmt,
-            to_ui,
-            from_mgmt,
-            from_ui,
-            led,
-            storage: NetStorage::new(flash, flash_offset),
-            ws_cmd_tx,
-            ws_event_rx,
+    info!("net: starting");
+
+    let mut storage = NetStorage::new(flash, flash_offset);
+
+    // Initialize LED - Red indicates WiFi not connected
+    let mut led = Led::new(led.0, led.1, led.2);
+    led.set(Color::Red);
+
+    // Send initial relay URL to ws_task (if configured)
+    let relay_url = storage.get_relay_url();
+    if !relay_url.is_empty() {
+        if let Ok(url_string) = String::try_from(relay_url) {
+            info!("net: sending initial relay url to ws_task");
+            ws_cmd_tx.send(WsCommand::Connect(url_string)).await;
         }
     }
 
-    #[allow(unreachable_code)]
-    pub async fn run(self) -> ! {
-        info!("net: starting");
+    const MAX_QUEUE_DEPTH: usize = 4;
+    let channel: Channel<CriticalSectionRawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
 
-        let Self {
-            mut to_mgmt,
-            mut to_ui,
-            from_mgmt,
-            from_ui,
-            led,
-            mut storage,
-            ws_cmd_tx,
-            ws_event_rx,
-        } = self;
+    let mgmt_read_task = read_tlv_loop(from_mgmt, channel.sender(), Event::Mgmt);
+    let ui_read_task = read_tlv_loop(from_ui, channel.sender(), Event::Ui);
 
-        // Initialize LED - Red indicates WiFi not connected
-        let mut led = Led::new(led.0, led.1, led.2);
-        led.set(Color::Red);
-
-        // Send initial relay URL to ws_task (if configured)
-        let relay_url = storage.get_relay_url();
-        if !relay_url.is_empty() {
-            if let Ok(url_string) = String::try_from(relay_url) {
-                info!("net: sending initial relay url to ws_task");
-                ws_cmd_tx.send(WsCommand::Connect(url_string)).await;
-            }
+    // Forward WS events to the main event channel
+    let ws_event_task = async {
+        loop {
+            let event = ws_event_rx.receive().await;
+            channel.send(Event::Ws(event)).await;
         }
+    };
 
-        const MAX_QUEUE_DEPTH: usize = 4;
-        let channel: Channel<CriticalSectionRawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
-
-        let mgmt_read_task = read_tlv_loop(from_mgmt, channel.sender(), Event::Mgmt);
-        let ui_read_task = read_tlv_loop(from_ui, channel.sender(), Event::Ui);
-
-        // Forward WS events to the main event channel
-        let ws_event_task = async {
-            loop {
-                let event = ws_event_rx.receive().await;
-                channel.send(Event::Ws(event)).await;
-            }
-        };
-
-        // Event handling task - with or without audio jitter buffer
-        #[cfg(feature = "audio-buffer")]
-        let handle_task = async {
-            let mut ws_mode = WsMode::Normal;
-            let mut loopback = false;
-            let mut wifi_connected = false;
-            let mut ws_connected = false;
-            let mut audio_buffer: JitterBuffer<MAX_VALUE_SIZE> = JitterBuffer::new();
-            let mut ticker = Ticker::every(Duration::from_millis(20));
-            info!("net: ready to handle events (audio buffering enabled)");
-            loop {
-                match select(channel.receive(), ticker.next()).await {
-                    Either::First(event) => match event {
-                        Event::Mgmt(tlv) => {
-                            handle_mgmt(
-                                tlv,
-                                &mut to_mgmt,
-                                &mut to_ui,
-                                &mut storage,
-                                &ws_cmd_tx,
-                                &mut ws_mode,
-                                &mut loopback,
-                            )
-                            .await
-                        }
-                        Event::Ui(tlv) => {
-                            if let Some(audio) =
-                                handle_ui(tlv, &mut to_mgmt, &ws_cmd_tx, loopback).await
-                            {
-                                // Loopback: send directly to UI (bypass jitter buffer)
-                                to_ui.must_write_tlv(NetToUi::AudioFrame, &audio).await;
-                            }
-                        }
-                        Event::Ws(event) => {
-                            handle_ws_buffered(
-                                event,
-                                &mut to_mgmt,
-                                &mut led,
-                                &mut ws_mode,
-                                &mut audio_buffer,
-                                &mut wifi_connected,
-                                &mut ws_connected,
-                            )
-                            .await
-                        }
-                    },
-                    Either::Second(_) => {
-                        // Timer tick - pop from buffer if playing
-                        if audio_buffer.state() == JitterState::Playing || audio_buffer.level() >= 5
-                        {
-                            if let Some(frame) = audio_buffer.pop() {
-                                /*
-                                let energy: u32 =
-                                    frame.iter().map(|&b| (b as i8).unsigned_abs() as u32).sum();
-                                info!(
-                                    "net: output {} bytes, energy={}, data={:02x}",
-                                    frame.len(),
-                                    energy,
-                                    frame.as_slice()
-                                );
-                                */
-                                to_ui.must_write_tlv(NetToUi::AudioFrame, &frame).await;
-                            }
-                        }
-                    }
-                }
-            }
-        };
-
-        #[cfg(not(feature = "audio-buffer"))]
-        let handle_task = async {
-            let mut ws_mode = WsMode::Normal;
-            let mut loopback = false;
-            let mut wifi_connected = false;
-            let mut ws_connected = false;
-            info!("net: ready to handle events");
-            loop {
-                match channel.receive().await {
+    // Event handling task - with or without audio jitter buffer
+    #[cfg(feature = "audio-buffer")]
+    let handle_task = async {
+        let mut ws_mode = WsMode::Normal;
+        let mut loopback = false;
+        let mut wifi_connected = false;
+        let mut ws_connected = false;
+        let mut audio_buffer: JitterBuffer<MAX_VALUE_SIZE> = JitterBuffer::new();
+        let mut ticker = Ticker::every(Duration::from_millis(20));
+        info!("net: ready to handle events (audio buffering enabled)");
+        loop {
+            match select(channel.receive(), ticker.next()).await {
+                Either::First(event) => match event {
                     Event::Mgmt(tlv) => {
                         handle_mgmt(
                             tlv,
@@ -298,29 +199,80 @@ where
                         if let Some(audio) =
                             handle_ui(tlv, &mut to_mgmt, &ws_cmd_tx, loopback).await
                         {
-                            // Loopback: send directly to UI
+                            // Loopback: send directly to UI (bypass jitter buffer)
                             to_ui.must_write_tlv(NetToUi::AudioFrame, &audio).await;
                         }
                     }
                     Event::Ws(event) => {
-                        handle_ws(
+                        handle_ws_buffered(
                             event,
                             &mut to_mgmt,
-                            &mut to_ui,
                             &mut led,
                             &mut ws_mode,
+                            &mut audio_buffer,
                             &mut wifi_connected,
                             &mut ws_connected,
                         )
                         .await
                     }
+                },
+                Either::Second(_) => {
+                    // Timer tick - pop from buffer if playing
+                    if audio_buffer.state() == JitterState::Playing || audio_buffer.level() >= 5 {
+                        if let Some(frame) = audio_buffer.pop() {
+                            to_ui.must_write_tlv(NetToUi::AudioFrame, &frame).await;
+                        }
+                    }
                 }
             }
-        };
+        }
+    };
 
-        futures::join!(mgmt_read_task, ui_read_task, ws_event_task, handle_task);
-        unreachable!()
-    }
+    #[cfg(not(feature = "audio-buffer"))]
+    let handle_task = async {
+        let mut ws_mode = WsMode::Normal;
+        let mut loopback = false;
+        let mut wifi_connected = false;
+        let mut ws_connected = false;
+        info!("net: ready to handle events");
+        loop {
+            match channel.receive().await {
+                Event::Mgmt(tlv) => {
+                    handle_mgmt(
+                        tlv,
+                        &mut to_mgmt,
+                        &mut to_ui,
+                        &mut storage,
+                        &ws_cmd_tx,
+                        &mut ws_mode,
+                        &mut loopback,
+                    )
+                    .await
+                }
+                Event::Ui(tlv) => {
+                    if let Some(audio) = handle_ui(tlv, &mut to_mgmt, &ws_cmd_tx, loopback).await {
+                        // Loopback: send directly to UI
+                        to_ui.must_write_tlv(NetToUi::AudioFrame, &audio).await;
+                    }
+                }
+                Event::Ws(event) => {
+                    handle_ws(
+                        event,
+                        &mut to_mgmt,
+                        &mut to_ui,
+                        &mut led,
+                        &mut ws_mode,
+                        &mut wifi_connected,
+                        &mut ws_connected,
+                    )
+                    .await
+                }
+            }
+        }
+    };
+
+    futures::join!(mgmt_read_task, ui_read_task, ws_event_task, handle_task);
+    unreachable!()
 }
 
 async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(

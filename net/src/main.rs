@@ -173,8 +173,8 @@ async fn main(spawner: Spawner) {
         ))
         .ok();
 
-    // Run the main App logic
-    link::net::App::new(
+    // Run the main event loop
+    link::net::run(
         to_mgmt,
         from_mgmt,
         to_ui,
@@ -185,7 +185,6 @@ async fn main(spawner: Spawner) {
         ws_cmd_channel.sender(),
         ws_event_channel.receiver(),
     )
-    .run()
     .await;
 }
 
