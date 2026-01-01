@@ -5,14 +5,8 @@ use crate::shared::{
     Color, CtlToMgmt, Led, MgmtToCtl, MgmtToNet, MgmtToUi, ReadTlv, Tlv, Value, WriteTlv,
 };
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
+use embedded_hal_async::delay::DelayNs;
 use embedded_io_async::{Read, Write};
-
-/// Trait for async delay functionality.
-/// This allows the delay to be mocked in tests.
-#[allow(async_fn_in_trait)]
-pub trait AsyncDelay {
-    async fn delay_ms(&mut self, ms: u32);
-}
 
 /// Holds the GPIO pins used to control the UI chip's reset behavior.
 ///
@@ -37,7 +31,7 @@ where
 
     /// Reset UI chip into bootloader mode.
     /// Sets BOOT0=1, BOOT1=0, then power cycles.
-    pub async fn reset_to_bootloader<D: AsyncDelay>(&mut self, delay: &mut D) {
+    pub async fn reset_to_bootloader<D: DelayNs>(&mut self, delay: &mut D) {
         // Set boot pins for bootloader mode (BOOT0=1, BOOT1=0)
         let _ = self.boot0.set_high();
         let _ = self.boot1.set_low();
@@ -50,7 +44,7 @@ where
 
     /// Reset UI chip into user mode.
     /// Sets BOOT0=0, BOOT1=1, then power cycles.
-    pub async fn reset_to_user<D: AsyncDelay>(&mut self, delay: &mut D) {
+    pub async fn reset_to_user<D: DelayNs>(&mut self, delay: &mut D) {
         // Set boot pins for normal mode (BOOT0=0, BOOT1=1)
         let _ = self.boot0.set_low();
         let _ = self.boot1.set_high();
@@ -94,7 +88,7 @@ where
     /// Reset NET chip into bootloader mode.
     /// Sequence matches C code: power cycle, then BOOT low, then power cycle again.
     /// BOOT must be low when RST goes high for ESP32 to enter bootloader.
-    pub async fn reset_to_bootloader<D: AsyncDelay>(&mut self, delay: &mut D) {
+    pub async fn reset_to_bootloader<D: DelayNs>(&mut self, delay: &mut D) {
         // First power cycle (clean slate)
         let _ = self.rst.set_low();
         delay.delay_ms(10).await;
@@ -112,7 +106,7 @@ where
 
     /// Reset NET chip into user mode.
     /// Sequence: BOOT high -> RST low -> delay -> RST high
-    pub async fn reset_to_user<D: AsyncDelay>(&mut self, delay: &mut D) {
+    pub async fn reset_to_user<D: DelayNs>(&mut self, delay: &mut D) {
         let _ = self.boot.set_high();
         let _ = self.rst.set_low();
         delay.delay_ms(10).await;
@@ -151,7 +145,7 @@ where
     UiRst: StatefulOutputPin,
     NetBoot: OutputPin,
     NetRst: OutputPin,
-    D: AsyncDelay,
+    D: DelayNs,
 {
     use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 
@@ -248,7 +242,7 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
     UiRst: StatefulOutputPin,
     NetBoot: OutputPin,
     NetRst: OutputPin,
-    D: AsyncDelay,
+    D: DelayNs,
 {
     match tlv.tlv_type {
         CtlToMgmt::Ping => {

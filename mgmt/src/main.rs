@@ -12,18 +12,8 @@ use embassy_stm32::{
     usart,
     usart::{Config, DataBits, Parity, StopBits, Uart},
 };
-use embassy_time::{Duration, Timer};
+use embassy_time::Delay;
 use {defmt_rtt as _, panic_probe as _};
-
-// CLAUDE Why are we using this instead of embedded_hal_async::delay::DelayNs?
-/// Async delay implementation using embassy_time::Timer.
-struct EmbassyDelay;
-
-impl link::mgmt::AsyncDelay for EmbassyDelay {
-    async fn delay_ms(&mut self, ms: u32) {
-        Timer::after(Duration::from_millis(ms as u64)).await;
-    }
-}
 
 const DMA_BUF_SIZE: usize = link::MAX_VALUE_SIZE;
 
@@ -165,7 +155,7 @@ async fn main(_spawner: Spawner) {
         led_b,
         ui_reset_pins,
         net_reset_pins,
-        EmbassyDelay,
+        Delay,
     )
     .await;
 }

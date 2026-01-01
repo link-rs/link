@@ -298,8 +298,8 @@ pub fn mock_i2c_with_eeprom() -> MockI2c {
 /// Mock async delay that does nothing (instant).
 pub struct MockAsyncDelay;
 
-impl crate::mgmt::AsyncDelay for MockAsyncDelay {
-    async fn delay_ms(&mut self, _ms: u32) {
+impl embedded_hal_async::delay::DelayNs for MockAsyncDelay {
+    async fn delay_ns(&mut self, _ns: u32) {
         // No-op for testing
     }
 }
