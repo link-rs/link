@@ -94,11 +94,8 @@ where
     }
 
     #[allow(unreachable_code)]
-    pub async fn run(mut self) -> ! {
+    pub async fn run(self) -> ! {
         info!("ui: starting");
-
-        // Initialize the audio subsystem (codec config + I2S construction)
-        self.audio_system.init(&mut self.i2c, &mut self.delay);
 
         let Self {
             mut to_mgmt,

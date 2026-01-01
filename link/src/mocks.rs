@@ -419,14 +419,6 @@ impl Default for MockAudioStream {
 }
 
 impl crate::ui::AudioSystem for MockAudioStream {
-    fn init<I: embedded_hal::i2c::I2c, D: embedded_hal::delay::DelayNs>(
-        &mut self,
-        _i2c: &mut I,
-        _delay: &mut D,
-    ) {
-        // No-op for mock
-    }
-
     fn set_input_enabled<I: embedded_hal::i2c::I2c>(&mut self, _i2c: &mut I, _enable: bool) {
         // No-op for mock
     }
@@ -480,14 +472,6 @@ impl CapturingAudioStream {
 }
 
 impl crate::ui::AudioSystem for CapturingAudioStream {
-    fn init<I: embedded_hal::i2c::I2c, D: embedded_hal::delay::DelayNs>(
-        &mut self,
-        _i2c: &mut I,
-        _delay: &mut D,
-    ) {
-        // No-op for mock
-    }
-
     fn set_input_enabled<I: embedded_hal::i2c::I2c>(&mut self, _i2c: &mut I, _enable: bool) {
         // No-op for mock
     }

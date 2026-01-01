@@ -24,41 +24,13 @@ use {defmt_rtt as _, panic_probe as _};
 
 const I2S_BUF_SIZE: usize = STEREO_FRAME_SIZE * 2;
 
-/// Raw peripherals needed to construct I2S.
-struct I2sPeripherals<'d> {
-    spi: Peri<'d, peripherals::SPI3>,
-    ws: Peri<'d, peripherals::PA15>,
-    ck: Peri<'d, peripherals::PC10>,
-    sd_tx: Peri<'d, peripherals::PB5>,
-    sd_rx: Peri<'d, peripherals::PB4>,
-    dma_tx: Peri<'d, peripherals::DMA1_CH7>,
-    tx_buf: &'d mut [u16; I2S_BUF_SIZE],
-    dma_rx: Peri<'d, peripherals::DMA1_CH0>,
-    rx_buf: &'d mut [u16; I2S_BUF_SIZE],
-}
-
-/// Audio system state: either uninitialized (holding peripherals) or ready (holding I2S).
-enum AudioState<'d> {
-    Uninitialized(Option<I2sPeripherals<'d>>),
-    Ready(I2S<'d, u16>),
-}
-
-// CLAUDE We can simplify this scheme some.  We don't need to delegate initialization to
-// `link::ui::App`, so we can go ahead and actually initialize everything in
-// `BoardAudioSystem::new` and remove the `init` method from `AudioSystem`.  That also means that
-// we will never be in the `Uninitialized` state, so we can stop holding the peripherals and
-// tracking state -- we can delete I2sPeripherals and AudioState.
-
-/// Board-level audio system with deferred I2S construction.
-///
-/// The I2S peripheral is constructed lazily in `init()`, ensuring the
-/// WM8960 codec is fully configured before I2S clocks start.
+/// Board-level audio system wrapping the I2S peripheral.
 pub struct BoardAudioSystem<'d> {
-    state: AudioState<'d>,
+    i2s: I2S<'d, u16>,
 }
 
 impl<'d> BoardAudioSystem<'d> {
-    pub fn new(
+    pub fn new<I: I2cTrait, D: DelayNs>(
         spi: Peri<'d, peripherals::SPI3>,
         ws: Peri<'d, peripherals::PA15>,
         ck: Peri<'d, peripherals::PC10>,
@@ -68,39 +40,10 @@ impl<'d> BoardAudioSystem<'d> {
         tx_buf: &'d mut [u16; I2S_BUF_SIZE],
         dma_rx: Peri<'d, peripherals::DMA1_CH0>,
         rx_buf: &'d mut [u16; I2S_BUF_SIZE],
+        i2c: &mut I,
+        delay: &mut D,
     ) -> Self {
-        Self {
-            state: AudioState::Uninitialized(Some(I2sPeripherals {
-                spi,
-                ws,
-                ck,
-                sd_tx,
-                sd_rx,
-                dma_tx,
-                tx_buf,
-                dma_rx,
-                rx_buf,
-            })),
-        }
-    }
-
-    fn i2s(&mut self) -> &mut I2S<'d, u16> {
-        match &mut self.state {
-            AudioState::Ready(i2s) => i2s,
-            AudioState::Uninitialized(_) => panic!("audio system not initialized"),
-        }
-    }
-}
-
-impl<'d> AudioSystem for BoardAudioSystem<'d> {
-    fn init<I: I2cTrait, D: DelayNs>(&mut self, i2c: &mut I, delay: &mut D) {
-        // Take peripherals out of Uninitialized state
-        let p = match &mut self.state {
-            AudioState::Uninitialized(opt) => opt.take().expect("init() called twice"),
-            AudioState::Ready(_) => panic!("init() called on already initialized audio system"),
-        };
-
-        // 1. Configure WM8960 codec FIRST (while I2S doesn't exist yet)
+        // 1. Configure WM8960 codec FIRST (before I2S clocks start)
         let mut codec = wm8960::Codec::new(i2c);
         codec.init(delay);
         codec.enable_input(true);
@@ -119,12 +62,14 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
         config.clock_polarity = i2s::ClockPolarity::IdleLow;
 
         let i2s = I2S::new_full_duplex(
-            p.spi, p.ws, p.ck, p.sd_tx, p.sd_rx, p.dma_tx, p.tx_buf, p.dma_rx, p.rx_buf, config,
+            spi, ws, ck, sd_tx, sd_rx, dma_tx, tx_buf, dma_rx, rx_buf, config,
         );
 
-        self.state = AudioState::Ready(i2s);
+        Self { i2s }
     }
+}
 
+impl<'d> AudioSystem for BoardAudioSystem<'d> {
     fn set_input_enabled<I: I2cTrait>(&mut self, i2c: &mut I, enable: bool) {
         wm8960::Codec::new(i2c).enable_input(enable);
     }
@@ -134,11 +79,11 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
     }
 
     async fn start(&mut self) {
-        self.i2s().start();
+        self.i2s.start();
     }
 
     async fn stop(&mut self) {
-        self.i2s().stop().await;
+        self.i2s.stop().await;
     }
 
     async fn read_write(
@@ -146,7 +91,7 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
         tx: &StereoFrame,
         rx: &mut StereoFrame,
     ) -> Result<(), AudioError> {
-        match self.i2s().read_write(&tx.0, &mut rx.0).await {
+        match self.i2s.read_write(&tx.0, &mut rx.0).await {
             Ok(_) => Ok(()),
             Err(i2s::Error::Overrun) => Err(AudioError::Overrun),
             Err(i2s::Error::DmaUnsynced) => Err(AudioError::DmaUnsynced),
@@ -268,7 +213,7 @@ async fn main(_spawner: Spawner) {
     let button_mic = ExtiInput::new(p.PA4, p.EXTI4, Pull::Up);
 
     // Shared I2C bus for EEPROM and audio codec (I2C1: PB6 SCL, PB7 SDA)
-    let i2c = {
+    let mut i2c = {
         use embassy_stm32::{gpio::Speed, i2c::Config, time::Hertz};
 
         let mut config = Config::default();
@@ -280,12 +225,12 @@ async fn main(_spawner: Spawner) {
 
         I2c::new_blocking(p.I2C1, p.PB6, p.PB7, config)
     };
-    let delay = Delay;
+    let mut delay = Delay;
 
-    // Audio system with deferred I2S construction
-    // Peripherals are held until init() configures codec and then constructs I2S
+    // Audio system: initializes codec via I2C, then constructs I2S
     let audio_system = BoardAudioSystem::new(
         p.SPI3, p.PA15, p.PC10, p.PB5, p.PB4, p.DMA1_CH7, i2s_tx_buf, p.DMA1_CH0, i2s_rx_buf,
+        &mut i2c, &mut delay,
     );
 
     link::ui::App::new(

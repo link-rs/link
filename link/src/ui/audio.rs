@@ -12,7 +12,6 @@
 //! - Playback: A-law decode → mono → stereo (duplicate)
 
 use audio_codec_algorithms::{decode_alaw, encode_alaw};
-use embedded_hal::delay::DelayNs;
 use embedded_hal::i2c::I2c;
 
 /// Size of an encoded audio frame in bytes (A-law mono samples).
@@ -129,14 +128,13 @@ pub enum AudioError {
 /// Unified audio system trait - combines codec control and audio streaming.
 ///
 /// Implementors manage both the audio codec (e.g., WM8960 via I2C) and the
-/// audio transport (e.g., I2S). Control methods accept I2C/delay references
+/// audio transport (e.g., I2S). Control methods accept I2C references
 /// since the bus may be shared with other peripherals (e.g., EEPROM).
 ///
-/// # Initialization Contract
+/// # Initialization
 ///
-/// The `init()` method MUST configure the codec before the audio transport
-/// becomes active. This ensures proper initialization order (codec configured
-/// before I2S clocks start).
+/// Implementations are expected to be fully initialized at construction time.
+/// The codec should be configured before the audio transport becomes active.
 ///
 /// # Audio Format
 ///
@@ -145,12 +143,6 @@ pub enum AudioError {
 /// using the `StereoFrame::encode()` and `Frame::decode_to_stereo()` methods.
 #[allow(async_fn_in_trait)]
 pub trait AudioSystem {
-    /// Initialize the audio subsystem.
-    ///
-    /// This configures the codec via I2C and prepares the audio transport.
-    /// The implementation ensures proper initialization order.
-    fn init<I: I2c, D: DelayNs>(&mut self, i2c: &mut I, delay: &mut D);
-
     /// Enable or disable the audio input path (microphone).
     fn set_input_enabled<I: I2c>(&mut self, i2c: &mut I, enable: bool);
 
