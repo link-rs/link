@@ -1157,25 +1157,22 @@ where
     )
 }
 
-// CLAUDE Is there not some library we can use for this?
-/// Parse a wss:// URL into (host, port, path)
+/// Parse a wss:// or ws:// URL into (host, port, path)
 fn parse_wss_url(url: &str) -> Option<(&str, u16, &str)> {
-    let url = url
-        .strip_prefix("wss://")
-        .or_else(|| url.strip_prefix("ws://"))?;
+    let parsed = url_lite::Url::parse(url).ok()?;
 
-    let (host_port, path) = match url.find('/') {
-        Some(idx) => (&url[..idx], &url[idx..]),
-        None => (url, "/"),
-    };
+    // Verify scheme is ws or wss
+    let schema = parsed.schema?;
+    if schema != "wss" && schema != "ws" {
+        return None;
+    }
 
-    let (host, port) = match host_port.find(':') {
-        Some(idx) => {
-            let port: u16 = host_port[idx + 1..].parse().ok()?;
-            (&host_port[..idx], port)
-        }
-        None => (host_port, 443),
-    };
+    let host = parsed.host?;
+    let port = parsed
+        .port
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(if schema == "wss" { 443 } else { 80 });
+    let path = parsed.path.unwrap_or("/");
 
     Some((host, port, path))
 }

@@ -47,6 +47,9 @@ rand_core = "0.6"
 # Heapless collections for no_std
 heapless = { version = "0.9", features = ["defmt"] }
 
+# URL parsing for no_std
+url-lite = "0.1"
+
 link = { path = "../link", default-features = false, features = ["net", "defmt", "trace-tlv", "audio-buffer"] }
 
 [profile.dev]
