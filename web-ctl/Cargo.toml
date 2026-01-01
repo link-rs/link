@@ -8,7 +8,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 link = { path = "../link", default-features = false, features = ["ctl"] }
-bootloader = { path = "../bootloader" }
 
 # WASM bindings
 wasm-bindgen = "0.2"

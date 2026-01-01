@@ -50,13 +50,13 @@ pub async fn handle_mgmt(
             println!(
                 "Chip ID: 0x{:04X} ({})",
                 info.chip_id,
-                bootloader::stm::chip_name(info.chip_id)
+                link::ctl::stm::chip_name(info.chip_id)
             );
 
             println!("\nSupported Commands ({}):", info.command_count);
             for i in 0..info.command_count {
                 let cmd = info.commands[i];
-                println!("  0x{:02X} - {}", cmd, bootloader::stm::command_name(cmd));
+                println!("  0x{:02X} - {}", cmd, link::ctl::stm::command_name(cmd));
             }
 
             if let Some(flash) = info.flash_sample {

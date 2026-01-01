@@ -5,15 +5,18 @@
 
 extern crate alloc;
 
+pub mod esp;
+pub mod stm;
+
 use crate::shared::{
     CtlToMgmt, MAX_VALUE_SIZE, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt,
     WifiSsid, WriteTlv,
 };
-pub use bootloader::esp::ChipType as NetChipType;
-use bootloader::esp::{self, Bootloader as EspBootloader, SecurityInfo};
-use bootloader::stm::{self, Bootloader};
 use core::future::Future;
 use embedded_io_async::{ErrorType, Read, Write};
+pub use esp::ChipType as NetChipType;
+use esp::{Bootloader as EspBootloader, SecurityInfo};
+use stm::Bootloader;
 
 /// Maximum size for verification error data (matches write chunk size).
 const VERIFY_CHUNK_SIZE: usize = 256;
