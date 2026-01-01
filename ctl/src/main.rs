@@ -18,10 +18,6 @@ use std::time::Duration;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
-// ============================================================================
-// Type aliases
-// ============================================================================
-
 type AppWriter = FromTokio<WriteHalf<SerialStream>>;
 type AppReader = FromTokio<ReadHalf<SerialStream>>;
 type App = link::ctl::App<AppReader, AppWriter>;
@@ -200,11 +196,6 @@ enum WifiAction {
     Clear,
 }
 
-// CLAUDE Is there a reason for this wrapper struct?  Couldn't we just use App wherever we use
-// Context?
-struct Context {
-    app: App,
-}
 
 // CLAUDE This method overlaps a lot with `async fn connect()`, and in fact you're opening the
 // successful port twice: Once when you test it, and once after it's selected.  You should refactor
@@ -388,11 +379,6 @@ fn command_name(code: u8) -> &'static str {
         _ => "Unknown",
     }
 }
-
-// CLAUDE I find these ====== comments annoying.  Please delete them everywhere
-// ============================================================================
-// Command dispatch (shared between CLI and REPL)
-// ============================================================================
 
 async fn dispatch(
     cmd: Command,
@@ -923,10 +909,6 @@ async fn handle_net(
     }
 }
 
-// ============================================================================
-// Special bootloader handlers (create their own connection)
-// ============================================================================
-
 // CLAUDE I don't think these need to make their own serial connections.  The port configuration is
 // the same in bootloader or non-bootloader mode.  Move these into the normal mgmt handler.
 
@@ -1110,19 +1092,15 @@ async fn handle_mgmt_flash(
     Ok(())
 }
 
-// ============================================================================
-// REPL infrastructure
-// ============================================================================
-
 fn repl_handler<'a>(
     args: ArgMatches,
-    ctx: &'a mut Context,
+    app: &'a mut App,
 ) -> Pin<Box<dyn Future<Output = Result<Option<String>, reedline_repl_rs::Error>> + 'a>> {
     Box::pin(async move {
         let cmd = Command::from_arg_matches(&args)
             .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
 
-        match dispatch(cmd, &mut ctx.app).await {
+        match dispatch(cmd, app).await {
             Ok(output) => Ok(output),
             Err(e) => Err(reedline_repl_rs::Error::UnknownCommand(e.to_string())),
         }
@@ -1133,16 +1111,14 @@ async fn run_repl(app: App, port_name: &str) -> Result<(), reedline_repl_rs::Err
     println!("Connected to {} - entering REPL mode", port_name);
     println!("Type 'help' for available commands, 'exit' to quit\n");
 
-    let ctx = Context { app };
-
-    let mut callbacks: AsyncCallBackMap<Context, reedline_repl_rs::Error> = AsyncCallBackMap::new();
+    let mut callbacks: AsyncCallBackMap<App, reedline_repl_rs::Error> = AsyncCallBackMap::new();
     callbacks.insert("mgmt".to_string(), repl_handler);
     callbacks.insert("ui".to_string(), repl_handler);
     callbacks.insert("net".to_string(), repl_handler);
     callbacks.insert("circular-ping".to_string(), repl_handler);
     callbacks.insert("exit".to_string(), repl_handler);
 
-    let mut repl = Repl::<Context, reedline_repl_rs::Error>::new(ctx)
+    let mut repl = Repl::<App, reedline_repl_rs::Error>::new(app)
         .with_name("ctl")
         .with_version(env!("CARGO_PKG_VERSION"))
         .with_description("Control interface for the link device")
@@ -1151,10 +1127,6 @@ async fn run_repl(app: App, port_name: &str) -> Result<(), reedline_repl_rs::Err
 
     repl.run_async().await
 }
-
-// ============================================================================
-// Main entry point
-// ============================================================================
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -2,8 +2,7 @@ use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -12,24 +11,19 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 #[command(name = "echo-server")]
 #[command(about = "WebSocket echo server for testing (WSS with self-signed cert)")]
 struct Args {
-    // CLAUDE Just make this a port, and always bind to 0.0.0.0
-    /// Address to bind to
-    #[arg(short, long, default_value = "0.0.0.0:9001")]
-    bind: SocketAddr,
-
-    // CLAUDEYou can remove this, and just always use `localhost`
-    /// Subject alternative names for the certificate (can specify multiple)
-    #[arg(long, default_values_t = vec!["localhost".to_string()])]
-    san: Vec<String>,
+    /// Port to bind to
+    #[arg(short, long, default_value = "9001")]
+    port: u16,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    let bind_addr: SocketAddr = ([0, 0, 0, 0], args.port).into();
 
     // Generate self-signed certificate
     println!("Generating self-signed certificate...");
-    let CertifiedKey { cert, key_pair } = generate_simple_self_signed(args.san.clone())?;
+    let CertifiedKey { cert, key_pair } = generate_simple_self_signed(vec!["localhost".to_string()])?;
 
     let cert_der = CertificateDer::from(cert.der().to_vec());
     let key_der = PrivateKeyDer::try_from(key_pair.serialize_der()).unwrap();
@@ -40,8 +34,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_single_cert(vec![cert_der], key_der)?;
 
     let acceptor = TlsAcceptor::from(Arc::new(config));
-    let listener = TcpListener::bind(&args.bind).await?;
-    println!("WebSocket echo server listening on wss://{}", args.bind);
+    let listener = TcpListener::bind(bind_addr).await?;
+    println!("WebSocket echo server listening on wss://{}", bind_addr);
 
     while let Ok((stream, addr)) = listener.accept().await {
         let acceptor = acceptor.clone();
@@ -52,9 +46,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn handle_connection(stream: TcpStream, addr: SocketAddr, acceptor: TlsAcceptor) {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use tokio::time::{interval, Duration};
-
     println!("[{}] New connection", addr);
 
     // TLS handshake
@@ -79,114 +70,37 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, acceptor: TlsAcc
 
     println!("[{}] WebSocket connected", addr);
 
-    // CLAUDE Please remove the stats reporting from this binary
-    // Stats counters
-    let frames_received = Arc::new(AtomicU64::new(0));
-    let bytes_received = Arc::new(AtomicU64::new(0));
-    let frames_sent = Arc::new(AtomicU64::new(0));
-    let bytes_sent = Arc::new(AtomicU64::new(0));
-    let running = Arc::new(AtomicBool::new(true));
-
-    // Spawn stats reporter task
-    let stats_task = {
-        let frames_received = frames_received.clone();
-        let bytes_received = bytes_received.clone();
-        let frames_sent = frames_sent.clone();
-        let bytes_sent = bytes_sent.clone();
-        let running = running.clone();
-        tokio::spawn(async move {
-            let mut ticker = interval(Duration::from_secs(1));
-            let mut last_frames_rx = 0u64;
-            let mut last_bytes_rx = 0u64;
-            let mut last_frames_tx = 0u64;
-            let mut last_bytes_tx = 0u64;
-            while running.load(Ordering::Relaxed) {
-                ticker.tick().await;
-                let fr = frames_received.load(Ordering::Relaxed);
-                let br = bytes_received.load(Ordering::Relaxed);
-                let ft = frames_sent.load(Ordering::Relaxed);
-                let bt = bytes_sent.load(Ordering::Relaxed);
-                let delta_fr = fr - last_frames_rx;
-                let delta_br = br - last_bytes_rx;
-                let delta_ft = ft - last_frames_tx;
-                let delta_bt = bt - last_bytes_tx;
-                if delta_fr > 0 || delta_ft > 0 {
-                    println!(
-                        "[{}] Stats: RX {} frames/{} bytes, TX {} frames/{} bytes (total: RX {}/{}, TX {}/{})",
-                        addr, delta_fr, delta_br, delta_ft, delta_bt, fr, br, ft, bt
-                    );
-                }
-                last_frames_rx = fr;
-                last_bytes_rx = br;
-                last_frames_tx = ft;
-                last_bytes_tx = bt;
-            }
-        })
-    };
-
     let (mut write, mut read) = ws_stream.split();
 
     while let Some(msg) = read.next().await {
         match msg {
             Ok(Message::Binary(data)) => {
-                let len = data.len();
-                println!("[{}] RX Binary: {} bytes", addr, len);
-                frames_received.fetch_add(1, Ordering::Relaxed);
-                bytes_received.fetch_add(len as u64, Ordering::Relaxed);
                 if let Err(e) = write.send(Message::Binary(data)).await {
                     eprintln!("[{}] Send error: {}", addr, e);
                     break;
                 }
-                println!("[{}] TX Binary: {} bytes", addr, len);
-                frames_sent.fetch_add(1, Ordering::Relaxed);
-                bytes_sent.fetch_add(len as u64, Ordering::Relaxed);
             }
             Ok(Message::Text(text)) => {
-                let len = text.len();
-                println!(
-                    "[{}] RX Text: {} bytes: {:?}",
-                    addr,
-                    len,
-                    &text[..len.min(100)]
-                );
-                frames_received.fetch_add(1, Ordering::Relaxed);
-                bytes_received.fetch_add(len as u64, Ordering::Relaxed);
                 if let Err(e) = write.send(Message::Text(text)).await {
                     eprintln!("[{}] Send error: {}", addr, e);
                     break;
                 }
-                println!("[{}] TX Text: {} bytes", addr, len);
-                frames_sent.fetch_add(1, Ordering::Relaxed);
-                bytes_sent.fetch_add(len as u64, Ordering::Relaxed);
             }
             Ok(Message::Ping(data)) => {
-                println!("[{}] RX Ping: {} bytes", addr, data.len());
                 if let Err(e) = write.send(Message::Pong(data)).await {
                     eprintln!("[{}] Pong send error: {}", addr, e);
                     break;
                 }
-                println!("[{}] TX Pong", addr);
             }
-            Ok(Message::Pong(data)) => {
-                println!("[{}] RX Pong: {} bytes", addr, data.len());
-            }
-            Ok(Message::Close(frame)) => {
-                println!("[{}] RX Close: {:?}", addr, frame);
-                break;
-            }
-            Ok(Message::Frame(frame)) => {
-                println!("[{}] RX Frame: {:?}", addr, frame);
-            }
+            Ok(Message::Pong(_)) => {}
+            Ok(Message::Close(_)) => break,
+            Ok(Message::Frame(_)) => {}
             Err(e) => {
                 eprintln!("[{}] Error: {}", addr, e);
                 break;
             }
         }
     }
-
-    // Stop stats task
-    running.store(false, Ordering::Relaxed);
-    let _ = stats_task.await;
 
     println!("[{}] Disconnected", addr);
 }

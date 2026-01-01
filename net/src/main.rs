@@ -16,7 +16,7 @@ use embedded_tls::{Aes128GcmSha256, NoVerify, TlsConfig, TlsConnection, TlsConte
 use esp_bootloader_esp_idf::partitions;
 use esp_hal::{
     clock::CpuClock,
-    gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
+    gpio::{Level, Output, OutputConfig},
     rng::Rng,
     timer::timg::TimerGroup,
     uart::{
@@ -45,8 +45,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-// CLAUDE I might call this `singleton`, in analogy to the STM32 macro of that name
-macro_rules! mk_static {
+macro_rules! singleton {
     ($t:ty, $val:expr) => {{
         static STATIC_CELL: StaticCell<$t> = StaticCell::new();
         STATIC_CELL.uninit().write($val)
@@ -111,14 +110,6 @@ async fn main(spawner: Spawner) {
         .into_async();
     let (from_ui, to_ui) = ui_uart.split();
 
-    // CLAUDE Go ahead and delete these for now
-    // Signal pins for MGMT synchronization (not yet used)
-    let _signal_to_mgmt = Output::new(peripherals.GPIO15, Level::Low, OutputConfig::default());
-    let _signal_from_mgmt = Input::new(
-        peripherals.GPIO16,
-        InputConfig::default().with_pull(Pull::Down),
-    );
-
     // RGB LED
     let led = (
         Output::new(peripherals.GPIO38, Level::High, OutputConfig::default()),
@@ -142,7 +133,7 @@ async fn main(spawner: Spawner) {
 
     // Initialize WiFi
     let radio = esp_radio::init().expect("radio init");
-    let radio = mk_static!(esp_radio::Controller<'static>, radio);
+    let radio = singleton!(esp_radio::Controller<'static>, radio);
     let (controller, interfaces) =
         esp_radio::wifi::new(radio, peripherals.WIFI, WifiConfig::default()).expect("wifi init");
 
@@ -152,7 +143,7 @@ async fn main(spawner: Spawner) {
     let (stack, runner) = embassy_net::new(
         interfaces.sta,
         embassy_net::Config::dhcpv4(Default::default()),
-        mk_static!(StackResources<3>, StackResources::<3>::new()),
+        singleton!(StackResources<3>, StackResources::<3>::new()),
         seed,
     );
 
@@ -689,15 +680,12 @@ async fn ws_task(
         info!("ws: connected");
         event_tx.send(WsEvent::Connected).await;
 
-        // Main WebSocket loop using select! for concurrent read/write
+        // Main WebSocket loop using select for concurrent read/write
         let mut should_reconnect = false;
         let mut connection_broken = false;
 
         // CLAUDE Have you verified that edge_ws::io::recv is cancellation-safe?  Otherwise we
         // might lose data.
-
-        // CLAUDE would it be cleaner to use the select! macro here?  The nesting is getting pretty
-        // deep.
 
         loop {
             match select(

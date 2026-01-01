@@ -9,7 +9,7 @@
 // Shared types and utilities
 pub mod shared;
 
-// Chip-specific modules (embedded)
+// Chip-specific modules
 pub mod mgmt;
 pub mod net;
 pub mod ui;
