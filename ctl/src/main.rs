@@ -390,53 +390,6 @@ async fn connect(
     manually_select_port(baud).await.map_err(|e| e.into())
 }
 
-// CLAUDE This method should move to bootloader::stm
-fn chip_name(product_id: u16) -> &'static str {
-    match product_id {
-        0x410 => "STM32F1 Medium-density",
-        0x411 => "STM32F2",
-        0x412 => "STM32F1 Low-density",
-        0x413 => "STM32F4 (405/407/415/417)",
-        0x414 => "STM32F1 High-density",
-        0x415 => "STM32L4 (75/76)",
-        0x416 => "STM32L1 Medium-density",
-        0x417 => "STM32L0 (51/52/53/62/63)",
-        0x418 => "STM32F1 Connectivity line",
-        0x419 => "STM32F4 (27/29/37/39/69/79)",
-        0x420 => "STM32F1 Medium-density VL",
-        0x421 => "STM32F446",
-        0x440 => "STM32F0 (30/51/71)",
-        0x442 => "STM32F0 (30/91/98)",
-        0x443 => "STM32F0 (3/4/5)",
-        0x444 => "STM32F0 (3/4) small",
-        0x445 => "STM32F0 (4/7)",
-        0x448 => "STM32F0 (70/71/72)",
-        0x460 => "STM32G0 (70/71/B1)",
-        0x466 => "STM32G0 (30/31/41)",
-        0x467 => "STM32G0 (B0/C1)",
-        _ => "Unknown",
-    }
-}
-
-// CLAUDE This method should move to bootloader::stm
-fn command_name(code: u8) -> &'static str {
-    match code {
-        0x00 => "Get",
-        0x01 => "Get Version",
-        0x02 => "Get ID",
-        0x11 => "Read Memory",
-        0x21 => "Go",
-        0x31 => "Write Memory",
-        0x43 => "Erase",
-        0x44 => "Extended Erase",
-        0x63 => "Write Protect",
-        0x73 => "Write Unprotect",
-        0x82 => "Readout Protect",
-        0x92 => "Readout Unprotect",
-        _ => "Unknown",
-    }
-}
-
 async fn dispatch(
     cmd: Command,
     app: &mut App,
@@ -517,13 +470,13 @@ async fn handle_ui(
             println!(
                 "Chip ID: 0x{:04X} ({})",
                 info.chip_id,
-                chip_name(info.chip_id)
+                bootloader::stm::chip_name(info.chip_id)
             );
 
             println!("\nSupported Commands ({}):", info.command_count);
             for i in 0..info.command_count {
                 let cmd = info.commands[i];
-                println!("  0x{:02X} - {}", cmd, command_name(cmd));
+                println!("  0x{:02X} - {}", cmd, bootloader::stm::command_name(cmd));
             }
 
             if let Some(flash) = info.flash_sample {
@@ -1016,13 +969,13 @@ async fn handle_mgmt_info(port: Option<String>) -> Result<(), Box<dyn std::error
     println!(
         "Chip ID: 0x{:04X} ({})",
         info.chip_id,
-        chip_name(info.chip_id)
+        bootloader::stm::chip_name(info.chip_id)
     );
 
     println!("\nSupported Commands ({}):", info.command_count);
     for i in 0..info.command_count {
         let cmd = info.commands[i];
-        println!("  0x{:02X} - {}", cmd, command_name(cmd));
+        println!("  0x{:02X} - {}", cmd, bootloader::stm::command_name(cmd));
     }
 
     if let Some(flash) = info.flash_sample {
