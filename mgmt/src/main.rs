@@ -25,11 +25,11 @@ impl link::mgmt::AsyncDelay for EmbassyDelay {
     }
 }
 
-const DMA_BUF_SIZE: usize = link::shared::MAX_VALUE_SIZE;
+const DMA_BUF_SIZE: usize = link::MAX_VALUE_SIZE;
 
 /// Convert centralized UART config to STM32 HAL config.
-fn uart_config_to_stm32(cfg: link::shared::uart_config::Config) -> Config {
-    use link::shared::uart_config::{Parity as P, StopBits as S};
+fn uart_config_to_stm32(cfg: link::uart_config::Config) -> Config {
+    use link::uart_config::{Parity as P, StopBits as S};
     let mut config = Config::default();
     config.baudrate = cfg.baudrate;
     config.data_bits = DataBits::DataBits8;
@@ -94,8 +94,8 @@ async fn main(_spawner: Spawner) {
     let _mco = Mco::new(p.MCO, p.PA8, McoSource::PLL, mco_config);
 
     // UART configs from centralized definitions
-    let stm_config = uart_config_to_stm32(link::shared::uart_config::STM32_BOOTLOADER);
-    let net_config = uart_config_to_stm32(link::shared::uart_config::MGMT_NET);
+    let stm_config = uart_config_to_stm32(link::uart_config::STM32_BOOTLOADER);
+    let net_config = uart_config_to_stm32(link::uart_config::MGMT_NET);
 
     // DMA buffers for ring-buffered RX
     let ctl_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();

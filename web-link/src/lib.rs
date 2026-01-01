@@ -20,8 +20,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::console;
 
-use link::shared::led::Color;
-use link::shared::protocol::*;
+use link::Color;
+use link::{CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, NetToUi, UiToMgmt, UiToNet};
 
 mod channel_io;
 

@@ -23,8 +23,8 @@ use link::ui::{AudioError, AudioSystem, StereoFrame, STEREO_FRAME_SIZE};
 use {defmt_rtt as _, panic_probe as _};
 
 /// Convert centralized UART config to STM32 HAL config.
-fn uart_config_to_stm32(cfg: link::shared::uart_config::Config) -> Config {
-    use link::shared::uart_config::{Parity as P, StopBits as S};
+fn uart_config_to_stm32(cfg: link::uart_config::Config) -> Config {
+    use link::uart_config::{Parity as P, StopBits as S};
     let mut config = Config::default();
     config.baudrate = cfg.baudrate;
     config.data_bits = DataBits::DataBits8;
@@ -121,7 +121,7 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
 // Main
 // =============================================================================
 
-const DMA_BUF_SIZE: usize = link::shared::MAX_VALUE_SIZE;
+const DMA_BUF_SIZE: usize = link::MAX_VALUE_SIZE;
 
 bind_interrupts!(struct Irqs {
     USART1 => usart::InterruptHandler<peripherals::USART1>;
@@ -171,8 +171,8 @@ async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(config);
 
     // UART configs from centralized definitions
-    let mgmt_config = uart_config_to_stm32(link::shared::uart_config::STM32_BOOTLOADER);
-    let net_config = uart_config_to_stm32(link::shared::uart_config::UI_NET);
+    let mgmt_config = uart_config_to_stm32(link::uart_config::STM32_BOOTLOADER);
+    let net_config = uart_config_to_stm32(link::uart_config::UI_NET);
 
     // DMA buffers for ring-buffered RX
     let mgmt_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();

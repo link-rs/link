@@ -46,11 +46,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 esp_bootloader_esp_idf::esp_app_desc!();
 
 /// Convert centralized UART config to ESP32 HAL config.
-fn uart_config_to_esp32(
-    cfg: link::shared::uart_config::Config,
-    flow_ctl: &HwFlowControl,
-) -> Config {
-    use link::shared::uart_config::{Parity as P, StopBits as S};
+fn uart_config_to_esp32(cfg: link::uart_config::Config, flow_ctl: &HwFlowControl) -> Config {
+    use link::uart_config::{Parity as P, StopBits as S};
     Config::default()
         .with_baudrate(cfg.baudrate)
         .with_parity(match cfg.parity {
@@ -103,7 +100,7 @@ async fn main(spawner: Spawner) {
     };
 
     // UART configs from centralized definitions
-    let mgmt_config = uart_config_to_esp32(link::shared::uart_config::MGMT_NET, &flow_ctl_disabled);
+    let mgmt_config = uart_config_to_esp32(link::uart_config::MGMT_NET, &flow_ctl_disabled);
     let mgmt_uart = Uart::new(peripherals.UART0, mgmt_config)
         .unwrap()
         .with_tx(peripherals.GPIO43)
@@ -111,7 +108,7 @@ async fn main(spawner: Spawner) {
         .into_async();
     let (from_mgmt, to_mgmt) = mgmt_uart.split();
 
-    let ui_config = uart_config_to_esp32(link::shared::uart_config::UI_NET, &flow_ctl_disabled);
+    let ui_config = uart_config_to_esp32(link::uart_config::UI_NET, &flow_ctl_disabled);
     let ui_uart = Uart::new(peripherals.UART1, ui_config)
         .unwrap()
         .with_tx(peripherals.GPIO17)

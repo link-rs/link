@@ -6,16 +6,21 @@
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
-// CLAUDE the `shared` module should be pub(crate), and we should deliberately export what is
-// needed outside of this crate here.
-
-// Shared types and utilities
-pub mod shared;
+// Shared types and utilities (internal module, public items re-exported below)
+pub(crate) mod shared;
 
 // Re-export commonly used types at the crate root for convenience
-pub use shared::{Color, InvertedPin, Led};
+pub use shared::{Color, InvertedPin, Led, MAX_VALUE_SIZE};
 
-// Re-export logging macros
+// Re-export uart_config module for chip firmware
+pub use shared::uart_config;
+
+// Re-export protocol types
+pub use shared::protocol::{
+    CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, NetToUi, UiToMgmt, UiToNet,
+};
+
+// Re-export logging macros (crate-internal)
 pub(crate) use shared::info;
 
 // CLAUDE We should feature-gate each chip's module, so that there are `mgmt`, `net`, `ui`, and
