@@ -392,10 +392,7 @@ async fn connect(
     manually_select_port(baud).await.map_err(|e| e.into())
 }
 
-async fn dispatch(
-    cmd: Command,
-    app: &mut App,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+async fn dispatch(cmd: Command, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         Command::Mgmt { action } => handlers::handle_mgmt(action, app).await,
         Command::Ui { action } => handlers::handle_ui(action, app).await,
@@ -408,7 +405,8 @@ async fn dispatch(
                 println!("Sending UI-first circular ping with data: {}", data);
                 app.ui_first_circular_ping(data.as_bytes()).await;
             }
-            Ok(Some("Completed circular ping!".to_string()))
+            println!("Completed circular ping!");
+            Ok(())
         }
         Command::Exit => {
             std::process::exit(0);
@@ -607,10 +605,10 @@ fn repl_handler<'a>(
         let cmd = Command::from_arg_matches(&args)
             .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
 
-        match dispatch(cmd, app).await {
-            Ok(output) => Ok(output),
-            Err(e) => Err(reedline_repl_rs::Error::UnknownCommand(e.to_string())),
-        }
+        dispatch(cmd, app)
+            .await
+            .map(|()| None)
+            .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
     })
 }
 
@@ -659,13 +657,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (mut app, port_name) = connect(cli.port, cli.baud).await?;
             println!("Connected to {} at {} baud", port_name, cli.baud);
 
-            match dispatch(cmd, &mut app).await {
-                Ok(Some(output)) => println!("{}", output),
-                Ok(None) => {}
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    std::process::exit(1);
-                }
+            if let Err(e) = dispatch(cmd, &mut app).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
             }
         }
         None => {

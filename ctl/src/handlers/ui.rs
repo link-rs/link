@@ -4,15 +4,13 @@ use crate::{App, GetSetBool, GetSetHex, GetSetU32, UiAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::FlashPhase;
 
-pub async fn handle_ui(
-    action: UiAction,
-    app: &mut App,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+pub async fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         UiAction::Ping { data } => {
             println!("Sending UI ping with data: {}", data);
             app.ui_ping(data.as_bytes()).await;
-            Ok(Some("Received pong!".to_string()))
+            println!("Received pong!");
+            Ok(())
         }
         UiAction::Info => {
             println!("UI Bootloader Info");
@@ -71,7 +69,9 @@ pub async fn handle_ui(
                 println!("\nFlash Memory: Could not read (read protection may be enabled)");
             }
 
-            Ok(Some("UI chip reset back to user mode.\nDone!".to_string()))
+            println!("UI chip reset back to user mode.");
+            println!("Done!");
+            Ok(())
         }
         UiAction::Flash { file } => {
             println!("UI Flash");
@@ -123,26 +123,31 @@ pub async fn handle_ui(
             pb.finish_and_clear();
 
             match result {
-                Ok(()) => Ok(Some(
-                    "Flash complete!\nUI chip reset back to user mode.".to_string(),
-                )),
+                Ok(()) => {
+                    println!("Flash complete!");
+                    println!("UI chip reset back to user mode.");
+                    Ok(())
+                }
                 Err(e) => Err(format!("Flash failed: {:?}", e).into()),
             }
         }
         UiAction::Version { action } => match action.unwrap_or_default() {
             GetSetU32::Get => {
                 let version = app.get_version().await;
-                Ok(Some(format!("{}", version)))
+                println!("{}", version);
+                Ok(())
             }
             GetSetU32::Set { value } => {
                 app.set_version(value).await;
-                Ok(Some(format!("Version set to {}", value)))
+                println!("Version set to {}", value);
+                Ok(())
             }
         },
         UiAction::SFrameKey { action } => match action.unwrap_or_default() {
             GetSetHex::Get => {
                 let key = app.get_sframe_key().await;
-                Ok(Some(hex::encode(key)))
+                println!("{}", hex::encode(key));
+                Ok(())
             }
             GetSetHex::Set { value } => {
                 let key_bytes = hex::decode(&value).map_err(|_| "Invalid hex string")?;
@@ -152,31 +157,37 @@ pub async fn handle_ui(
                 let mut key_array = [0u8; 16];
                 key_array.copy_from_slice(&key_bytes);
                 app.set_sframe_key(&key_array).await;
-                Ok(Some(format!("SFrame key set to {}", value)))
+                println!("SFrame key set to {}", value);
+                Ok(())
             }
         },
         UiAction::Loopback { action } => match action.unwrap_or_default() {
             GetSetBool::Get => {
                 let enabled = app.ui_get_loopback().await;
-                Ok(Some(format!("{}", enabled)))
+                println!("{}", enabled);
+                Ok(())
             }
             GetSetBool::Set { value } => {
                 app.ui_set_loopback(value).await;
-                Ok(Some(format!("UI loopback set to {}", value)))
+                println!("UI loopback set to {}", value);
+                Ok(())
             }
         },
         UiAction::Reset { action } => match action.as_deref() {
             Some("hold") => {
                 app.hold_ui_reset().await;
-                Ok(Some("UI chip held in reset".to_string()))
+                println!("UI chip held in reset");
+                Ok(())
             }
             Some("release") => {
                 app.reset_ui_to_user().await;
-                Ok(Some("UI chip released from reset".to_string()))
+                println!("UI chip released from reset");
+                Ok(())
             }
             _ => {
                 app.reset_ui_to_user().await;
-                Ok(Some("UI chip reset".to_string()))
+                println!("UI chip reset");
+                Ok(())
             }
         },
     }

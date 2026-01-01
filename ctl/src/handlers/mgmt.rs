@@ -5,12 +5,13 @@ use crate::{App, MgmtAction};
 pub async fn handle_mgmt(
     action: MgmtAction,
     app: &mut App,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         MgmtAction::Ping { data } => {
             println!("Sending MGMT ping with data: {}", data);
             app.mgmt_ping(data.as_bytes()).await;
-            Ok(Some("Received pong!".to_string()))
+            println!("Received pong!");
+            Ok(())
         }
         MgmtAction::Info => {
             Err("mgmt info requires bootloader mode - run as: ctl mgmt info".into())

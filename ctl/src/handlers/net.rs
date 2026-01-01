@@ -7,12 +7,13 @@ use link::ctl::FlashPhase;
 pub async fn handle_net(
     action: NetAction,
     app: &mut App,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         NetAction::Ping { data } => {
             println!("Sending NET ping with data: {}", data);
             app.net_ping(data.as_bytes()).await;
-            Ok(Some("Received pong!".to_string()))
+            println!("Received pong!");
+            Ok(())
         }
         NetAction::Info => {
             println!("Resetting NET chip to bootloader mode...");
@@ -39,38 +40,43 @@ pub async fn handle_net(
                 sec.key_purposes[6]
             );
 
-            Ok(Some("NET chip reset back to user mode.\nDone!".to_string()))
+            println!("NET chip reset back to user mode.");
+            println!("Done!");
+            Ok(())
         }
         NetAction::Wifi { action } => match action {
             None => {
                 let ssids = app.get_wifi_ssids().await;
                 if ssids.is_empty() {
-                    Ok(Some("No WiFi networks configured".to_string()))
+                    println!("No WiFi networks configured");
                 } else {
-                    let mut output = String::new();
                     for wifi in ssids {
-                        output.push_str(&format!("{}\t{}\n", wifi.ssid, wifi.password));
+                        println!("{}\t{}", wifi.ssid, wifi.password);
                     }
-                    Ok(Some(output.trim_end().to_string()))
                 }
+                Ok(())
             }
             Some(WifiAction::Add { ssid, password }) => {
                 app.add_wifi_ssid(&ssid, &password).await;
-                Ok(Some(format!("Added WiFi network: {}", ssid)))
+                println!("Added WiFi network: {}", ssid);
+                Ok(())
             }
             Some(WifiAction::Clear) => {
                 app.clear_wifi_ssids().await;
-                Ok(Some("Cleared all WiFi networks".to_string()))
+                println!("Cleared all WiFi networks");
+                Ok(())
             }
         },
         NetAction::RelayUrl { action } => match action.unwrap_or_default() {
             GetSetString::Get => {
                 let url = app.get_relay_url().await;
-                Ok(Some(url.to_string()))
+                println!("{}", url);
+                Ok(())
             }
             GetSetString::Set { value } => {
                 app.set_relay_url(&value).await;
-                Ok(Some(format!("Relay URL set to {}", value)))
+                println!("Relay URL set to {}", value);
+                Ok(())
             }
         },
         NetAction::Flash {
@@ -157,16 +163,19 @@ pub async fn handle_net(
             pb.finish_and_clear();
 
             match result {
-                Ok(()) => Ok(Some(
-                    "Flash complete!\nNET chip reset back to user mode.".to_string(),
-                )),
+                Ok(()) => {
+                    println!("Flash complete!");
+                    println!("NET chip reset back to user mode.");
+                    Ok(())
+                }
                 Err(e) => Err(format!("Flash failed: {:?}", e).into()),
             }
         }
         NetAction::WsPing { data } => {
             println!("Sending WebSocket ping with data: {}", data);
             app.ws_ping(data.as_bytes()).await;
-            Ok(Some("Received echo response!".to_string()))
+            println!("Received echo response!");
+            Ok(())
         }
         NetAction::WsEchoTest => {
             println!("Running WebSocket echo test...");
@@ -174,48 +183,38 @@ pub async fn handle_net(
 
             let results = app.ws_echo_test().await;
 
-            let mut output = String::new();
-            output.push_str("Results:\n");
-            output.push_str(&format!("  Packets sent:           {}\n", results.sent));
-            output.push_str(&format!("  Packets received (raw): {}\n", results.received));
-            output.push_str(&format!(
-                "  Packets output (buf):   {}\n",
-                results.buffered_output
-            ));
-            output.push_str(&format!(
-                "  Buffer underruns:       {}\n",
-                results.underruns
-            ));
+            println!("Results:");
+            println!("  Packets sent:           {}", results.sent);
+            println!("  Packets received (raw): {}", results.received);
+            println!("  Packets output (buf):   {}", results.buffered_output);
+            println!("  Buffer underruns:       {}", results.underruns);
 
             if results.received > 0 && results.sent > 0 {
                 let loss_pct =
                     ((results.sent - results.received) as f64 / results.sent as f64) * 100.0;
-                output.push_str(&format!("  Packet loss:            {:.1}%\n", loss_pct));
+                println!("  Packet loss:            {:.1}%", loss_pct);
             }
 
-            output.push_str(&format_jitter_stats(
+            print_jitter_stats(
                 "Raw jitter (before buffer)",
                 results.raw_jitter_us.as_slice(),
-            ));
-            output.push_str(&format_jitter_stats(
+            );
+            print_jitter_stats(
                 "Buffered jitter (after buffer)",
                 results.buffered_jitter_us.as_slice(),
-            ));
+            );
 
             if !results.raw_jitter_us.is_empty() {
-                output.push_str(&format!(
-                    "\nRaw timings (µs): {:?}\n",
-                    results.raw_jitter_us.as_slice()
-                ));
+                println!("\nRaw timings (µs): {:?}", results.raw_jitter_us.as_slice());
             }
             if !results.buffered_jitter_us.is_empty() {
-                output.push_str(&format!(
+                println!(
                     "Buffered timings (µs): {:?}",
                     results.buffered_jitter_us.as_slice()
-                ));
+                );
             }
 
-            Ok(Some(output))
+            Ok(())
         }
         NetAction::WsSpeedTest => {
             println!("Running WebSocket speed test...");
@@ -223,73 +222,57 @@ pub async fn handle_net(
 
             let results = app.ws_speed_test().await;
 
-            let mut output = String::new();
-            output.push_str("Results:\n");
-            output.push_str(&format!("  Packets sent:     {}\n", results.sent));
-            output.push_str(&format!("  Packets received: {}\n", results.received));
-            output.push_str(&format!(
-                "  Send time:        {} ms\n",
-                results.send_time_ms
-            ));
-            output.push_str(&format!(
-                "  Receive time:     {} ms\n",
-                results.recv_time_ms
-            ));
+            println!("Results:");
+            println!("  Packets sent:     {}", results.sent);
+            println!("  Packets received: {}", results.received);
+            println!("  Send time:        {} ms", results.send_time_ms);
+            println!("  Receive time:     {} ms", results.recv_time_ms);
 
             if results.sent > 0 {
                 let send_rate =
                     (results.sent as f64 * 640.0) / (results.send_time_ms as f64 / 1000.0) / 1024.0;
-                output.push_str(&format!("  Send rate:        {:.1} KB/s\n", send_rate));
+                println!("  Send rate:        {:.1} KB/s", send_rate);
                 let fps = results.sent as f64 / (results.send_time_ms as f64 / 1000.0);
-                output.push_str(&format!("  Send FPS:         {:.1}\n", fps));
+                println!("  Send FPS:         {:.1}", fps);
             }
 
             if results.received > 0 && results.sent > 0 {
                 let loss_pct =
                     ((results.sent - results.received) as f64 / results.sent as f64) * 100.0;
-                output.push_str(&format!("  Packet loss:      {:.1}%", loss_pct));
+                println!("  Packet loss:      {:.1}%", loss_pct);
             }
 
-            Ok(Some(output))
+            Ok(())
         }
         NetAction::Loopback { action } => match action.unwrap_or_default() {
             GetSetBool::Get => {
                 let enabled = app.net_get_loopback().await;
-                Ok(Some(format!("{}", enabled)))
+                println!("{}", enabled);
+                Ok(())
             }
             GetSetBool::Set { value } => {
                 app.net_set_loopback(value).await;
-                Ok(Some(format!("NET loopback set to {}", value)))
+                println!("NET loopback set to {}", value);
+                Ok(())
             }
         },
     }
 }
 
-fn format_jitter_stats(label: &str, timings: &[u32]) -> String {
+fn print_jitter_stats(label: &str, timings: &[u32]) {
     if timings.is_empty() {
-        return format!("\n{}: No data\n", label);
+        println!("\n{}: No data", label);
+        return;
     }
     let min = timings.iter().min().copied().unwrap_or(0);
     let max = timings.iter().max().copied().unwrap_or(0);
     let sum: u64 = timings.iter().map(|&x| x as u64).sum();
     let avg = sum / timings.len() as u64;
 
-    let mut s = format!("\n{}:\n", label);
-    s.push_str(&format!(
-        "  Min: {:>6} µs ({:>5.1} ms)\n",
-        min,
-        min as f64 / 1000.0
-    ));
-    s.push_str(&format!(
-        "  Max: {:>6} µs ({:>5.1} ms)\n",
-        max,
-        max as f64 / 1000.0
-    ));
-    s.push_str(&format!(
-        "  Avg: {:>6} µs ({:>5.1} ms)\n",
-        avg,
-        avg as f64 / 1000.0
-    ));
+    println!("\n{}:", label);
+    println!("  Min: {:>6} µs ({:>5.1} ms)", min, min as f64 / 1000.0);
+    println!("  Max: {:>6} µs ({:>5.1} ms)", max, max as f64 / 1000.0);
+    println!("  Avg: {:>6} µs ({:>5.1} ms)", avg, avg as f64 / 1000.0);
 
     let target_us = 20000i64;
     let jitter: i64 = timings
@@ -297,10 +280,9 @@ fn format_jitter_stats(label: &str, timings: &[u32]) -> String {
         .map(|&x| (x as i64 - target_us).abs())
         .sum::<i64>()
         / timings.len() as i64;
-    s.push_str(&format!(
-        "  Avg deviation from 20ms: {:>6} µs ({:>5.1} ms)\n",
+    println!(
+        "  Avg deviation from 20ms: {:>6} µs ({:>5.1} ms)",
         jitter,
         jitter as f64 / 1000.0
-    ));
-    s
+    );
 }
