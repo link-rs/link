@@ -35,23 +35,20 @@ enum Event {
     AudioFrame(Frame),
 }
 
-// CLAUDE There's no reason to have separate new() and run() here.  It can just be a run() method,
-// like in mgmt.
-pub struct App<W, R, LR, LG, LB, BA, BB, BM, I, D, AS> {
-    to_mgmt: W,
-    to_net: W,
+#[allow(unreachable_code)]
+pub async fn run<W, R, LR, LG, LB, BA, BB, BM, I, D, AS>(
+    mut to_mgmt: W,
     from_mgmt: R,
+    mut to_net: W,
     from_net: R,
     led: (LR, LG, LB),
     button_a: BA,
     button_b: BB,
     button_mic: BM,
-    i2c: I,
-    delay: D,
-    audio_system: AS,
-}
-
-impl<W, R, LR, LG, LB, BA, BB, BM, I, D, AS> App<W, R, LR, LG, LB, BA, BB, BM, I, D, AS>
+    mut i2c: I,
+    mut delay: D,
+    mut audio_system: AS,
+) -> !
 where
     W: Write,
     R: Read,
@@ -65,196 +62,150 @@ where
     D: DelayNs,
     AS: AudioSystem,
 {
-    pub fn new(
-        to_mgmt: W,
-        from_mgmt: R,
-        to_net: W,
-        from_net: R,
-        led: (LR, LG, LB),
-        button_a: BA,
-        button_b: BB,
-        button_mic: BM,
-        i2c: I,
-        delay: D,
-        audio_system: AS,
-    ) -> Self {
-        Self {
-            to_mgmt,
-            to_net,
-            from_mgmt,
-            from_net,
-            led,
-            button_a,
-            button_b,
-            button_mic,
-            i2c,
-            delay,
-            audio_system,
-        }
-    }
+    info!("ui: starting");
 
-    #[allow(unreachable_code)]
-    pub async fn run(self) -> ! {
-        info!("ui: starting");
+    // Initialize LED
+    let mut led = Led::new(led.0, led.1, led.2);
+    led.set(Color::Green);
 
-        let Self {
-            mut to_mgmt,
-            mut to_net,
-            from_mgmt,
-            from_net,
-            led,
-            button_a,
-            button_b,
-            button_mic,
-            mut i2c,
-            mut delay,
-            mut audio_system,
-        } = self;
+    const MAX_QUEUE_DEPTH: usize = 4;
+    let channel: Channel<CriticalSectionRawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
 
-        // Initialize LED
-        let mut led = Led::new(led.0, led.1, led.2);
-        led.set(Color::Green);
+    let mgmt_read_task = read_tlv_loop(from_mgmt, channel.sender(), Event::Mgmt);
+    let net_read_task = read_tlv_loop(from_net, channel.sender(), Event::Net);
+    let button_a_task = button_monitor(button_a, Button::A, false, channel.sender());
+    let button_b_task = button_monitor(button_b, Button::B, false, channel.sender());
+    let button_mic_task = button_monitor(button_mic, Button::A, true, channel.sender());
 
-        const MAX_QUEUE_DEPTH: usize = 4;
-        let channel: Channel<CriticalSectionRawMutex, Event, MAX_QUEUE_DEPTH> = Channel::new();
+    // Queue for playback frames (from NET)
+    const PLAYBACK_QUEUE_SIZE: usize = 4;
+    let playback_channel: Channel<CriticalSectionRawMutex, Frame, PLAYBACK_QUEUE_SIZE> =
+        Channel::new();
 
-        let mgmt_read_task = read_tlv_loop(from_mgmt, channel.sender(), Event::Mgmt);
-        let net_read_task = read_tlv_loop(from_net, channel.sender(), Event::Net);
-        let button_a_task = button_monitor(button_a, Button::A, false, channel.sender());
-        let button_b_task = button_monitor(button_b, Button::B, false, channel.sender());
-        let button_mic_task = button_monitor(button_mic, Button::A, true, channel.sender());
+    let handle_task = async {
+        info!("ui: ready to handle events");
 
-        // Queue for playback frames (from NET)
-        const PLAYBACK_QUEUE_SIZE: usize = 4;
-        let playback_channel: Channel<CriticalSectionRawMutex, Frame, PLAYBACK_QUEUE_SIZE> =
-            Channel::new();
+        // Track which button is currently held (if any)
+        let mut active_button: Option<Button> = None;
+        // Loopback mode: mic audio goes directly to speaker instead of NET
+        let mut loopback = false;
 
-        let handle_task = async {
-            info!("ui: ready to handle events");
-
-            // Track which button is currently held (if any)
-            let mut active_button: Option<Button> = None;
-            // Loopback mode: mic audio goes directly to speaker instead of NET
-            let mut loopback = false;
-
-            loop {
-                match channel.receive().await {
-                    Event::Mgmt(tlv) => {
-                        handle_mgmt(
-                            tlv,
-                            &mut to_mgmt,
-                            &mut to_net,
-                            &mut i2c,
-                            &mut delay,
-                            &mut loopback,
-                        )
-                        .await
-                    }
-                    Event::Net(tlv) => {
-                        if let Some(frame) = handle_net(tlv, &mut to_mgmt).await {
-                            playback_channel.send(frame).await;
-                        }
-                    }
-                    Event::ButtonDown(button) => {
-                        info!("ui: button {:?} down", button);
-                        if active_button.is_none() {
-                            active_button = Some(button);
-                        }
-                    }
-                    Event::ButtonUp(button) => {
-                        info!("ui: button {:?} up", button);
-                        if active_button == Some(button) {
-                            active_button = None;
-                        }
-                    }
-                    Event::AudioFrame(frame) => {
-                        // Audio frame read from microphone
-                        if let Some(button) = active_button {
-                            if loopback {
-                                // Loopback: send directly to speaker
-                                playback_channel.send(frame).await;
-                            } else {
-                                // Normal: send to NET
-                                let tlv_type = match button {
-                                    Button::A => UiToNet::AudioFrameA,
-                                    Button::B => UiToNet::AudioFrameB,
-                                };
-                                to_net.must_write_tlv(tlv_type, frame.as_bytes()).await;
-                            }
-                        }
-                    }
-                }
-            }
-        };
-
-        // Audio I/O task: reads from microphone, writes queued playback frames
-        let audio_task = async {
-            audio_system.start().await;
-
-            // Play a 400Hz stereo square wave for startup
-            // Generate stereo tone (interleaved L/R samples)
-            let tone_stereo = StereoFrame(core::array::from_fn(|i| {
-                const AMPLITUDE: u16 = 0x1ff;
-                const FREQ: u16 = 40; // Period in samples (doubled for stereo)
-                ((((i / 2) as u16) / (FREQ / 2)) % 2) * AMPLITUDE
-            }));
-            let mut zero_stereo = StereoFrame::default();
-            for _i in 0..25 {
-                // 25 frames at 80ms each = 2 seconds
-                let _ = audio_system
-                    .read_write(&tone_stereo, &mut zero_stereo)
-                    .await;
-            }
-
-            loop {
-                // Wait for a frame with timeout (25% of 80ms frame time = 20ms)
-                // This gives frames a chance to arrive while limiting latency
-                #[cfg(feature = "audio-buffer")]
-                let tx_stereo = {
-                    use embassy_time::{Duration, with_timeout};
-                    match with_timeout(Duration::from_millis(20), playback_channel.receive()).await
-                    {
-                        Ok(frame) => frame.decode_to_stereo(),
-                        Err(_timeout) => StereoFrame::default(),
-                    }
-                };
-
-                // Fallback for tests (no embassy-time available)
-                #[cfg(not(feature = "audio-buffer"))]
-                let tx_stereo = if let Ok(frame) = playback_channel.try_receive() {
-                    frame.decode_to_stereo()
-                } else {
-                    StereoFrame::default()
-                };
-
-                let mut rx_stereo = StereoFrame::default();
-
-                // Do the I2S read/write cycle
-                if audio_system
-                    .read_write(&tx_stereo, &mut rx_stereo)
+        loop {
+            match channel.receive().await {
+                Event::Mgmt(tlv) => {
+                    handle_mgmt(
+                        tlv,
+                        &mut to_mgmt,
+                        &mut to_net,
+                        &mut i2c,
+                        &mut delay,
+                        &mut loopback,
+                    )
                     .await
-                    .is_ok()
-                {
-                    // Encode stereo to A-law mono for transmission
-                    let encoded_frame = rx_stereo.encode();
-                    // Try to send the recorded frame - drop if channel is full
-                    // This prevents blocking the audio task if event handler is slow
-                    let _ = channel.try_send(Event::AudioFrame(encoded_frame));
+                }
+                Event::Net(tlv) => {
+                    if let Some(frame) = handle_net(tlv, &mut to_mgmt).await {
+                        playback_channel.send(frame).await;
+                    }
+                }
+                Event::ButtonDown(button) => {
+                    info!("ui: button {:?} down", button);
+                    if active_button.is_none() {
+                        active_button = Some(button);
+                    }
+                }
+                Event::ButtonUp(button) => {
+                    info!("ui: button {:?} up", button);
+                    if active_button == Some(button) {
+                        active_button = None;
+                    }
+                }
+                Event::AudioFrame(frame) => {
+                    // Audio frame read from microphone
+                    if let Some(button) = active_button {
+                        if loopback {
+                            // Loopback: send directly to speaker
+                            playback_channel.send(frame).await;
+                        } else {
+                            // Normal: send to NET
+                            let tlv_type = match button {
+                                Button::A => UiToNet::AudioFrameA,
+                                Button::B => UiToNet::AudioFrameB,
+                            };
+                            to_net.must_write_tlv(tlv_type, frame.as_bytes()).await;
+                        }
+                    }
                 }
             }
-        };
+        }
+    };
 
-        futures::join!(
-            mgmt_read_task,
-            net_read_task,
-            button_a_task,
-            button_b_task,
-            button_mic_task,
-            handle_task,
-            audio_task
-        );
-        unreachable!()
-    }
+    // Audio I/O task: reads from microphone, writes queued playback frames
+    let audio_task = async {
+        audio_system.start().await;
+
+        // Play a 400Hz stereo square wave for startup
+        // Generate stereo tone (interleaved L/R samples)
+        let tone_stereo = StereoFrame(core::array::from_fn(|i| {
+            const AMPLITUDE: u16 = 0x1ff;
+            const FREQ: u16 = 40; // Period in samples (doubled for stereo)
+            ((((i / 2) as u16) / (FREQ / 2)) % 2) * AMPLITUDE
+        }));
+        let mut zero_stereo = StereoFrame::default();
+        for _i in 0..25 {
+            // 25 frames at 80ms each = 2 seconds
+            let _ = audio_system
+                .read_write(&tone_stereo, &mut zero_stereo)
+                .await;
+        }
+
+        loop {
+            // Wait for a frame with timeout (25% of 80ms frame time = 20ms)
+            // This gives frames a chance to arrive while limiting latency
+            #[cfg(feature = "audio-buffer")]
+            let tx_stereo = {
+                use embassy_time::{Duration, with_timeout};
+                match with_timeout(Duration::from_millis(20), playback_channel.receive()).await {
+                    Ok(frame) => frame.decode_to_stereo(),
+                    Err(_timeout) => StereoFrame::default(),
+                }
+            };
+
+            // Fallback for tests (no embassy-time available)
+            #[cfg(not(feature = "audio-buffer"))]
+            let tx_stereo = if let Ok(frame) = playback_channel.try_receive() {
+                frame.decode_to_stereo()
+            } else {
+                StereoFrame::default()
+            };
+
+            let mut rx_stereo = StereoFrame::default();
+
+            // Do the I2S read/write cycle
+            if audio_system
+                .read_write(&tx_stereo, &mut rx_stereo)
+                .await
+                .is_ok()
+            {
+                // Encode stereo to A-law mono for transmission
+                let encoded_frame = rx_stereo.encode();
+                // Try to send the recorded frame - drop if channel is full
+                // This prevents blocking the audio task if event handler is slow
+                let _ = channel.try_send(Event::AudioFrame(encoded_frame));
+            }
+        }
+    };
+
+    futures::join!(
+        mgmt_read_task,
+        net_read_task,
+        button_a_task,
+        button_b_task,
+        button_mic_task,
+        handle_task,
+        audio_task
+    );
+    unreachable!()
 }
 
 async fn button_monitor<'a, B: Wait, const N: usize>(
@@ -713,25 +664,23 @@ mod audio_streaming_tests {
 
         let (button_a, button_a_ctrl) = ControllableButton::new();
 
-        let ui_app = App::new(
-            ui_to_mgmt,
-            ui_from_mgmt,
-            ui_to_net,
-            ui_from_net,
-            mock_led_pins(),
-            button_a,
-            MockButton,
-            MockButton,
-            mock_i2c_with_eeprom(),
-            MockDelay,
-            MockAudioStream::new(),
-        );
-
         let collector = TlvCollector::new();
         let frames_a = collector.frames_a();
 
         tokio::select! {
-            _ = ui_app.run() => unreachable!(),
+            _ = run(
+                ui_to_mgmt,
+                ui_from_mgmt,
+                ui_to_net,
+                ui_from_net,
+                mock_led_pins(),
+                button_a,
+                MockButton,
+                MockButton,
+                mock_i2c_with_eeprom(),
+                MockDelay,
+                MockAudioStream::new(),
+            ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
                 // Wait for startup tone to complete (50 frames × 5ms = 250ms)
@@ -774,26 +723,24 @@ mod audio_streaming_tests {
 
         let (button_mic, button_mic_ctrl) = ControllableButton::new();
 
-        let ui_app = App::new(
-            ui_to_mgmt,
-            ui_from_mgmt,
-            ui_to_net,
-            ui_from_net,
-            mock_led_pins(),
-            MockButton,
-            MockButton,
-            button_mic,
-            mock_i2c_with_eeprom(),
-            MockDelay,
-            MockAudioStream::new(),
-        );
-
         let collector = TlvCollector::new();
         let frames_a = collector.frames_a();
         let frames_b = collector.frames_b();
 
         tokio::select! {
-            _ = ui_app.run() => unreachable!(),
+            _ = run(
+                ui_to_mgmt,
+                ui_from_mgmt,
+                ui_to_net,
+                ui_from_net,
+                mock_led_pins(),
+                MockButton,
+                MockButton,
+                button_mic,
+                mock_i2c_with_eeprom(),
+                MockDelay,
+                MockAudioStream::new(),
+            ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
                 // Wait for startup tone to complete (50 frames × 5ms = 250ms)
@@ -838,25 +785,23 @@ mod audio_streaming_tests {
 
         let (button_b, button_b_ctrl) = ControllableButton::new();
 
-        let ui_app = App::new(
-            ui_to_mgmt,
-            ui_from_mgmt,
-            ui_to_net,
-            ui_from_net,
-            mock_led_pins(),
-            MockButton,
-            button_b,
-            MockButton,
-            mock_i2c_with_eeprom(),
-            MockDelay,
-            MockAudioStream::new(),
-        );
-
         let collector = TlvCollector::new();
         let frames_b = collector.frames_b();
 
         tokio::select! {
-            _ = ui_app.run() => unreachable!(),
+            _ = run(
+                ui_to_mgmt,
+                ui_from_mgmt,
+                ui_to_net,
+                ui_from_net,
+                mock_led_pins(),
+                MockButton,
+                button_b,
+                MockButton,
+                mock_i2c_with_eeprom(),
+                MockDelay,
+                MockAudioStream::new(),
+            ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
                 // Wait for startup tone to complete (50 frames × 5ms = 250ms)
@@ -897,26 +842,24 @@ mod audio_streaming_tests {
         let (ui_to_net, net_from_ui) = channel();
         let (_net_to_ui, ui_from_net) = channel();
 
-        let ui_app = App::new(
-            ui_to_mgmt,
-            ui_from_mgmt,
-            ui_to_net,
-            ui_from_net,
-            mock_led_pins(),
-            MockButton,
-            MockButton,
-            MockButton,
-            mock_i2c_with_eeprom(),
-            MockDelay,
-            MockAudioStream::new(),
-        );
-
         let collector = TlvCollector::new();
         let frames_a = collector.frames_a();
         let frames_b = collector.frames_b();
 
         tokio::select! {
-            _ = ui_app.run() => unreachable!(),
+            _ = run(
+                ui_to_mgmt,
+                ui_from_mgmt,
+                ui_to_net,
+                ui_from_net,
+                mock_led_pins(),
+                MockButton,
+                MockButton,
+                MockButton,
+                mock_i2c_with_eeprom(),
+                MockDelay,
+                MockAudioStream::new(),
+            ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
                 // Wait for startup tone + extra time without pressing any button
@@ -938,25 +881,23 @@ mod audio_streaming_tests {
 
         let (button_a, button_a_ctrl) = ControllableButton::new();
 
-        let ui_app = App::new(
-            ui_to_mgmt,
-            ui_from_mgmt,
-            ui_to_net,
-            ui_from_net,
-            mock_led_pins(),
-            button_a,
-            MockButton,
-            MockButton,
-            mock_i2c_with_eeprom(),
-            MockDelay,
-            MockAudioStream::new(),
-        );
-
         let collector = TlvCollector::new();
         let frames_a = collector.frames_a();
 
         tokio::select! {
-            _ = ui_app.run() => unreachable!(),
+            _ = run(
+                ui_to_mgmt,
+                ui_from_mgmt,
+                ui_to_net,
+                ui_from_net,
+                mock_led_pins(),
+                button_a,
+                MockButton,
+                MockButton,
+                mock_i2c_with_eeprom(),
+                MockDelay,
+                MockAudioStream::new(),
+            ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
                 // Wait for startup tone to complete
@@ -993,26 +934,24 @@ mod audio_streaming_tests {
         let (button_a, button_a_ctrl) = ControllableButton::new();
         let (button_b, button_b_ctrl) = ControllableButton::new();
 
-        let ui_app = App::new(
-            ui_to_mgmt,
-            ui_from_mgmt,
-            ui_to_net,
-            ui_from_net,
-            mock_led_pins(),
-            button_a,
-            button_b,
-            MockButton,
-            mock_i2c_with_eeprom(),
-            MockDelay,
-            MockAudioStream::new(),
-        );
-
         let collector = TlvCollector::new();
         let frames_a = collector.frames_a();
         let frames_b = collector.frames_b();
 
         tokio::select! {
-            _ = ui_app.run() => unreachable!(),
+            _ = run(
+                ui_to_mgmt,
+                ui_from_mgmt,
+                ui_to_net,
+                ui_from_net,
+                mock_led_pins(),
+                button_a,
+                button_b,
+                MockButton,
+                mock_i2c_with_eeprom(),
+                MockDelay,
+                MockAudioStream::new(),
+            ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
                 // Wait for startup tone to complete
@@ -1065,22 +1004,20 @@ mod audio_streaming_tests {
 
         let (audio_stream, written_frames) = CapturingAudioStream::new();
 
-        let ui_app = App::new(
-            ui_to_mgmt,
-            ui_from_mgmt,
-            ui_to_net,
-            ui_from_net,
-            mock_led_pins(),
-            MockButton,
-            MockButton,
-            MockButton,
-            mock_i2c_with_eeprom(),
-            MockDelay,
-            audio_stream,
-        );
-
         tokio::select! {
-            _ = ui_app.run() => unreachable!(),
+            _ = run(
+                ui_to_mgmt,
+                ui_from_mgmt,
+                ui_to_net,
+                ui_from_net,
+                mock_led_pins(),
+                MockButton,
+                MockButton,
+                MockButton,
+                mock_i2c_with_eeprom(),
+                MockDelay,
+                audio_stream,
+            ) => unreachable!(),
             _ = async {
                 // Wait for startup tone to complete (50 frames × 5ms = 250ms)
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1146,20 +1083,6 @@ mod audio_streaming_tests {
 
         let (audio_stream, written_frames) = CapturingAudioStream::new();
 
-        let ui_app = App::new(
-            ui_to_mgmt,
-            ui_from_mgmt,
-            ui_to_net,
-            ui_from_net,
-            mock_led_pins(),
-            MockButton,
-            MockButton,
-            MockButton,
-            mock_i2c_with_eeprom(),
-            MockDelay,
-            audio_stream,
-        );
-
         // Pre-compute expected decoded values for markers 1000, 2000, 3000
         let markers: Vec<(u8, u16)> = (0..3)
             .map(|i| {
@@ -1171,7 +1094,19 @@ mod audio_streaming_tests {
             .collect();
 
         tokio::select! {
-            _ = ui_app.run() => unreachable!(),
+            _ = run(
+                ui_to_mgmt,
+                ui_from_mgmt,
+                ui_to_net,
+                ui_from_net,
+                mock_led_pins(),
+                MockButton,
+                MockButton,
+                MockButton,
+                mock_i2c_with_eeprom(),
+                MockDelay,
+                audio_stream,
+            ) => unreachable!(),
             _ = async {
                 // Wait for startup tone to complete (50 frames × 5ms = 250ms)
                 tokio::time::sleep(Duration::from_millis(300)).await;

@@ -237,7 +237,7 @@ async fn main(_spawner: Spawner) {
         &mut i2c, &mut delay,
     );
 
-    link::ui::App::new(
+    link::ui::run(
         to_mgmt,
         from_mgmt,
         to_net,
@@ -250,6 +250,5 @@ async fn main(_spawner: Spawner) {
         delay,
         audio_system,
     )
-    .run()
     .await;
 }

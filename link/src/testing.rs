@@ -53,19 +53,6 @@ where
         net_reset_pins,
         MockAsyncDelay,
     );
-    let ui_app = ui::App::new(
-        ui_to_mgmt,
-        ui_from_mgmt,
-        ui_to_net,
-        ui_from_net,
-        mock_led_pins(),
-        MockButton,
-        MockButton,
-        MockButton,
-        mock_i2c_with_eeprom(),
-        MockDelay,
-        MockAudioStream::new(),
-    );
     // Create WS channels for NET app
     let ws_cmd_channel: Channel<CriticalSectionRawMutex, net::WsCommand, 4> = Channel::new();
     let ws_event_channel: Channel<CriticalSectionRawMutex, net::WsEvent, 4> = Channel::new();
@@ -85,7 +72,19 @@ where
     tokio::select! {
         _ = test_fn(ctl_app) => {},
         _ = mgmt_task => {},
-        _ = ui_app.run() => {},
+        _ = ui::run(
+            ui_to_mgmt,
+            ui_from_mgmt,
+            ui_to_net,
+            ui_from_net,
+            mock_led_pins(),
+            MockButton,
+            MockButton,
+            MockButton,
+            mock_i2c_with_eeprom(),
+            MockDelay,
+            MockAudioStream::new(),
+        ) => {},
         _ = net_app.run() => {},
     }
 }
@@ -134,19 +133,6 @@ where
         net_reset_pins,
         MockAsyncDelay,
     );
-    let ui_app = ui::App::new(
-        ui_to_mgmt,
-        ui_from_mgmt,
-        ui_to_net,
-        ui_from_net,
-        mock_led_pins(),
-        MockButton,
-        MockButton,
-        MockButton,
-        mock_i2c_with_eeprom(),
-        MockDelay,
-        MockAudioStream::new(),
-    );
     // Create WS channels for NET app
     let ws_cmd_channel: Channel<CriticalSectionRawMutex, net::WsCommand, 4> = Channel::new();
     let ws_event_channel: Channel<CriticalSectionRawMutex, net::WsEvent, 4> = Channel::new();
@@ -166,7 +152,19 @@ where
     tokio::select! {
         _ = test_fn(ctl_app, gpio_ops) => {},
         _ = mgmt_task => {},
-        _ = ui_app.run() => {},
+        _ = ui::run(
+            ui_to_mgmt,
+            ui_from_mgmt,
+            ui_to_net,
+            ui_from_net,
+            mock_led_pins(),
+            MockButton,
+            MockButton,
+            MockButton,
+            mock_i2c_with_eeprom(),
+            MockDelay,
+            MockAudioStream::new(),
+        ) => {},
         _ = net_app.run() => {},
     }
 }
