@@ -22,6 +22,23 @@ use embedded_hal::i2c::I2c as I2cTrait;
 use link::ui::{AudioError, AudioSystem, StereoFrame, STEREO_FRAME_SIZE};
 use {defmt_rtt as _, panic_probe as _};
 
+/// Convert centralized UART config to STM32 HAL config.
+fn uart_config_to_stm32(cfg: link::shared::uart_config::Config) -> Config {
+    use link::shared::uart_config::{Parity as P, StopBits as S};
+    let mut config = Config::default();
+    config.baudrate = cfg.baudrate;
+    config.data_bits = DataBits::DataBits8;
+    config.parity = match cfg.parity {
+        P::None => Parity::ParityNone,
+        P::Even => Parity::ParityEven,
+    };
+    config.stop_bits = match cfg.stop_bits {
+        S::One => StopBits::STOP1,
+        S::Two => StopBits::STOP2,
+    };
+    config
+}
+
 const I2S_BUF_SIZE: usize = STEREO_FRAME_SIZE * 2;
 
 /// Board-level audio system wrapping the I2S peripheral.
@@ -153,21 +170,9 @@ async fn main(_spawner: Spawner) {
     };
     let p = embassy_stm32::init(config);
 
-    // CLAUDE Same comments on UART config here as for the MGMT chip (mgmt/src/main.rs)
-
-    // UART config for MGMT (even parity for STM32 bootloader compatibility)
-    let mut mgmt_config = Config::default();
-    mgmt_config.baudrate = 115200;
-    mgmt_config.data_bits = DataBits::DataBits8;
-    mgmt_config.stop_bits = StopBits::STOP1;
-    mgmt_config.parity = Parity::ParityEven;
-
-    // UART config for NET
-    let mut net_config = Config::default();
-    net_config.baudrate = 460800;
-    net_config.data_bits = DataBits::DataBits8;
-    net_config.stop_bits = StopBits::STOP2;
-    net_config.parity = Parity::ParityNone;
+    // UART configs from centralized definitions
+    let mgmt_config = uart_config_to_stm32(link::shared::uart_config::STM32_BOOTLOADER);
+    let net_config = uart_config_to_stm32(link::shared::uart_config::UI_NET);
 
     // DMA buffers for ring-buffered RX
     let mgmt_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();

@@ -45,6 +45,27 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
+/// Convert centralized UART config to ESP32 HAL config.
+fn uart_config_to_esp32(
+    cfg: link::shared::uart_config::Config,
+    flow_ctl: &HwFlowControl,
+) -> Config {
+    use link::shared::uart_config::{Parity as P, StopBits as S};
+    Config::default()
+        .with_baudrate(cfg.baudrate)
+        .with_parity(match cfg.parity {
+            P::None => Parity::None,
+            P::Even => Parity::Even,
+        })
+        .with_stop_bits(match cfg.stop_bits {
+            S::One => StopBits::_1,
+            S::Two => StopBits::_2,
+        })
+        .with_rx(RxConfig::default().with_fifo_full_threshold(1))
+        .with_sw_flow_ctrl(SwFlowControl::Disabled)
+        .with_hw_flow_ctrl(flow_ctl.clone())
+}
+
 macro_rules! singleton {
     ($t:ty, $val:expr) => {{
         static STATIC_CELL: StaticCell<$t> = StaticCell::new();
@@ -81,15 +102,8 @@ async fn main(spawner: Spawner) {
         rts: RtsConfig::Disabled,
     };
 
-    // CLAUDE Same comment here about UART configs as in mgmt, ui
-
-    // UART to MGMT
-    let mgmt_config = Config::default()
-        .with_baudrate(115200)
-        .with_parity(Parity::None)
-        .with_rx(RxConfig::default().with_fifo_full_threshold(1))
-        .with_sw_flow_ctrl(SwFlowControl::Disabled)
-        .with_hw_flow_ctrl(flow_ctl_disabled);
+    // UART configs from centralized definitions
+    let mgmt_config = uart_config_to_esp32(link::shared::uart_config::MGMT_NET, &flow_ctl_disabled);
     let mgmt_uart = Uart::new(peripherals.UART0, mgmt_config)
         .unwrap()
         .with_tx(peripherals.GPIO43)
@@ -97,12 +111,7 @@ async fn main(spawner: Spawner) {
         .into_async();
     let (from_mgmt, to_mgmt) = mgmt_uart.split();
 
-    // UART to UI
-    let ui_config = Config::default()
-        .with_baudrate(460800)
-        .with_stop_bits(StopBits::_2)
-        .with_rx(RxConfig::default().with_fifo_full_threshold(1))
-        .with_hw_flow_ctrl(flow_ctl_disabled);
+    let ui_config = uart_config_to_esp32(link::shared::uart_config::UI_NET, &flow_ctl_disabled);
     let ui_uart = Uart::new(peripherals.UART1, ui_config)
         .unwrap()
         .with_tx(peripherals.GPIO17)

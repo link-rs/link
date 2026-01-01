@@ -4,6 +4,7 @@ pub mod jitter_buffer;
 pub mod led;
 pub mod protocol;
 pub mod tlv;
+pub mod uart_config;
 
 pub use jitter_buffer::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
 pub use led::{Color, InvertedPin, Led};
