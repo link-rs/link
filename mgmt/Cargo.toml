@@ -21,7 +21,7 @@ embedded-hal = "1"
 panic-probe = { version = "1", features = ["print-defmt"] }
 num_enum = { version = "0.7", default-features = false }
 embedded-io-async = "0.6"
-link = { path = "../link", features = ["defmt"] }
+link = { path = "../link", default-features = false, features = ["mgmt", "defmt"] }
 embedded-io = "0.6.1"
 cortex-m-stack = "0.2.1"
 

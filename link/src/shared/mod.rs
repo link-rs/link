@@ -8,6 +8,7 @@ pub mod mocks;
 pub mod protocol;
 pub mod tlv;
 pub mod uart_config;
+pub mod wifi;
 
 pub(crate) use logging::info;
 
@@ -15,6 +16,7 @@ pub use jitter_buffer::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, M
 pub use led::{Color, InvertedPin, Led};
 pub use protocol::*;
 pub use tlv::{MAX_VALUE_SIZE, ReadTlv, SYNC_WORD, Tlv, Value, WriteTlv};
+pub use wifi::{MAX_PASSWORD_LEN, MAX_RELAY_URL_LEN, MAX_SSID_LEN, MAX_WIFI_SSIDS, WifiSsid};
 
 // Re-export embassy_sync types for use by chip modules
 pub use embassy_sync::{

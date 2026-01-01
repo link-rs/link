@@ -8,7 +8,7 @@ name = "ctl"
 path = "src/main.rs"
 
 [dependencies]
-link = { path = "../link", default-features = false, features = ["std"] }
+link = { path = "../link", default-features = false, features = ["ctl"] }
 bootloader = { path = "../bootloader" }
 tokio = { version = "1.48.0", features = ["full"] }
 tokio-serial = "5.4"

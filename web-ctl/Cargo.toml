@@ -7,7 +7,7 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-link = { path = "../link", default-features = false, features = ["std"] }
+link = { path = "../link", default-features = false, features = ["ctl"] }
 bootloader = { path = "../bootloader" }
 
 # WASM bindings

@@ -1,8 +1,16 @@
 //! Link - Multi-chip communication framework.
 //!
 //! This crate provides the core application logic for the Link multi-chip system.
-//! The code is `no_std` compatible for embedded use. The `std` feature enables
-//! the `ctl` module for host-side communication.
+//! The code is `no_std` compatible for embedded use.
+//!
+//! # Features
+//!
+//! Each chip has its own feature gate:
+//! - `mgmt` - MGMT chip module
+//! - `net` - NET chip module
+//! - `ui` - UI chip module
+//! - `ctl` - Host-side control module (enables `std`)
+//! - `all` - All modules (default for development/testing)
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
@@ -23,20 +31,16 @@ pub use shared::protocol::{
 // Re-export logging macros (crate-internal)
 pub(crate) use shared::info;
 
-// CLAUDE We should feature-gate each chip's module, so that there are `mgmt`, `net`, `ui`, and
-// `ctl` features which enable the corresponding modules.  All of the modules should be enabled by
-// default, but each instantiation crate should only enable the feature it depends on.  We can then
-// remove the `std` feature at that point, and enable `std` whenever `ctl` is built.  There should
-// be a `integration_test` feature that enables all of the modules, and the `integration_test`
-// feature should be on by default (but disabled in the instantiations).
-
-// Chip-specific modules
+// Chip-specific modules (feature-gated)
+#[cfg(feature = "mgmt")]
 pub mod mgmt;
+#[cfg(feature = "net")]
 pub mod net;
+#[cfg(feature = "ui")]
 pub mod ui;
 
-// Host-side modules (requires std)
-#[cfg(any(test, feature = "std"))]
+// Host-side control module (requires std)
+#[cfg(feature = "ctl")]
 pub mod ctl;
 
 // Integration tests - tests that involve two or more chips.

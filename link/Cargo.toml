@@ -12,10 +12,22 @@ virtual-serialport = "0.1.3"
 tokio = { version = "1.48.0", features = ["full"] }
 
 [features]
-default = ["defmt"]
+# Chip module features - each instantiation crate enables only what it needs
+mgmt = []
+net = []
+ui = []
+ctl = ["std"]  # ctl requires std
+
+# All modules enabled - for development and testing
+all = ["mgmt", "net", "ui", "ctl"]
+default = ["all", "defmt"]
+
+# Logging
 defmt = ["dep:defmt", "heapless/defmt"]
-trace-tlv = ["defmt"]  # Verbose TLV read/write logging - easy to disable
-std = ["dep:bootloader", "dep:md-5", "dep:miniz_oxide"]  # Enable std/alloc library support (required for ctl module)
+trace-tlv = ["defmt"]  # Verbose TLV read/write logging
+
+# Platform features
+std = ["dep:bootloader", "dep:md-5", "dep:miniz_oxide"]
 audio-buffer = ["dep:embassy-time"]  # Enable jitter buffering for audio playback
 
 [dependencies]

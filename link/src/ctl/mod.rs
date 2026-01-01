@@ -5,10 +5,9 @@
 
 extern crate alloc;
 
-use crate::net::WifiSsid;
 use crate::shared::{
     CtlToMgmt, MAX_VALUE_SIZE, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt,
-    WriteTlv,
+    WifiSsid, WriteTlv,
 };
 pub use bootloader::esp::ChipType as NetChipType;
 use bootloader::esp::{self, Bootloader as EspBootloader, SecurityInfo};

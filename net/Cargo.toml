@@ -47,7 +47,7 @@ rand_core = "0.6"
 # Heapless collections for no_std
 heapless = { version = "0.9", features = ["defmt"] }
 
-link = { path = "../link", features = ["defmt", "trace-tlv", "audio-buffer"] }
+link = { path = "../link", default-features = false, features = ["net", "defmt", "trace-tlv", "audio-buffer"] }
 
 [profile.dev]
 opt-level = "s"
