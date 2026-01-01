@@ -117,26 +117,40 @@ enum UiAction {
     },
 }
 
-// CLAUDE Instead of using Option<GetSetX>, could we have the GetSetX types have a Get variant that
-// is the default?  And then have the #[command] fill in the default if not present.
-#[derive(Debug, Clone, Subcommand)]
+#[derive(Debug, Clone, Default, Subcommand)]
 enum GetSetU32 {
-    Set { value: u32 },
+    #[default]
+    Get,
+    Set {
+        value: u32,
+    },
 }
 
-#[derive(Debug, Clone, Subcommand)]
+#[derive(Debug, Clone, Default, Subcommand)]
 enum GetSetHex {
-    Set { value: String },
+    #[default]
+    Get,
+    Set {
+        value: String,
+    },
 }
 
-#[derive(Debug, Clone, Subcommand)]
+#[derive(Debug, Clone, Default, Subcommand)]
 enum GetSetBool {
-    Set { value: bool },
+    #[default]
+    Get,
+    Set {
+        value: bool,
+    },
 }
 
-#[derive(Debug, Clone, Subcommand)]
+#[derive(Debug, Clone, Default, Subcommand)]
 enum GetSetString {
-    Set { value: String },
+    #[default]
+    Get,
+    Set {
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -554,22 +568,22 @@ async fn handle_ui(
                 Err(e) => Err(format!("Flash failed: {:?}", e).into()),
             }
         }
-        UiAction::Version { action } => match action {
-            None => {
+        UiAction::Version { action } => match action.unwrap_or_default() {
+            GetSetU32::Get => {
                 let version = app.get_version().await;
                 Ok(Some(format!("{}", version)))
             }
-            Some(GetSetU32::Set { value }) => {
+            GetSetU32::Set { value } => {
                 app.set_version(value).await;
                 Ok(Some(format!("Version set to {}", value)))
             }
         },
-        UiAction::SFrameKey { action } => match action {
-            None => {
+        UiAction::SFrameKey { action } => match action.unwrap_or_default() {
+            GetSetHex::Get => {
                 let key = app.get_sframe_key().await;
                 Ok(Some(hex::encode(key)))
             }
-            Some(GetSetHex::Set { value }) => {
+            GetSetHex::Set { value } => {
                 let key_bytes = hex::decode(&value).map_err(|_| "Invalid hex string")?;
                 if key_bytes.len() != 16 {
                     return Err("SFrame key must be exactly 32 hex characters (16 bytes)".into());
@@ -580,12 +594,12 @@ async fn handle_ui(
                 Ok(Some(format!("SFrame key set to {}", value)))
             }
         },
-        UiAction::Loopback { action } => match action {
-            None => {
+        UiAction::Loopback { action } => match action.unwrap_or_default() {
+            GetSetBool::Get => {
                 let enabled = app.ui_get_loopback().await;
                 Ok(Some(format!("{}", enabled)))
             }
-            Some(GetSetBool::Set { value }) => {
+            GetSetBool::Set { value } => {
                 app.ui_set_loopback(value).await;
                 Ok(Some(format!("UI loopback set to {}", value)))
             }
@@ -666,12 +680,12 @@ async fn handle_net(
                 Ok(Some("Cleared all WiFi networks".to_string()))
             }
         },
-        NetAction::RelayUrl { action } => match action {
-            None => {
+        NetAction::RelayUrl { action } => match action.unwrap_or_default() {
+            GetSetString::Get => {
                 let url = app.get_relay_url().await;
                 Ok(Some(url.to_string()))
             }
-            Some(GetSetString::Set { value }) => {
+            GetSetString::Set { value } => {
                 app.set_relay_url(&value).await;
                 Ok(Some(format!("Relay URL set to {}", value)))
             }
@@ -895,12 +909,12 @@ async fn handle_net(
 
             Ok(Some(output))
         }
-        NetAction::Loopback { action } => match action {
-            None => {
+        NetAction::Loopback { action } => match action.unwrap_or_default() {
+            GetSetBool::Get => {
                 let enabled = app.net_get_loopback().await;
                 Ok(Some(format!("{}", enabled)))
             }
-            Some(GetSetBool::Set { value }) => {
+            GetSetBool::Set { value } => {
                 app.net_set_loopback(value).await;
                 Ok(Some(format!("NET loopback set to {}", value)))
             }
