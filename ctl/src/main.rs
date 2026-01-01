@@ -210,27 +210,13 @@ enum WifiAction {
     Clear,
 }
 
-// CLAUDE This method overlaps a lot with `async fn connect()`, and in fact you're opening the
-// successful port twice: Once when you test it, and once after it's selected.  You should refactor
-// select_port to return an App (or Option or Result) and have the following form:
-//
-//      if let Ok(app) = find_link_device(specified, baud) {
-//          return app;
-//      }
-//
-//      return manually_select_port(specified, baud);
-//
-// Also, you should not automatically pick the only available port; you should test whether it's a
-// Link device first, and prompt the user if it doesn't seem to be one.
-/// Test if a serial port has a valid Link device connected.
-async fn test_link_device(port_name: &str, baud: u32) -> bool {
-    let port = match tokio_serial::new(port_name, baud)
+/// Try to connect to a specific port and verify it's a Link device.
+/// Returns the App if successful, None if connection failed or not a Link device.
+async fn try_connect(port_name: &str, baud: u32) -> Option<App> {
+    let port = tokio_serial::new(port_name, baud)
         .parity(tokio_serial::Parity::Even)
         .open_native_async()
-    {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
+        .ok()?;
 
     let (reader, writer) = tokio::io::split(port);
     let reader = FromTokio::new(reader);
@@ -240,13 +226,40 @@ async fn test_link_device(port_name: &str, baud: u32) -> bool {
     let challenge: [u8; 4] = rand::rng().random();
 
     match tokio::time::timeout(Duration::from_millis(50), app.hello(&challenge)).await {
-        Ok(result) => result,
-        Err(_) => false,
+        Ok(true) => Some(app),
+        _ => None,
     }
 }
 
-/// Select a serial port, optionally filtering by valid Link devices.
-async fn select_port(specified: Option<String>, baud: u32) -> Result<String, String> {
+/// Find a Link device among available ports and return a connected App.
+async fn find_link_device(baud: u32) -> Option<(App, String)> {
+    let all_ports: Vec<_> = serialport::available_ports()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| matches!(p.port_type, SerialPortType::UsbPort(_)))
+        .map(|p| p.port_name)
+        .filter(|name| !name.starts_with("/dev/tty."))
+        .collect();
+
+    if all_ports.is_empty() {
+        return None;
+    }
+
+    println!("Scanning for Link devices...");
+
+    for port_name in &all_ports {
+        if let Some(app) = try_connect(port_name, baud).await {
+            println!("Found Link device on {}", port_name);
+            return Some((app, port_name.clone()));
+        }
+    }
+
+    None
+}
+
+/// Select a port name (for bootloader handlers that do their own connection).
+/// This is a compatibility shim - bootloader handlers should be refactored.
+async fn select_port_name(specified: Option<String>) -> Result<String, String> {
     if let Some(port) = specified {
         return Ok(port);
     }
@@ -261,72 +274,93 @@ async fn select_port(specified: Option<String>, baud: u32) -> Result<String, Str
 
     if all_ports.is_empty() {
         return Err("No USB serial ports found".to_string());
-    } else if all_ports.len() == 1 {
+    }
+
+    if all_ports.len() == 1 {
         println!("Auto-selected port: {}", all_ports[0]);
         return Ok(all_ports[0].clone());
     }
 
-    println!("Scanning for Link devices...");
-    let futures: Vec<_> = all_ports
-        .iter()
-        .map(|port| {
-            let port = port.clone();
-            async move {
-                let is_valid = test_link_device(&port, baud).await;
-                (port, is_valid)
-            }
-        })
-        .collect();
+    println!("Available USB serial ports:");
+    for (i, port) in all_ports.iter().enumerate() {
+        println!("  {}: {}", i + 1, port);
+    }
+    print!("Select port [1-{}] (default: 1): ", all_ports.len());
+    std::io::stdout().flush().unwrap();
 
-    let results = futures::future::join_all(futures).await;
-    let valid_ports: Vec<String> = results
-        .into_iter()
-        .filter_map(|(port, is_valid)| if is_valid { Some(port) } else { None })
-        .collect();
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| format!("Failed to read input: {}", e))?;
 
-    let ports = if valid_ports.is_empty() {
-        println!("No Link devices detected, showing all USB serial ports");
-        all_ports
+    let trimmed = input.trim();
+    let choice: usize = if trimmed.is_empty() {
+        1
     } else {
-        valid_ports
+        trimmed.parse().map_err(|_| "Invalid number".to_string())?
     };
 
-    match ports.len() {
-        0 => Err("No USB serial ports found".to_string()),
-        1 => {
-            println!("Auto-selected port: {}", ports[0]);
-            Ok(ports[0].clone())
-        }
-        _ => {
-            println!("Multiple ports found:");
-            for (i, port) in ports.iter().enumerate() {
-                println!("  {}: {}", i + 1, port);
-            }
-            print!("Select port [1-{}] (default: 1): ", ports.len());
-            std::io::stdout().flush().unwrap();
-
-            let mut input = String::new();
-            std::io::stdin()
-                .read_line(&mut input)
-                .map_err(|e| format!("Failed to read input: {}", e))?;
-
-            let trimmed = input.trim();
-            let choice: usize = if trimmed.is_empty() {
-                1
-            } else {
-                trimmed.parse().map_err(|_| "Invalid number".to_string())?
-            };
-
-            if choice < 1 || choice > ports.len() {
-                return Err(format!(
-                    "Please select a number between 1 and {}",
-                    ports.len()
-                ));
-            }
-
-            Ok(ports[choice - 1].clone())
-        }
+    if choice < 1 || choice > all_ports.len() {
+        return Err(format!(
+            "Please select a number between 1 and {}",
+            all_ports.len()
+        ));
     }
+
+    Ok(all_ports[choice - 1].clone())
+}
+
+/// Prompt user to manually select a port and connect.
+async fn manually_select_port(baud: u32) -> Result<(App, String), String> {
+    let all_ports: Vec<_> = serialport::available_ports()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| matches!(p.port_type, SerialPortType::UsbPort(_)))
+        .map(|p| p.port_name)
+        .filter(|name| !name.starts_with("/dev/tty."))
+        .collect();
+
+    if all_ports.is_empty() {
+        return Err("No USB serial ports found".to_string());
+    }
+
+    println!("No Link devices detected, showing all USB serial ports:");
+    for (i, port) in all_ports.iter().enumerate() {
+        println!("  {}: {}", i + 1, port);
+    }
+    print!("Select port [1-{}] (default: 1): ", all_ports.len());
+    std::io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| format!("Failed to read input: {}", e))?;
+
+    let trimmed = input.trim();
+    let choice: usize = if trimmed.is_empty() {
+        1
+    } else {
+        trimmed.parse().map_err(|_| "Invalid number".to_string())?
+    };
+
+    if choice < 1 || choice > all_ports.len() {
+        return Err(format!(
+            "Please select a number between 1 and {}",
+            all_ports.len()
+        ));
+    }
+
+    let port_name = &all_ports[choice - 1];
+    let serial_port = tokio_serial::new(port_name, baud)
+        .parity(tokio_serial::Parity::Even)
+        .open_native_async()
+        .map_err(|e| format!("Failed to open port: {}", e))?;
+
+    let (reader, writer) = tokio::io::split(serial_port);
+    let reader = FromTokio::new(reader);
+    let writer = FromTokio::new(writer);
+
+    Ok((link::ctl::App::new(reader, writer), port_name.clone()))
 }
 
 /// Open a connection to the device
@@ -334,16 +368,26 @@ async fn connect(
     port: Option<String>,
     baud: u32,
 ) -> Result<(App, String), Box<dyn std::error::Error>> {
-    let port_name = select_port(port, baud).await?;
-    let serial_port = tokio_serial::new(&port_name, baud)
-        .parity(tokio_serial::Parity::Even)
-        .open_native_async()?;
+    // If user specified a port, connect directly
+    if let Some(port_name) = port {
+        let serial_port = tokio_serial::new(&port_name, baud)
+            .parity(tokio_serial::Parity::Even)
+            .open_native_async()?;
 
-    let (reader, writer) = tokio::io::split(serial_port);
-    let reader = FromTokio::new(reader);
-    let writer = FromTokio::new(writer);
+        let (reader, writer) = tokio::io::split(serial_port);
+        let reader = FromTokio::new(reader);
+        let writer = FromTokio::new(writer);
 
-    Ok((link::ctl::App::new(reader, writer), port_name))
+        return Ok((link::ctl::App::new(reader, writer), port_name));
+    }
+
+    // Try to find a Link device automatically
+    if let Some((app, port_name)) = find_link_device(baud).await {
+        return Ok((app, port_name));
+    }
+
+    // Fall back to manual selection
+    manually_select_port(baud).await.map_err(|e| e.into())
 }
 
 // CLAUDE This method should move to bootloader::stm
@@ -929,7 +973,7 @@ async fn handle_mgmt_info(port: Option<String>) -> Result<(), Box<dyn std::error
     println!("MGMT Bootloader Info");
     println!("====================\n");
 
-    let port_name = select_port(port, 115200).await?;
+    let port_name = select_port_name(port).await?;
 
     println!("\nTo read bootloader information, the MGMT chip must be in bootloader mode.");
     println!("Please follow these steps:");
@@ -1023,7 +1067,7 @@ async fn handle_mgmt_flash(
     let firmware = std::fs::read(&file)?;
     println!("Firmware: {} ({} bytes)", file.display(), firmware.len());
 
-    let port_name = select_port(port, 115200).await?;
+    let port_name = select_port_name(port).await?;
 
     println!("\nTo flash the MGMT chip, it must be in bootloader mode.");
     println!("Please follow these steps:");
