@@ -39,10 +39,7 @@ pub mod ui;
 #[cfg(any(test, feature = "std"))]
 pub mod ctl;
 
-// CLAUDE The `testing` module should be `integration_tests`.  It should only cover systemic
-// behavior that involve two or more chips.  Tests that only involve one chip should go in the
-// individual chip modules (plus `ctl`).
-
-// Integration tests
+// Integration tests - tests that involve two or more chips.
+// Single-chip tests should go in their respective modules.
 #[cfg(test)]
-mod testing;
+mod integration_tests;
