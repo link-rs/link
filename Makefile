@@ -13,7 +13,7 @@ all: $(UI_BIN) $(MGMT_BIN) $(NET_BIN) ctl web-ctl web-link
 
 # Preflight checks: build everything, run tests, check formatting
 preflight: all
-	cd link && cargo test
+	cd link && cargo test --features std
 	@for crate in $(CRATES); do \
 		echo "Checking format: $$crate"; \
 		(cd $$crate && cargo fmt --check) || exit 1; \

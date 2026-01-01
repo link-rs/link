@@ -14,7 +14,3 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-serial = "5.4"
 serialport = "4.8"
 embedded-io-adapters = { version = "0.6", features = ["tokio-1"] }
-
-[[example]]
-name = "stm32_info"
-path = "examples/stm32_info.rs"
