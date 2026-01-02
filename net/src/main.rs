@@ -5,7 +5,7 @@ extern crate alloc;
 
 use defmt::{info, warn};
 use edge_http::ws as http_ws;
-use edge_ws::FrameType;
+use edge_ws::{FrameHeader, FrameType};
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
 use embassy_net::{tcp::TcpSocket, Runner, StackResources};
@@ -611,38 +611,53 @@ async fn ws_task(
         let mut should_reconnect = false;
         let mut connection_broken = false;
 
-        // SAFETY NOTE: edge_ws::io::recv is NOT cancellation-safe. If a command arrives
-        // while recv is in progress, the recv future is dropped and partial frame data
-        // may be lost. This is acceptable for audio streaming where:
-        // - Frames are small (640 bytes) and reads complete quickly
-        // - The jitter buffer handles occasional frame loss gracefully
-        // - Commands are infrequent compared to frame rate
+        // CANCELLATION SAFETY: We use FrameHeader::recv() in the select instead of
+        // edge_ws::io::recv(). This is important because io::recv() has two await points
+        // (header then payload), and if cancelled between them, the stream corrupts.
+        // By reading only the header (2-14 bytes) in the select, and reading the payload
+        // afterward, we minimize the cancellation window to just the small header read.
 
         loop {
-            match select(
-                edge_ws::io::recv(&mut tls, &mut ws_read_buf),
-                cmd_rx.receive(),
-            )
-            .await
-            {
-                Either::First(read_result) => {
-                    // Frame received from server
-                    match read_result {
-                        Ok((FrameType::Binary(_fragmented), len)) => {
+            match select(FrameHeader::recv(&mut tls), cmd_rx.receive()).await {
+                Either::First(header_result) => {
+                    // Header received - now read payload outside of select (cannot be cancelled)
+                    let header = match header_result {
+                        Ok(h) => h,
+                        Err(e) => {
+                            warn!("ws: header read error: {:?}", e);
+                            connection_broken = true;
+                            break;
+                        }
+                    };
+
+                    // Read payload - this is outside the select, so it cannot be cancelled
+                    let payload = match header.recv_payload(&mut tls, &mut ws_read_buf).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!("ws: payload read error: {:?}", e);
+                            connection_broken = true;
+                            break;
+                        }
+                    };
+                    let len = payload.len();
+
+                    // Handle frame based on type
+                    match header.frame_type {
+                        FrameType::Binary(_fragmented) => {
                             info!("ws: received {} bytes", len);
-                            if let Ok(payload) = Vec::try_from(&ws_read_buf[..len]) {
-                                event_tx.send(WsEvent::Received(payload)).await;
+                            if let Ok(data) = Vec::try_from(&ws_read_buf[..len]) {
+                                event_tx.send(WsEvent::Received(data)).await;
                             }
                         }
-                        Ok((FrameType::Text(_fragmented), len)) => {
+                        FrameType::Text(_fragmented) => {
                             if let Ok(text) = core::str::from_utf8(&ws_read_buf[..len]) {
                                 info!("ws: received text: {}", text);
                             }
-                            if let Ok(payload) = Vec::try_from(&ws_read_buf[..len]) {
-                                event_tx.send(WsEvent::Received(payload)).await;
+                            if let Ok(data) = Vec::try_from(&ws_read_buf[..len]) {
+                                event_tx.send(WsEvent::Received(data)).await;
                             }
                         }
-                        Ok((FrameType::Close, len)) => {
+                        FrameType::Close => {
                             // Parse close code if present
                             let code = if len >= 2 {
                                 u16::from_be_bytes([ws_read_buf[0], ws_read_buf[1]])
@@ -672,7 +687,7 @@ async fn ws_task(
                             let _ = tls.flush().await;
                             break;
                         }
-                        Ok((FrameType::Ping, len)) => {
+                        FrameType::Ping => {
                             // Respond with Pong containing the same payload
                             if edge_ws::io::send(
                                 &mut tls,
@@ -689,16 +704,11 @@ async fn ws_task(
                             }
                             let _ = tls.flush().await;
                         }
-                        Ok((FrameType::Pong, _)) => {
+                        FrameType::Pong => {
                             // Ignore pong frames
                         }
-                        Ok((FrameType::Continue(_), _)) => {
+                        FrameType::Continue(_) => {
                             // Continuation frames - we don't handle fragmentation currently
-                        }
-                        Err(e) => {
-                            warn!("ws: read error: {:?}", e);
-                            connection_broken = true;
-                            break;
                         }
                     }
                 }
