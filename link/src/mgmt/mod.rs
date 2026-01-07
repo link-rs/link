@@ -112,6 +112,28 @@ where
         delay.delay_ms(10).await;
         let _ = self.rst.set_high();
     }
+
+    /// Set the BOOT/GPIO0 pin directly.
+    /// - high = normal mode (boot from flash)
+    /// - low = bootloader mode
+    pub fn set_boot(&mut self, high: bool) {
+        if high {
+            let _ = self.boot.set_high();
+        } else {
+            let _ = self.boot.set_low();
+        }
+    }
+
+    /// Set the RST/EN pin directly.
+    /// - high = chip running
+    /// - low = chip held in reset
+    pub fn set_rst(&mut self, high: bool) {
+        if high {
+            let _ = self.rst.set_high();
+        } else {
+            let _ = self.rst.set_low();
+        }
+    }
 }
 
 /// Type alias for backwards compatibility.
@@ -151,11 +173,15 @@ where
 
     info!("mgmt: starting");
 
-    // Initialize LEDs
-    let mut led_a = Led::new(led_a.0, led_a.1, led_a.2);
-    let mut led_b = Led::new(led_b.0, led_b.1, led_b.2);
-    led_a.set(Color::Green);
-    led_b.set(Color::Red);
+    // Initialize LEDs (off by default)
+    let led_a = Led::new(led_a.0, led_a.1, led_a.2);
+    let led_b = Led::new(led_b.0, led_b.1, led_b.2);
+    let led_a: Mutex<NoopRawMutex, _> = Mutex::new(led_a);
+    let led_b: Mutex<NoopRawMutex, _> = Mutex::new(led_b);
+
+    // Set LEDs to off initially
+    led_a.lock().await.set(Color::Black);
+    led_b.lock().await.set(Color::Black);
 
     // UI and NET chips are held in reset at boot (RST low).
     // Wait for MGMT clocks to stabilize, then release them to boot.
@@ -166,6 +192,9 @@ where
 
     let to_ctl: Mutex<NoopRawMutex, _> = Mutex::new(to_ctl);
     let reset_state: Mutex<NoopRawMutex, _> = Mutex::new((ui_reset_pins, net_reset_pins, delay));
+
+    // LED A: Blue=ToNet, Red=FromNet
+    // LED B: Blue=ToUi, Red=FromUi
 
     let ui_task = async {
         let mut buffer = Value::default();
@@ -178,8 +207,13 @@ where
             buffer.truncate(n);
             info!("ui->ctl: {=[u8]:x}", buffer.as_slice());
 
+            // Blink LED B red for FromUi
+            led_b.lock().await.set(Color::Red);
+
             let mut to_ctl = to_ctl.lock().await;
             let _ = to_ctl.write_tlv(MgmtToCtl::FromUi, &buffer).await;
+
+            led_b.lock().await.set(Color::Black);
         }
     };
 
@@ -193,8 +227,13 @@ where
             buffer.truncate(n);
             info!("net->ctl: {=[u8]:x}", &buffer);
 
+            // Blink LED A red for FromNet
+            led_a.lock().await.set(Color::Red);
+
             let mut to_ctl = to_ctl.lock().await;
             let _ = to_ctl.write_tlv(MgmtToCtl::FromNet, &buffer).await;
+
+            led_a.lock().await.set(Color::Black);
         }
     };
 
@@ -208,6 +247,17 @@ where
             let mut to_ctl = to_ctl.lock().await;
             let mut reset_state = reset_state.lock().await;
             let (ui_pins, net_pins, delay) = reset_state.deref_mut();
+
+            // Save tlv_type before moving tlv
+            let tlv_type = tlv.tlv_type;
+
+            // Blink appropriate LED blue for outgoing data
+            match tlv_type {
+                CtlToMgmt::ToNet => led_a.lock().await.set(Color::Blue),
+                CtlToMgmt::ToUi => led_b.lock().await.set(Color::Blue),
+                _ => {}
+            }
+
             handle_ctl(
                 tlv,
                 to_ctl.deref_mut(),
@@ -218,6 +268,13 @@ where
                 delay,
             )
             .await;
+
+            // Turn off LED after operation
+            match tlv_type {
+                CtlToMgmt::ToNet => led_a.lock().await.set(Color::Black),
+                CtlToMgmt::ToUi => led_b.lock().await.set(Color::Black),
+                _ => {}
+            }
         }
     };
 
@@ -303,6 +360,20 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
             info!("mgmt: holding UI in reset");
             ui_reset_pins.hold_reset();
             to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
+        }
+        CtlToMgmt::SetNetBoot => {
+            // Set GPIO0/BOOT pin directly (0=low/bootloader, 1=high/normal)
+            let high = tlv.value.first().map(|&v| v != 0).unwrap_or(false);
+            info!("mgmt: set NET BOOT pin = {}", high);
+            net_reset_pins.set_boot(high);
+            // No ack - these come in rapid succession during reset sequence
+        }
+        CtlToMgmt::SetNetRst => {
+            // Set EN/RST pin directly (0=low/reset, 1=high/run)
+            let high = tlv.value.first().map(|&v| v != 0).unwrap_or(false);
+            info!("mgmt: set NET RST pin = {}", high);
+            net_reset_pins.set_rst(high);
+            // No ack - these come in rapid succession during reset sequence
         }
     }
 }

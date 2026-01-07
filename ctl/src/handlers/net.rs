@@ -2,31 +2,51 @@
 
 use crate::{App, GetSetBool, GetSetString, NetAction, WifiAction};
 use indicatif::{ProgressBar, ProgressStyle};
-use link::ctl::FlashPhase;
+use link::ctl::EspflashPhase;
 
-pub async fn handle_net(
-    action: NetAction,
-    app: &mut App,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         NetAction::Ping { data } => {
             println!("Sending NET ping with data: {}", data);
-            app.net_ping(data.as_bytes()).await;
+            app.net_ping(data.as_bytes());
             println!("Received pong!");
             Ok(())
         }
         NetAction::Info => {
-            println!("Resetting NET chip to bootloader mode...");
+            println!("Querying NET chip info...");
             let info = app
                 .get_net_bootloader_info()
-                .await
                 .map_err(|e| format!("Failed to get bootloader info: {:?}", e))?;
 
+            let dev = &info.device_info;
             let sec = &info.security_info;
+
             println!("\nNET Bootloader Info");
             println!("===================\n");
-            println!("Chip Type:         {}", sec.chip_type.name());
-            println!("Chip ID:           {} (0x{:04X})", sec.chip_id, sec.chip_id);
+
+            // Device info
+            println!("Chip Type:         {:?}", dev.chip);
+            if let Some((major, minor)) = dev.revision {
+                println!("Chip Revision:     {}.{}", major, minor);
+            }
+            println!("Crystal Freq:      {:?}", dev.crystal_frequency);
+            println!("Flash Size:        {:?}", dev.flash_size);
+            if !dev.features.is_empty() {
+                println!("Features:          {}", dev.features.join(", "));
+            }
+            if let Some(ref mac) = dev.mac_address {
+                println!("MAC Address:       {}", mac);
+            }
+
+            // Security info
+            println!("\nSecurity Info:");
+            println!("---------------");
+            if let Some(chip_id) = sec.chip_id {
+                println!("Chip ID:           {} (0x{:04X})", chip_id, chip_id);
+            }
+            if let Some(eco_ver) = sec.eco_version {
+                println!("ECO Version:       {}", eco_ver);
+            }
             println!("Security Flags:    0x{:08X}", sec.flags);
             println!("Flash Crypt Count: {}", sec.flash_crypt_cnt);
             println!(
@@ -40,13 +60,13 @@ pub async fn handle_net(
                 sec.key_purposes[6]
             );
 
-            println!("NET chip reset back to user mode.");
+            println!("\nNET chip reset back to user mode.");
             println!("Done!");
             Ok(())
         }
         NetAction::Wifi { action } => match action {
             None => {
-                let ssids = app.get_wifi_ssids().await;
+                let ssids = app.get_wifi_ssids();
                 if ssids.is_empty() {
                     println!("No WiFi networks configured");
                 } else {
@@ -57,24 +77,24 @@ pub async fn handle_net(
                 Ok(())
             }
             Some(WifiAction::Add { ssid, password }) => {
-                app.add_wifi_ssid(&ssid, &password).await;
+                app.add_wifi_ssid(&ssid, &password);
                 println!("Added WiFi network: {}", ssid);
                 Ok(())
             }
             Some(WifiAction::Clear) => {
-                app.clear_wifi_ssids().await;
+                app.clear_wifi_ssids();
                 println!("Cleared all WiFi networks");
                 Ok(())
             }
         },
         NetAction::RelayUrl { action } => match action.unwrap_or_default() {
             GetSetString::Get => {
-                let url = app.get_relay_url().await;
+                let url = app.get_relay_url();
                 println!("{}", url);
                 Ok(())
             }
             GetSetString::Set { value } => {
-                app.set_relay_url(&value).await;
+                app.set_relay_url(&value);
                 println!("Relay URL set to {}", value);
                 Ok(())
             }
@@ -82,11 +102,11 @@ pub async fn handle_net(
         NetAction::Flash {
             file,
             address,
-            compress,
+            compress: _compress, // Not used with espflash (stub handles compression internally)
             no_verify,
         } => {
-            println!("NET Flash (ESP32)");
-            println!("=================\n");
+            println!("NET Flash (ESP32) - using espflash");
+            println!("===================================\n");
 
             let address: u32 = if address.starts_with("0x") || address.starts_with("0X") {
                 u32::from_str_radix(&address[2..], 16).map_err(|_| "Invalid hex address")?
@@ -99,12 +119,8 @@ pub async fn handle_net(
                 println!("      Use --address to override if needed.\n");
             }
 
-            if compress {
-                println!("Mode: Compressed transfer enabled (-c)\n");
-            }
-
             if no_verify {
-                println!("Note: MD5 verification disabled (--no-verify)\n");
+                println!("Note: Verification disabled (--no-verify)\n");
             }
 
             let firmware = std::fs::read(&file)?;
@@ -113,52 +129,44 @@ pub async fn handle_net(
             println!("Resetting NET chip to bootloader mode...\n");
 
             let pb = ProgressBar::new(firmware.len() as u64);
-            let bytes_style = ProgressStyle::default_bar()
-                .template("{prefix:>12} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%)")
-                .unwrap()
-                .progress_chars("#>-");
-            let erase_style = ProgressStyle::default_bar()
-                .template("{prefix:>12} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%)")
-                .unwrap()
-                .progress_chars("#>-");
-            pb.set_style(erase_style.clone());
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{prefix:>12} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%)")
+                    .unwrap()
+                    .progress_chars("#>-"),
+            );
 
             let mut current_phase = None;
+            let mut current_total = 0usize;
             let verify = !no_verify;
-            let result = app
-                .flash_net(
-                    &firmware,
-                    address,
-                    compress,
-                    verify,
-                    |phase, progress, total| {
-                        if current_phase != Some(phase) {
-                            current_phase = Some(phase);
-                            match phase {
-                                FlashPhase::Compressing => {
-                                    pb.set_style(bytes_style.clone());
-                                    pb.set_prefix("Compressing");
-                                }
-                                FlashPhase::Erasing => {
-                                    pb.set_style(erase_style.clone());
-                                    pb.set_prefix("Erasing");
-                                }
-                                FlashPhase::Writing => {
-                                    pb.set_style(bytes_style.clone());
-                                    pb.set_prefix("Writing");
-                                }
-                                FlashPhase::Verifying => {
-                                    pb.set_style(bytes_style.clone());
-                                    pb.set_prefix("Verifying");
-                                }
-                            }
-                            pb.set_length(total as u64);
-                            pb.set_position(0);
+            let result = app.flash_net(
+                &firmware,
+                address,
+                verify,
+                |phase, progress, total| {
+                    // Skip progress bar for connecting phase
+                    if phase == EspflashPhase::Connecting {
+                        return;
+                    }
+                    // Update prefix when phase changes
+                    if current_phase != Some(phase) {
+                        current_phase = Some(phase);
+                        match phase {
+                            EspflashPhase::Connecting => {}
+                            EspflashPhase::Erasing => pb.set_prefix("Erasing"),
+                            EspflashPhase::Writing => pb.set_prefix("Writing"),
+                            EspflashPhase::Verifying => pb.set_prefix("Verifying"),
                         }
-                        pb.set_position(progress as u64);
-                    },
-                )
-                .await;
+                    }
+                    // Update length when total changes (espflash flashes multiple segments)
+                    if current_total != total {
+                        current_total = total;
+                        pb.set_length(total as u64);
+                        pb.set_position(0);
+                    }
+                    pb.set_position(progress as u64);
+                },
+            );
 
             pb.finish_and_clear();
 
@@ -168,12 +176,12 @@ pub async fn handle_net(
                     println!("NET chip reset back to user mode.");
                     Ok(())
                 }
-                Err(e) => Err(format!("Flash failed: {:?}", e).into()),
+                Err(e) => Err(format!("Flash failed: {}", e).into()),
             }
         }
         NetAction::WsPing { data } => {
             println!("Sending WebSocket ping with data: {}", data);
-            app.ws_ping(data.as_bytes()).await;
+            app.ws_ping(data.as_bytes());
             println!("Received echo response!");
             Ok(())
         }
@@ -181,7 +189,7 @@ pub async fn handle_net(
             println!("Running WebSocket echo test...");
             println!("  Sending 50 packets (640 bytes each) at 20ms intervals (50 fps)\n");
 
-            let results = app.ws_echo_test().await;
+            let results = app.ws_echo_test();
 
             println!("Results:");
             println!("  Packets sent:           {}", results.sent);
@@ -220,7 +228,7 @@ pub async fn handle_net(
             println!("Running WebSocket speed test...");
             println!("  Sending 50 packets (640 bytes each) as fast as possible\n");
 
-            let results = app.ws_speed_test().await;
+            let results = app.ws_speed_test();
 
             println!("Results:");
             println!("  Packets sent:     {}", results.sent);
@@ -246,12 +254,12 @@ pub async fn handle_net(
         }
         NetAction::Loopback { action } => match action.unwrap_or_default() {
             GetSetBool::Get => {
-                let enabled = app.net_get_loopback().await;
+                let enabled = app.net_get_loopback();
                 println!("{}", enabled);
                 Ok(())
             }
             GetSetBool::Set { value } => {
-                app.net_set_loopback(value).await;
+                app.net_set_loopback(value);
                 println!("NET loopback set to {}", value);
                 Ok(())
             }

@@ -1,28 +1,79 @@
 //! CTL (Controller) chip - the host computer interface.
 //!
-//! This module is `no_std` compatible but requires the `alloc` crate for
-//! compression support.
+//! This module requires `std` for synchronous I/O operations.
 
 extern crate alloc;
 
-pub mod esp;
 pub mod stm;
 
 use crate::shared::{
-    CtlToMgmt, MAX_VALUE_SIZE, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, ReadTlv, Tlv, UiToMgmt,
-    WifiSsid, WriteTlv,
+    CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, Tlv, UiToMgmt, WifiSsid, HEADER_SIZE,
+    MAX_VALUE_SIZE, SYNC_WORD,
 };
-use core::future::Future;
-use embedded_io_async::{ErrorType, Read, Write};
-pub use esp::ChipType as NetChipType;
-use esp::{Bootloader as EspBootloader, SecurityInfo};
+use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
+use espflash::flasher::{FlashData, FlashSettings, Flasher};
+use espflash::image_format::idf::IdfBootloaderFormat;
+use espflash::target::{Chip, ProgressCallbacks};
+use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, StopBits, UsbPortInfo};
+use std::io::{self, Read, Write};
+use std::time::Duration;
 use stm::Bootloader;
+
+// Re-export espflash types
+pub use espflash::flasher::{DeviceInfo, FlashSize, SecurityInfo};
+pub use espflash::target::XtalFrequency;
+
+/// Flash phase for progress reporting (NET chip).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EspflashPhase {
+    /// Connecting to bootloader
+    Connecting,
+    /// Erasing flash
+    Erasing,
+    /// Writing firmware
+    Writing,
+    /// Verifying firmware
+    Verifying,
+}
+
+/// Errors from NET chip flashing.
+#[derive(Debug)]
+pub enum EspflashError {
+    /// I/O error
+    Io(io::Error),
+    /// Bootloader timeout
+    BootloaderTimeout,
+    /// espflash error
+    Espflash(String),
+}
+
+impl core::fmt::Display for EspflashError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            EspflashError::Io(e) => write!(f, "I/O error: {}", e),
+            EspflashError::BootloaderTimeout => write!(f, "Bootloader timeout"),
+            EspflashError::Espflash(msg) => write!(f, "espflash error: {}", msg),
+        }
+    }
+}
+
+impl From<io::Error> for EspflashError {
+    fn from(e: io::Error) -> Self {
+        EspflashError::Io(e)
+    }
+}
+
+/// Combined device and security information from the NET chip.
+#[derive(Debug, Clone)]
+pub struct EspflashDeviceInfo {
+    /// Device information (chip type, revision, flash size, features, MAC).
+    pub device_info: DeviceInfo,
+    /// Security information (flags, key purposes, chip ID).
+    pub security_info: SecurityInfo,
+}
 
 /// Maximum size for verification error data (matches write chunk size).
 const VERIFY_CHUNK_SIZE: usize = 256;
-
-/// Maximum size for ESP32 boot message line buffer.
-const LINE_BUFFER_SIZE: usize = 128;
 
 /// Results from the WebSocket echo test.
 #[derive(Debug, Clone, Default)]
@@ -71,12 +122,6 @@ pub struct MgmtBootloaderInfo {
     pub flash_sample: Option<[u8; 32]>,
 }
 
-/// Information retrieved from the NET chip (ESP32) when it's in bootloader mode.
-#[derive(Debug, Clone)]
-pub struct NetBootloaderInfo {
-    /// Security information from the ESP32 (includes chip type detection).
-    pub security_info: SecurityInfo,
-}
 
 /// Phase of the flash operation, reported to progress callbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,27 +155,6 @@ impl<E> From<stm::Error<E>> for FlashError<E> {
     }
 }
 
-/// Errors that can occur during NET (ESP32) flash operations.
-#[derive(Debug)]
-pub enum NetFlashError<E> {
-    /// ESP32 bootloader protocol error.
-    Bootloader(esp::Error<E>),
-    /// MD5 verification failed - flash contents don't match uploaded data.
-    VerifyFailed {
-        address: u32,
-        size: u32,
-        expected: [u8; 16],
-        actual: [u8; 16],
-    },
-    /// Compression failed.
-    CompressionFailed,
-}
-
-impl<E> From<esp::Error<E>> for NetFlashError<E> {
-    fn from(e: esp::Error<E>) -> Self {
-        NetFlashError::Bootloader(e)
-    }
-}
 
 /// Calculate the number of sectors needed for a given firmware size on STM32F405.
 /// Sectors 0-3: 16KB each, Sector 4: 64KB, Sectors 5-11: 128KB each.
@@ -160,11 +184,100 @@ fn sectors_for_size_f405(size: usize) -> usize {
     12 // All sectors needed
 }
 
+// ============================================================================
+// Sync TLV Read/Write
+// ============================================================================
+
+/// Error type for TLV read operations.
+#[derive(Debug)]
+pub enum TlvReadError<E> {
+    Io(E),
+    InvalidType,
+    TooLong,
+}
+
+/// Read a TLV packet from a sync reader.
+/// Scans for sync word, then reads header and value.
+fn read_tlv<T, R>(reader: &mut R) -> Result<Option<Tlv<T>>, TlvReadError<std::io::Error>>
+where
+    T: TryFrom<u16>,
+    R: Read,
+{
+    // Scan for sync word, draining any garbage
+    let mut matched = 0usize;
+    while matched < SYNC_WORD.len() {
+        let mut byte = [0u8; 1];
+        match reader.read_exact(&mut byte) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(TlvReadError::Io(e)),
+        }
+
+        if byte[0] == SYNC_WORD[matched] {
+            matched += 1;
+        } else {
+            matched = 0;
+            if byte[0] == SYNC_WORD[0] {
+                matched = 1;
+            }
+        }
+    }
+
+    // Sync word found, now read the header
+    let mut header = [0u8; HEADER_SIZE];
+    match reader.read_exact(&mut header) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(TlvReadError::Io(e)),
+    }
+
+    // Decode header
+    let raw_type = u16::from_be_bytes([header[0], header[1]]);
+    let Ok(tlv_type) = T::try_from(raw_type) else {
+        return Err(TlvReadError::InvalidType);
+    };
+    let length = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
+
+    let mut value = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
+    if value.resize(length, 0).is_err() {
+        return Err(TlvReadError::TooLong);
+    }
+
+    match reader.read_exact(&mut value) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(TlvReadError::Io(e)),
+    }
+
+    Ok(Some(Tlv { tlv_type, value }))
+}
+
+/// Write a TLV packet to a sync writer.
+fn write_tlv<T, W>(writer: &mut W, tlv_type: T, value: &[u8]) -> std::io::Result<()>
+where
+    T: Into<u16>,
+    W: Write,
+{
+    let type_val: u16 = tlv_type.into();
+    writer.write_all(&SYNC_WORD)?;
+
+    let mut header = [0u8; HEADER_SIZE];
+    header[0..2].copy_from_slice(&type_val.to_be_bytes());
+    header[2..6].copy_from_slice(&(value.len() as u32).to_be_bytes());
+    writer.write_all(&header)?;
+    writer.write_all(value)?;
+    writer.flush()?;
+    Ok(())
+}
+
+// ============================================================================
+// Tunnel Reader/Writer
+// ============================================================================
+
 /// A reader that extracts data from TLV packets received through MGMT.
 ///
-/// Buffers incoming TLV values and exposes them as a continuous byte stream
-/// via the `Read` trait. Also implements `ReadTlv` via the blanket impl.
-struct TunnelReader<'a, R> {
+/// Buffers incoming TLV values and exposes them as a continuous byte stream.
+pub struct TunnelReader<'a, R> {
     tlv_type: MgmtToCtl,
     reader: &'a mut R,
     buffer: &'a mut heapless::Vec<u8, MAX_VALUE_SIZE>,
@@ -184,24 +297,26 @@ impl<'a, R> TunnelReader<'a, R> {
     }
 }
 
-impl<'a, R> ErrorType for TunnelReader<'a, R>
-where
-    R: Read,
-{
-    type Error = <R as ErrorType>::Error;
-}
-
-impl<'a, R> Read for TunnelReader<'a, R>
-where
-    R: ReadTlv<MgmtToCtl> + Read,
-{
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+impl<'a, R: Read> Read for TunnelReader<'a, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         while self.buffer.is_empty() {
-            let tlv = self.reader.read_tlv().await.unwrap().unwrap();
+            let tlv: Tlv<MgmtToCtl> = read_tlv(self.reader)
+                .map_err(|e| match e {
+                    TlvReadError::Io(io) => io,
+                    TlvReadError::InvalidType => {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid TLV type")
+                    }
+                    TlvReadError::TooLong => {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, "TLV too long")
+                    }
+                })?
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "unexpected EOF")
+                })?;
+
             if tlv.tlv_type != self.tlv_type {
                 continue;
             }
-            // heapless extend_from_slice returns Result, unwrap since we know capacity is sufficient
             self.buffer.extend_from_slice(&tlv.value).unwrap();
         }
 
@@ -218,10 +333,7 @@ where
 }
 
 /// A writer that wraps TLV packets for tunneling through MGMT.
-///
-/// Encodes the inner TLV first, then sends it as the value of an outer
-/// tunnel TLV. Implements `WriteTlv` directly (not via the blanket impl).
-struct TunnelWriter<'a, W> {
+pub struct TunnelWriter<'a, W> {
     tlv_type: CtlToMgmt,
     writer: &'a mut W,
 }
@@ -232,60 +344,36 @@ impl<'a, W> TunnelWriter<'a, W> {
     }
 }
 
-impl<'a, W> ErrorType for TunnelWriter<'a, W>
-where
-    W: Write,
-{
-    type Error = <W as ErrorType>::Error;
-}
-
-impl<'a, W> Write for TunnelWriter<'a, W>
-where
-    W: Write,
-{
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+impl<'a, W: Write> Write for TunnelWriter<'a, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let to_write = core::cmp::min(MAX_VALUE_SIZE, buf.len());
-        self.writer
-            .write_tlv(self.tlv_type, &buf[..to_write])
-            .await?;
+        write_tlv(self.writer, self.tlv_type, &buf[..to_write])?;
         Ok(to_write)
     }
 
-    async fn flush(&mut self) -> Result<(), Self::Error> {
-        self.writer.flush().await
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
     }
 }
 
+// ============================================================================
+// MGMT Reader/Writer
+// ============================================================================
+
 /// Encapsulates the read side of MGMT communication.
-///
-/// Provides typed readers for UI and NET tunnels that can be borrowed
-/// independently from the write side.
-struct MgmtReader<R> {
+pub struct MgmtReader<R> {
     from_mgmt: R,
     ui_buffer: heapless::Vec<u8, MAX_VALUE_SIZE>,
     net_buffer: heapless::Vec<u8, MAX_VALUE_SIZE>,
 }
 
-impl<R> ErrorType for MgmtReader<R>
-where
-    R: Read,
-{
-    type Error = <R as ErrorType>::Error;
-}
-
-impl<R> Read for MgmtReader<R>
-where
-    R: Read,
-{
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        self.from_mgmt.read(buf).await
+impl<R: Read> Read for MgmtReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.from_mgmt.read(buf)
     }
 }
 
-impl<R> MgmtReader<R>
-where
-    R: Read,
-{
+impl<R: Read> MgmtReader<R> {
     fn new(from_mgmt: R) -> Self {
         Self {
             from_mgmt,
@@ -294,67 +382,98 @@ where
         }
     }
 
+    /// Drain any pending data from the input buffer.
+    ///
+    /// This clears internal buffers and reads/discards any pending data from the
+    /// underlying reader. Useful before starting a new protocol that expects a
+    /// clean slate (e.g., bootloader communication after reset).
+    ///
+    /// Note: This relies on the underlying reader having a reasonable timeout
+    /// (e.g., 50-100ms) so that reads will return when no data is available.
+    pub fn drain(&mut self) {
+        // Clear internal TLV buffers
+        self.ui_buffer.clear();
+        self.net_buffer.clear();
+
+        // Read and discard any pending data from the serial port
+        // With a typical 50ms timeout, this will return quickly when empty
+        let mut buf = [0u8; 256];
+        loop {
+            match self.from_mgmt.read(&mut buf) {
+                Ok(0) => break,              // EOF or no data
+                Ok(_) => continue,           // Discard and keep reading
+                Err(_) => break,             // Timeout or error - buffer is drained
+            }
+        }
+    }
+
+    /// Read a TLV from the MGMT connection.
+    pub fn read_tlv(&mut self) -> Result<Option<Tlv<MgmtToCtl>>, TlvReadError<std::io::Error>> {
+        read_tlv(&mut self.from_mgmt)
+    }
+
     /// Get a reader for the UI tunnel.
-    fn ui(&mut self) -> TunnelReader<'_, R> {
+    pub fn ui(&mut self) -> TunnelReader<'_, R> {
         TunnelReader::new(MgmtToCtl::FromUi, &mut self.from_mgmt, &mut self.ui_buffer)
     }
 
     /// Get a reader for the NET tunnel.
-    fn net(&mut self) -> TunnelReader<'_, R> {
+    pub fn net(&mut self) -> TunnelReader<'_, R> {
         TunnelReader::new(
             MgmtToCtl::FromNet,
             &mut self.from_mgmt,
             &mut self.net_buffer,
         )
     }
+
+    /// Get a mutable reference to the underlying reader.
+    ///
+    /// This is useful for operations that need to modify the underlying reader,
+    /// such as setting the timeout on a serial port.
+    pub fn inner_mut(&mut self) -> &mut R {
+        &mut self.from_mgmt
+    }
 }
 
 /// Encapsulates the write side of MGMT communication.
-///
-/// Provides typed writers for UI and NET tunnels that can be borrowed
-/// independently from the read side.
-struct MgmtWriter<W> {
+pub struct MgmtWriter<W> {
     to_mgmt: W,
 }
 
-impl<W> ErrorType for MgmtWriter<W>
-where
-    W: Write,
-{
-    type Error = <W as ErrorType>::Error;
-}
-
-impl<W> Write for MgmtWriter<W>
-where
-    W: Write,
-{
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        self.to_mgmt.write(buf).await
+impl<W: Write> Write for MgmtWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.to_mgmt.write(buf)
     }
 
-    async fn flush(&mut self) -> Result<(), Self::Error> {
-        self.to_mgmt.flush().await
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.to_mgmt.flush()
     }
 }
 
-impl<W> MgmtWriter<W>
-where
-    W: Write,
-{
+impl<W: Write> MgmtWriter<W> {
     fn new(to_mgmt: W) -> Self {
         Self { to_mgmt }
     }
 
+    /// Write a TLV to the MGMT connection.
+    pub fn write_tlv(&mut self, tlv_type: CtlToMgmt, value: &[u8]) -> std::io::Result<()> {
+        write_tlv(&mut self.to_mgmt, tlv_type, value)
+    }
+
     /// Get a writer for the UI tunnel (TLV protocol).
-    fn ui(&mut self) -> TunnelWriter<'_, W> {
+    pub fn ui(&mut self) -> TunnelWriter<'_, W> {
         TunnelWriter::new(CtlToMgmt::ToUi, &mut self.to_mgmt)
     }
 
     /// Get a writer for the NET tunnel.
-    fn net(&mut self) -> TunnelWriter<'_, W> {
+    pub fn net(&mut self) -> TunnelWriter<'_, W> {
         TunnelWriter::new(CtlToMgmt::ToNet, &mut self.to_mgmt)
     }
 }
+
+// ============================================================================
+// App
+// ============================================================================
 
 pub struct App<R, W> {
     reader: MgmtReader<R>,
@@ -373,9 +492,17 @@ where
         }
     }
 
-    pub async fn mgmt_ping(&mut self, data: &[u8]) {
-        self.writer.must_write_tlv(CtlToMgmt::Ping, data).await;
-        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+    /// Get a mutable reference to the underlying reader.
+    ///
+    /// This is useful for operations that need to modify the underlying reader,
+    /// such as setting the timeout on a serial port.
+    pub fn reader_mut(&mut self) -> &mut MgmtReader<R> {
+        &mut self.reader
+    }
+
+    pub fn mgmt_ping(&mut self, data: &[u8]) {
+        write_tlv(&mut self.writer, CtlToMgmt::Ping, data).unwrap();
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, MgmtToCtl::Pong);
         assert_eq!(&tlv.value, data);
     }
@@ -384,13 +511,17 @@ where
     ///
     /// Sends a 4-byte challenge value and verifies the response is the challenge
     /// XOR'd with b"LINK". Returns true if the handshake succeeded.
-    pub async fn hello(&mut self, challenge: &[u8; 4]) -> bool {
+    pub fn hello(&mut self, challenge: &[u8; 4]) -> bool {
         const MAGIC: &[u8; 4] = b"LINK";
 
-        self.writer
-            .must_write_tlv(CtlToMgmt::Hello, challenge)
-            .await;
-        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+        if write_tlv(&mut self.writer, CtlToMgmt::Hello, challenge).is_err() {
+            return false;
+        }
+
+        let tlv: Tlv<MgmtToCtl> = match read_tlv(&mut self.reader) {
+            Ok(Some(tlv)) => tlv,
+            _ => return false,
+        };
 
         if tlv.tlv_type != MgmtToCtl::Hello || tlv.value.len() != 4 {
             return false;
@@ -405,72 +536,59 @@ where
         true
     }
 
-    pub async fn ui_ping(&mut self, data: &[u8]) {
-        self.writer.ui().must_write_tlv(MgmtToUi::Ping, data).await;
-        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
+    pub fn ui_ping(&mut self, data: &[u8]) {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::Ping, data).unwrap();
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, UiToMgmt::Pong);
         assert_eq!(&tlv.value, data);
     }
 
-    pub async fn net_ping(&mut self, data: &[u8]) {
-        self.writer
-            .net()
-            .must_write_tlv(MgmtToNet::Ping, data)
-            .await;
-        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+    pub fn net_ping(&mut self, data: &[u8]) {
+        write_tlv(&mut self.writer.net(), MgmtToNet::Ping, data).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::Pong);
         assert_eq!(&tlv.value, data);
     }
 
-    pub async fn ui_first_circular_ping(&mut self, data: &[u8]) {
-        self.writer
-            .ui()
-            .must_write_tlv(MgmtToUi::CircularPing, data)
-            .await;
-        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+    pub fn ui_first_circular_ping(&mut self, data: &[u8]) {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::CircularPing, data).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::CircularPing);
         assert_eq!(&tlv.value, data);
     }
 
-    pub async fn net_first_circular_ping(&mut self, data: &[u8]) {
-        self.writer
-            .net()
-            .must_write_tlv(MgmtToNet::CircularPing, data)
-            .await;
-        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
+    pub fn net_first_circular_ping(&mut self, data: &[u8]) {
+        write_tlv(&mut self.writer.net(), MgmtToNet::CircularPing, data).unwrap();
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, UiToMgmt::CircularPing);
         assert_eq!(&tlv.value, data);
     }
 
     /// Get the version stored in UI chip EEPROM.
-    pub async fn get_version(&mut self) -> u32 {
-        self.writer
-            .ui()
-            .must_write_tlv(MgmtToUi::GetVersion, &[])
-            .await;
-        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
+    pub fn get_version(&mut self) -> u32 {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::GetVersion, &[]).unwrap();
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, UiToMgmt::Version);
         assert_eq!(tlv.value.len(), 4);
         u32::from_be_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]])
     }
 
     /// Set the version stored in UI chip EEPROM.
-    pub async fn set_version(&mut self, version: u32) {
-        self.writer
-            .ui()
-            .must_write_tlv(MgmtToUi::SetVersion, &version.to_be_bytes())
-            .await;
-        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
+    pub fn set_version(&mut self, version: u32) {
+        write_tlv(
+            &mut self.writer.ui(),
+            MgmtToUi::SetVersion,
+            &version.to_be_bytes(),
+        )
+        .unwrap();
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, UiToMgmt::Ack);
     }
 
     /// Get the SFrame key stored in UI chip EEPROM.
-    pub async fn get_sframe_key(&mut self) -> [u8; 16] {
-        self.writer
-            .ui()
-            .must_write_tlv(MgmtToUi::GetSFrameKey, &[])
-            .await;
-        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
+    pub fn get_sframe_key(&mut self) -> [u8; 16] {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::GetSFrameKey, &[]).unwrap();
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, UiToMgmt::SFrameKey);
         assert_eq!(tlv.value.len(), 16);
         let mut key = [0u8; 16];
@@ -479,115 +597,95 @@ where
     }
 
     /// Set the SFrame key stored in UI chip EEPROM.
-    pub async fn set_sframe_key(&mut self, key: &[u8; 16]) {
-        self.writer
-            .ui()
-            .must_write_tlv(MgmtToUi::SetSFrameKey, key)
-            .await;
-        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
+    pub fn set_sframe_key(&mut self, key: &[u8; 16]) {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::SetSFrameKey, key).unwrap();
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, UiToMgmt::Ack);
     }
 
     /// Set UI chip loopback mode.
     /// When enabled, mic audio goes directly to speaker instead of to NET.
-    pub async fn ui_set_loopback(&mut self, enabled: bool) {
-        self.writer
-            .ui()
-            .must_write_tlv(MgmtToUi::SetLoopback, &[enabled as u8])
-            .await;
-        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
+    pub fn ui_set_loopback(&mut self, enabled: bool) {
+        write_tlv(
+            &mut self.writer.ui(),
+            MgmtToUi::SetLoopback,
+            &[enabled as u8],
+        )
+        .unwrap();
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, UiToMgmt::Ack);
     }
 
     /// Get UI chip loopback mode.
-    pub async fn ui_get_loopback(&mut self) -> bool {
-        self.writer
-            .ui()
-            .must_write_tlv(MgmtToUi::GetLoopback, &[])
-            .await;
-        let tlv: Tlv<UiToMgmt> = self.reader.ui().must_read_tlv().await;
+    pub fn ui_get_loopback(&mut self) -> bool {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::GetLoopback, &[]).unwrap();
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, UiToMgmt::Loopback);
         tlv.value.first().copied().unwrap_or(0) != 0
     }
 
     /// Set NET chip loopback mode.
     /// When enabled, audio from UI goes back to UI through jitter buffer instead of to WebSocket.
-    pub async fn net_set_loopback(&mut self, enabled: bool) {
-        self.writer
-            .net()
-            .must_write_tlv(MgmtToNet::SetLoopback, &[enabled as u8])
-            .await;
-        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+    pub fn net_set_loopback(&mut self, enabled: bool) {
+        write_tlv(
+            &mut self.writer.net(),
+            MgmtToNet::SetLoopback,
+            &[enabled as u8],
+        )
+        .unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
     }
 
     /// Get NET chip loopback mode.
-    pub async fn net_get_loopback(&mut self) -> bool {
-        self.writer
-            .net()
-            .must_write_tlv(MgmtToNet::GetLoopback, &[])
-            .await;
-        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+    pub fn net_get_loopback(&mut self) -> bool {
+        write_tlv(&mut self.writer.net(), MgmtToNet::GetLoopback, &[]).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::Loopback);
         tlv.value.first().copied().unwrap_or(0) != 0
     }
 
     /// Add a WiFi SSID and password pair to NET chip storage.
-    pub async fn add_wifi_ssid(&mut self, ssid: &str, password: &str) {
+    pub fn add_wifi_ssid(&mut self, ssid: &str, password: &str) {
         let wifi = WifiSsid {
             ssid: ssid.try_into().expect("SSID too long"),
             password: password.try_into().expect("Password too long"),
         };
         let mut buf = [0u8; 128];
         let serialized = postcard::to_slice(&wifi, &mut buf).expect("Serialization failed");
-        self.writer
-            .net()
-            .must_write_tlv(MgmtToNet::AddWifiSsid, serialized)
-            .await;
-        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+        write_tlv(&mut self.writer.net(), MgmtToNet::AddWifiSsid, serialized).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
     }
 
     /// Get all WiFi SSIDs from NET chip storage.
-    pub async fn get_wifi_ssids(&mut self) -> heapless::Vec<WifiSsid, 8> {
-        self.writer
-            .net()
-            .must_write_tlv(MgmtToNet::GetWifiSsids, &[])
-            .await;
-        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+    pub fn get_wifi_ssids(&mut self) -> heapless::Vec<WifiSsid, 8> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::GetWifiSsids, &[]).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::WifiSsids);
         postcard::from_bytes(&tlv.value).expect("Deserialization failed")
     }
 
     /// Clear all WiFi SSIDs from NET chip storage.
-    pub async fn clear_wifi_ssids(&mut self) {
-        self.writer
-            .net()
-            .must_write_tlv(MgmtToNet::ClearWifiSsids, &[])
-            .await;
-        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+    pub fn clear_wifi_ssids(&mut self) {
+        write_tlv(&mut self.writer.net(), MgmtToNet::ClearWifiSsids, &[]).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
     }
 
     /// Get the relay URL from NET chip storage.
-    pub async fn get_relay_url(&mut self) -> heapless::String<128> {
-        self.writer
-            .net()
-            .must_write_tlv(MgmtToNet::GetRelayUrl, &[])
-            .await;
-        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+    pub fn get_relay_url(&mut self) -> heapless::String<128> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::GetRelayUrl, &[]).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::RelayUrl);
         let url_str = core::str::from_utf8(&tlv.value).expect("Invalid UTF-8");
         url_str.try_into().expect("URL too long")
     }
 
     /// Set the relay URL in NET chip storage.
-    pub async fn set_relay_url(&mut self, url: &str) {
-        self.writer
-            .net()
-            .must_write_tlv(MgmtToNet::SetRelayUrl, url.as_bytes())
-            .await;
-        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+    pub fn set_relay_url(&mut self, url: &str) {
+        write_tlv(&mut self.writer.net(), MgmtToNet::SetRelayUrl, url.as_bytes()).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
     }
 
@@ -595,12 +693,9 @@ where
     ///
     /// This sends data to the relay server via WebSocket and expects the same
     /// data back (assumes an echo server). Useful for testing WS connectivity.
-    pub async fn ws_ping(&mut self, data: &[u8]) {
-        self.writer
-            .net()
-            .must_write_tlv(MgmtToNet::WsSend, data)
-            .await;
-        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+    pub fn ws_ping(&mut self, data: &[u8]) {
+        write_tlv(&mut self.writer.net(), MgmtToNet::WsSend, data).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::WsReceived);
         assert_eq!(&tlv.value, data);
     }
@@ -613,15 +708,12 @@ where
     /// 3. Measures jitter before and after the jitter buffer
     ///
     /// Returns EchoTestResults with raw and buffered jitter measurements.
-    pub async fn ws_echo_test(&mut self) -> EchoTestResults {
+    pub fn ws_echo_test(&mut self) -> EchoTestResults {
         // Tunnel through MGMT to NET (like ws_ping does)
-        self.writer
-            .net()
-            .must_write_tlv(MgmtToNet::WsEchoTest, &[])
-            .await;
+        write_tlv(&mut self.writer.net(), MgmtToNet::WsEchoTest, &[]).unwrap();
 
         // Wait for result from NET (tunneled through MGMT as FromNet)
-        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::WsEchoTestResult);
 
         // Parse result:
@@ -687,15 +779,12 @@ where
     /// then waits up to 2 seconds to receive responses.
     ///
     /// Returns SpeedTestResults with timing information.
-    pub async fn ws_speed_test(&mut self) -> SpeedTestResults {
+    pub fn ws_speed_test(&mut self) -> SpeedTestResults {
         // Tunnel through MGMT to NET
-        self.writer
-            .net()
-            .must_write_tlv(MgmtToNet::WsSpeedTest, &[])
-            .await;
+        write_tlv(&mut self.writer.net(), MgmtToNet::WsSpeedTest, &[]).unwrap();
 
         // Wait for result from NET (tunneled through MGMT as FromNet)
-        let tlv: Tlv<NetToMgmt> = self.reader.net().must_read_tlv().await;
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::WsSpeedTestResult);
 
         // Parse result: sent (1), received (1), send_time_ms (4), recv_time_ms (4)
@@ -727,26 +816,24 @@ where
     ///
     /// Returns bootloader version, chip ID, supported commands, and optionally
     /// a sample of flash memory if read protection is not enabled.
-    pub async fn get_mgmt_bootloader_info(
-        &mut self,
-    ) -> Result<MgmtBootloaderInfo, stm::Error<R::Error>>
-    where
-        W::Error: Into<R::Error>,
-    {
+    pub fn get_mgmt_bootloader_info(&mut self) -> Result<MgmtBootloaderInfo, stm::Error<std::io::Error>> {
+        // Drain any stale data from previous communication before starting bootloader protocol
+        self.reader.drain();
+
         let mut bl = Bootloader::new(&mut self.reader, &mut self.writer);
 
         // Initialize communication (sends 0x7F for auto-baud detection)
-        bl.init().await?;
+        bl.init()?;
 
         // Get bootloader info
-        let info = bl.get().await?;
+        let info = bl.get()?;
 
         // Get chip ID
-        let chip_id = bl.get_id().await?;
+        let chip_id = bl.get_id()?;
 
         // Try to read a small amount of memory from the start of flash
         let mut flash_sample = [0u8; 32];
-        let flash_result = bl.read_memory(0x0800_0000, &mut flash_sample).await;
+        let flash_result = bl.read_memory(0x0800_0000, &mut flash_sample);
         let flash_sample = if flash_result.is_ok() {
             Some(flash_sample)
         } else {
@@ -754,7 +841,7 @@ where
         };
 
         // Reset MGMT chip back to normal operation by jumping to user firmware
-        bl.go(0x0800_0000).await?;
+        bl.go(0x0800_0000)?;
 
         Ok(MgmtBootloaderInfo {
             bootloader_version: info.version,
@@ -779,19 +866,22 @@ where
     /// 5. Jumps to the new firmware
     ///
     /// The progress callback is called with (phase, bytes_processed, total_bytes).
-    pub async fn flash_mgmt<F>(
+    pub fn flash_mgmt<F>(
         &mut self,
         firmware: &[u8],
         mut progress: F,
-    ) -> Result<(), FlashError<R::Error>>
+    ) -> Result<(), FlashError<std::io::Error>>
     where
-        W::Error: Into<R::Error>,
         F: FnMut(FlashPhase, usize, usize),
     {
+        // Drain any stale data from previous communication (e.g., hello response)
+        // before starting bootloader protocol
+        self.reader.drain();
+
         let mut bl = Bootloader::new(&mut self.reader, &mut self.writer);
 
         // Initialize communication
-        bl.init().await?;
+        bl.init()?;
 
         // Erase pages needed for firmware (STM32F072CB has 2KB pages)
         // Erase page-by-page for progress feedback
@@ -803,8 +893,8 @@ where
             progress(FlashPhase::Erasing, page, pages_needed);
             // Try extended erase first, fall back to legacy
             let page_num = page as u16;
-            if bl.extended_erase(Some(&[page_num]), None).await.is_err() {
-                bl.erase(Some(&[page as u8])).await?;
+            if bl.extended_erase(Some(&[page_num]), None).is_err() {
+                bl.erase(Some(&[page as u8]))?;
             }
         }
         progress(FlashPhase::Erasing, pages_needed, pages_needed);
@@ -816,7 +906,7 @@ where
 
         for chunk in firmware.chunks(256) {
             let address = base_address + written as u32;
-            bl.write_memory(address, chunk).await?;
+            bl.write_memory(address, chunk)?;
             written += chunk.len();
             progress(FlashPhase::Writing, written, total);
         }
@@ -827,9 +917,7 @@ where
 
         for chunk in firmware.chunks(256) {
             let address = base_address + verified as u32;
-            let len = bl
-                .read_memory(address, &mut read_buf[..chunk.len()])
-                .await?;
+            let len = bl.read_memory(address, &mut read_buf[..chunk.len()])?;
             if &read_buf[..len] != chunk {
                 return Err(FlashError::VerifyFailed {
                     address,
@@ -842,7 +930,7 @@ where
         }
 
         // Jump to new firmware
-        bl.go(0x0800_0000).await?;
+        bl.go(0x0800_0000)?;
 
         Ok(())
     }
@@ -851,11 +939,9 @@ where
     ///
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins
     /// to put the UI chip into bootloader mode.
-    pub async fn reset_ui_to_bootloader(&mut self) {
-        self.writer
-            .must_write_tlv(CtlToMgmt::ResetUiToBootloader, &[])
-            .await;
-        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+    pub fn reset_ui_to_bootloader(&mut self) {
+        write_tlv(&mut self.writer, CtlToMgmt::ResetUiToBootloader, &[]).unwrap();
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
     }
 
@@ -863,11 +949,9 @@ where
     ///
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins
     /// to put the UI chip back into normal user mode.
-    pub async fn reset_ui_to_user(&mut self) {
-        self.writer
-            .must_write_tlv(CtlToMgmt::ResetUiToUser, &[])
-            .await;
-        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+    pub fn reset_ui_to_user(&mut self) {
+        write_tlv(&mut self.writer, CtlToMgmt::ResetUiToUser, &[]).unwrap();
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
     }
 
@@ -875,11 +959,9 @@ where
     ///
     /// Sends a command to MGMT to assert the RST pin low, keeping the
     /// UI chip in reset until released.
-    pub async fn hold_ui_reset(&mut self) {
-        self.writer
-            .must_write_tlv(CtlToMgmt::HoldUiReset, &[])
-            .await;
-        let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+    pub fn hold_ui_reset(&mut self) {
+        write_tlv(&mut self.writer, CtlToMgmt::HoldUiReset, &[]).unwrap();
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
     }
 
@@ -887,16 +969,23 @@ where
     ///
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins
     /// to put the NET chip into bootloader mode.
-    pub async fn reset_net_to_bootloader(&mut self) {
-        self.writer
-            .must_write_tlv(CtlToMgmt::ResetNetToBootloader, &[])
-            .await;
+    pub fn reset_net_to_bootloader(&mut self) {
+        eprintln!("[debug] Sending ResetNetToBootloader command to MGMT...");
+        write_tlv(&mut self.writer, CtlToMgmt::ResetNetToBootloader, &[]).unwrap();
         // Read TLVs, skipping any FromNet (boot messages from NET chip) until we get the Ack
-        for _ in 0..100 {
-            let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+        for i in 0..100 {
+            eprintln!("[trace] Waiting for Ack (attempt {})", i);
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
+            eprintln!("[trace] Received TLV: {:?}", tlv.tlv_type);
             match tlv.tlv_type {
-                MgmtToCtl::Ack => return,
-                MgmtToCtl::FromNet => continue,
+                MgmtToCtl::Ack => {
+                    eprintln!("[debug] Received Ack from MGMT");
+                    return;
+                }
+                MgmtToCtl::FromNet => {
+                    eprintln!("[trace] Skipping FromNet TLV ({} bytes)", tlv.value.len());
+                    continue;
+                }
                 other => panic!("unexpected TLV type: {:?}", other),
             }
         }
@@ -907,13 +996,11 @@ where
     ///
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins
     /// to put the NET chip back into normal user mode.
-    pub async fn reset_net_to_user(&mut self) {
-        self.writer
-            .must_write_tlv(CtlToMgmt::ResetNetToUser, &[])
-            .await;
+    pub fn reset_net_to_user(&mut self) {
+        write_tlv(&mut self.writer, CtlToMgmt::ResetNetToUser, &[]).unwrap();
         // Read TLVs, skipping any FromNet (boot messages from NET chip) until we get the Ack
         for _ in 0..100 {
-            let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
             match tlv.tlv_type {
                 MgmtToCtl::Ack => return,
                 MgmtToCtl::FromNet => continue,
@@ -930,57 +1017,52 @@ where
     /// 2. Queries bootloader information via the tunneled UI connection
     /// 3. Resets the UI chip back to user mode
     ///
-    /// The `delay_ms` parameter should return a future that completes after
-    /// the specified number of milliseconds. For tokio, use `|ms| tokio::time::sleep(Duration::from_millis(ms))`.
+    /// The `delay_ms` parameter should be a function that sleeps for the given
+    /// number of milliseconds. For std, use `|ms| std::thread::sleep(Duration::from_millis(ms))`.
     ///
     /// Returns bootloader version, chip ID, supported commands, and optionally
     /// a sample of flash memory if read protection is not enabled.
-    pub async fn get_ui_bootloader_info<D, Fut>(
+    pub fn get_ui_bootloader_info<D>(
         &mut self,
         delay_ms: D,
-    ) -> Result<MgmtBootloaderInfo, stm::Error<R::Error>>
+    ) -> Result<MgmtBootloaderInfo, stm::Error<std::io::Error>>
     where
-        W::Error: Into<R::Error>,
-        D: FnOnce(u64) -> Fut,
-        Fut: Future<Output = ()>,
+        D: FnOnce(u64),
     {
         // Reset UI chip into bootloader mode
-        self.reset_ui_to_bootloader().await;
+        self.reset_ui_to_bootloader();
 
         // Wait for bootloader to be ready
-        delay_ms(1000).await;
+        delay_ms(1000);
 
         // Query bootloader info, capturing any error
-        let result = self.query_ui_bootloader().await;
+        let result = self.query_ui_bootloader();
 
         // Always reset UI chip back to user mode
-        self.reset_ui_to_user().await;
+        self.reset_ui_to_user();
 
         result
     }
 
     /// Helper to query the UI bootloader. Separated so borrows are released before reset.
-    async fn query_ui_bootloader(&mut self) -> Result<MgmtBootloaderInfo, stm::Error<R::Error>>
-    where
-        W::Error: Into<R::Error>,
-    {
+    fn query_ui_bootloader(&mut self) -> Result<MgmtBootloaderInfo, stm::Error<std::io::Error>> {
         // Create a bootloader client using the tunneled UI connection
         let mut ui_reader = self.reader.ui();
         let mut ui_writer = self.writer.ui();
         let mut bl = Bootloader::new(&mut ui_reader, &mut ui_writer);
 
         // Initialize communication (sends 0x7F for auto-baud detection)
-        bl.init().await?;
+        bl.init()?;
 
         // Get bootloader info
-        let info = bl.get().await?;
+        let info = bl.get()?;
 
         // Get chip ID
-        let chip_id = bl.get_id().await?;
+        let chip_id = bl.get_id()?;
 
         // Try to read a small amount of memory from the start of flash
         let mut flash_sample = [0u8; 32];
-        let flash_sample = match bl.read_memory(0x0800_0000, &mut flash_sample).await {
+        let flash_sample = match bl.read_memory(0x0800_0000, &mut flash_sample) {
             Ok(_) => Some(flash_sample),
             Err(_) => None, // Read protection may be enabled
         };
@@ -1003,45 +1085,42 @@ where
     /// 4. Verifies the written data by reading it back
     /// 5. Resets the UI chip back to user mode
     ///
-    /// The `delay_ms` parameter should return a future that completes after
-    /// the specified number of milliseconds.
+    /// The `delay_ms` parameter should be a function that sleeps for the given
+    /// number of milliseconds.
     ///
     /// The progress callback is called with (phase, bytes_processed, total_bytes).
-    pub async fn flash_ui<F, D, Fut>(
+    pub fn flash_ui<F, D>(
         &mut self,
         firmware: &[u8],
         delay_ms: D,
         mut progress: F,
-    ) -> Result<(), FlashError<R::Error>>
+    ) -> Result<(), FlashError<std::io::Error>>
     where
-        W::Error: Into<R::Error>,
         F: FnMut(FlashPhase, usize, usize),
-        D: FnOnce(u64) -> Fut,
-        Fut: Future<Output = ()>,
+        D: FnOnce(u64),
     {
         // Reset UI chip into bootloader mode
-        self.reset_ui_to_bootloader().await;
+        self.reset_ui_to_bootloader();
 
         // Wait for bootloader to be ready
-        delay_ms(100).await;
+        delay_ms(100);
 
         // Flash the firmware
-        let result = self.do_flash_ui(firmware, &mut progress).await;
+        let result = self.do_flash_ui(firmware, &mut progress);
 
         // Always reset UI chip back to user mode
-        self.reset_ui_to_user().await;
+        self.reset_ui_to_user();
 
         result
     }
 
     /// Helper to flash the UI chip. Separated so borrows are released before reset.
-    async fn do_flash_ui<F>(
+    fn do_flash_ui<F>(
         &mut self,
         firmware: &[u8],
         progress: &mut F,
-    ) -> Result<(), FlashError<R::Error>>
+    ) -> Result<(), FlashError<std::io::Error>>
     where
-        W::Error: Into<R::Error>,
         F: FnMut(FlashPhase, usize, usize),
     {
         let mut ui_reader = self.reader.ui();
@@ -1049,7 +1128,7 @@ where
         let mut bl = Bootloader::new(&mut ui_reader, &mut ui_writer);
 
         // Initialize communication
-        bl.init().await?;
+        bl.init()?;
 
         // Erase sectors needed for firmware (STM32F405RG has variable sector sizes)
         // Sectors 0-3: 16KB, Sector 4: 64KB, Sectors 5-11: 128KB
@@ -1057,7 +1136,7 @@ where
 
         for sector in 0..sectors_needed {
             progress(FlashPhase::Erasing, sector, sectors_needed);
-            bl.extended_erase(Some(&[sector as u16]), None).await?;
+            bl.extended_erase(Some(&[sector as u16]), None)?;
         }
         progress(FlashPhase::Erasing, sectors_needed, sectors_needed);
 
@@ -1068,7 +1147,7 @@ where
 
         for chunk in firmware.chunks(256) {
             let address = base_address + written as u32;
-            bl.write_memory(address, chunk).await?;
+            bl.write_memory(address, chunk)?;
             written += chunk.len();
             progress(FlashPhase::Writing, written, total);
         }
@@ -1079,9 +1158,7 @@ where
 
         for chunk in firmware.chunks(256) {
             let address = base_address + verified as u32;
-            let len = bl
-                .read_memory(address, &mut read_buf[..chunk.len()])
-                .await?;
+            let len = bl.read_memory(address, &mut read_buf[..chunk.len()])?;
             if &read_buf[..len] != chunk {
                 return Err(FlashError::VerifyFailed {
                     address,
@@ -1096,308 +1173,299 @@ where
         Ok(())
     }
 
-    /// Get bootloader information from the NET chip (ESP32).
-    ///
-    /// This method:
-    /// 1. Resets the NET chip into bootloader mode
-    /// 2. Syncs with the ESP32 bootloader via SLIP framing
-    /// 3. Queries security information
-    /// 4. Resets the NET chip back to user mode
-    ///
-    /// Returns security information including chip ID and security flags.
-    pub async fn get_net_bootloader_info(
-        &mut self,
-    ) -> Result<NetBootloaderInfo, esp::Error<R::Error>>
-    where
-        W::Error: Into<R::Error>,
-    {
-        // Reset NET chip into bootloader mode
-        self.reset_net_to_bootloader().await;
+}
 
-        // Query bootloader info (waits for "waiting for download" message)
-        let result = self.query_net_bootloader().await;
+// =============================================================================
+// NET chip (ESP32) support via espflash
+// =============================================================================
 
-        // Always reset NET chip back to user mode.
-        // We can't use reset_net_to_user() directly because there may be
-        // pending FromNet TLVs from bootloader communication that we need to skip.
-        self.writer
-            .must_write_tlv(CtlToMgmt::ResetNetToUser, &[])
-            .await;
+/// Serial port wrapper for the TLV tunnel to NET chip.
+///
+/// DTR/RTS signals are mapped directly to BOOT/RST pins:
+/// - DTR HIGH → BOOT LOW (bootloader mode), DTR LOW → BOOT HIGH (normal)
+/// - RTS HIGH → RST LOW (chip in reset), RTS LOW → RST HIGH (chip running)
+struct TunnelSerialPort<'a, R, W> {
+    reader: &'a mut MgmtReader<R>,
+    writer: &'a mut MgmtWriter<W>,
+    read_buffer: Vec<u8>,
+    timeout: Duration,
+    baud_rate: u32,
+}
 
-        // Read TLVs, skipping any FromNet until we get the Ack
-        // Limit iterations to prevent infinite loop if Ack never arrives
-        for _ in 0..100 {
-            let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
-            match tlv.tlv_type {
-                MgmtToCtl::Ack => {
-                    return result;
-                }
-                MgmtToCtl::FromNet => {
-                    continue;
-                }
-                other => panic!("unexpected TLV type: {:?}", other),
-            }
+impl<'a, R, W> TunnelSerialPort<'a, R, W>
+where
+    R: Read + Send,
+    W: Write + Send,
+{
+    fn new(reader: &'a mut MgmtReader<R>, writer: &'a mut MgmtWriter<W>) -> Self {
+        TunnelSerialPort {
+            reader,
+            writer,
+            read_buffer: Vec::new(),
+            timeout: Duration::from_secs(3),
+            baud_rate: 115_200,
         }
-        // Gave up waiting for Ack after discarding 100 FromNet TLVs
-
-        result
     }
+}
 
-    /// Helper to query the NET bootloader. Separated so borrows are released before reset.
-    async fn query_net_bootloader(&mut self) -> Result<NetBootloaderInfo, esp::Error<R::Error>>
-    where
-        W::Error: Into<R::Error>,
-    {
-        // Create reader for the NET tunnel
+impl<R, W> io::Read for TunnelSerialPort<'_, R, W>
+where
+    R: Read + Send,
+    W: Write + Send,
+{
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !self.read_buffer.is_empty() {
+            let to_copy = buf.len().min(self.read_buffer.len());
+            buf[..to_copy].copy_from_slice(&self.read_buffer[..to_copy]);
+            self.read_buffer.drain(..to_copy);
+            return Ok(to_copy);
+        }
         let mut net_reader = self.reader.net();
+        net_reader.read(buf)
+    }
+}
 
-        // Wait for ESP32 to be ready by scanning for "waiting for download"
-        // The ESP32 prints boot messages before it's ready to receive SLIP commands
-        let mut line_buf: heapless::Vec<u8, LINE_BUFFER_SIZE> = heapless::Vec::new();
-        loop {
-            let mut byte = [0u8; 1];
-            embedded_io_async::Read::read_exact(&mut net_reader, &mut byte)
-                .await
-                .map_err(|_| esp::Error::Timeout)?;
-
-            if byte[0] == 0x0a {
-                // End of line
-                if let Ok(line) = core::str::from_utf8(&line_buf) {
-                    let line = line.trim();
-                    if line.contains("waiting for download") {
-                        break;
-                    }
-                }
-                line_buf.clear();
-            } else if byte[0] != 0x0d {
-                // Ignore error if buffer is full - just skip extra chars
-                let _ = line_buf.push(byte[0]);
-            }
-        }
-
-        // Now create the bootloader client and sync
+impl<R, W> io::Write for TunnelSerialPort<'_, R, W>
+where
+    R: Read + Send,
+    W: Write + Send,
+{
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut net_writer = self.writer.net();
-        let mut bl = EspBootloader::new(&mut net_reader, &mut net_writer);
-
-        // Synchronize with the ESP32 bootloader
-        bl.sync().await?;
-
-        // Get security information (includes chip type detection)
-        let security_info = bl.get_security_info().await?;
-
-        Ok(NetBootloaderInfo { security_info })
+        net_writer.write(buf)
     }
 
-    /// Flash firmware to the NET chip (ESP32-S3).
+    fn flush(&mut self) -> io::Result<()> {
+        let mut net_writer = self.writer.net();
+        net_writer.flush()
+    }
+}
+
+impl<R, W> SerialPort for TunnelSerialPort<'_, R, W>
+where
+    R: Read + Send,
+    W: Write + Send,
+{
+    fn name(&self) -> Option<String> {
+        Some("tunnel".to_string())
+    }
+    fn baud_rate(&self) -> serialport::Result<u32> {
+        Ok(self.baud_rate)
+    }
+    fn data_bits(&self) -> serialport::Result<DataBits> {
+        Ok(DataBits::Eight)
+    }
+    fn flow_control(&self) -> serialport::Result<FlowControl> {
+        Ok(FlowControl::None)
+    }
+    fn parity(&self) -> serialport::Result<Parity> {
+        Ok(Parity::None)
+    }
+    fn stop_bits(&self) -> serialport::Result<StopBits> {
+        Ok(StopBits::One)
+    }
+    fn timeout(&self) -> Duration {
+        self.timeout
+    }
+    fn set_baud_rate(&mut self, baud_rate: u32) -> serialport::Result<()> {
+        self.baud_rate = baud_rate;
+        Ok(())
+    }
+    fn set_data_bits(&mut self, _: DataBits) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_flow_control(&mut self, _: FlowControl) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_parity(&mut self, _: Parity) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_stop_bits(&mut self, _: StopBits) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_timeout(&mut self, timeout: Duration) -> serialport::Result<()> {
+        self.timeout = timeout;
+        Ok(())
+    }
+    fn write_request_to_send(&mut self, level: bool) -> serialport::Result<()> {
+        let rst = !level; // RTS HIGH = RST LOW
+        self.writer
+            .write_tlv(CtlToMgmt::SetNetRst, &[rst as u8])
+            .map_err(|e| serialport::Error::new(serialport::ErrorKind::Io(e.kind()), e.to_string()))
+    }
+    fn write_data_terminal_ready(&mut self, level: bool) -> serialport::Result<()> {
+        let boot = !level; // DTR HIGH = BOOT LOW
+        self.writer
+            .write_tlv(CtlToMgmt::SetNetBoot, &[boot as u8])
+            .map_err(|e| serialport::Error::new(serialport::ErrorKind::Io(e.kind()), e.to_string()))
+    }
+    fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
+        Ok(true)
+    }
+    fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
+        Ok(true)
+    }
+    fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
+        Ok(false)
+    }
+    fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
+        Ok(true)
+    }
+    fn bytes_to_read(&self) -> serialport::Result<u32> {
+        Ok(self.read_buffer.len() as u32)
+    }
+    fn bytes_to_write(&self) -> serialport::Result<u32> {
+        Ok(0)
+    }
+    fn clear(&self, _: ClearBuffer) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn try_clone(&self) -> serialport::Result<Box<dyn SerialPort>> {
+        Err(serialport::Error::new(serialport::ErrorKind::InvalidInput, "cannot clone"))
+    }
+    fn set_break(&self) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn clear_break(&self) -> serialport::Result<()> {
+        Ok(())
+    }
+}
+
+/// Progress adapter for espflash callbacks.
+struct ProgressAdapter<F> {
+    callback: F,
+    phase: EspflashPhase,
+    total: usize,
+}
+
+impl<F: FnMut(EspflashPhase, usize, usize)> ProgressCallbacks for ProgressAdapter<F> {
+    fn init(&mut self, _addr: u32, total: usize) {
+        self.total = total;
+        self.phase = EspflashPhase::Writing;
+        (self.callback)(self.phase, 0, total);
+    }
+    fn update(&mut self, current: usize) {
+        (self.callback)(self.phase, current, self.total);
+    }
+    fn verifying(&mut self) {
+        self.phase = EspflashPhase::Verifying;
+        (self.callback)(self.phase, 0, self.total);
+    }
+    fn finish(&mut self, _skipped: bool) {
+        (self.callback)(self.phase, self.total, self.total);
+    }
+}
+
+// NET chip operations (ESP32)
+impl<R, W> App<R, W>
+where
+    R: Read + Send,
+    W: Write + Send,
+{
+    /// Flash firmware to the NET chip (ESP32).
     ///
-    /// This method:
-    /// 1. Resets the NET chip into bootloader mode
-    /// 2. Waits for the bootloader to be ready
-    /// 3. Syncs with the ESP32 bootloader
-    /// 4. Writes the firmware to flash
-    /// 5. Verifies with MD5 checksum
-    /// 6. Resets the NET chip back to user mode
-    ///
-    /// # Address Parameter
-    ///
-    /// The `address` parameter specifies the flash offset. Standard ESP-IDF layout:
-    /// - `0x0` - Bootloader
-    /// - `0x8000` - Partition table
-    /// - `0x10000` - Application (most common for app-only updates)
-    ///
-    /// **WARNING:** This function only flashes a single binary. For full ESP-IDF
-    /// firmware updates, you may need to flash bootloader, partition table, and app
-    /// separately. A future version should parse `flasher_args.json` from the
-    /// ESP-IDF build directory to automate this.
-    ///
-    /// The progress callback is called with (phase, bytes_processed, total_bytes).
-    /// Note: ESP32 combines erase and write, so Erasing phase reports 0/1 then 1/1.
-    pub async fn flash_net<F>(
+    /// The `firmware` parameter should be an ELF file - espflash converts it
+    /// to IDF bootloader format. The progress callback is called with
+    /// (phase, current, total).
+    pub fn flash_net<F>(
         &mut self,
-        firmware: &[u8],
-        address: u32,
-        compress: bool,
-        verify: bool,
+        elf_data: &[u8],
+        _address: u32,
+        _verify: bool,
         mut progress: F,
-    ) -> Result<(), NetFlashError<R::Error>>
+    ) -> Result<(), EspflashError>
     where
-        W::Error: Into<R::Error>,
-        F: FnMut(FlashPhase, usize, usize),
+        F: FnMut(EspflashPhase, usize, usize),
     {
-        // Reset NET chip into bootloader mode
-        self.reset_net_to_bootloader().await;
+        progress(EspflashPhase::Connecting, 0, 1);
 
-        // Flash the firmware
-        let result = self
-            .do_flash_net(firmware, address, compress, verify, &mut progress)
-            .await;
+        let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer);
+        let port_info = UsbPortInfo {
+            vid: 0x303A,
+            pid: 0x1002,
+            serial_number: Some("MGMT_BRIDGE".to_string()),
+            manufacturer: Some("Link".to_string()),
+            product: Some("MGMT Bridge".to_string()),
+        };
 
-        // Always reset NET chip back to user mode.
-        // We can't use reset_net_to_user() directly because there may be
-        // pending FromNet TLVs from bootloader communication that we need to skip.
-        self.writer
-            .must_write_tlv(CtlToMgmt::ResetNetToUser, &[])
-            .await;
+        let connection = Connection::new(
+            port,
+            port_info,
+            ResetAfterOperation::HardReset,
+            ResetBeforeOperation::DefaultReset,
+            115_200,
+        );
 
-        // Read TLVs, skipping any FromNet until we get the Ack
-        for _ in 0..100 {
-            let tlv: Tlv<MgmtToCtl> = self.reader.must_read_tlv().await;
-            match tlv.tlv_type {
-                MgmtToCtl::Ack => {
-                    return result;
-                }
-                MgmtToCtl::FromNet => {
-                    continue;
-                }
-                other => panic!("unexpected TLV type: {:?}", other),
-            }
-        }
-        // Gave up waiting for Ack after discarding 100 FromNet TLVs
+        let mut flasher = Flasher::connect(connection, false, true, true, None, None)
+            .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
-        result
-    }
+        progress(EspflashPhase::Connecting, 1, 1);
 
-    /// Helper to flash the NET chip. Separated so borrows are released before reset.
-    async fn do_flash_net<F>(
-        &mut self,
-        firmware: &[u8],
-        address: u32,
-        compress: bool,
-        verify: bool,
-        progress: &mut F,
-    ) -> Result<(), NetFlashError<R::Error>>
-    where
-        W::Error: Into<R::Error>,
-        F: FnMut(FlashPhase, usize, usize),
-    {
-        // Create reader for the NET tunnel
-        let mut net_reader = self.reader.net();
+        let info = flasher
+            .device_info()
+            .map_err(|e| EspflashError::Espflash(format!("device_info: {:?}", e)))?;
+        let chip = flasher.chip();
 
-        // Wait for ESP32 to be ready by scanning for "waiting for download"
-        let mut line_buf: heapless::Vec<u8, LINE_BUFFER_SIZE> = heapless::Vec::new();
-        loop {
-            let mut byte = [0u8; 1];
-            embedded_io_async::Read::read_exact(&mut net_reader, &mut byte)
-                .await
-                .map_err(|_| esp::Error::<R::Error>::Timeout)?;
+        let flash_settings = FlashSettings::new(None, Some(info.flash_size), None);
+        let flash_data = FlashData::new(flash_settings, 0, None, chip, info.crystal_frequency);
 
-            if byte[0] == 0x0a {
-                // End of line
-                if let Ok(line) = core::str::from_utf8(&line_buf) {
-                    let line = line.trim();
-                    if line.contains("waiting for download") {
-                        break;
-                    }
-                }
-                line_buf.clear();
-            } else if byte[0] != 0x0d {
-                // Ignore error if buffer is full - just skip extra chars
-                let _ = line_buf.push(byte[0]);
-            }
-        }
+        let image_format = IdfBootloaderFormat::new(elf_data, &flash_data, None, None, None, None)
+            .map_err(|e| EspflashError::Espflash(format!("IdfBootloaderFormat: {:?}", e)))?;
 
-        // Create the bootloader client
-        let mut net_writer = self.writer.net();
-        let mut bl = EspBootloader::new(&mut net_reader, &mut net_writer);
+        let mut progress_adapter = ProgressAdapter {
+            callback: progress,
+            phase: EspflashPhase::Erasing,
+            total: elf_data.len(),
+        };
 
-        // Synchronize with the ESP32 bootloader
-        bl.sync().await?;
+        flasher
+            .load_image_to_flash(&mut progress_adapter, image_format.into())
+            .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
-        // Use 1KB block size for good balance of speed and reliability
-        const BLOCK_SIZE: u32 = 1024;
-        let uncompressed_size = firmware.len() as u32;
-
-        if compress {
-            // Compress the firmware using zlib/deflate
-            use miniz_oxide::deflate::compress_to_vec_zlib;
-
-            progress(FlashPhase::Compressing, 0, firmware.len());
-
-            // Compression level 6 is default (good balance of speed and ratio)
-            let compressed = compress_to_vec_zlib(firmware, 6);
-
-            progress(FlashPhase::Compressing, firmware.len(), firmware.len());
-
-            // Report erase phase (ESP32 erases during flash_defl_begin)
-            progress(FlashPhase::Erasing, 0, 1);
-
-            // Begin compressed flash operation
-            let _packet_count = bl
-                .flash_defl_begin(uncompressed_size, BLOCK_SIZE, address)
-                .await?;
-
-            progress(FlashPhase::Erasing, 1, 1);
-
-            // Write compressed data in blocks
-            let compressed_total = compressed.len();
-            let mut written = 0;
-
-            for (seq, chunk) in compressed.chunks(BLOCK_SIZE as usize).enumerate() {
-                bl.flash_defl_data(chunk, seq as u32).await?;
-
-                written += chunk.len();
-                progress(FlashPhase::Writing, written, compressed_total);
-            }
-
-            // End compressed flash operation (don't reboot - we'll reset via MGMT)
-            bl.flash_defl_end(false).await?;
-        } else {
-            // Uncompressed flash path
-            progress(FlashPhase::Erasing, 0, 1);
-
-            let _packet_count = bl
-                .flash_begin(uncompressed_size, BLOCK_SIZE, address)
-                .await?;
-
-            progress(FlashPhase::Erasing, 1, 1);
-
-            // Write firmware in blocks
-            let total = firmware.len();
-            let mut written = 0;
-
-            for (seq, chunk) in firmware.chunks(BLOCK_SIZE as usize).enumerate() {
-                // Pad to block size with 0xFF and align to 4 bytes
-                let mut block = [0xFFu8; BLOCK_SIZE as usize];
-                block[..chunk.len()].copy_from_slice(chunk);
-                let padded_len = chunk.len().div_ceil(4) * 4;
-
-                bl.flash_data(&block[..padded_len.max(chunk.len())], seq as u32)
-                    .await?;
-
-                written += chunk.len();
-                progress(FlashPhase::Writing, written, total);
-            }
-
-            // End flash operation (don't reboot - we'll reset via MGMT)
-            bl.flash_end(false).await?;
-        }
-
-        // Verify by computing MD5 of flashed region and comparing to firmware
-        if verify {
-            let total = firmware.len();
-            progress(FlashPhase::Verifying, 0, total);
-
-            // Compute expected MD5 from firmware data
-            use md5::{Digest, Md5};
-            let mut hasher = Md5::new();
-            hasher.update(firmware);
-            let expected_md5: [u8; 16] = hasher.finalize().into();
-
-            // Get actual MD5 from flash
-            let actual_md5 = bl.spi_flash_md5(address, uncompressed_size).await?;
-
-            progress(FlashPhase::Verifying, total, total);
-
-            if expected_md5 != actual_md5 {
-                return Err(NetFlashError::VerifyFailed {
-                    address,
-                    size: uncompressed_size,
-                    expected: expected_md5,
-                    actual: actual_md5,
-                });
-            }
-        }
+        flasher
+            .connection()
+            .reset()
+            .map_err(|e| EspflashError::Espflash(format!("reset: {:?}", e)))?;
 
         Ok(())
+    }
+
+    /// Get NET chip bootloader info.
+    ///
+    /// Returns detailed device information including chip type, revision,
+    /// flash size, features, MAC address, and security info.
+    pub fn get_net_bootloader_info(&mut self) -> Result<EspflashDeviceInfo, EspflashError> {
+        let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer);
+        let port_info = UsbPortInfo {
+            vid: 0,
+            pid: 0,
+            serial_number: None,
+            manufacturer: None,
+            product: None,
+        };
+
+        let connection = Connection::new(
+            port,
+            port_info,
+            ResetAfterOperation::NoReset,
+            ResetBeforeOperation::DefaultReset,
+            115_200,
+        );
+
+        let mut flasher = Flasher::connect(connection, false, false, false, Some(Chip::Esp32s3), None)
+            .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
+
+        let device_info = flasher
+            .device_info()
+            .map_err(|e| EspflashError::Espflash(format!("device_info: {:?}", e)))?;
+
+        let security_info = flasher
+            .security_info()
+            .map_err(|e| EspflashError::Espflash(format!("security_info: {:?}", e)))?;
+
+        Ok(EspflashDeviceInfo {
+            device_info,
+            security_info,
+        })
     }
 }

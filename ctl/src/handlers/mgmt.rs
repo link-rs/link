@@ -5,14 +5,11 @@ use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::FlashPhase;
 use std::io::Write;
 
-pub async fn handle_mgmt(
-    action: MgmtAction,
-    app: &mut App,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         MgmtAction::Ping { data } => {
             println!("Sending MGMT ping with data: {}", data);
-            app.mgmt_ping(data.as_bytes()).await;
+            app.mgmt_ping(data.as_bytes());
             println!("Received pong!");
             Ok(())
         }
@@ -33,7 +30,7 @@ pub async fn handle_mgmt(
 
             println!("Querying bootloader information...\n");
 
-            let Ok(info) = app.get_mgmt_bootloader_info().await else {
+            let Ok(info) = app.get_mgmt_bootloader_info() else {
                 eprintln!("Failed to get bootloader info");
                 eprintln!("\nMake sure the MGMT chip is in bootloader mode:");
                 eprintln!("  1. Set BOOT0 pin high");
@@ -120,31 +117,29 @@ pub async fn handle_mgmt(
             pb.set_style(pages_style.clone());
 
             let mut current_phase = None;
-            let result = app
-                .flash_mgmt(&firmware, |phase, progress, total| {
-                    if current_phase != Some(phase) {
-                        current_phase = Some(phase);
-                        match phase {
-                            FlashPhase::Compressing => {}
-                            FlashPhase::Erasing => {
-                                pb.set_style(pages_style.clone());
-                                pb.set_prefix("Erasing");
-                            }
-                            FlashPhase::Writing => {
-                                pb.set_style(bytes_style.clone());
-                                pb.set_prefix("Writing");
-                            }
-                            FlashPhase::Verifying => {
-                                pb.set_style(bytes_style.clone());
-                                pb.set_prefix("Verifying");
-                            }
+            let result = app.flash_mgmt(&firmware, |phase, progress, total| {
+                if current_phase != Some(phase) {
+                    current_phase = Some(phase);
+                    match phase {
+                        FlashPhase::Compressing => {}
+                        FlashPhase::Erasing => {
+                            pb.set_style(pages_style.clone());
+                            pb.set_prefix("Erasing");
                         }
-                        pb.set_length(total as u64);
-                        pb.set_position(0);
+                        FlashPhase::Writing => {
+                            pb.set_style(bytes_style.clone());
+                            pb.set_prefix("Writing");
+                        }
+                        FlashPhase::Verifying => {
+                            pb.set_style(bytes_style.clone());
+                            pb.set_prefix("Verifying");
+                        }
                     }
-                    pb.set_position(progress as u64);
-                })
-                .await;
+                    pb.set_length(total as u64);
+                    pb.set_position(0);
+                }
+                pb.set_position(progress as u64);
+            });
 
             pb.finish_and_clear();
 

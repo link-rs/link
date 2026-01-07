@@ -51,7 +51,7 @@ flash-mgmt: $(MGMT_BIN)
 
 # Flash NET chip (ESP32-S3)
 flash-net: $(NET_BIN)
-	cd ctl && cargo run -- net flash $(abspath $(NET_BIN)) -c --no-verify
+	cd ctl && cargo run -- net flash $(abspath $(NET_BIN))
 
 # Web CTL (WASM)
 web-ctl: $(UI_BIN) $(MGMT_BIN) $(NET_BIN)

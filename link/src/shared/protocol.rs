@@ -24,6 +24,11 @@ pub enum CtlToMgmt {
     HoldUiReset,
     /// Start WebSocket speed test: blast frames as fast as possible
     WsSpeedTest,
+    /// Set NET chip GPIO0/BOOT pin directly (1 byte: 0=low, 1=high)
+    /// Low = bootloader mode when reset is released
+    SetNetBoot,
+    /// Set NET chip EN/RST pin directly (1 byte: 0=low/reset, 1=high/run)
+    SetNetRst,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

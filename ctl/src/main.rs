@@ -6,20 +6,15 @@
 mod handlers;
 
 use clap::{FromArgMatches, Parser, Subcommand};
-use embedded_io_adapters::tokio_1::FromTokio;
 use rand::Rng;
 use reedline_repl_rs::clap::ArgMatches;
-use reedline_repl_rs::{AsyncCallBackMap, Repl};
+use reedline_repl_rs::{CallBackMap, Repl};
 use serialport::SerialPortType;
-use std::future::Future;
-use std::io::Write;
-use std::pin::Pin;
+use std::io::{BufReader, BufWriter, Write};
 use std::time::Duration;
-use tokio::io::{ReadHalf, WriteHalf};
-use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
-type AppWriter = FromTokio<WriteHalf<SerialStream>>;
-type AppReader = FromTokio<ReadHalf<SerialStream>>;
+type AppReader = BufReader<Box<dyn serialport::SerialPort>>;
+type AppWriter = BufWriter<Box<dyn serialport::SerialPort>>;
 type App = link::ctl::App<AppReader, AppWriter>;
 
 #[derive(Parser)]
@@ -210,29 +205,51 @@ enum WifiAction {
     Clear,
 }
 
+/// Open a serial port with standard settings
+fn open_serial_port(
+    port_name: &str,
+    baud: u32,
+) -> Result<Box<dyn serialport::SerialPort>, serialport::Error> {
+    serialport::new(port_name, baud)
+        .parity(serialport::Parity::Even)
+        .timeout(Duration::from_secs(3))
+        .open()
+}
+
 /// Try to connect to a specific port and verify it's a Link device.
 /// Returns the App if successful, None if connection failed or not a Link device.
-async fn try_connect(port_name: &str, baud: u32) -> Option<App> {
-    let port = tokio_serial::new(port_name, baud)
-        .parity(tokio_serial::Parity::Even)
-        .open_native_async()
-        .ok()?;
+fn try_connect(port_name: &str, baud: u32) -> Option<App> {
+    let port = open_serial_port(port_name, baud).ok()?;
 
-    let (reader, writer) = tokio::io::split(port);
-    let reader = FromTokio::new(reader);
-    let writer = FromTokio::new(writer);
+    // Set short timeout for hello check
+    let port_clone = port.try_clone().ok()?;
+
+    // Create shorter timeout versions for the hello check
+    let mut port_read = port;
+    let port_write = port_clone;
+    port_read.set_timeout(Duration::from_millis(50)).ok()?;
+
+    let reader = BufReader::new(port_read);
+    let writer = BufWriter::new(port_write);
 
     let mut app = link::ctl::App::new(reader, writer);
     let challenge: [u8; 4] = rand::rng().random();
 
-    match tokio::time::timeout(Duration::from_millis(50), app.hello(&challenge)).await {
-        Ok(true) => Some(app),
-        _ => None,
+    if app.hello(&challenge) {
+        // Restore normal timeout for subsequent operations
+        app.reader_mut()
+            .inner_mut()
+            .get_mut()
+            .set_timeout(Duration::from_secs(3))
+            .ok()?;
+        Some(app)
+    } else {
+        None
     }
 }
 
 /// Find a Link device among available ports and return a connected App.
-async fn find_link_device(baud: u32) -> Option<(App, String)> {
+fn find_link_device(baud: u32) -> Option<(App, String)> {
     let all_ports: Vec<_> = serialport::available_ports()
         .unwrap_or_default()
         .into_iter()
@@ -248,7 +265,7 @@ async fn find_link_device(baud: u32) -> Option<(App, String)> {
     println!("Scanning for Link devices...");
 
     for port_name in &all_ports {
-        if let Some(app) = try_connect(port_name, baud).await {
+        if let Some(app) = try_connect(port_name, baud) {
             println!("Found Link device on {}", port_name);
             return Some((app, port_name.clone()));
         }
@@ -258,7 +275,7 @@ async fn find_link_device(baud: u32) -> Option<(App, String)> {
 }
 
 /// Prompt user to manually select a port and connect.
-async fn manually_select_port(baud: u32) -> Result<(App, String), String> {
+fn manually_select_port(baud: u32) -> Result<(App, String), String> {
     let all_ports: Vec<_> = serialport::available_ports()
         .unwrap_or_default()
         .into_iter()
@@ -298,57 +315,52 @@ async fn manually_select_port(baud: u32) -> Result<(App, String), String> {
     }
 
     let port_name = &all_ports[choice - 1];
-    let serial_port = tokio_serial::new(port_name, baud)
-        .parity(tokio_serial::Parity::Even)
-        .open_native_async()
-        .map_err(|e| format!("Failed to open port: {}", e))?;
+    let port =
+        open_serial_port(port_name, baud).map_err(|e| format!("Failed to open port: {}", e))?;
+    let port_clone = port
+        .try_clone()
+        .map_err(|e| format!("Failed to clone port: {}", e))?;
 
-    let (reader, writer) = tokio::io::split(serial_port);
-    let reader = FromTokio::new(reader);
-    let writer = FromTokio::new(writer);
+    let reader = BufReader::new(port);
+    let writer = BufWriter::new(port_clone);
 
     Ok((link::ctl::App::new(reader, writer), port_name.clone()))
 }
 
 /// Open a connection to the device
-async fn connect(
-    port: Option<String>,
-    baud: u32,
-) -> Result<(App, String), Box<dyn std::error::Error>> {
+fn connect(port: Option<String>, baud: u32) -> Result<(App, String), Box<dyn std::error::Error>> {
     // If user specified a port, connect directly
     if let Some(port_name) = port {
-        let serial_port = tokio_serial::new(&port_name, baud)
-            .parity(tokio_serial::Parity::Even)
-            .open_native_async()?;
+        let port = open_serial_port(&port_name, baud)?;
+        let port_clone = port.try_clone()?;
 
-        let (reader, writer) = tokio::io::split(serial_port);
-        let reader = FromTokio::new(reader);
-        let writer = FromTokio::new(writer);
+        let reader = BufReader::new(port);
+        let writer = BufWriter::new(port_clone);
 
         return Ok((link::ctl::App::new(reader, writer), port_name));
     }
 
     // Try to find a Link device automatically
-    if let Some((app, port_name)) = find_link_device(baud).await {
+    if let Some((app, port_name)) = find_link_device(baud) {
         return Ok((app, port_name));
     }
 
     // Fall back to manual selection
-    manually_select_port(baud).await.map_err(|e| e.into())
+    manually_select_port(baud).map_err(|e| e.into())
 }
 
-async fn dispatch(cmd: Command, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+fn dispatch(cmd: Command, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        Command::Mgmt { action } => handlers::handle_mgmt(action, app).await,
-        Command::Ui { action } => handlers::handle_ui(action, app).await,
-        Command::Net { action } => handlers::handle_net(action, app).await,
+        Command::Mgmt { action } => handlers::handle_mgmt(action, app),
+        Command::Ui { action } => handlers::handle_ui(action, app),
+        Command::Net { action } => handlers::handle_net(action, app),
         Command::CircularPing { reverse, data } => {
             if reverse {
                 println!("Sending NET-first circular ping with data: {}", data);
-                app.net_first_circular_ping(data.as_bytes()).await;
+                app.net_first_circular_ping(data.as_bytes());
             } else {
                 println!("Sending UI-first circular ping with data: {}", data);
-                app.ui_first_circular_ping(data.as_bytes()).await;
+                app.ui_first_circular_ping(data.as_bytes());
             }
             println!("Completed circular ping!");
             Ok(())
@@ -359,26 +371,23 @@ async fn dispatch(cmd: Command, app: &mut App) -> Result<(), Box<dyn std::error:
     }
 }
 
-fn repl_handler<'a>(
+fn repl_handler(
     args: ArgMatches,
-    app: &'a mut App,
-) -> Pin<Box<dyn Future<Output = Result<Option<String>, reedline_repl_rs::Error>> + 'a>> {
-    Box::pin(async move {
-        let cmd = Command::from_arg_matches(&args)
-            .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
+    app: &mut App,
+) -> Result<Option<String>, reedline_repl_rs::Error> {
+    let cmd = Command::from_arg_matches(&args)
+        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
 
-        dispatch(cmd, app)
-            .await
-            .map(|()| None)
-            .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
-    })
+    dispatch(cmd, app)
+        .map(|()| None)
+        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
 
-async fn run_repl(app: App, port_name: &str) -> Result<(), reedline_repl_rs::Error> {
+fn run_repl(app: App, port_name: &str) -> Result<(), reedline_repl_rs::Error> {
     println!("Connected to {} - entering REPL mode", port_name);
     println!("Type 'help' for available commands, 'exit' to quit\n");
 
-    let mut callbacks: AsyncCallBackMap<App, reedline_repl_rs::Error> = AsyncCallBackMap::new();
+    let mut callbacks: CallBackMap<App, reedline_repl_rs::Error> = CallBackMap::new();
     callbacks.insert("mgmt".to_string(), repl_handler);
     callbacks.insert("ui".to_string(), repl_handler);
     callbacks.insert("net".to_string(), repl_handler);
@@ -390,30 +399,29 @@ async fn run_repl(app: App, port_name: &str) -> Result<(), reedline_repl_rs::Err
         .with_version(env!("CARGO_PKG_VERSION"))
         .with_description("Control interface for the link device")
         .with_banner(&format!("Connected to {}", port_name))
-        .with_async_derived::<ReplCli>(callbacks);
+        .with_derived::<ReplCli>(callbacks);
 
-    repl.run_async().await
+    repl.run()
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
         Some(cmd) => {
             // CLI mode: connect, run one command, exit
-            let (mut app, port_name) = connect(cli.port, cli.baud).await?;
+            let (mut app, port_name) = connect(cli.port, cli.baud)?;
             println!("Connected to {} at {} baud", port_name, cli.baud);
 
-            if let Err(e) = dispatch(cmd, &mut app).await {
+            if let Err(e) = dispatch(cmd, &mut app) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
         }
         None => {
             // REPL mode: connect once, run commands in loop
-            let (app, port_name) = connect(cli.port, cli.baud).await?;
-            run_repl(app, &port_name).await?;
+            let (app, port_name) = connect(cli.port, cli.baud)?;
+            run_repl(app, &port_name)?;
         }
     }
 
