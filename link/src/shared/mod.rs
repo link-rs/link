@@ -1,8 +1,16 @@
 //! Shared types and utilities used across all chips.
 
+// Jitter buffer - only for net firmware with audio-buffer or tests
+#[cfg(any(all(feature = "net", feature = "audio-buffer"), test))]
 pub mod jitter_buffer;
+
 pub mod led;
+
+// Logging macro - provides info! that is a no-op when defmt is disabled
+// Needed by firmware modules (mgmt, net, ui)
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 mod logging;
+
 #[cfg(test)]
 pub mod mocks;
 pub mod protocol;
@@ -10,22 +18,47 @@ pub mod tlv;
 pub mod uart_config;
 pub mod wifi;
 
+// Re-export the info macro (no-op when defmt is disabled)
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 pub(crate) use logging::info;
 
+// Jitter buffer types - only for net firmware with audio-buffer or tests
+#[cfg(any(all(feature = "net", feature = "audio-buffer"), test))]
+#[allow(unused_imports)] // Re-exported for public API
 pub use jitter_buffer::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
-pub use led::{Color, InvertedPin, Led};
-pub use protocol::*;
-pub use tlv::{HEADER_SIZE, MAX_VALUE_SIZE, ReadTlv, SYNC_WORD, Tlv, Value, WriteTlv};
-pub use wifi::{MAX_PASSWORD_LEN, MAX_RELAY_URL_LEN, MAX_SSID_LEN, MAX_WIFI_SSIDS, WifiSsid};
 
-// Re-export embassy_sync types for use by chip modules
+// LED types - used by all
+pub use led::{Color, InvertedPin, Led};
+
+// Protocol types - used by all
+pub use protocol::*;
+
+// TLV types - core types used by all
+pub use tlv::{MAX_VALUE_SIZE, Tlv};
+// Sync TLV constants - only used by ctl (firmware uses async traits)
+#[cfg(feature = "ctl")]
+pub use tlv::{HEADER_SIZE, SYNC_WORD};
+// Async TLV traits and types - for firmware modules
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+#[allow(unused_imports)] // Re-exported for public API
+pub use tlv::{ReadTlv, Value, WriteTlv};
+
+// WiFi types - WifiSsid used by ctl and net
+#[cfg(any(feature = "ctl", feature = "net"))]
+#[allow(unused_imports)] // Re-exported for public API
+pub use wifi::WifiSsid;
+
+// Re-export embassy_sync types for use by firmware chip modules that need them
+#[cfg(any(feature = "net", feature = "ui"))]
+#[allow(unused_imports)] // Re-exported for public API
 pub use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, RawMutex},
     channel::{Channel, Receiver, Sender},
-    mutex::Mutex,
 };
 
 /// Read TLV messages from a reader and send them to a channel.
+/// Only available for net and ui firmware.
+#[cfg(any(feature = "net", feature = "ui"))]
 pub async fn read_tlv_loop<'a, T, R, RM, E, F, const N: usize>(
     mut reader: R,
     sender: Sender<'a, RM, E, N>,

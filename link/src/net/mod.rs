@@ -2,11 +2,10 @@
 
 mod storage;
 
-// Re-export jitter buffer from shared for backwards compatibility
+// Re-export jitter buffer from shared for backwards compatibility (only with audio-buffer)
+#[cfg(feature = "audio-buffer")]
 pub use crate::shared::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
-pub use storage::{
-    MAX_PASSWORD_LEN, MAX_RELAY_URL_LEN, MAX_SSID_LEN, MAX_WIFI_SSIDS, NetStorage, WifiSsid,
-};
+pub use storage::{MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, NetStorage, WifiSsid};
 
 use crate::info;
 #[cfg(feature = "audio-buffer")]

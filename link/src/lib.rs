@@ -28,7 +28,9 @@ pub use shared::protocol::{
     CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, NetToUi, UiToMgmt, UiToNet,
 };
 
-// Re-export logging macros (crate-internal)
+// Re-export logging macros (crate-internal, no-op when defmt disabled)
+// Only for firmware modules
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 pub(crate) use shared::info;
 
 // Chip-specific modules (feature-gated)

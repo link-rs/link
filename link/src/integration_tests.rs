@@ -1,4 +1,8 @@
 //! Integration tests for the multi-chip system.
+//!
+//! These tests require all features (ctl, mgmt, net, ui) to be enabled.
+
+#![cfg(all(feature = "ctl", feature = "mgmt", feature = "net", feature = "ui"))]
 
 use crate::shared::mocks::{
     GpioOp, MockAsyncDelay, MockAudioStream, MockButton, MockDelay, MockFlash, MockPin,

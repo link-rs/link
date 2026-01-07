@@ -1,6 +1,9 @@
 //! TLV (Type-Length-Value) encoding and decoding.
 
+// Async TLV imports - for firmware modules
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 use embedded_io_async::{Read, ReadExactError, Write};
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 use heapless::Vec;
 
 // Verbose TLV tracing - enable with `trace-tlv` feature, easy to disable
@@ -9,27 +12,30 @@ macro_rules! trace {
     ($($arg:tt)*) => { defmt::debug!($($arg)*) };
 }
 
-#[cfg(not(feature = "trace-tlv"))]
+#[cfg(all(not(feature = "trace-tlv"), any(feature = "mgmt", feature = "net", feature = "ui")))]
 macro_rules! trace {
     ($($arg:tt)*) => {};
 }
 
-pub type Type = u16;
-pub type Length = u32;
+type Type = u16;
+type Length = u32;
+
+/// Value buffer for TLV messages.
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 pub type Value = Vec<u8, MAX_VALUE_SIZE>;
 
 pub const HEADER_SIZE: usize = core::mem::size_of::<Type>() + core::mem::size_of::<Length>();
-pub type Header = [u8; HEADER_SIZE];
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+type Header = [u8; HEADER_SIZE];
 
 pub const MAX_VALUE_SIZE: usize = 640;
-pub const MAX_TLV_SIZE: usize = HEADER_SIZE + MAX_VALUE_SIZE;
-pub type TlvVec = Vec<u8, MAX_TLV_SIZE>;
 
 /// Sync word prefix for guarded TLV communication.
 /// Used to synchronize after bootloader garbage or other noise.
 /// Spells "LINK" in ASCII.
 pub const SYNC_WORD: [u8; 4] = [0x4C, 0x49, 0x4E, 0x4B];
 
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 fn decode_header<T: TryFrom<u16>>(header: &Header) -> Result<(T, usize), T::Error> {
     let raw_type = Type::from_be_bytes([header[0], header[1]]);
     let tlv_type = T::try_from(raw_type)?;
@@ -37,6 +43,7 @@ fn decode_header<T: TryFrom<u16>>(header: &Header) -> Result<(T, usize), T::Erro
     Ok((tlv_type, length as usize))
 }
 
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 fn encode_header(tlv_type: impl Into<u16>, length: usize) -> Header {
     let mut header = Header::default();
     let type_val: Type = tlv_type.into();
@@ -46,165 +53,185 @@ fn encode_header(tlv_type: impl Into<u16>, length: usize) -> Header {
     header
 }
 
+/// TLV message structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tlv<T> {
     pub tlv_type: T,
+    // Use async Value type when any firmware feature is enabled
+    #[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
     pub value: Value,
+    // Use heapless::Vec directly when only ctl feature (no firmware features)
+    #[cfg(not(any(feature = "mgmt", feature = "net", feature = "ui")))]
+    pub value: heapless::Vec<u8, MAX_VALUE_SIZE>,
 }
 
-impl<T> Tlv<T> {
-    /// Encode a TLV to bytes (header + value, no sync word).
-    pub fn encode(tlv_type: T, value: &[u8]) -> TlvVec
+// Async TLV types and traits - for firmware modules
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+#[allow(dead_code)] // Some items provided for API flexibility, not used in all configurations
+mod async_tlv {
+    use super::*;
+
+    type TlvVec = Vec<u8, { HEADER_SIZE + MAX_VALUE_SIZE }>;
+
+    impl<T> Tlv<T> {
+        /// Encode a TLV to bytes (header + value, no sync word).
+        pub fn encode(tlv_type: T, value: &[u8]) -> TlvVec
+        where
+            T: Into<u16>,
+        {
+            let mut enc = TlvVec::new();
+            let header = encode_header(tlv_type, value.len());
+            enc.extend_from_slice(&header).unwrap();
+            enc.extend_from_slice(value).unwrap();
+            enc
+        }
+    }
+
+    #[derive(Debug)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    pub enum ReadError<E> {
+        Io(E),
+        InvalidType,
+        TooLong,
+    }
+
+    #[allow(async_fn_in_trait)]
+    pub trait ReadTlv<T: TryFrom<u16>> {
+        type Error: core::fmt::Debug;
+
+        async fn read_tlv(&mut self) -> Result<Option<Tlv<T>>, Self::Error>;
+
+        async fn must_read_tlv(&mut self) -> Tlv<T> {
+            self.read_tlv().await.unwrap().unwrap()
+        }
+    }
+
+    impl<T, R> ReadTlv<T> for R
     where
-        T: Into<u16>,
+        T: TryFrom<u16>,
+        R: Read,
     {
-        let mut enc = TlvVec::new();
-        let header = encode_header(tlv_type, value.len());
-        enc.extend_from_slice(&header).unwrap();
-        enc.extend_from_slice(value).unwrap();
-        enc
-    }
-}
+        type Error = ReadError<R::Error>;
 
-#[derive(Debug)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ReadError<E> {
-    Io(E),
-    InvalidType,
-    TooLong,
-}
+        async fn read_tlv(&mut self) -> Result<Option<Tlv<T>>, Self::Error> {
+            trace!("scanning for sync word");
 
-#[allow(async_fn_in_trait)]
-pub trait ReadTlv<T: TryFrom<u16>> {
-    type Error: core::fmt::Debug;
+            // Scan for sync word, draining any garbage
+            let mut matched = 0usize;
+            while matched < SYNC_WORD.len() {
+                let mut byte = [0u8; 1];
+                let Ok(1) = self.read(&mut byte).await else {
+                    continue;
+                };
 
-    async fn read_tlv(&mut self) -> Result<Option<Tlv<T>>, Self::Error>;
-
-    async fn must_read_tlv(&mut self) -> Tlv<T> {
-        self.read_tlv().await.unwrap().unwrap()
-    }
-}
-
-impl<T, R> ReadTlv<T> for R
-where
-    T: TryFrom<u16>,
-    R: Read,
-{
-    type Error = ReadError<R::Error>;
-
-    async fn read_tlv(&mut self) -> Result<Option<Tlv<T>>, Self::Error> {
-        trace!("scanning for sync word");
-
-        // Scan for sync word, draining any garbage
-        let mut matched = 0usize;
-        while matched < SYNC_WORD.len() {
-            let mut byte = [0u8; 1];
-            let Ok(1) = self.read(&mut byte).await else {
-                continue;
-            };
-
-            if byte[0] == SYNC_WORD[matched] {
-                matched += 1;
-            } else {
-                matched = 0;
-                if byte[0] == SYNC_WORD[0] {
-                    matched = 1;
+                if byte[0] == SYNC_WORD[matched] {
+                    matched += 1;
+                } else {
+                    matched = 0;
+                    if byte[0] == SYNC_WORD[0] {
+                        matched = 1;
+                    }
                 }
             }
+
+            // Sync word found, now read the header
+            trace!("reading header");
+
+            let mut header = [0u8; HEADER_SIZE];
+            match self.read_exact(&mut header).await {
+                Ok(()) => {
+                    trace!("header = {=[u8]:02x}", header);
+                }
+                Err(ReadExactError::UnexpectedEof) => {
+                    trace!("unexpected EOF at header");
+                    return Ok(None);
+                }
+                Err(ReadExactError::Other(e)) => {
+                    trace!("IO error at header");
+                    return Err(ReadError::Io(e));
+                }
+            }
+
+            let Ok((tlv_type, length)) = decode_header(&header) else {
+                trace!("invalid type in header");
+                return Err(ReadError::InvalidType);
+            };
+
+            trace!(
+                "type={:#06x}, length={:#x}",
+                u16::from_be_bytes([header[0], header[1]]),
+                length
+            );
+
+            let mut value = Value::new();
+            if value.resize(length, 0).is_err() {
+                trace!("value too long ({:#x})", length);
+                return Err(ReadError::TooLong);
+            }
+
+            match self.read_exact(&mut value).await {
+                Ok(()) => {
+                    trace!("value = {=[u8]:02x}", value.as_slice());
+                }
+                Err(ReadExactError::UnexpectedEof) => {
+                    trace!("unexpected EOF at value");
+                    return Ok(None);
+                }
+                Err(ReadExactError::Other(e)) => {
+                    trace!("IO error at value");
+                    return Err(ReadError::Io(e));
+                }
+            }
+
+            trace!("complete, value={=[u8]:02x}", value.as_slice());
+
+            Ok(Some(Tlv { tlv_type, value }))
         }
+    }
 
-        // Sync word found, now read the header
-        trace!("reading header");
+    #[allow(async_fn_in_trait)]
+    pub trait WriteTlv<T: Into<u16>> {
+        type Error: core::fmt::Debug;
 
-        let mut header = [0u8; HEADER_SIZE];
-        match self.read_exact(&mut header).await {
-            Ok(()) => {
-                trace!("header = {=[u8]:02x}", header);
-            }
-            Err(ReadExactError::UnexpectedEof) => {
-                trace!("unexpected EOF at header");
-                return Ok(None);
-            }
-            Err(ReadExactError::Other(e)) => {
-                trace!("IO error at header");
-                return Err(ReadError::Io(e));
-            }
+        async fn write_tlv(&mut self, tlv_type: T, value: &[u8]) -> Result<(), Self::Error>;
+
+        async fn must_write_tlv(&mut self, tlv_type: T, value: &[u8]) {
+            self.write_tlv(tlv_type, value).await.unwrap()
         }
+    }
 
-        let Ok((tlv_type, length)) = decode_header(&header) else {
-            trace!("invalid type in header");
-            return Err(ReadError::InvalidType);
-        };
+    impl<T, W> WriteTlv<T> for W
+    where
+        T: Into<u16>,
+        W: Write,
+    {
+        type Error = W::Error;
 
-        trace!(
-            "type={:#06x}, length={:#x}",
-            u16::from_be_bytes([header[0], header[1]]),
-            length
-        );
-
-        let mut value = Value::new();
-        if value.resize(length, 0).is_err() {
-            trace!("value too long ({:#x})", length);
-            return Err(ReadError::TooLong);
+        async fn write_tlv(&mut self, tlv_type: T, value: &[u8]) -> Result<(), W::Error> {
+            let type_val: u16 = tlv_type.into();
+            trace!(
+                "write sync + type={:#06x}, length={:#x}",
+                type_val,
+                value.len()
+            );
+            self.write_all(&SYNC_WORD).await?;
+            let header = encode_header(type_val, value.len());
+            self.write_all(&header).await?;
+            self.write_all(&value).await?;
+            self.flush().await?;
+            trace!("write complete");
+            Ok(())
         }
-
-        match self.read_exact(&mut value).await {
-            Ok(()) => {
-                trace!("value = {=[u8]:02x}", value.as_slice());
-            }
-            Err(ReadExactError::UnexpectedEof) => {
-                trace!("unexpected EOF at value");
-                return Ok(None);
-            }
-            Err(ReadExactError::Other(e)) => {
-                trace!("IO error at value");
-                return Err(ReadError::Io(e));
-            }
-        }
-
-        trace!("complete, value={=[u8]:02x}", value.as_slice());
-
-        Ok(Some(Tlv { tlv_type, value }))
     }
 }
 
-#[allow(async_fn_in_trait)]
-pub trait WriteTlv<T: Into<u16>> {
-    type Error: core::fmt::Debug;
-
-    async fn write_tlv(&mut self, tlv_type: T, value: &[u8]) -> Result<(), Self::Error>;
-
-    async fn must_write_tlv(&mut self, tlv_type: T, value: &[u8]) {
-        self.write_tlv(tlv_type, value).await.unwrap()
-    }
-}
-
-impl<T, W> WriteTlv<T> for W
-where
-    T: Into<u16>,
-    W: Write,
-{
-    type Error = W::Error;
-
-    async fn write_tlv(&mut self, tlv_type: T, value: &[u8]) -> Result<(), W::Error> {
-        let type_val: u16 = tlv_type.into();
-        trace!(
-            "write sync + type={:#06x}, length={:#x}",
-            type_val,
-            value.len()
-        );
-        self.write_all(&SYNC_WORD).await?;
-        let header = encode_header(type_val, value.len());
-        self.write_all(&header).await?;
-        self.write_all(&value).await?;
-        self.flush().await?;
-        trace!("write complete");
-        Ok(())
-    }
-}
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+#[allow(unused_imports)] // Re-exported for public API, may not be used internally
+pub use async_tlv::{ReadTlv, WriteTlv};
 
 #[cfg(test)]
 mod test {
+    use super::async_tlv::ReadError;
     use super::*;
     use crate::shared::protocol::*;
     use embedded_io_adapters::futures_03::FromFutures;

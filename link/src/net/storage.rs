@@ -5,9 +5,7 @@ use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
 
 // Re-export WiFi types from shared
-pub use crate::shared::wifi::{
-    MAX_PASSWORD_LEN, MAX_RELAY_URL_LEN, MAX_SSID_LEN, MAX_WIFI_SSIDS, WifiSsid,
-};
+pub use crate::shared::wifi::{MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, WifiSsid};
 
 /// Persistent storage data for the NET chip.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
