@@ -1359,7 +1359,7 @@ where
             115_200,
         );
 
-        let mut flasher = Flasher::connect(connection, false, true, true, None, None)
+        let mut flasher = Flasher::connect(connection, true, true, true, None, None)
             .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
         let info = flasher
