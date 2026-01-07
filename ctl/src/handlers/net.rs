@@ -2,7 +2,54 @@
 
 use crate::{App, GetSetBool, GetSetString, NetAction, WifiAction};
 use indicatif::{ProgressBar, ProgressStyle};
-use link::ctl::EspflashPhase;
+use link::ctl::ProgressCallbacks;
+
+/// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
+struct FlashProgress {
+    pb: ProgressBar,
+    verifying: bool,
+}
+
+impl FlashProgress {
+    fn new() -> Self {
+        let pb = ProgressBar::new(0);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{prefix:>12} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%)")
+                .unwrap()
+                .progress_chars("#>-"),
+        );
+        Self { pb, verifying: false }
+    }
+
+    fn finish(self) {
+        self.pb.finish_and_clear();
+    }
+}
+
+impl ProgressCallbacks for FlashProgress {
+    fn init(&mut self, _addr: u32, total: usize) {
+        if !self.verifying {
+            self.pb.set_prefix("Writing");
+        }
+        self.pb.set_length(total as u64);
+        self.pb.set_position(0);
+    }
+
+    fn update(&mut self, current: usize) {
+        self.pb.set_position(current as u64);
+    }
+
+    fn verifying(&mut self) {
+        self.verifying = true;
+        self.pb.set_prefix("Verifying");
+        self.pb.set_position(0);
+    }
+
+    fn finish(&mut self, _skipped: bool) {
+        // Progress bar will be cleared by FlashProgress::finish()
+    }
+}
 
 pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     match action {
@@ -128,47 +175,11 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             println!("Flash address: 0x{:08X}", address);
             println!("Resetting NET chip to bootloader mode...\n");
 
-            let pb = ProgressBar::new(firmware.len() as u64);
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("{prefix:>12} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%)")
-                    .unwrap()
-                    .progress_chars("#>-"),
-            );
-
-            let mut current_phase = None;
-            let mut current_total = 0usize;
+            let mut progress = FlashProgress::new();
             let verify = !no_verify;
-            let result = app.flash_net(
-                &firmware,
-                address,
-                verify,
-                |phase, progress, total| {
-                    // Skip progress bar for connecting phase
-                    if phase == EspflashPhase::Connecting {
-                        return;
-                    }
-                    // Update prefix when phase changes
-                    if current_phase != Some(phase) {
-                        current_phase = Some(phase);
-                        match phase {
-                            EspflashPhase::Connecting => {}
-                            EspflashPhase::Erasing => pb.set_prefix("Erasing"),
-                            EspflashPhase::Writing => pb.set_prefix("Writing"),
-                            EspflashPhase::Verifying => pb.set_prefix("Verifying"),
-                        }
-                    }
-                    // Update length when total changes (espflash flashes multiple segments)
-                    if current_total != total {
-                        current_total = total;
-                        pb.set_length(total as u64);
-                        pb.set_position(0);
-                    }
-                    pb.set_position(progress as u64);
-                },
-            );
+            let result = app.flash_net(&firmware, address, verify, &mut progress);
 
-            pb.finish_and_clear();
+            progress.finish();
 
             match result {
                 Ok(()) => {

@@ -13,7 +13,7 @@ use crate::shared::{
 use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
 use espflash::flasher::{FlashData, FlashSettings, Flasher};
 use espflash::image_format::idf::IdfBootloaderFormat;
-use espflash::target::{Chip, ProgressCallbacks};
+use espflash::target::Chip;
 use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, StopBits, UsbPortInfo};
 use std::io::{self, Read, Write};
 use std::time::Duration;
@@ -21,20 +21,7 @@ use stm::Bootloader;
 
 // Re-export espflash types
 pub use espflash::flasher::{DeviceInfo, FlashSize, SecurityInfo};
-pub use espflash::target::XtalFrequency;
-
-/// Flash phase for progress reporting (NET chip).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EspflashPhase {
-    /// Connecting to bootloader
-    Connecting,
-    /// Erasing flash
-    Erasing,
-    /// Writing firmware
-    Writing,
-    /// Verifying firmware
-    Verifying,
-}
+pub use espflash::target::{DefaultProgressCallback, ProgressCallbacks, XtalFrequency};
 
 /// Errors from NET chip flashing.
 #[derive(Debug)]
@@ -122,7 +109,6 @@ pub struct MgmtBootloaderInfo {
     pub flash_sample: Option<[u8; 32]>,
 }
 
-
 /// Phase of the flash operation, reported to progress callbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlashPhase {
@@ -154,7 +140,6 @@ impl<E> From<stm::Error<E>> for FlashError<E> {
         FlashError::Bootloader(e)
     }
 }
-
 
 /// Calculate the number of sectors needed for a given firmware size on STM32F405.
 /// Sectors 0-3: 16KB each, Sector 4: 64KB, Sectors 5-11: 128KB each.
@@ -400,9 +385,9 @@ impl<R: Read> MgmtReader<R> {
         let mut buf = [0u8; 256];
         loop {
             match self.from_mgmt.read(&mut buf) {
-                Ok(0) => break,              // EOF or no data
-                Ok(_) => continue,           // Discard and keep reading
-                Err(_) => break,             // Timeout or error - buffer is drained
+                Ok(0) => break,    // EOF or no data
+                Ok(_) => continue, // Discard and keep reading
+                Err(_) => break,   // Timeout or error - buffer is drained
             }
         }
     }
@@ -684,7 +669,12 @@ where
 
     /// Set the relay URL in NET chip storage.
     pub fn set_relay_url(&mut self, url: &str) {
-        write_tlv(&mut self.writer.net(), MgmtToNet::SetRelayUrl, url.as_bytes()).unwrap();
+        write_tlv(
+            &mut self.writer.net(),
+            MgmtToNet::SetRelayUrl,
+            url.as_bytes(),
+        )
+        .unwrap();
         let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
     }
@@ -816,7 +806,9 @@ where
     ///
     /// Returns bootloader version, chip ID, supported commands, and optionally
     /// a sample of flash memory if read protection is not enabled.
-    pub fn get_mgmt_bootloader_info(&mut self) -> Result<MgmtBootloaderInfo, stm::Error<std::io::Error>> {
+    pub fn get_mgmt_bootloader_info(
+        &mut self,
+    ) -> Result<MgmtBootloaderInfo, stm::Error<std::io::Error>> {
         // Drain any stale data from previous communication before starting bootloader protocol
         self.reader.drain();
 
@@ -1172,7 +1164,6 @@ where
 
         Ok(())
     }
-
 }
 
 // =============================================================================
@@ -1321,38 +1312,16 @@ where
         Ok(())
     }
     fn try_clone(&self) -> serialport::Result<Box<dyn SerialPort>> {
-        Err(serialport::Error::new(serialport::ErrorKind::InvalidInput, "cannot clone"))
+        Err(serialport::Error::new(
+            serialport::ErrorKind::InvalidInput,
+            "cannot clone",
+        ))
     }
     fn set_break(&self) -> serialport::Result<()> {
         Ok(())
     }
     fn clear_break(&self) -> serialport::Result<()> {
         Ok(())
-    }
-}
-
-/// Progress adapter for espflash callbacks.
-struct ProgressAdapter<F> {
-    callback: F,
-    phase: EspflashPhase,
-    total: usize,
-}
-
-impl<F: FnMut(EspflashPhase, usize, usize)> ProgressCallbacks for ProgressAdapter<F> {
-    fn init(&mut self, _addr: u32, total: usize) {
-        self.total = total;
-        self.phase = EspflashPhase::Writing;
-        (self.callback)(self.phase, 0, total);
-    }
-    fn update(&mut self, current: usize) {
-        (self.callback)(self.phase, current, self.total);
-    }
-    fn verifying(&mut self) {
-        self.phase = EspflashPhase::Verifying;
-        (self.callback)(self.phase, 0, self.total);
-    }
-    fn finish(&mut self, _skipped: bool) {
-        (self.callback)(self.phase, self.total, self.total);
     }
 }
 
@@ -1365,20 +1334,14 @@ where
     /// Flash firmware to the NET chip (ESP32).
     ///
     /// The `firmware` parameter should be an ELF file - espflash converts it
-    /// to IDF bootloader format. The progress callback is called with
-    /// (phase, current, total).
-    pub fn flash_net<F>(
+    /// to IDF bootloader format. Progress is reported via the `ProgressCallbacks` trait.
+    pub fn flash_net(
         &mut self,
         elf_data: &[u8],
         _address: u32,
         _verify: bool,
-        mut progress: F,
-    ) -> Result<(), EspflashError>
-    where
-        F: FnMut(EspflashPhase, usize, usize),
-    {
-        progress(EspflashPhase::Connecting, 0, 1);
-
+        progress: &mut dyn ProgressCallbacks,
+    ) -> Result<(), EspflashError> {
         let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer);
         let port_info = UsbPortInfo {
             vid: 0x303A,
@@ -1399,8 +1362,6 @@ where
         let mut flasher = Flasher::connect(connection, false, true, true, None, None)
             .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
-        progress(EspflashPhase::Connecting, 1, 1);
-
         let info = flasher
             .device_info()
             .map_err(|e| EspflashError::Espflash(format!("device_info: {:?}", e)))?;
@@ -1412,14 +1373,8 @@ where
         let image_format = IdfBootloaderFormat::new(elf_data, &flash_data, None, None, None, None)
             .map_err(|e| EspflashError::Espflash(format!("IdfBootloaderFormat: {:?}", e)))?;
 
-        let mut progress_adapter = ProgressAdapter {
-            callback: progress,
-            phase: EspflashPhase::Erasing,
-            total: elf_data.len(),
-        };
-
         flasher
-            .load_image_to_flash(&mut progress_adapter, image_format.into())
+            .load_image_to_flash(progress, image_format.into())
             .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
         flasher
@@ -1452,8 +1407,9 @@ where
             115_200,
         );
 
-        let mut flasher = Flasher::connect(connection, false, false, false, Some(Chip::Esp32s3), None)
-            .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
+        let mut flasher =
+            Flasher::connect(connection, false, false, false, Some(Chip::Esp32s3), None)
+                .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
         let device_info = flasher
             .device_info()
