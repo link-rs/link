@@ -271,4 +271,22 @@ mod tests {
             assert_eq!(frame[0], i as u8);
         }
     }
+
+    #[test]
+    fn test_reset() {
+        let mut buf: JitterBuffer<64> = JitterBuffer::new();
+
+        // Fill and start playing
+        for i in 0..MIN_START_LEVEL {
+            buf.push(&[i as u8; 10]);
+        }
+        buf.pop();
+        assert_eq!(buf.state(), JitterState::Playing);
+
+        // Reset should return to initial state
+        buf.reset();
+        assert_eq!(buf.level(), 0);
+        assert_eq!(buf.state(), JitterState::Buffering);
+        assert_eq!(buf.stats().received, 0);
+    }
 }

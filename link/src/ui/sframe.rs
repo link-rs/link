@@ -3,7 +3,6 @@
 //! This module provides a minimal implementation of the SFrame encryption format
 //! as defined in RFC 9605, supporting only the AES_128_GCM_SHA256_128 cipher suite
 //! (ID 0x0004).
-#![allow(dead_code)] // TODO: Delete once used
 
 use aes_gcm::{
     Aes128Gcm, Nonce,

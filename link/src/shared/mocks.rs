@@ -37,16 +37,6 @@ impl MockI2c {
     pub fn attach<D: I2cDevice + 'static>(&mut self, address: u8, device: D) {
         self.devices.insert(address, Box::new(device));
     }
-
-    /// Attach a shared device handler at the given I2C address.
-    /// This allows tests to retain a reference to the mock device to inspect its state.
-    pub fn attach_shared<D: I2cDevice + 'static>(
-        &mut self,
-        address: u8,
-        device: std::rc::Rc<std::cell::RefCell<D>>,
-    ) {
-        self.devices.insert(address, Box::new(device));
-    }
 }
 
 impl Default for MockI2c {
@@ -500,4 +490,170 @@ impl crate::ui::AudioSystem for CapturingAudioStream {
         self.frame_counter = self.frame_counter.wrapping_add(1);
         Ok(())
     }
+}
+
+// =============================================================================
+// Sync/Async Channel Adapters for Integration Tests
+// =============================================================================
+//
+// These types bridge sync (std::io) and async (embedded_io_async) I/O for testing.
+// They use tokio mpsc channels internally, with the sync side using blocking operations.
+
+use std::collections::VecDeque;
+
+/// Writer that implements `std::io::Write` for sync code (like ctl::App).
+/// Sends byte chunks through a tokio channel.
+pub struct SyncWriter {
+    tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+}
+
+impl SyncWriter {
+    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>) -> Self {
+        Self { tx }
+    }
+}
+
+impl std::io::Write for SyncWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.tx
+            .send(buf.to_vec())
+            .map_err(|_| std::io::Error::other("channel closed"))?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Reader that implements `std::io::Read` for sync code (like ctl::App).
+/// Uses blocking receive from a tokio channel.
+pub struct SyncReader {
+    rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    buffer: VecDeque<u8>,
+}
+
+impl SyncReader {
+    pub fn new(rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
+        Self {
+            rx,
+            buffer: VecDeque::new(),
+        }
+    }
+}
+
+impl std::io::Read for SyncReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // Fill buffer if empty
+        while self.buffer.is_empty() {
+            match self.rx.blocking_recv() {
+                Some(data) => self.buffer.extend(data),
+                None => return Ok(0), // EOF
+            }
+        }
+
+        // Copy from buffer to output
+        let n = buf.len().min(self.buffer.len());
+        for b in buf.iter_mut().take(n) {
+            *b = self.buffer.pop_front().unwrap();
+        }
+        Ok(n)
+    }
+}
+
+/// Writer that implements `embedded_io_async::Write` for async firmware code.
+pub struct AsyncWriter {
+    tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+}
+
+impl AsyncWriter {
+    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>) -> Self {
+        Self { tx }
+    }
+}
+
+impl embedded_io_async::ErrorType for AsyncWriter {
+    type Error = Infallible;
+}
+
+impl embedded_io_async::Write for AsyncWriter {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        // Send never blocks for unbounded channel, just fails if closed
+        let _ = self.tx.send(buf.to_vec());
+        Ok(buf.len())
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+/// Reader that implements `embedded_io_async::Read` for async firmware code.
+pub struct AsyncReader {
+    rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    buffer: VecDeque<u8>,
+}
+
+impl AsyncReader {
+    pub fn new(rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
+        Self {
+            rx,
+            buffer: VecDeque::new(),
+        }
+    }
+}
+
+impl embedded_io_async::ErrorType for AsyncReader {
+    type Error = Infallible;
+}
+
+impl embedded_io_async::Read for AsyncReader {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        // Fill buffer if empty
+        while self.buffer.is_empty() {
+            match self.rx.recv().await {
+                Some(data) => self.buffer.extend(data),
+                None => return Ok(0), // EOF
+            }
+        }
+
+        // Copy from buffer to output
+        let n = buf.len().min(self.buffer.len());
+        for b in buf.iter_mut().take(n) {
+            *b = self.buffer.pop_front().unwrap();
+        }
+        Ok(n)
+    }
+}
+
+/// Create a bidirectional channel pair for connecting sync and async code.
+///
+/// Returns `((sync_reader, sync_writer), (async_reader, async_writer))`.
+///
+/// - The sync side (ctl::App) uses `sync_reader` and `sync_writer`
+/// - The async side (firmware) uses `async_reader` and `async_writer`
+/// - Data flows: sync_writer -> async_reader, async_writer -> sync_reader
+pub fn sync_async_channel() -> ((SyncReader, SyncWriter), (AsyncReader, AsyncWriter)) {
+    // sync_writer -> async_reader (CTL sends to firmware)
+    let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel();
+    // async_writer -> sync_reader (firmware sends to CTL)
+    let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
+
+    let sync_end = (SyncReader::new(rx2), SyncWriter::new(tx1));
+    let async_end = (AsyncReader::new(rx1), AsyncWriter::new(tx2));
+
+    (sync_end, async_end)
+}
+
+/// Create a bidirectional channel pair for connecting two async endpoints.
+///
+/// Returns two `(AsyncReader, AsyncWriter)` pairs, one for each end.
+pub fn async_async_channel() -> ((AsyncReader, AsyncWriter), (AsyncReader, AsyncWriter)) {
+    let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel();
+    let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
+
+    let end1 = (AsyncReader::new(rx2), AsyncWriter::new(tx1));
+    let end2 = (AsyncReader::new(rx1), AsyncWriter::new(tx2));
+
+    (end1, end2)
 }

@@ -475,7 +475,7 @@ where
     }
 }
 
-#[cfg_attr(feature = "audio-buffer", allow(dead_code))]
+#[cfg(any(test, not(feature = "audio-buffer")))]
 async fn handle_ws<M, U, LR, LG, LB>(
     event: WsEvent,
     to_mgmt: &mut M,

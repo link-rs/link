@@ -67,7 +67,6 @@ pub struct Tlv<T> {
 
 // Async TLV types and traits - for firmware modules
 #[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
-#[allow(dead_code)] // Some items provided for API flexibility, not used in all configurations
 mod async_tlv {
     use super::*;
 
@@ -100,10 +99,6 @@ mod async_tlv {
         type Error: core::fmt::Debug;
 
         async fn read_tlv(&mut self) -> Result<Option<Tlv<T>>, Self::Error>;
-
-        async fn must_read_tlv(&mut self) -> Tlv<T> {
-            self.read_tlv().await.unwrap().unwrap()
-        }
     }
 
     impl<T, R> ReadTlv<T> for R

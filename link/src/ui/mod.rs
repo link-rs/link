@@ -2,6 +2,7 @@
 
 mod audio;
 mod eeprom;
+#[cfg(feature = "sframe")]
 mod sframe;
 
 pub use audio::{

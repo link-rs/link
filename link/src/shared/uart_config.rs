@@ -46,3 +46,18 @@ pub const UI_NET: Config = Config {
     parity: Parity::None,
     stop_bits: StopBits::Two,
 };
+
+/// Trait for types that can have their baud rate changed at runtime.
+///
+/// This is used by the MGMT firmware to change UART baud rates on demand.
+/// Implementations should ensure any pending writes are flushed before
+/// the baud rate change takes effect.
+#[cfg(feature = "mgmt")]
+#[allow(async_fn_in_trait)]
+pub trait SetBaudRate {
+    /// Set the baud rate for this UART connection.
+    ///
+    /// This should update both TX and RX sides of the connection.
+    /// Implementations should flush any pending data before changing the rate.
+    async fn set_baud_rate(&mut self, baud_rate: u32);
+}

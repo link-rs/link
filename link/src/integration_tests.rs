@@ -1,49 +1,45 @@
 //! Integration tests for the multi-chip system.
 //!
 //! These tests require all features (ctl, mgmt, net, ui) to be enabled.
+//! They test the full communication stack between CTL (sync, std::io) and
+//! firmware modules (async, embedded_io_async).
 
 #![cfg(all(feature = "ctl", feature = "mgmt", feature = "net", feature = "ui"))]
 
 use crate::shared::mocks::{
-    GpioOp, MockAsyncDelay, MockAudioStream, MockButton, MockDelay, MockFlash, MockPin,
-    TrackingPin, mock_i2c_with_eeprom, mock_led_pins,
+    GpioOp, MockAsyncDelay, MockAudioStream, MockButton, MockDelay, MockFlash, MockPin, SyncReader,
+    SyncWriter, TrackingPin, async_async_channel, mock_i2c_with_eeprom, mock_led_pins,
+    sync_async_channel,
 };
 use crate::{ctl, mgmt, net, ui};
-use core::future::Future;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use embedded_io_adapters::futures_03::FromFutures;
 use std::sync::{Arc, Mutex};
 
-type Reader = FromFutures<async_ringbuffer::Reader>;
-type Writer = FromFutures<async_ringbuffer::Writer>;
-
-fn channel() -> (Writer, Reader) {
-    const BUFFER_CAPACITY: usize = 1024;
-    let (w, r) = async_ringbuffer::ring_buffer(BUFFER_CAPACITY);
-    (FromFutures::new(w), FromFutures::new(r))
-}
-
-async fn device_test<F, Fut>(test_fn: F)
+/// Run a test with the full device stack.
+///
+/// The test function receives a `ctl::App` and runs sync operations on it.
+/// The firmware tasks run concurrently in async context.
+async fn device_test<F>(test_fn: F)
 where
-    F: FnOnce(ctl::App<Reader, Writer>) -> Fut,
-    Fut: Future<Output = ()>,
+    F: FnOnce(ctl::App<SyncReader, SyncWriter>) + Send + 'static,
 {
-    let (ctl_to_mgmt, mgmt_from_ctl) = channel();
-    let (mgmt_to_ctl, ctl_from_mgmt) = channel();
+    // CTL <-> MGMT: sync on CTL side, async on MGMT side
+    let ((ctl_reader, ctl_writer), (mgmt_from_ctl, mgmt_to_ctl)) = sync_async_channel();
 
-    let (ui_to_mgmt, mgmt_from_ui) = channel();
-    let (mgmt_to_ui, ui_from_mgmt) = channel();
+    // MGMT <-> UI: both async
+    let ((mgmt_from_ui, mgmt_to_ui), (ui_from_mgmt, ui_to_mgmt)) = async_async_channel();
 
-    let (net_to_mgmt, mgmt_from_net) = channel();
-    let (mgmt_to_net, net_from_mgmt) = channel();
+    // MGMT <-> NET: both async
+    let ((mgmt_from_net, mgmt_to_net), (net_from_mgmt, net_to_mgmt)) = async_async_channel();
 
-    let (net_to_ui, ui_from_net) = channel();
-    let (ui_to_net, net_from_ui) = channel();
+    // UI <-> NET: both async
+    let ((ui_from_net, ui_to_net), (net_from_ui, net_to_ui)) = async_async_channel();
 
-    let ctl_app = ctl::App::new(ctl_from_mgmt, ctl_to_mgmt);
+    let ctl_app = ctl::App::new(ctl_reader, ctl_writer);
     let ui_reset_pins = mgmt::UiResetPins::new(MockPin::new(), MockPin::new(), MockPin::new());
     let net_reset_pins = mgmt::NetResetPins::new(MockPin::new(), MockPin::new());
+
     let mgmt_task = mgmt::run(
         mgmt_to_ctl,
         mgmt_from_ctl,
@@ -57,13 +53,22 @@ where
         net_reset_pins,
         MockAsyncDelay,
     );
+
     // Create WS channels for NET app
     let ws_cmd_channel: Channel<CriticalSectionRawMutex, net::WsCommand, 4> = Channel::new();
     let ws_event_channel: Channel<CriticalSectionRawMutex, net::WsEvent, 4> = Channel::new();
 
+    // Run the CTL test in a blocking task to avoid blocking the async runtime
+    let ctl_task = tokio::task::spawn_blocking(move || {
+        test_fn(ctl_app);
+    });
+
     tokio::select! {
-        _ = test_fn(ctl_app) => {},
-        _ = mgmt_task => {},
+        result = ctl_task => {
+            // Test completed - unwrap to propagate any panics
+            result.unwrap();
+        }
+        _ = mgmt_task => {}
         _ = ui::run(
             ui_to_mgmt,
             ui_from_mgmt,
@@ -76,7 +81,7 @@ where
             mock_i2c_with_eeprom(),
             MockDelay,
             MockAudioStream::new(),
-        ) => {},
+        ) => {}
         _ = net::run(
             net_to_mgmt,
             net_from_mgmt,
@@ -87,29 +92,28 @@ where
             0,
             ws_cmd_channel.sender(),
             ws_event_channel.receiver(),
-        ) => {},
+        ) => {}
     }
 }
 
 /// Test harness that provides access to tracked GPIO operations.
-async fn device_test_with_gpio_tracking<F, Fut>(test_fn: F)
+async fn device_test_with_gpio_tracking<F>(test_fn: F)
 where
-    F: FnOnce(ctl::App<Reader, Writer>, Arc<Mutex<Vec<(&'static str, GpioOp)>>>) -> Fut,
-    Fut: Future<Output = ()>,
+    F: FnOnce(ctl::App<SyncReader, SyncWriter>, Arc<Mutex<Vec<(&'static str, GpioOp)>>>) + Send + 'static,
 {
-    let (ctl_to_mgmt, mgmt_from_ctl) = channel();
-    let (mgmt_to_ctl, ctl_from_mgmt) = channel();
+    // CTL <-> MGMT: sync on CTL side, async on MGMT side
+    let ((ctl_reader, ctl_writer), (mgmt_from_ctl, mgmt_to_ctl)) = sync_async_channel();
 
-    let (ui_to_mgmt, mgmt_from_ui) = channel();
-    let (mgmt_to_ui, ui_from_mgmt) = channel();
+    // MGMT <-> UI: both async
+    let ((mgmt_from_ui, mgmt_to_ui), (ui_from_mgmt, ui_to_mgmt)) = async_async_channel();
 
-    let (net_to_mgmt, mgmt_from_net) = channel();
-    let (mgmt_to_net, net_from_mgmt) = channel();
+    // MGMT <-> NET: both async
+    let ((mgmt_from_net, mgmt_to_net), (net_from_mgmt, net_to_mgmt)) = async_async_channel();
 
-    let (net_to_ui, ui_from_net) = channel();
-    let (ui_to_net, net_from_ui) = channel();
+    // UI <-> NET: both async
+    let ((ui_from_net, ui_to_net), (net_from_ui, net_to_ui)) = async_async_channel();
 
-    let ctl_app = ctl::App::new(ctl_from_mgmt, ctl_to_mgmt);
+    let ctl_app = ctl::App::new(ctl_reader, ctl_writer);
 
     // Create tracking pins for UI and NET reset
     let gpio_ops: Arc<Mutex<Vec<(&'static str, GpioOp)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -135,13 +139,23 @@ where
         net_reset_pins,
         MockAsyncDelay,
     );
+
     // Create WS channels for NET app
     let ws_cmd_channel: Channel<CriticalSectionRawMutex, net::WsCommand, 4> = Channel::new();
     let ws_event_channel: Channel<CriticalSectionRawMutex, net::WsEvent, 4> = Channel::new();
 
+    // Run the CTL test in a blocking task to avoid blocking the async runtime
+    let gpio_ops_clone = gpio_ops.clone();
+    let ctl_task = tokio::task::spawn_blocking(move || {
+        test_fn(ctl_app, gpio_ops_clone);
+    });
+
     tokio::select! {
-        _ = test_fn(ctl_app, gpio_ops) => {},
-        _ = mgmt_task => {},
+        result = ctl_task => {
+            // Test completed - unwrap to propagate any panics
+            result.unwrap();
+        }
+        _ = mgmt_task => {}
         _ = ui::run(
             ui_to_mgmt,
             ui_from_mgmt,
@@ -154,7 +168,7 @@ where
             mock_i2c_with_eeprom(),
             MockDelay,
             MockAudioStream::new(),
-        ) => {},
+        ) => {}
         _ = net::run(
             net_to_mgmt,
             net_from_mgmt,
@@ -165,54 +179,54 @@ where
             0,
             ws_cmd_channel.sender(),
             ws_event_channel.receiver(),
-        ) => {},
+        ) => {}
     }
 }
 
 #[tokio::test]
 async fn ctl_mgmt_ping() {
-    device_test(|mut ctl| async move {
-        ctl.mgmt_ping(b"hello mgmt").await;
+    device_test(|mut ctl| {
+        ctl.mgmt_ping(b"hello mgmt");
     })
     .await;
 }
 
 #[tokio::test]
 async fn ctl_ui_ping() {
-    device_test(|mut ctl| async move {
-        ctl.ui_ping(b"hello ui").await;
+    device_test(|mut ctl| {
+        ctl.ui_ping(b"hello ui");
     })
     .await;
 }
 
 #[tokio::test]
 async fn ctl_net_ping() {
-    device_test(|mut ctl| async move {
-        ctl.net_ping(b"hello net").await;
+    device_test(|mut ctl| {
+        ctl.net_ping(b"hello net");
     })
     .await;
 }
 
 #[tokio::test]
 async fn ui_first_circular_ping() {
-    device_test(|mut ctl| async move {
-        ctl.ui_first_circular_ping(b"hello ui circular").await;
+    device_test(|mut ctl| {
+        ctl.ui_first_circular_ping(b"hello ui circular");
     })
     .await;
 }
 
 #[tokio::test]
 async fn net_first_circular_ping() {
-    device_test(|mut ctl| async move {
-        ctl.net_first_circular_ping(b"hello net circular").await;
+    device_test(|mut ctl| {
+        ctl.net_first_circular_ping(b"hello net circular");
     })
     .await;
 }
 
 #[tokio::test]
 async fn get_version_default() {
-    device_test(|mut ctl| async move {
-        let version = ctl.get_version().await;
+    device_test(|mut ctl| {
+        let version = ctl.get_version();
         assert_eq!(version, 0xffffffff);
     })
     .await;
@@ -220,9 +234,9 @@ async fn get_version_default() {
 
 #[tokio::test]
 async fn set_and_get_version() {
-    device_test(|mut ctl| async move {
-        ctl.set_version(0x12345678).await;
-        let version = ctl.get_version().await;
+    device_test(|mut ctl| {
+        ctl.set_version(0x12345678);
+        let version = ctl.get_version();
         assert_eq!(version, 0x12345678);
     })
     .await;
@@ -230,8 +244,8 @@ async fn set_and_get_version() {
 
 #[tokio::test]
 async fn get_sframe_key_default() {
-    device_test(|mut ctl| async move {
-        let key = ctl.get_sframe_key().await;
+    device_test(|mut ctl| {
+        let key = ctl.get_sframe_key();
         assert_eq!(key, [0xff; 16]);
     })
     .await;
@@ -239,13 +253,13 @@ async fn get_sframe_key_default() {
 
 #[tokio::test]
 async fn set_and_get_sframe_key() {
-    device_test(|mut ctl| async move {
+    device_test(|mut ctl| {
         let key = [
             0x5b, 0x9f, 0x37, 0xb1, 0x54, 0x6b, 0x61, 0xf9, 0x14, 0xda, 0x9f, 0x55, 0x7a, 0x8f,
             0xe2, 0x15,
         ];
-        ctl.set_sframe_key(&key).await;
-        let result = ctl.get_sframe_key().await;
+        ctl.set_sframe_key(&key);
+        let result = ctl.get_sframe_key();
         assert_eq!(result, key);
     })
     .await;
@@ -253,8 +267,8 @@ async fn set_and_get_sframe_key() {
 
 #[tokio::test]
 async fn get_wifi_ssids_default() {
-    device_test(|mut ctl| async move {
-        let ssids = ctl.get_wifi_ssids().await;
+    device_test(|mut ctl| {
+        let ssids = ctl.get_wifi_ssids();
         assert!(ssids.is_empty());
     })
     .await;
@@ -262,9 +276,9 @@ async fn get_wifi_ssids_default() {
 
 #[tokio::test]
 async fn add_and_get_wifi_ssid() {
-    device_test(|mut ctl| async move {
-        ctl.add_wifi_ssid("MyNetwork", "MyPassword").await;
-        let ssids = ctl.get_wifi_ssids().await;
+    device_test(|mut ctl| {
+        ctl.add_wifi_ssid("MyNetwork", "MyPassword");
+        let ssids = ctl.get_wifi_ssids();
         assert_eq!(ssids.len(), 1);
         assert_eq!(ssids[0].ssid.as_str(), "MyNetwork");
         assert_eq!(ssids[0].password.as_str(), "MyPassword");
@@ -274,11 +288,11 @@ async fn add_and_get_wifi_ssid() {
 
 #[tokio::test]
 async fn clear_wifi_ssids() {
-    device_test(|mut ctl| async move {
-        ctl.add_wifi_ssid("Network1", "Pass1").await;
-        ctl.add_wifi_ssid("Network2", "Pass2").await;
-        ctl.clear_wifi_ssids().await;
-        let ssids = ctl.get_wifi_ssids().await;
+    device_test(|mut ctl| {
+        ctl.add_wifi_ssid("Network1", "Pass1");
+        ctl.add_wifi_ssid("Network2", "Pass2");
+        ctl.clear_wifi_ssids();
+        let ssids = ctl.get_wifi_ssids();
         assert!(ssids.is_empty());
     })
     .await;
@@ -286,8 +300,8 @@ async fn clear_wifi_ssids() {
 
 #[tokio::test]
 async fn get_relay_url_default() {
-    device_test(|mut ctl| async move {
-        let url = ctl.get_relay_url().await;
+    device_test(|mut ctl| {
+        let url = ctl.get_relay_url();
         assert_eq!(url.as_str(), "");
     })
     .await;
@@ -295,9 +309,9 @@ async fn get_relay_url_default() {
 
 #[tokio::test]
 async fn set_and_get_relay_url() {
-    device_test(|mut ctl| async move {
-        ctl.set_relay_url("wss://relay.example.com/stream").await;
-        let url = ctl.get_relay_url().await;
+    device_test(|mut ctl| {
+        ctl.set_relay_url("wss://relay.example.com/stream");
+        let url = ctl.get_relay_url();
         assert_eq!(url.as_str(), "wss://relay.example.com/stream");
     })
     .await;
@@ -305,8 +319,8 @@ async fn set_and_get_relay_url() {
 
 #[tokio::test]
 async fn reset_ui_to_bootloader_gpio_sequence() {
-    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
-        ctl.reset_ui_to_bootloader().await;
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| {
+        ctl.reset_ui_to_bootloader();
 
         let ops = gpio_ops.lock().unwrap();
         // First 2 ops are MGMT startup releasing both chips from reset
@@ -324,8 +338,8 @@ async fn reset_ui_to_bootloader_gpio_sequence() {
 
 #[tokio::test]
 async fn reset_ui_to_user_gpio_sequence() {
-    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
-        ctl.reset_ui_to_user().await;
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| {
+        ctl.reset_ui_to_user();
 
         let ops = gpio_ops.lock().unwrap();
         // First 2 ops are MGMT startup releasing both chips from reset
@@ -343,8 +357,8 @@ async fn reset_ui_to_user_gpio_sequence() {
 
 #[tokio::test]
 async fn reset_net_to_bootloader_gpio_sequence() {
-    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
-        ctl.reset_net_to_bootloader().await;
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| {
+        ctl.reset_net_to_bootloader();
 
         let ops = gpio_ops.lock().unwrap();
         // First 2 ops are MGMT startup releasing both chips from reset
@@ -367,8 +381,8 @@ async fn reset_net_to_bootloader_gpio_sequence() {
 
 #[tokio::test]
 async fn reset_net_to_user_gpio_sequence() {
-    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
-        ctl.reset_net_to_user().await;
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| {
+        ctl.reset_net_to_user();
 
         let ops = gpio_ops.lock().unwrap();
         // First 2 ops are MGMT startup releasing both chips from reset
