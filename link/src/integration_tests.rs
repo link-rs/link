@@ -7,10 +7,11 @@
 #![cfg(all(feature = "ctl", feature = "mgmt", feature = "net", feature = "ui"))]
 
 use crate::shared::mocks::{
-    GpioOp, MockAsyncDelay, MockAudioStream, MockButton, MockDelay, MockFlash, MockPin, SyncReader,
-    SyncWriter, TrackingPin, async_async_channel, mock_i2c_with_eeprom, mock_led_pins,
-    sync_async_channel,
+    AsyncReader, AsyncWriter, GpioOp, MockAsyncDelay, MockAudioStream, MockButton, MockDelay,
+    MockFlash, MockPin, SyncReader, SyncWriter, TrackingPin, async_async_channel,
+    mock_i2c_with_eeprom, mock_led_pins, sync_async_channel,
 };
+use std::sync::atomic::{AtomicU32, Ordering};
 use crate::{ctl, mgmt, net, ui};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -401,3 +402,158 @@ async fn reset_net_to_user_gpio_sequence() {
 // uses tokio::select! with futures::join! which doesn't work well with tokio::time::sleep.
 // The audio functionality is tested in the ui::audio_streaming_tests module instead,
 // and the NET unit tests verify the WebSocket forwarding logic.
+
+/// Test harness that provides access to tracked baud rate changes.
+///
+/// Uses AsyncWriter/AsyncReader with baud rate tracking built in.
+/// The test function receives the CTL baud rate and NET baud rate atomics to verify changes.
+async fn device_test_with_baud_tracking<F>(test_fn: F)
+where
+    F: FnOnce(ctl::App<SyncReader, SyncWriter>, Arc<AtomicU32>, Arc<AtomicU32>) + Send + 'static,
+{
+    // Create baud rate tracking atomics
+    let ctl_baud = Arc::new(AtomicU32::new(115200));
+    let net_baud = Arc::new(AtomicU32::new(115200));
+
+    // CTL <-> MGMT: sync on CTL side, async on MGMT side with baud rate tracking
+    // sync_writer -> async_reader (CTL sends to MGMT)
+    let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel();
+    // async_writer -> sync_reader (MGMT sends to CTL)
+    let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
+    let (ctl_reader, ctl_writer) = (SyncReader::new(rx2), SyncWriter::new(tx1));
+    let (mgmt_from_ctl, mgmt_to_ctl) = (
+        AsyncReader::with_baud_tracking(rx1, ctl_baud.clone()),
+        AsyncWriter::with_baud_tracking(tx2, ctl_baud.clone()),
+    );
+
+    // MGMT <-> UI: both async (no baud rate tracking needed)
+    let ((mgmt_from_ui, mgmt_to_ui), (ui_from_mgmt, ui_to_mgmt)) = async_async_channel();
+
+    // MGMT <-> NET: both async with baud rate tracking
+    let (tx3, rx3) = tokio::sync::mpsc::unbounded_channel();
+    let (tx4, rx4) = tokio::sync::mpsc::unbounded_channel();
+    let (mgmt_from_net, mgmt_to_net) = (
+        AsyncReader::with_baud_tracking(rx4, net_baud.clone()),
+        AsyncWriter::with_baud_tracking(tx3, net_baud.clone()),
+    );
+    let (net_from_mgmt, net_to_mgmt) = (AsyncReader::new(rx3), AsyncWriter::new(tx4));
+
+    // UI <-> NET: both async
+    let ((ui_from_net, ui_to_net), (net_from_ui, net_to_ui)) = async_async_channel();
+
+    let ctl_app = ctl::App::new(ctl_reader, ctl_writer);
+
+    let ui_reset_pins = mgmt::UiResetPins::new(MockPin::new(), MockPin::new(), MockPin::new());
+    let net_reset_pins = mgmt::NetResetPins::new(MockPin::new(), MockPin::new());
+
+    let mgmt_task = mgmt::run(
+        mgmt_to_ctl,
+        mgmt_from_ctl,
+        mgmt_to_ui,
+        mgmt_from_ui,
+        mgmt_to_net,
+        mgmt_from_net,
+        mock_led_pins(),
+        mock_led_pins(),
+        ui_reset_pins,
+        net_reset_pins,
+        MockAsyncDelay,
+    );
+
+    // Create WS channels for NET app
+    let ws_cmd_channel: Channel<CriticalSectionRawMutex, net::WsCommand, 4> = Channel::new();
+    let ws_event_channel: Channel<CriticalSectionRawMutex, net::WsEvent, 4> = Channel::new();
+
+    // Run the CTL test in a blocking task to avoid blocking the async runtime
+    let ctl_baud_for_test = ctl_baud.clone();
+    let net_baud_for_test = net_baud.clone();
+    let ctl_task = tokio::task::spawn_blocking(move || {
+        test_fn(ctl_app, ctl_baud_for_test, net_baud_for_test);
+    });
+
+    tokio::select! {
+        result = ctl_task => {
+            // Test completed - unwrap to propagate any panics
+            result.unwrap();
+        }
+        _ = mgmt_task => {}
+        _ = ui::run(
+            ui_to_mgmt,
+            ui_from_mgmt,
+            ui_to_net,
+            ui_from_net,
+            mock_led_pins(),
+            MockButton,
+            MockButton,
+            MockButton,
+            mock_i2c_with_eeprom(),
+            MockDelay,
+            MockAudioStream::new(),
+        ) => {}
+        _ = net::run(
+            net_to_mgmt,
+            net_from_mgmt,
+            net_to_ui,
+            net_from_ui,
+            mock_led_pins(),
+            MockFlash::new(),
+            0,
+            ws_cmd_channel.sender(),
+            ws_event_channel.receiver(),
+        ) => {}
+    }
+}
+
+#[tokio::test]
+async fn set_net_baud_rate() {
+    device_test_with_baud_tracking(|mut ctl, ctl_baud, net_baud| {
+        // Verify initial baud rates
+        assert_eq!(ctl_baud.load(Ordering::SeqCst), 115200);
+        assert_eq!(net_baud.load(Ordering::SeqCst), 115200);
+
+        // Set NET baud rate
+        ctl.set_net_baud_rate(460800);
+
+        // Verify NET changed, CTL unchanged
+        assert_eq!(net_baud.load(Ordering::SeqCst), 460800);
+        assert_eq!(ctl_baud.load(Ordering::SeqCst), 115200);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn set_ctl_baud_rate() {
+    device_test_with_baud_tracking(|mut ctl, ctl_baud, net_baud| {
+        // Verify initial baud rates
+        assert_eq!(ctl_baud.load(Ordering::SeqCst), 115200);
+        assert_eq!(net_baud.load(Ordering::SeqCst), 115200);
+
+        // Set CTL baud rate
+        ctl.set_ctl_baud_rate(230400);
+
+        // Verify CTL changed, NET unchanged
+        assert_eq!(ctl_baud.load(Ordering::SeqCst), 230400);
+        assert_eq!(net_baud.load(Ordering::SeqCst), 115200);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn set_both_baud_rates() {
+    device_test_with_baud_tracking(|mut ctl, ctl_baud, net_baud| {
+        // Verify initial baud rates
+        assert_eq!(ctl_baud.load(Ordering::SeqCst), 115200);
+        assert_eq!(net_baud.load(Ordering::SeqCst), 115200);
+
+        // Set NET baud rate first
+        ctl.set_net_baud_rate(921600);
+        assert_eq!(net_baud.load(Ordering::SeqCst), 921600);
+        assert_eq!(ctl_baud.load(Ordering::SeqCst), 115200);
+
+        // Then set CTL baud rate
+        ctl.set_ctl_baud_rate(460800);
+        assert_eq!(net_baud.load(Ordering::SeqCst), 921600);
+        assert_eq!(ctl_baud.load(Ordering::SeqCst), 460800);
+    })
+    .await;
+}

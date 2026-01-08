@@ -76,6 +76,16 @@ enum MgmtAction {
     Flash {
         file: std::path::PathBuf,
     },
+    #[command(name = "net-baud-rate")]
+    NetBaudRate {
+        #[command(subcommand)]
+        action: Option<GetSetU32>,
+    },
+    #[command(name = "ctl-baud-rate")]
+    CtlBaudRate {
+        #[command(subcommand)]
+        action: Option<GetSetU32>,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -371,14 +381,58 @@ fn dispatch(cmd: Command, app: &mut App) -> Result<(), Box<dyn std::error::Error
     }
 }
 
-fn repl_handler(
+fn mgmt_handler(
     args: ArgMatches,
     app: &mut App,
 ) -> Result<Option<String>, reedline_repl_rs::Error> {
-    let cmd = Command::from_arg_matches(&args)
+    let action = MgmtAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
+    dispatch(Command::Mgmt { action }, app)
+        .map(|()| None)
+        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+}
 
-    dispatch(cmd, app)
+fn ui_handler(
+    args: ArgMatches,
+    app: &mut App,
+) -> Result<Option<String>, reedline_repl_rs::Error> {
+    let action = UiAction::from_arg_matches(&args)
+        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
+    dispatch(Command::Ui { action }, app)
+        .map(|()| None)
+        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+}
+
+fn net_handler(
+    args: ArgMatches,
+    app: &mut App,
+) -> Result<Option<String>, reedline_repl_rs::Error> {
+    let action = NetAction::from_arg_matches(&args)
+        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
+    dispatch(Command::Net { action }, app)
+        .map(|()| None)
+        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+}
+
+fn circular_ping_handler(
+    args: ArgMatches,
+    app: &mut App,
+) -> Result<Option<String>, reedline_repl_rs::Error> {
+    let reverse = args.get_flag("reverse");
+    let data = args
+        .get_one::<String>("data")
+        .cloned()
+        .unwrap_or_else(|| "hello".to_string());
+    dispatch(Command::CircularPing { reverse, data }, app)
+        .map(|()| None)
+        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+}
+
+fn exit_handler(
+    _args: ArgMatches,
+    app: &mut App,
+) -> Result<Option<String>, reedline_repl_rs::Error> {
+    dispatch(Command::Exit, app)
         .map(|()| None)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
@@ -388,11 +442,11 @@ fn run_repl(app: App, port_name: &str) -> Result<(), reedline_repl_rs::Error> {
     println!("Type 'help' for available commands, 'exit' to quit\n");
 
     let mut callbacks: CallBackMap<App, reedline_repl_rs::Error> = CallBackMap::new();
-    callbacks.insert("mgmt".to_string(), repl_handler);
-    callbacks.insert("ui".to_string(), repl_handler);
-    callbacks.insert("net".to_string(), repl_handler);
-    callbacks.insert("circular-ping".to_string(), repl_handler);
-    callbacks.insert("exit".to_string(), repl_handler);
+    callbacks.insert("mgmt".to_string(), mgmt_handler);
+    callbacks.insert("ui".to_string(), ui_handler);
+    callbacks.insert("net".to_string(), net_handler);
+    callbacks.insert("circular-ping".to_string(), circular_ping_handler);
+    callbacks.insert("exit".to_string(), exit_handler);
 
     let mut repl = Repl::<App, reedline_repl_rs::Error>::new(app)
         .with_name("ctl")

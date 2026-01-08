@@ -29,6 +29,11 @@ pub enum CtlToMgmt {
     SetNetBoot,
     /// Set NET chip EN/RST pin directly (1 byte: 0=low/reset, 1=high/run)
     SetNetRst,
+    /// Set NET UART baud rate (4 bytes: u32 little-endian)
+    SetNetBaudRate,
+    /// Set CTL UART baud rate (4 bytes: u32 little-endian)
+    /// ACK is sent before the baud rate change takes effect.
+    SetCtlBaudRate,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

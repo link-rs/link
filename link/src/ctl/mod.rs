@@ -454,6 +454,14 @@ impl<W: Write> MgmtWriter<W> {
     pub fn net(&mut self) -> TunnelWriter<'_, W> {
         TunnelWriter::new(CtlToMgmt::ToNet, &mut self.to_mgmt)
     }
+
+    /// Get a mutable reference to the underlying writer.
+    ///
+    /// This is useful for operations that need to modify the underlying writer,
+    /// such as setting the baud rate on a serial port.
+    pub fn inner_mut(&mut self) -> &mut W {
+        &mut self.to_mgmt
+    }
 }
 
 // ============================================================================
@@ -483,6 +491,14 @@ where
     /// such as setting the timeout on a serial port.
     pub fn reader_mut(&mut self) -> &mut MgmtReader<R> {
         &mut self.reader
+    }
+
+    /// Get a mutable reference to the underlying writer.
+    ///
+    /// This is useful for operations that need to modify the underlying writer,
+    /// such as setting the baud rate on a serial port.
+    pub fn writer_mut(&mut self) -> &mut MgmtWriter<W> {
+        &mut self.writer
     }
 
     pub fn mgmt_ping(&mut self, data: &[u8]) {
@@ -1000,6 +1016,39 @@ where
             }
         }
         panic!("gave up waiting for Ack after discarding 100 FromNet TLVs");
+    }
+
+    /// Set the NET UART baud rate on the MGMT chip.
+    ///
+    /// This changes the baud rate between MGMT and NET chips.
+    /// The change takes effect immediately after MGMT processes the command.
+    pub fn set_net_baud_rate(&mut self, baud_rate: u32) {
+        write_tlv(
+            &mut self.writer,
+            CtlToMgmt::SetNetBaudRate,
+            &baud_rate.to_le_bytes(),
+        )
+        .unwrap();
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
+        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+    }
+
+    /// Set the CTL UART baud rate on the MGMT chip.
+    ///
+    /// This changes the baud rate between CTL and MGMT.
+    /// IMPORTANT: The ACK is sent at the old baud rate before the change takes effect.
+    /// After calling this, the caller must change their own serial port baud rate
+    /// to match before continuing communication.
+    pub fn set_ctl_baud_rate(&mut self, baud_rate: u32) {
+        write_tlv(
+            &mut self.writer,
+            CtlToMgmt::SetCtlBaudRate,
+            &baud_rate.to_le_bytes(),
+        )
+        .unwrap();
+        // Read ACK at current baud rate (before MGMT switches)
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
+        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
     }
 
     /// Get bootloader information from the UI chip.

@@ -6,13 +6,16 @@ use embassy_executor::Spawner;
 use embassy_stm32::{
     bind_interrupts,
     gpio::{Level, Output, Speed},
+    mode::Async,
     peripherals,
     rcc::{Mco, McoConfig, McoPrescaler, McoSource},
     time::Hertz,
     usart,
-    usart::{Config, DataBits, Parity, StopBits, Uart},
+    usart::{Config, DataBits, Parity, RingBufferedUartRx, StopBits, Uart, UartTx},
 };
 use embassy_time::Delay;
+use embedded_io_async::{ErrorType, Read, Write};
+use link::uart_config::SetBaudRate;
 use {defmt_rtt as _, panic_probe as _};
 
 const DMA_BUF_SIZE: usize = link::MAX_VALUE_SIZE;
@@ -32,6 +35,49 @@ fn uart_config_to_stm32(cfg: link::uart_config::Config) -> Config {
         S::Two => StopBits::STOP2,
     };
     config
+}
+
+/// Wrapper around UartTx that implements SetBaudRate.
+struct UartTxWrapper<'d>(UartTx<'d, Async>);
+
+impl<'d> ErrorType for UartTxWrapper<'d> {
+    type Error = usart::Error;
+}
+
+impl<'d> Write for UartTxWrapper<'d> {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        self.0.write(buf).await?;
+        Ok(buf.len())
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        self.0.flush().await
+    }
+}
+
+impl<'d> SetBaudRate for UartTxWrapper<'d> {
+    async fn set_baud_rate(&mut self, baud_rate: u32) {
+        let _ = self.0.set_baudrate(baud_rate);
+    }
+}
+
+/// Wrapper around RingBufferedUartRx that implements SetBaudRate.
+struct UartRxWrapper<'d>(RingBufferedUartRx<'d>);
+
+impl<'d> ErrorType for UartRxWrapper<'d> {
+    type Error = usart::Error;
+}
+
+impl<'d> Read for UartRxWrapper<'d> {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        self.0.read(buf).await
+    }
+}
+
+impl<'d> SetBaudRate for UartRxWrapper<'d> {
+    async fn set_baud_rate(&mut self, baud_rate: u32) {
+        let _ = self.0.set_baudrate(baud_rate);
+    }
 }
 
 bind_interrupts!(
@@ -98,7 +144,8 @@ async fn main(_spawner: Spawner) {
     )
     .unwrap()
     .split();
-    let from_ctl = from_ctl.into_ring_buffered(ctl_rx_buf);
+    let to_ctl = UartTxWrapper(to_ctl);
+    let from_ctl = UartRxWrapper(from_ctl.into_ring_buffered(ctl_rx_buf));
 
     // UART to UI (uses even parity for bootloader compatibility)
     let (to_ui, from_ui) = Uart::new(
@@ -106,7 +153,8 @@ async fn main(_spawner: Spawner) {
     )
     .unwrap()
     .split();
-    let from_ui = from_ui.into_ring_buffered(ui_rx_buf);
+    let to_ui = UartTxWrapper(to_ui);
+    let from_ui = UartRxWrapper(from_ui.into_ring_buffered(ui_rx_buf));
 
     // UART to NET (no parity)
     let (to_net, from_net) = Uart::new(
@@ -114,7 +162,8 @@ async fn main(_spawner: Spawner) {
     )
     .unwrap()
     .split();
-    let from_net = from_net.into_ring_buffered(net_rx_buf);
+    let to_net = UartTxWrapper(to_net);
+    let from_net = UartRxWrapper(from_net.into_ring_buffered(net_rx_buf));
 
     // RGB LEDs (R, G, B pin tuples)
     // LED A: R=PA4 (inverted), G=PA6, B=PA7

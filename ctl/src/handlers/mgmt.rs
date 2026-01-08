@@ -1,8 +1,9 @@
 //! MGMT chip command handlers.
 
-use crate::{App, MgmtAction};
+use crate::{App, GetSetU32, MgmtAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::FlashPhase;
+use serialport::SerialPort;
 use std::io::Write;
 
 pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
@@ -158,6 +159,50 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
                     eprintln!("  1. Set BOOT0 pin high");
                     eprintln!("  2. Reset the device");
                     Err("Flash failed".into())
+                }
+            }
+        }
+        MgmtAction::NetBaudRate { action } => {
+            let action = action.unwrap_or_default();
+            match action {
+                GetSetU32::Get => {
+                    // MGMT doesn't currently support querying baud rate
+                    println!("Get not implemented - MGMT protocol doesn't support baud rate queries");
+                    Ok(())
+                }
+                GetSetU32::Set { value } => {
+                    println!("Setting NET UART baud rate to {}", value);
+                    app.set_net_baud_rate(value);
+                    println!("NET baud rate set to {}", value);
+                    Ok(())
+                }
+            }
+        }
+        MgmtAction::CtlBaudRate { action } => {
+            let action = action.unwrap_or_default();
+            match action {
+                GetSetU32::Get => {
+                    // MGMT doesn't currently support querying baud rate
+                    println!("Get not implemented - MGMT protocol doesn't support baud rate queries");
+                    Ok(())
+                }
+                GetSetU32::Set { value } => {
+                    println!("Setting CTL UART baud rate to {}", value);
+
+                    // Send command to MGMT (ACK is sent before rate change)
+                    app.set_ctl_baud_rate(value);
+
+                    // Now change local serial port baud rate to match
+                    let reader_port: &mut Box<dyn SerialPort> =
+                        app.reader_mut().inner_mut().get_mut();
+                    reader_port.set_baud_rate(value)?;
+
+                    let writer_port: &mut Box<dyn SerialPort> =
+                        app.writer_mut().inner_mut().get_mut();
+                    writer_port.set_baud_rate(value)?;
+
+                    println!("CTL baud rate set to {} (both MGMT and local)", value);
+                    Ok(())
                 }
             }
         }
