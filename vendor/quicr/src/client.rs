@@ -677,3 +677,24 @@ impl Default for ClientBuilder {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_status_is_ready() {
+        assert!(Status::Ready.is_ready());
+        assert!(Status::Ok.is_ready());
+        assert!(!Status::Connecting.is_ready());
+        assert!(!Status::Disconnected.is_ready());
+    }
+
+    #[test]
+    fn test_status_is_disconnected() {
+        assert!(Status::Disconnected.is_disconnected());
+        assert!(Status::Error.is_disconnected());
+        assert!(Status::IdleTimeout.is_disconnected());
+        assert!(!Status::Ready.is_disconnected());
+    }
+}

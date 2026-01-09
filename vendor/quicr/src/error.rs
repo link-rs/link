@@ -198,3 +198,26 @@ impl From<embassy_time::TimeoutError> for Error {
         Self::Timeout
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_is_recoverable() {
+        assert!(Error::Timeout.is_recoverable());
+        assert!(Error::NotConnected.is_recoverable());
+        assert!(Error::ChannelClosed.is_recoverable());
+        assert!(!Error::NotAuthorized.is_recoverable());
+        assert!(!Error::ConfigError("test".into()).is_recoverable());
+    }
+
+    #[test]
+    fn test_error_display() {
+        let error = Error::NotConnected;
+        assert_eq!(error.to_string(), "client is not connected");
+
+        let error = Error::Timeout;
+        assert_eq!(error.to_string(), "operation timed out");
+    }
+}

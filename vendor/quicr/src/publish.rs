@@ -676,3 +676,26 @@ impl Publisher {
         self.object_id
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_publish_object_status_is_ok() {
+        assert!(PublishObjectStatus::Ok.is_ok());
+        assert!(PublishObjectStatus::ObjectDataComplete.is_ok());
+        assert!(!PublishObjectStatus::InternalError.is_ok());
+        assert!(!PublishObjectStatus::NoSubscribers.is_ok());
+    }
+
+    #[test]
+    fn test_publish_object_status_can_continue() {
+        assert!(PublishObjectStatus::Ok.can_continue());
+        assert!(PublishObjectStatus::ObjectDataComplete.can_continue());
+        assert!(PublishObjectStatus::ContinuationDataNeeded.can_continue());
+        assert!(PublishObjectStatus::NoSubscribers.can_continue());
+        assert!(!PublishObjectStatus::InternalError.can_continue());
+        assert!(!PublishObjectStatus::NotAuthorized.can_continue());
+    }
+}

@@ -239,19 +239,47 @@ mod tests {
     fn test_track_namespace_from_strings() {
         let ns = TrackNamespace::from_strings(&["chat", "room1"]);
         assert_eq!(ns.len(), 2);
+        assert!(!ns.is_empty());
         assert_eq!(ns.entries()[0].as_ref(), b"chat");
         assert_eq!(ns.entries()[1].as_ref(), b"room1");
+    }
+
+    #[test]
+    fn test_track_namespace_from_bytes() {
+        let ns = TrackNamespace::from_bytes(&[b"chat", b"room1"]);
+        assert_eq!(ns.len(), 2);
+    }
+
+    #[test]
+    fn test_empty_namespace() {
+        let ns = TrackNamespace::new();
+        assert!(ns.is_empty());
+        assert_eq!(ns.len(), 0);
+    }
+
+    #[test]
+    fn test_namespace_push() {
+        let mut ns = TrackNamespace::new();
+        ns.push("chat");
+        ns.push("room1");
+        assert_eq!(ns.len(), 2);
     }
 
     #[test]
     fn test_track_namespace_prefix() {
         let ns1 = TrackNamespace::from_strings(&["chat"]);
         let ns2 = TrackNamespace::from_strings(&["chat", "room1"]);
-        let ns3 = TrackNamespace::from_strings(&["video"]);
+        let ns3 = TrackNamespace::from_strings(&["video", "room1"]);
 
         assert!(ns1.is_prefix_of(&ns2));
         assert!(!ns2.is_prefix_of(&ns1));
-        assert!(!ns3.is_prefix_of(&ns2));
+        assert!(!ns1.is_prefix_of(&ns3));
+    }
+
+    #[test]
+    fn test_namespace_display() {
+        let ns = TrackNamespace::from_strings(&["chat", "room1"]);
+        assert_eq!(ns.to_string(), "chat/room1");
     }
 
     #[test]
@@ -260,5 +288,15 @@ mod tests {
         assert_eq!(track.namespace.len(), 2);
         assert_eq!(track.name.as_ref(), b"messages");
         assert_eq!(track.to_string(), "chat/room1/messages");
+    }
+
+    #[test]
+    fn test_full_track_name_equality() {
+        let track1 = FullTrackName::from_strings(&["chat", "room1"], "messages");
+        let track2 = FullTrackName::from_strings(&["chat", "room1"], "messages");
+        let track3 = FullTrackName::from_strings(&["chat", "room2"], "messages");
+
+        assert_eq!(track1, track2);
+        assert_ne!(track1, track3);
     }
 }

@@ -309,3 +309,64 @@ impl ReceivedObject {
         core::str::from_utf8(&self.data).ok()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_object_headers_new() {
+        let headers = ObjectHeaders::new(1, 2);
+        assert_eq!(headers.group_id, 1);
+        assert_eq!(headers.object_id, 2);
+        assert_eq!(headers.subgroup_id, 0);
+        assert_eq!(headers.status, ObjectStatus::Available);
+        assert!(headers.priority.is_none());
+        assert!(headers.ttl.is_none());
+    }
+
+    #[test]
+    fn test_object_headers_builder() {
+        let headers = ObjectHeaders::builder()
+            .group_id(5)
+            .object_id(10)
+            .subgroup_id(1)
+            .status(ObjectStatus::Available)
+            .priority(50)
+            .ttl(1000)
+            .track_mode(TrackMode::Stream)
+            .build(256);
+
+        assert_eq!(headers.group_id, 5);
+        assert_eq!(headers.object_id, 10);
+        assert_eq!(headers.subgroup_id, 1);
+        assert_eq!(headers.payload_length, 256);
+        assert_eq!(headers.priority, Some(50));
+        assert_eq!(headers.ttl, Some(1000));
+        assert_eq!(headers.track_mode, Some(TrackMode::Stream));
+    }
+
+    #[test]
+    fn test_object_status_values() {
+        assert_eq!(ObjectStatus::Available as u8, 0);
+        assert_eq!(ObjectStatus::DoesNotExist as u8, 1);
+        assert_eq!(ObjectStatus::EndOfGroup as u8, 3);
+        assert_eq!(ObjectStatus::EndOfTrack as u8, 4);
+        assert_eq!(ObjectStatus::EndOfSubGroup as u8, 5);
+    }
+
+    #[test]
+    fn test_track_mode_default() {
+        assert_eq!(TrackMode::default(), TrackMode::Stream);
+    }
+
+    #[test]
+    fn test_group_order_default() {
+        assert_eq!(GroupOrder::default(), GroupOrder::Ascending);
+    }
+
+    #[test]
+    fn test_filter_type_default() {
+        assert_eq!(FilterType::default(), FilterType::LargestObject);
+    }
+}

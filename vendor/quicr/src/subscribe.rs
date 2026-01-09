@@ -619,3 +619,25 @@ impl Subscription {
         self.track.wait_ready().await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_subscribe_status_is_active() {
+        assert!(SubscribeStatus::Ok.is_active());
+        assert!(SubscribeStatus::NewGroupRequested.is_active());
+        assert!(!SubscribeStatus::Paused.is_active());
+        assert!(!SubscribeStatus::Cancelled.is_active());
+    }
+
+    #[test]
+    fn test_subscribe_status_is_done() {
+        assert!(SubscribeStatus::Cancelled.is_done());
+        assert!(SubscribeStatus::DoneByFin.is_done());
+        assert!(SubscribeStatus::DoneByReset.is_done());
+        assert!(SubscribeStatus::Error.is_done());
+        assert!(!SubscribeStatus::Ok.is_done());
+    }
+}
