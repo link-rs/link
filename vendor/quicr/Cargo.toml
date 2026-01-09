@@ -17,47 +17,18 @@ links = "quicr"
 [features]
 default = ["std", "mbedtls"]
 
-# FFI stub mode - provides mock implementations instead of real libquicr
-# Use this for development/testing when the C++ toolchain isn't available
-# MUTUALLY EXCLUSIVE with: prebuilt-esp32s3, prebuilt-esp32s3-std, espidf-build, espidf-std, esp-idf-native
-ffi-stub = []
-
-# Use prebuilt static libraries for ESP32-S3 (fastest build)
-# Libraries must be present in vendor/prebuilt/esp32s3/
-# Run ./scripts/docker-build-esp32s3.sh to generate them
-# MUTUALLY EXCLUSIVE with: ffi-stub, prebuilt-esp32s3-std, espidf-build, espidf-std, esp-idf-native
-prebuilt-esp32s3 = []
-
-# Build libquicr from source using ESP-IDF Docker for bare-metal (slower, but always fresh)
-# Requires Docker to be installed
-# MUTUALLY EXCLUSIVE with: ffi-stub, prebuilt-esp32s3, prebuilt-esp32s3-std, espidf-std, esp-idf-native
-espidf-build = []
-
-# ESP-IDF with std support - full FFI bindings with ESP-IDF runtime (Docker build)
-# Use this when building with esp-idf-hal (std-based ESP-IDF development)
-# Provides: pthread, lwip, mbedtls from ESP-IDF framework
-# Build libs with: ./scripts/docker-build-esp32s3.sh --std
-# MUTUALLY EXCLUSIVE with: ffi-stub, prebuilt-esp32s3, prebuilt-esp32s3-std, espidf-build, esp-idf-native
-espidf-std = ["std"]
-
-# Use prebuilt static libraries for ESP32-S3 with ESP-IDF std
-# Libraries must be present in vendor/prebuilt/esp32s3-std/
-# Run ./scripts/docker-build-esp32s3.sh --std to generate them
-# MUTUALLY EXCLUSIVE with: ffi-stub, prebuilt-esp32s3, espidf-build, espidf-std, esp-idf-native
-prebuilt-esp32s3-std = ["std"]
-
 # Native ESP-IDF build - build libquicr from source using host ESP-IDF toolchain
 # Requires: ESP-IDF installed via espup/esp-idf-sys, IDF_PATH set
 # Uses esp-idf-sys DEP_ESP_IDF_* environment variables for toolchain paths
 # This integrates with esp-idf-hal based projects without Docker
-# MUTUALLY EXCLUSIVE with: ffi-stub, prebuilt-esp32s3, prebuilt-esp32s3-std, espidf-build, espidf-std, esp-idf-component
+# MUTUALLY EXCLUSIVE with: esp-idf-component
 esp-idf-native = ["std"]
 
 # ESP-IDF component build - libquicr is built as an ESP-IDF component via esp-idf-sys
 # Use this when adding quicr as an extra_component in your project's Cargo.toml
 # This provides proper std::thread support via ESP-IDF's pthread without RTTI issues
 # Requires: quicr ESP-IDF component in your project's components/ directory
-# MUTUALLY EXCLUSIVE with: ffi-stub, prebuilt-esp32s3, prebuilt-esp32s3-std, espidf-build, espidf-std, esp-idf-native
+# MUTUALLY EXCLUSIVE with: esp-idf-native
 esp-idf-component = ["std"]
 
 # Standard library support (uses Embassy with std backend)

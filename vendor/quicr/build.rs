@@ -1,80 +1,29 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024 QuicR Contributors
 // SPDX-License-Identifier: BSD-2-Clause
 
-fn main() {}
-
 use std::env;
 use std::path::PathBuf;
-use std::process::Command;
 
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let libquicr_dir = manifest_dir.join("libquicr");
 
-    println!("cargo:rerun-if-changed=ffi/src/quicr_ffi.cpp");
-    println!("cargo:rerun-if-changed=ffi/include/quicr_ffi.h");
     println!("cargo:rerun-if-changed=build.rs");
 
     // Check for mutually exclusive features
-    let ffi_stub = cfg!(feature = "ffi-stub");
-    let prebuilt_esp32s3 = cfg!(feature = "prebuilt-esp32s3");
-    let prebuilt_esp32s3_std = cfg!(feature = "prebuilt-esp32s3-std");
-    let espidf_build = cfg!(feature = "espidf-build");
-    let espidf_std = cfg!(feature = "espidf-std");
     let esp_idf_native = cfg!(feature = "esp-idf-native");
     let esp_idf_component = cfg!(feature = "esp-idf-component");
 
-    let exclusive_count = [
-        ffi_stub,
-        prebuilt_esp32s3,
-        prebuilt_esp32s3_std,
-        espidf_build,
-        espidf_std,
-        esp_idf_native,
-        esp_idf_component,
-    ]
-    .iter()
-    .filter(|&&x| x)
-    .count();
+    let exclusive_count = [esp_idf_native, esp_idf_component]
+        .iter()
+        .filter(|&&x| x)
+        .count();
 
     if exclusive_count > 1 {
         panic!(
-            "quicr: Features 'ffi-stub', 'prebuilt-esp32s3', 'prebuilt-esp32s3-std', 'espidf-build', \
-             'espidf-std', 'esp-idf-native', and 'esp-idf-component' are mutually exclusive. Only enable one at a time."
+            "quicr: Features 'esp-idf-native' and 'esp-idf-component' are mutually exclusive. Only enable one at a time."
         );
-    }
-
-    // Check for ffi-stub feature - skip C++ build if enabled
-    // The stub implementations are in src/ffi_stub.rs, no need to generate bindings
-    if ffi_stub {
-        println!("cargo:warning=quicr: ffi-stub feature enabled, using mock FFI implementations from src/ffi_stub.rs");
-        println!("cargo:rustc-cfg=ffi_stub");
-        return;
-    }
-
-    // Check for prebuilt-esp32s3 feature - use prebuilt static libraries (bare-metal)
-    if prebuilt_esp32s3 {
-        link_prebuilt_esp32s3(&manifest_dir, &out_dir, false);
-        return;
-    }
-
-    // Check for prebuilt-esp32s3-std feature - use prebuilt static libraries (ESP-IDF std)
-    if prebuilt_esp32s3_std {
-        link_prebuilt_esp32s3(&manifest_dir, &out_dir, true);
-        return;
-    }
-
-    // Check for espidf-build feature - build from source using Docker (bare-metal)
-    if espidf_build {
-        build_with_espidf_docker(&manifest_dir, &out_dir, false);
-        return;
-    }
-
-    // Check for espidf-std feature - build from source using Docker (ESP-IDF std)
-    if espidf_std {
-        build_with_espidf_docker(&manifest_dir, &out_dir, true);
-        return;
     }
 
     // Check for esp-idf-native feature - build from source using native ESP-IDF toolchain
@@ -88,7 +37,7 @@ fn main() {
     if esp_idf_component {
         println!("cargo:warning=quicr: esp-idf-component feature enabled, expecting libquicr from ESP-IDF component");
         // Generate bindings for the FFI header
-        generate_espidf_component_bindings(&out_dir);
+        generate_espidf_component_bindings(&manifest_dir, &out_dir);
         return;
     }
 
@@ -378,95 +327,11 @@ fn main() {
         _ => {}
     }
 
-    // Build the FFI wrapper
-    let mut cc_build = cc::Build::new();
+    // Generate Rust bindings from libquicr's c-bridge header
+    let c_bridge_header = libquicr_dir.join("c-bridge/include/quicr/quicr_bridge.h");
 
-    // The build directory contains generated headers like version.h
-    let build_include_dir = out_dir.join("build/include");
-
-    cc_build
-        .cpp(true)
-        .file("ffi/src/quicr_ffi.cpp")
-        .include("ffi/include")
-        .include(libquicr_dir.join("include"))
-        .include(&build_include_dir)
-        .include(libquicr_dir.join("dependencies/spdlog/include"))
-        .include(libquicr_build.join("include"));
-
-    // Debug build configuration
-    if is_debug {
-        cc_build
-            .flag("-g") // Debug symbols
-            .flag("-O0") // Disable optimization for better debugging
-            .define("DEBUG", "1");
-    }
-
-    // Add include paths for dependencies
-    let deps_dir = libquicr_dir.join("dependencies");
-    cc_build.include(deps_dir.join("picoquic"));
-    cc_build.include(deps_dir.join("picotls/include"));
-    cc_build.include(deps_dir.join("mbedtls/include"));
-
-    // Platform-specific compiler flags
-    match target_os.as_str() {
-        "macos" => {
-            cc_build.std("c++20");
-            cc_build.flag("-stdlib=libc++");
-        }
-        "linux" => {
-            cc_build.std("c++20");
-        }
-        "espidf" => {
-            // ESP-IDF uses a lower C++ standard and has specific requirements
-            cc_build.std("c++17");
-
-            // Add ESP-IDF include paths if available
-            if let Ok(idf_path) = env::var("IDF_PATH") {
-                cc_build.include(format!("{}/components/mbedtls/mbedtls/include", idf_path));
-                cc_build.include(format!("{}/components/mbedtls/port/include", idf_path));
-                cc_build.include(format!("{}/components/newlib/platform_include", idf_path));
-                cc_build.include(format!("{}/components/freertos/include", idf_path));
-                cc_build.include(format!("{}/components/esp_common/include", idf_path));
-            }
-
-            // ESP32 specific defines
-            cc_build.define("ESP_PLATFORM", "1");
-            cc_build.define("IDF_VER", None);
-
-            // Disable features not available on ESP32
-            cc_build.define("QUICR_NO_EXCEPTIONS", "1");
-        }
-        "none" => {
-            // Bare-metal ESP-HAL configuration
-            cc_build.std("c++17");
-
-            // ESP32 specific defines for bare-metal with lwIP
-            cc_build.define("ESP_PLATFORM", "1");
-            cc_build.define("ESP_HAL_BAREMETAL", "1");
-            cc_build.define("QUICR_NO_EXCEPTIONS", "1");
-            cc_build.define("QUICR_BAREMETAL", "1");
-        }
-        _ => {
-            cc_build.std("c++20");
-        }
-    }
-
-    // TLS backend defines for FFI wrapper
-    if use_mbedtls {
-        cc_build.define("USE_MBEDTLS", "1");
-    }
-    if use_openssl {
-        cc_build.define("USE_OPENSSL", "1");
-    }
-    if use_boringssl {
-        cc_build.define("USE_BORINGSSL", "1");
-    }
-
-    cc_build.compile("quicr_ffi");
-
-    // Generate Rust bindings
     let mut bindgen_builder = bindgen::Builder::default()
-        .header("ffi/include/quicr_ffi.h")
+        .header(c_bridge_header.to_string_lossy())
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .allowlist_function("quicr_.*")
         .allowlist_type("Quicr.*")
@@ -507,138 +372,10 @@ fn main() {
             .clang_arg("-DESP_HAL_BAREMETAL=1");
     }
 
-    let bindings = bindgen_builder
-        .generate()
-        .expect("Unable to generate bindings");
-
-    bindings
-        .write_to_file(out_dir.join("bindings.rs"))
-        .expect("Couldn't write bindings!");
-}
-
-/// Link prebuilt ESP32-S3 static libraries
-/// std_mode: true for ESP-IDF std, false for bare-metal
-fn link_prebuilt_esp32s3(manifest_dir: &PathBuf, out_dir: &PathBuf, std_mode: bool) {
-    let subdir = if std_mode { "esp32s3-std" } else { "esp32s3" };
-    let prebuilt_dir = manifest_dir.join("vendor/prebuilt").join(subdir);
-    let lib_dir = prebuilt_dir.join("lib");
-    let include_dir = prebuilt_dir.join("include");
-
-    let build_script_flag = if std_mode { " --std" } else { "" };
-
-    // Check that prebuilt libraries exist
-    if !lib_dir.exists() {
-        panic!(
-            "quicr: Prebuilt libraries not found at {}. \
-             Run ./scripts/docker-build-esp32s3.sh{} to build them, \
-             or use 'ffi-stub' feature for development.",
-            lib_dir.display(),
-            build_script_flag
-        );
-    }
-
-    // Check for required libraries
-    let required_libs = ["quicr", "picoquic-core", "picotls-core"];
-    for lib in &required_libs {
-        let lib_path = lib_dir.join(format!("lib{}.a", lib));
-        if !lib_path.exists() {
-            panic!(
-                "quicr: Required library {} not found. \
-                 Run ./scripts/docker-build-esp32s3.sh{} to rebuild.",
-                lib_path.display(),
-                build_script_flag
-            );
-        }
-    }
-
-    let mode_str = if std_mode {
-        "ESP-IDF std"
-    } else {
-        "bare-metal"
-    };
-    println!(
-        "cargo:warning=quicr: Using prebuilt ESP32-S3 ({}) libraries from {}",
-        mode_str,
-        lib_dir.display()
-    );
-
-    // Add library search path
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
-
-    // Link all static libraries
-    // Core libraries
-    println!("cargo:rustc-link-lib=static=quicr");
-    println!("cargo:rustc-link-lib=static=picoquic-core");
-    println!("cargo:rustc-link-lib=static=picoquic-log");
-    println!("cargo:rustc-link-lib=static=picohttp-core");
-    println!("cargo:rustc-link-lib=static=picotls-core");
-    println!("cargo:rustc-link-lib=static=picotls-minicrypto");
-    println!("cargo:rustc-link-lib=static=picotls-mbedtls");
-
-    // ESP-IDF provides mbedtls, pthread, lwip at runtime
-    if std_mode {
-        // For std mode, link against ESP-IDF provided libraries
-        println!("cargo:rustc-link-lib=mbedtls");
-        println!("cargo:rustc-link-lib=mbedcrypto");
-        println!("cargo:rustc-link-lib=mbedx509");
-        println!("cargo:rustc-link-lib=pthread");
-    }
-
-    // Build FFI wrapper
-    let mut cc_build = cc::Build::new();
-
-    cc_build
-        .cpp(true)
-        .file("ffi/src/quicr_ffi.cpp")
-        .include("ffi/include")
-        .include(include_dir.join("quicr"))
-        .include(&include_dir)
-        .define("ESP_PLATFORM", "1")
-        .define("USE_MBEDTLS", "1");
-
-    if std_mode {
-        // ESP-IDF std mode - can use exceptions, C++20
-        cc_build.std("c++20").define("ESP_IDF_STD", "1");
-    } else {
-        // Bare-metal mode - no exceptions
-        cc_build.std("c++17").define("QUICR_NO_EXCEPTIONS", "1");
-
-        // Cross-compilation flags for ESP32-S3 (xtensa)
-        let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-        if target_arch == "xtensa" {
-            cc_build
-                .flag("-mlongcalls")
-                .flag("-fno-exceptions")
-                .flag("-fno-rtti");
-        }
-    }
-
-    cc_build.compile("quicr_ffi");
-
-    // Generate bindings
-    let mut bindgen_builder = bindgen::Builder::default()
-        .header("ffi/include/quicr_ffi.h")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .allowlist_function("quicr_.*")
-        .allowlist_type("Quicr.*")
-        .allowlist_var("QUICR_.*")
-        .derive_debug(true)
-        .derive_default(true)
-        .derive_eq(true)
-        .derive_hash(true)
-        .clang_arg("-DESP_PLATFORM=1")
-        .clang_arg("-DUSE_MBEDTLS=1");
-
-    if std_mode {
-        // ESP-IDF std mode - use std types
-        bindgen_builder = bindgen_builder.clang_arg("-DESP_IDF_STD=1");
-    } else {
-        // Bare-metal mode - use core types
-        bindgen_builder = bindgen_builder
-            .use_core()
-            .ctypes_prefix("crate::ffi")
-            .clang_arg("--target=xtensa-esp32-elf");
-    }
+    // Add include paths for bindgen
+    bindgen_builder = bindgen_builder
+        .clang_arg(format!("-I{}", libquicr_dir.join("include").display()))
+        .clang_arg(format!("-I{}", libquicr_dir.join("c-bridge/include").display()));
 
     let bindings = bindgen_builder
         .generate()
@@ -647,62 +384,6 @@ fn link_prebuilt_esp32s3(manifest_dir: &PathBuf, out_dir: &PathBuf, std_mode: bo
     bindings
         .write_to_file(out_dir.join("bindings.rs"))
         .expect("Couldn't write bindings!");
-}
-
-/// Build libquicr from source using ESP-IDF Docker
-/// std_mode: true for ESP-IDF std, false for bare-metal
-fn build_with_espidf_docker(manifest_dir: &PathBuf, out_dir: &PathBuf, std_mode: bool) {
-    let script_path = manifest_dir.join("scripts/docker-build-esp32s3.sh");
-
-    // Check if Docker is available
-    let docker_check = Command::new("docker").arg("--version").output();
-
-    if docker_check.is_err() || !docker_check.unwrap().status.success() {
-        let feature = if std_mode {
-            "espidf-std"
-        } else {
-            "espidf-build"
-        };
-        let prebuilt_feature = if std_mode {
-            "prebuilt-esp32s3-std"
-        } else {
-            "prebuilt-esp32s3"
-        };
-        panic!(
-            "quicr: Docker not found. The '{}' feature requires Docker. \
-             Install Docker or use '{}' with pre-built libraries.",
-            feature, prebuilt_feature
-        );
-    }
-
-    // Check if build script exists
-    if !script_path.exists() {
-        panic!("quicr: Build script not found at {}", script_path.display());
-    }
-
-    let mode_str = if std_mode {
-        "ESP-IDF std"
-    } else {
-        "bare-metal"
-    };
-    println!("cargo:warning=quicr: Building libquicr ({}) with ESP-IDF Docker (this may take several minutes)...", mode_str);
-
-    // Run the Docker build script
-    let mut cmd = Command::new("bash");
-    cmd.arg(&script_path);
-    if std_mode {
-        cmd.arg("--std");
-    }
-    cmd.current_dir(manifest_dir);
-
-    let status = cmd.status().expect("Failed to run docker-build-esp32s3.sh");
-
-    if !status.success() {
-        panic!("quicr: Docker build failed. Check the output above for errors.");
-    }
-
-    // Now link the built libraries (same as prebuilt)
-    link_prebuilt_esp32s3(manifest_dir, out_dir, std_mode);
 }
 
 /// Build libquicr from source using native ESP-IDF toolchain (no Docker)
@@ -772,7 +453,7 @@ fn build_native_espidf(manifest_dir: &PathBuf, out_dir: &PathBuf) {
     write_find_threads_cmake(&cmake_modules_dir, &idf_path);
 
     // Configure CMake - following hactar project approach
-    let mut configure = Command::new("cmake");
+    let mut configure = std::process::Command::new("cmake");
     configure
         .current_dir(&build_dir)
         .arg(&libquicr_dir)
@@ -842,7 +523,7 @@ fn build_native_espidf(manifest_dir: &PathBuf, out_dir: &PathBuf) {
     }
 
     // Build
-    let status = Command::new("cmake")
+    let status = std::process::Command::new("cmake")
         .current_dir(&build_dir)
         .args(["--build", ".", "--target", "install", "--parallel"])
         .arg(num_cpus().to_string())
@@ -853,20 +534,10 @@ fn build_native_espidf(manifest_dir: &PathBuf, out_dir: &PathBuf) {
     }
 
     // Link the built libraries
-    link_native_espidf_libs(out_dir, &idf_path);
-
-    // Build FFI wrapper
-    build_espidf_ffi_wrapper(
-        manifest_dir,
-        out_dir,
-        &idf_path,
-        esp_chip,
-        &c_compiler,
-        &cxx_compiler,
-    );
+    link_native_espidf_libs(out_dir);
 
     // Generate Rust bindings
-    generate_espidf_bindings(out_dir, &target_arch);
+    generate_espidf_bindings(manifest_dir, out_dir);
 }
 
 /// Detect ESP-IDF compilers from IDF_PATH or esp-idf-sys
@@ -1538,7 +1209,7 @@ set(MBEDTLS_FOUND TRUE CACHE BOOL "MbedTLS found (ESP-IDF)" FORCE)
 }
 
 /// Link libraries built with native ESP-IDF
-fn link_native_espidf_libs(out_dir: &PathBuf, _idf_path: &str) {
+fn link_native_espidf_libs(out_dir: &PathBuf) {
     let build_dir = out_dir.join("libquicr-build");
 
     // Add library search paths - multiple locations based on CMake install structure
@@ -1587,103 +1258,11 @@ fn link_native_espidf_libs(out_dir: &PathBuf, _idf_path: &str) {
     println!("cargo:rerun-if-env-changed=DEP_ESP_IDF_PATH");
 }
 
-/// Build FFI wrapper for ESP-IDF
-fn build_espidf_ffi_wrapper(
-    manifest_dir: &PathBuf,
-    out_dir: &PathBuf,
-    idf_path: &str,
-    esp_chip: &str,
-    _c_compiler: &str,
-    cxx_compiler: &str,
-) {
-    let libquicr_dir = manifest_dir.join("libquicr");
-
-    // Get the cargo target for cc::Build
-    let target = env::var("TARGET").unwrap_or_else(|_| "xtensa-esp32s3-espidf".to_string());
-
-    // Find the archiver - derive from compiler name (xtensa-esp32s3-elf-g++ -> xtensa-esp32s3-elf-ar)
-    let compiler_name = std::path::Path::new(cxx_compiler)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("xtensa-esp32s3-elf-g++");
-    let ar_name = compiler_name.replace("-g++", "-ar").replace("-gcc", "-ar");
-    let ar_path = std::path::Path::new(cxx_compiler)
-        .parent()
-        .map(|p| p.join(&ar_name))
-        .filter(|p| p.exists())
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ar_name);
-
-    let mut cc_build = cc::Build::new();
-
-    // Generated config directory contains sdkconfig.h and lwipopts.h
-    let config_dir = out_dir.join("config");
-
-    cc_build
-        .cpp(true)
-        // Set target explicitly for cross-compilation
-        .target(&target)
-        .file("ffi/src/quicr_ffi.cpp")
-        .include("ffi/include")
-        .include(libquicr_dir.join("include"))
-        .include(out_dir.join("include"))
-        // CMake build output includes (version.h is generated here)
-        .include(out_dir.join("libquicr-build/include"))
-        .include(libquicr_dir.join("dependencies/spdlog/include"))
-        // Generated config (sdkconfig.h, lwipopts.h, arch/, netinet/, arpa/)
-        .include(&config_dir)
-        // ESP-IDF includes
-        .include(format!("{}/components/mbedtls/mbedtls/include", idf_path))
-        .include(format!("{}/components/mbedtls/port/include", idf_path))
-        .include(format!("{}/components/newlib/platform_include", idf_path))
-        .include(format!(
-            "{}/components/freertos/FreeRTOS-Kernel/include",
-            idf_path
-        ))
-        .include(format!("{}/components/freertos/config/include", idf_path))
-        .include(format!("{}/components/esp_common/include", idf_path))
-        .include(format!("{}/components/log/include", idf_path))
-        // lwip includes for socket types
-        .include(format!("{}/components/lwip/lwip/src/include", idf_path))
-        .include(format!("{}/components/lwip/port/include", idf_path))
-        // Compiler
-        .compiler(cxx_compiler)
-        // Flags - C++20 required for std::span, operator<=> used by libquicr
-        .std("c++20")
-        .define("ESP_PLATFORM", "1")
-        .define("USE_MBEDTLS", "1")
-        .define(
-            format!("CONFIG_IDF_TARGET_{}", esp_chip.to_uppercase()).as_str(),
-            "1",
-        )
-        // POSIX defines for newlib (enables fileno, etc.)
-        .define("_POSIX_SOURCE", "1")
-        .define("_DEFAULT_SOURCE", "1")
-        // spdlog configuration - note: we enable exceptions for libquicr headers
-        // but use SPDLOG_NO_EXCEPTIONS to avoid spdlog's exception dependencies
-        .define("SPDLOG_NO_EXCEPTIONS", "1")
-        .define("SPDLOG_NO_THREAD_ID", "1")
-        .define("SPDLOG_NO_TLS", "1")
-        .define("SPDLOG_DISABLE_DEFAULT_LOGGER", "1")
-        .flag("-ffunction-sections")
-        .flag("-fdata-sections")
-        // Note: libquicr headers use exceptions (throw), so we must keep exceptions enabled
-        // for the FFI wrapper even though this increases binary size
-        .flag("-fno-rtti");
-
-    // Add xtensa-specific flags
-    if esp_chip.starts_with("esp32s") || esp_chip == "esp32" {
-        cc_build.flag("-mlongcalls");
-    }
-
-    // Set archiver for cross-compilation
-    cc_build.archiver(&ar_path);
-
-    cc_build.compile("quicr_ffi");
-}
-
 /// Generate Rust bindings for ESP-IDF
-fn generate_espidf_bindings(out_dir: &PathBuf, _target_arch: &str) {
+fn generate_espidf_bindings(manifest_dir: &PathBuf, out_dir: &PathBuf) {
+    let libquicr_dir = manifest_dir.join("libquicr");
+    let c_bridge_header = libquicr_dir.join("c-bridge/include/quicr/quicr_bridge.h");
+
     // For ESP-IDF builds targeting ESP32 (32-bit), we must use a 32-bit target
     // that clang understands. Using the host target (64-bit) causes struct size
     // mismatches because pointers are 8 bytes on 64-bit but 4 bytes on ESP32.
@@ -1691,7 +1270,12 @@ fn generate_espidf_bindings(out_dir: &PathBuf, _target_arch: &str) {
     // We use arm-unknown-linux-gnueabi as a 32-bit target that clang knows.
     // The actual struct layouts match ESP32 since both are 32-bit with similar ABI.
     let bindings = bindgen::Builder::default()
-        .header("ffi/include/quicr_ffi.h")
+        .header(c_bridge_header.to_string_lossy())
+        .clang_arg(format!("-I{}", libquicr_dir.join("include").display()))
+        .clang_arg(format!(
+            "-I{}",
+            libquicr_dir.join("c-bridge/include").display()
+        ))
         .allowlist_function("quicr_.*")
         .allowlist_type("Quicr.*")
         .allowlist_var("QUICR_.*")
@@ -1714,8 +1298,11 @@ fn generate_espidf_bindings(out_dir: &PathBuf, _target_arch: &str) {
 /// Generate Rust bindings for ESP-IDF component build
 /// The C++ libraries are built by esp-idf-sys's CMake via extra_components,
 /// so we only need to generate bindings here (no build, no link directives).
-fn generate_espidf_component_bindings(out_dir: &PathBuf) {
+fn generate_espidf_component_bindings(manifest_dir: &PathBuf, out_dir: &PathBuf) {
     println!("cargo:warning=quicr: Generating bindings for ESP-IDF component build");
+
+    let libquicr_dir = manifest_dir.join("libquicr");
+    let c_bridge_header = libquicr_dir.join("c-bridge/include/quicr/quicr_bridge.h");
 
     // Generate bindings - same as generate_espidf_bindings but no link directives
     // The linking is handled by esp-idf-sys which builds the component
@@ -1725,7 +1312,12 @@ fn generate_espidf_component_bindings(out_dir: &PathBuf) {
     // are 8 bytes on 64-bit but 4 bytes on ESP32).
     // We use arm-unknown-linux-gnueabi as it's 32-bit and well-supported by clang.
     let bindings = bindgen::Builder::default()
-        .header("ffi/include/quicr_ffi.h")
+        .header(c_bridge_header.to_string_lossy())
+        .clang_arg(format!("-I{}", libquicr_dir.join("include").display()))
+        .clang_arg(format!(
+            "-I{}",
+            libquicr_dir.join("c-bridge/include").display()
+        ))
         .allowlist_function("quicr_.*")
         .allowlist_type("Quicr.*")
         .allowlist_var("QUICR_.*")
