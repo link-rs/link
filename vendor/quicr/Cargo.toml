@@ -59,6 +59,7 @@ static_cell = { version = "2.1" }
 
 [build-dependencies]
 bindgen = "0.71"
+cc = "1.2"
 cmake = "0.1"
 pkg-config = "0.3"
 

@@ -24,6 +24,7 @@ fn build_native() {
     println!("cargo:rerun-if-changed=libquicr/src");
     println!("cargo:rerun-if-changed=libquicr/include");
     println!("cargo:rerun-if-changed=ffi/include/quicr_ffi.h");
+    println!("cargo:rerun-if-changed=ffi/src/quicr_ffi.cpp");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
@@ -65,6 +66,18 @@ fn build_native() {
 
         config.build()
     };
+
+    // Build the FFI wrapper (quicr_ffi.cpp)
+    cc::Build::new()
+        .cpp(true)
+        .std("c++20")
+        .file(manifest_dir.join("ffi/src/quicr_ffi.cpp"))
+        .include(manifest_dir.join("ffi/include"))
+        .include(libquicr_dir.join("include"))
+        .include(libquicr_build.join("build/include")) // generated headers (version.h)
+        .include(libquicr_build.join("build/dependencies/spdlog/include"))
+        .include(libquicr_dir.join("dependencies/spdlog/include"))
+        .compile("quicr_ffi");
 
     // Link libraries
     println!(
