@@ -1408,7 +1408,9 @@ where
             115_200,
         );
 
-        let mut flasher = Flasher::connect(connection, true, true, true, None, None)
+        // Pass explicit 115200 baud rate to prevent espflash from changing it
+        // (the tunnel through MGMT doesn't support baud rate changes)
+        let mut flasher = Flasher::connect(connection, false, true, true, None, Some(115_200))
             .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
         let info = flasher
