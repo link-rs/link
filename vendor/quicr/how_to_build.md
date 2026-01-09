@@ -1,17 +1,18 @@
-# Build Instructions for quicr-rs
+# Build Instructions for quicr
 
-## Default Build (macOS/Linux with libquicr from source)
+## Desktop Build (macOS/Linux)
+
+Builds libquicr from source using cmake.
 
 ```bash
 # Clone with submodules
-git clone --recursive https://github.com/suhasHere/quicr-rs.git
-cd quicr-rs
+git clone --recursive <repo-url>
+cd quicr
 
 # Or if already cloned:
 git submodule update --init --recursive
 
 # Build (default features: std + mbedtls)
-# Note: requires mbedtls installed (brew install mbedtls on macOS)
 cargo build
 ```
 
@@ -19,43 +20,67 @@ cargo build
 
 | Feature | Description |
 |---------|-------------|
-| `ffi-stub` | Mock implementations (no C++ toolchain needed) |
-| `prebuilt-esp32s3` | Use prebuilt libs from `vendor/prebuilt/esp32s3/` |
-| `prebuilt-esp32s3-std` | Prebuilt libs with ESP-IDF std support |
-| `espidf-build` | Build libquicr via Docker for ESP32 bare-metal |
-| `espidf-std` | Build via Docker with ESP-IDF std |
-| `esp-idf-native` | Build using host ESP-IDF toolchain |
-| `esp32s3`, `esp32c3`, etc. | ESP32 chip variants |
-| `mbedtls` | MbedTLS for crypto (default) |
+| `std` | Standard library support (default) |
+| `mbedtls` | Use MbedTLS for crypto (default) |
+| `openssl` | Use OpenSSL for crypto |
+| `boringssl` | Use BoringSSL for crypto |
+| `esp-idf-component` | ESP-IDF build via component system |
+| `esp32s3`, `esp32c3`, etc. | ESP32 chip variants (bare-metal) |
 
-## ESP32 Builds
+## ESP-IDF Build
 
-```bash
-# Using Docker (builds libquicr for ESP32-S3)
-./scripts/docker-build-esp32s3.sh
+For ESP32 with ESP-IDF framework, use the `esp-idf-component` feature. This integrates with ESP-IDF's build system - libquicr is built as an ESP-IDF component, not by this crate's build.rs.
 
-# Build Rust with prebuilt libs
-cargo build --no-default-features --features "prebuilt-esp32s3,esp32s3,mbedtls"
+### Setup
 
-# Or with native ESP-IDF toolchain
-cargo build --no-default-features --features "esp-idf-native,mbedtls"
+1. Add the ESP-IDF component to your project:
+   ```
+   # In your project's build configuration
+   EXTRA_COMPONENT_DIRS=/path/to/quicr/esp-component
+   ```
+
+2. Enable the feature in Cargo.toml:
+   ```toml
+   [dependencies]
+   quicr = { path = "../vendor/quicr", features = ["esp-idf-component"] }
+   ```
+
+3. Build with cargo as normal - esp-idf-sys will build libquicr as a component.
+
+### How it works
+
 ```
-
-## Development (stub mode, no C++ deps)
-
-```bash
-cargo build --no-default-features --features "std,ffi-stub"
+┌─────────────────────────────────────────────────────┐
+│  Your ESP-IDF Rust Project                          │
+│    Cargo.toml: quicr = { features = ["esp-idf-component"] }
+└─────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────┐
+│  esp-idf-sys builds all components including:       │
+│    - freertos, lwip, mbedtls, pthread (ESP-IDF)     │
+│    - libquicr (via esp-component/CMakeLists.txt)    │
+└─────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────┐
+│  quicr crate build.rs                               │
+│    - Only generates Rust bindings (bindgen)         │
+│    - No C++ compilation                             │
+│    - No link directives (handled by esp-idf-sys)    │
+└─────────────────────────────────────────────────────┘
 ```
 
 ## Running Examples
 
-Examples require a relay server or stub mode:
+Examples require a relay server:
 
 ```bash
-# With stub mode (mock FFI, no relay needed)
-cargo run --example pubsub --no-default-features --features "std,ffi-stub" -- --mode publish
+# First start relay server (from libquicr):
+cd libquicr && mkdir -p build && cd build
+cmake .. && make
+./cmd/examples/qServer -p 4433
 
-# With real FFI (requires mbedtls and relay server running)
-# First start relay: cd vendor/libquicr && make && ./build/cmd/examples/qServer -p 4433
+# Run example:
 cargo run --example pubsub -- --mode publish
 ```

@@ -17,18 +17,9 @@ links = "quicr"
 [features]
 default = ["std", "mbedtls"]
 
-# Native ESP-IDF build - build libquicr from source using host ESP-IDF toolchain
-# Requires: ESP-IDF installed via espup/esp-idf-sys, IDF_PATH set
-# Uses esp-idf-sys DEP_ESP_IDF_* environment variables for toolchain paths
-# This integrates with esp-idf-hal based projects without Docker
-# MUTUALLY EXCLUSIVE with: esp-idf-component
-esp-idf-native = ["std"]
-
 # ESP-IDF component build - libquicr is built as an ESP-IDF component via esp-idf-sys
 # Use this when adding quicr as an extra_component in your project's Cargo.toml
-# This provides proper std::thread support via ESP-IDF's pthread without RTTI issues
-# Requires: quicr ESP-IDF component in your project's components/ directory
-# MUTUALLY EXCLUSIVE with: esp-idf-native
+# Requires: quicr esp-component/ directory added to ESP-IDF's EXTRA_COMPONENT_DIRS
 esp-idf-component = ["std"]
 
 # Standard library support (uses Embassy with std backend)
@@ -62,9 +53,6 @@ esp-hal-rtos = [
 
 # ESP-IDF platform support (std-based with ESP-IDF framework)
 esp-idf = ["std"]
-
-# Alias for esp-idf-hal based builds (same as esp-idf-native)
-esp-idf-hal = ["esp-idf-native"]
 
 # ESP32 chip variants (standalone)
 # NOTE: For standalone builds, you need to provide your own embassy integration
