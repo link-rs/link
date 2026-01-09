@@ -73,8 +73,8 @@ extern crate alloc;
 pub mod ffi;
 
 // Core modules
-pub mod error;
 pub mod config;
+pub mod error;
 pub mod runtime;
 
 // Protocol types
@@ -88,14 +88,21 @@ pub mod subscribe;
 
 // Re-exports for convenience
 pub use client::{Client, ClientBuilder, ClientCallbackData, ServerSetup, Status};
-pub use config::{ClientConfig, ClientConfigBuilder, LogLevel, TransportConfig, TransportConfigBuilder};
+pub use config::{
+    ClientConfig, ClientConfigBuilder, LogLevel, TransportConfig, TransportConfigBuilder,
+};
 pub use error::{Error, Result};
 pub use object::{
     FilterType, GroupOrder, ObjectHeaders, ObjectHeadersBuilder, ObjectStatus, ReceivedObject,
     TrackMode,
 };
-pub use publish::{PublishCallbackData, PublishObjectStatus, PublishStatus, PublishTrack, PublishTrackBuilder, Publisher};
-pub use subscribe::{SubscribeCallbackData, SubscribeStatus, SubscribeTrack, SubscribeTrackBuilder, Subscription};
+pub use publish::{
+    PublishCallbackData, PublishObjectStatus, PublishStatus, PublishTrack, PublishTrackBuilder,
+    Publisher,
+};
+pub use subscribe::{
+    SubscribeCallbackData, SubscribeStatus, SubscribeTrack, SubscribeTrackBuilder, Subscription,
+};
 pub use track::{FullTrackName, TrackNamespace};
 
 // Re-export runtime types needed for callback data

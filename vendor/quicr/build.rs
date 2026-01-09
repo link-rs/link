@@ -23,6 +23,7 @@ fn build_native() {
 
     println!("cargo:rerun-if-changed=libquicr/src");
     println!("cargo:rerun-if-changed=libquicr/include");
+    println!("cargo:rerun-if-changed=ffi/include/quicr_ffi.h");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
@@ -164,23 +165,17 @@ fn build_native() {
     }
 
     // Generate bindings
-    let c_bridge_header = libquicr_dir.join("c-bridge/include/quicr/quicr_bridge.h");
+    let ffi_header = manifest_dir.join("ffi/include/quicr_ffi.h");
 
     let mut builder = bindgen::Builder::default()
-        .header(c_bridge_header.to_string_lossy())
+        .header(ffi_header.to_string_lossy())
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .allowlist_function("quicr_.*")
         .allowlist_type("Quicr.*")
         .allowlist_var("QUICR_.*")
         .derive_debug(true)
         .derive_default(true)
-        .derive_eq(true)
-        .derive_hash(true)
-        .clang_arg(format!("-I{}", libquicr_dir.join("include").display()))
-        .clang_arg(format!(
-            "-I{}",
-            libquicr_dir.join("c-bridge/include").display()
-        ));
+        .clang_arg(format!("-I{}", manifest_dir.join("ffi/include").display()));
 
     if target_os == "macos" && target_arch == "aarch64" {
         builder = builder.clang_arg("--target=aarch64-apple-darwin");
@@ -198,27 +193,21 @@ fn build_native() {
 fn build_esp_idf_component() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let libquicr_dir = manifest_dir.join("libquicr");
-    let c_bridge_header = libquicr_dir.join("c-bridge/include/quicr/quicr_bridge.h");
+    let ffi_header = manifest_dir.join("ffi/include/quicr_ffi.h");
 
+    println!("cargo:rerun-if-changed=ffi/include/quicr_ffi.h");
     println!("cargo:warning=quicr: esp-idf-component build, expecting libquicr from ESP-IDF");
 
     // Use 32-bit ARM target for bindgen since ESP32 is 32-bit.
     // Using 64-bit host target causes struct size mismatches.
     bindgen::Builder::default()
-        .header(c_bridge_header.to_string_lossy())
-        .clang_arg(format!("-I{}", libquicr_dir.join("include").display()))
-        .clang_arg(format!(
-            "-I{}",
-            libquicr_dir.join("c-bridge/include").display()
-        ))
+        .header(ffi_header.to_string_lossy())
+        .clang_arg(format!("-I{}", manifest_dir.join("ffi/include").display()))
         .allowlist_function("quicr_.*")
         .allowlist_type("Quicr.*")
         .allowlist_var("QUICR_.*")
         .derive_debug(true)
         .derive_default(true)
-        .derive_eq(true)
-        .derive_hash(true)
         .clang_arg("--target=arm-unknown-linux-gnueabi")
         .clang_arg("-DESP_PLATFORM=1")
         .clang_arg("-DPLATFORM_ESP_IDF=1")

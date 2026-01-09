@@ -5,20 +5,20 @@ extern crate alloc;
 
 use crate::error::{Error, Result};
 
-#[cfg(feature = "std")]
-use std::ffi::CString;
 #[cfg(not(feature = "std"))]
 use alloc::ffi::CString;
-
 #[cfg(feature = "std")]
-use std::time::Duration;
+use std::ffi::CString;
+
 #[cfg(not(feature = "std"))]
 use embassy_time::Duration;
-
 #[cfg(feature = "std")]
-use std::string::String;
+use std::time::Duration;
+
 #[cfg(not(feature = "std"))]
 use alloc::string::String;
+#[cfg(feature = "std")]
+use std::string::String;
 
 // Conditional logging - use defmt for no_std with defmt-logging feature
 #[cfg(all(feature = "defmt-logging", not(feature = "std")))]
@@ -26,9 +26,13 @@ use defmt::{debug, trace};
 #[cfg(all(not(feature = "defmt-logging"), feature = "std"))]
 use log::{debug, trace};
 #[cfg(all(not(feature = "defmt-logging"), not(feature = "std")))]
-macro_rules! debug { ($($arg:tt)*) => {}; }
+macro_rules! debug {
+    ($($arg:tt)*) => {};
+}
 #[cfg(all(not(feature = "defmt-logging"), not(feature = "std")))]
-macro_rules! trace { ($($arg:tt)*) => {}; }
+macro_rules! trace {
+    ($($arg:tt)*) => {};
+}
 
 /// Log level for the libquicr C++ library
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -212,7 +216,7 @@ impl ClientConfig {
     }
 
     /// Convert to FFI representation
-    pub(crate) fn to_ffi(&self) -> Result<FfiClientConfig> {
+    pub(crate) fn to_ffi(&self) -> Result<FfiClientConfig<'_>> {
         let endpoint_id = CString::new(self.endpoint_id.as_str())
             .map_err(|_| Error::InvalidArgument("endpoint_id contains null bytes".into()))?;
 
@@ -381,7 +385,10 @@ impl ClientConfigBuilder {
 
         trace!(
             "Config built: endpoint_id={}, uri={}, log_level={:?}, bbr={}",
-            endpoint_id, connect_uri, config.transport.log_level, config.transport.use_bbr
+            endpoint_id,
+            connect_uri,
+            config.transport.log_level,
+            config.transport.use_bbr
         );
 
         Ok(config)
