@@ -9,20 +9,15 @@ description = "Safe Rust FFI bindings for libquicr MoQ pub/sub transport with Em
 repository = "https://github.com/Quicr/libquicr-rust"
 documentation = "https://docs.rs/quicr"
 readme = "README.md"
-keywords = ["quic", "moq", "pubsub", "esp32", "embassy"]
-categories = ["network-programming", "asynchronous", "embedded", "no-std"]
+keywords = ["quic", "moq", "pubsub", "embassy"]
+categories = ["network-programming", "asynchronous"]
 build = "build.rs"
 links = "quicr"
 
 [features]
 default = ["std", "mbedtls"]
 
-# ESP-IDF component build - libquicr is built as an ESP-IDF component via esp-idf-sys
-# Use this when adding quicr as an extra_component in your project's Cargo.toml
-# Requires: quicr esp-component/ directory added to ESP-IDF's EXTRA_COMPONENT_DIRS
-esp-idf-component = ["std"]
-
-# Standard library support (uses Embassy with std backend)
+# Standard library support
 std = [
     "bytes/std",
     "log/std",
@@ -33,96 +28,41 @@ std = [
     "critical-section/std",
 ]
 
-# ESP32 bare-metal platform support (no_std with esp-hal)
-# Use this for standalone builds without esp-rtos
-# NOTE: esp-hal-embassy is currently incompatible with embassy-time 0.5
-# For standalone ESP32 builds, users must manage embassy integration manually
-esp-hal = [
-    "dep:esp-hal",
-    "dep:esp-alloc",
-    "dep:esp-backtrace",
-    "dep:esp-println",
-]
-
-# ESP32 bare-metal with external runtime (for use with esp-rtos)
-# Use this when integrating with esp-rtos which provides its own embassy runtime
-esp-hal-rtos = [
-    "dep:esp-hal",
-    "dep:esp-alloc",
-]
-
-# ESP-IDF platform support (std-based with ESP-IDF framework)
-esp-idf = ["std"]
-
-# ESP32 chip variants (standalone)
-# NOTE: For standalone builds, you need to provide your own embassy integration
-esp32 = ["esp-hal", "esp-hal?/esp32", "esp-println?/esp32", "esp-backtrace?/esp32"]
-esp32s2 = ["esp-hal", "esp-hal?/esp32s2", "esp-println?/esp32s2", "esp-backtrace?/esp32s2"]
-esp32s3 = ["esp-hal", "esp-hal?/esp32s3", "esp-println?/esp32s3", "esp-backtrace?/esp32s3"]
-esp32c3 = ["esp-hal", "esp-hal?/esp32c3", "esp-println?/esp32c3", "esp-backtrace?/esp32c3"]
-esp32c6 = ["esp-hal", "esp-hal?/esp32c6", "esp-println?/esp32c6", "esp-backtrace?/esp32c6"]
-
-# ESP32 chip variants (with esp-rtos providing embassy runtime)
-esp32-rtos = ["esp-hal-rtos", "esp-hal?/esp32"]
-esp32s2-rtos = ["esp-hal-rtos", "esp-hal?/esp32s2"]
-esp32s3-rtos = ["esp-hal-rtos", "esp-hal?/esp32s3"]
-esp32c3-rtos = ["esp-hal-rtos", "esp-hal?/esp32c3"]
-esp32c6-rtos = ["esp-hal-rtos", "esp-hal?/esp32c6"]
+# ESP-IDF component build - libquicr is built as an ESP-IDF component via esp-idf-sys
+# Requires: quicr esp-component/ directory added to ESP-IDF's EXTRA_COMPONENT_DIRS
+esp-idf-component = ["std"]
 
 # TLS backend selection - choose one
 mbedtls = []
 openssl = []
 boringssl = []
 
-# Logging options
+# Logging with defmt (for embedded)
 defmt-logging = ["defmt", "embassy-executor/defmt", "embassy-time/defmt"]
-log-logging = ["log"]
 
 [dependencies]
-# Core bytes handling
 bytes = { version = "1.7", default-features = false }
-
-# Logging
-log = { version = "0.4", default-features = false, optional = true }
+log = { version = "0.4", default-features = false }
 defmt = { version = "0.3", optional = true }
-
-# Error handling
 thiserror = { version = "2.0", default-features = false }
-
-# Heapless collections for no_std
 heapless = { version = "0.9", default-features = false }
 
-# Embassy async runtime (works on both std and no_std)
-# NOTE: Versions aligned with esp-rtos v0.2.0 for compatibility
+# Embassy async runtime
 embassy-executor = { version = "0.9", default-features = false }
 embassy-time = { version = "0.5", default-features = false, features = ["tick-hz-1_000_000"] }
 embassy-sync = { version = "0.7", default-features = false }
 embassy-futures = { version = "0.1", default-features = false }
-embassy-net = { version = "0.7", default-features = false, features = ["udp", "tcp", "dhcpv4", "medium-ethernet"], optional = true }
 
-# ESP32 HAL (for bare-metal ESP32)
-esp-hal = { version = "1.0.0", default-features = false, features = ["unstable"], optional = true }
-# NOTE: esp-hal-embassy removed due to version conflict with embassy-time 0.5
-# When integrating with esp-rtos, embassy runtime is provided externally
-esp-alloc = { version = "0.9", optional = true }
-esp-backtrace = { version = "0.17", default-features = false, features = ["panic-handler", "exception-handler", "println"], optional = true }
-esp-println = { version = "0.15", default-features = false, features = ["uart"], optional = true }
-
-# Critical section for interrupt-safe code
 critical-section = { version = "1.2" }
 portable-atomic = { version = "1.10", default-features = false }
-
-# Static allocation
 static_cell = { version = "2.1" }
 
 [build-dependencies]
 bindgen = "0.71"
-cc = "1.2"
 cmake = "0.1"
 pkg-config = "0.3"
 
 [dev-dependencies]
-# For running examples and tests on std
 embassy-executor = { version = "0.9", features = ["arch-std", "executor-thread"] }
 embassy-time = { version = "0.5", features = ["std"] }
 embassy-futures = "0.1"
