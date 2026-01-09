@@ -1,0 +1,4 @@
+[submodule "vendor/quicr-rs/libquicr"]
+	path = vendor/quicr-rs/libquicr
+	url = https://github.com/Quicr/libquicr.git
+	branch = suhas-hactar
