@@ -1,6 +1,6 @@
 //! NET chip command handlers.
 
-use crate::{App, GetSetBool, GetSetString, GetSetU32, MoqTypeAction, NetAction, WifiAction};
+use crate::{App, GetSetBool, GetSetString, GetSetU32, NetAction, WifiAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::ProgressCallbacks;
 
@@ -279,55 +279,6 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Ok(())
             }
         },
-        NetAction::MoqEnabled { action } => match action.unwrap_or_default() {
-            GetSetBool::Get => {
-                let enabled = app.get_moq_enabled();
-                println!("{}", enabled);
-                Ok(())
-            }
-            GetSetBool::Set { value } => {
-                app.set_moq_enabled(value);
-                println!("MoQ enabled set to {}", value);
-                Ok(())
-            }
-        },
-        NetAction::MoqType { action } => match action.unwrap_or_default() {
-            MoqTypeAction::Get => {
-                let type_byte = app.get_moq_example_type();
-                let type_name = match type_byte {
-                    0 => "clock",
-                    1 => "chat",
-                    2 => "benchmark",
-                    _ => "unknown",
-                };
-                println!("{}", type_name);
-                Ok(())
-            }
-            MoqTypeAction::Set { value } => {
-                let type_byte = match value.to_lowercase().as_str() {
-                    "clock" | "0" => 0,
-                    "chat" | "1" => 1,
-                    "benchmark" | "bench" | "2" => 2,
-                    _ => {
-                        return Err(format!("Unknown type '{}'. Use: clock, chat, or benchmark", value).into());
-                    }
-                };
-                app.set_moq_example_type(type_byte);
-                let type_name = match type_byte {
-                    0 => "clock",
-                    1 => "chat",
-                    2 => "benchmark",
-                    _ => "unknown",
-                };
-                println!("MoQ example type set to {}", type_name);
-                Ok(())
-            }
-        },
-        NetAction::MoqConfig => {
-            let config = app.get_moq_config();
-            println!("{}", config);
-            Ok(())
-        }
         NetAction::BenchmarkFps { action } => match action.unwrap_or_default() {
             GetSetU32::Get => {
                 let fps = app.get_benchmark_fps();
@@ -360,28 +311,31 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Ok(())
             }
         },
-        NetAction::MoqStart => {
-            match app.start_moq_example() {
-                Ok(type_byte) => {
-                    let type_name = match type_byte {
-                        0 => "clock",
-                        1 => "chat",
-                        2 => "benchmark",
-                        _ => "unknown",
-                    };
-                    println!("Started MoQ {} example", type_name);
+        NetAction::RunClock => {
+            match app.run_clock() {
+                Ok(()) => {
+                    println!("Started clock mode (subscribing to clock track)");
                     Ok(())
                 }
-                Err(e) => Err(format!("Failed to start MoQ example: {}", e).into()),
+                Err(e) => Err(format!("Failed to run clock: {}", e).into()),
             }
         }
-        NetAction::MoqStop => {
-            match app.stop_moq_example() {
+        NetAction::RunBenchmark => {
+            match app.run_benchmark() {
                 Ok(()) => {
-                    println!("Stopped MoQ example");
+                    println!("Started benchmark mode (publishing frames)");
                     Ok(())
                 }
-                Err(e) => Err(format!("Failed to stop MoQ example: {}", e).into()),
+                Err(e) => Err(format!("Failed to run benchmark: {}", e).into()),
+            }
+        }
+        NetAction::StopMode => {
+            match app.stop_mode() {
+                Ok(()) => {
+                    println!("Stopped current mode");
+                    Ok(())
+                }
+                Err(e) => Err(format!("Failed to stop mode: {}", e).into()),
             }
         }
         NetAction::Chat { message } => {

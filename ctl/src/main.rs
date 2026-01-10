@@ -204,27 +204,12 @@ enum NetAction {
         action: Option<GetSetBool>,
     },
 
-    // MoQ commands
+    // MoQ commands (client auto-connects to relay)
     #[command(name = "moq-relay-url")]
     MoqRelayUrl {
         #[command(subcommand)]
         action: Option<GetSetString>,
     },
-
-    #[command(name = "moq-enabled")]
-    MoqEnabled {
-        #[command(subcommand)]
-        action: Option<GetSetBool>,
-    },
-
-    #[command(name = "moq-type")]
-    MoqType {
-        #[command(subcommand)]
-        action: Option<MoqTypeAction>,
-    },
-
-    #[command(name = "moq-config")]
-    MoqConfig,
 
     #[command(name = "benchmark-fps")]
     BenchmarkFps {
@@ -238,11 +223,17 @@ enum NetAction {
         action: Option<GetSetU32>,
     },
 
-    #[command(name = "moq-start")]
-    MoqStart,
+    /// Run clock mode - subscribe to clock track and log received times
+    #[command(name = "run-clock")]
+    RunClock,
 
-    #[command(name = "moq-stop")]
-    MoqStop,
+    /// Run benchmark mode - publish frames at configured FPS and size
+    #[command(name = "run-benchmark")]
+    RunBenchmark,
+
+    /// Stop current running mode
+    #[command(name = "stop-mode")]
+    StopMode,
 
     #[command(name = "chat")]
     Chat {
@@ -255,17 +246,6 @@ enum NetAction {
 enum WifiAction {
     Add { ssid: String, password: String },
     Clear,
-}
-
-#[derive(Debug, Clone, Default, Subcommand)]
-pub enum MoqTypeAction {
-    #[default]
-    Get,
-    /// Set MoQ example type (clock, chat, benchmark)
-    Set {
-        /// Example type: clock, chat, or benchmark
-        value: String,
-    },
 }
 
 /// Open a serial port with standard settings

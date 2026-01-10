@@ -87,10 +87,6 @@ enum MoqMode {
 struct MoqConfig {
     /// MoQ relay URL.
     relay_url: String<MAX_MOQ_RELAY_URL_LEN>,
-    /// Whether MoQ is enabled.
-    enabled: bool,
-    /// Current mode.
-    current_mode: MoqExampleType,
     /// Target FPS for benchmark mode (0 = burst mode).
     benchmark_fps: u32,
     /// Payload size for benchmark mode.
@@ -101,8 +97,6 @@ impl Default for MoqConfig {
     fn default() -> Self {
         Self {
             relay_url: String::new(),
-            enabled: false,
-            current_mode: MoqExampleType::Clock,
             benchmark_fps: 50,
             benchmark_payload_size: 640,
         }
@@ -954,43 +948,6 @@ fn handle_mgmt_message(
                 write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
             }
         }
-        MgmtToNet::GetMoqEnabled => {
-            write_tlv(mgmt_uart, NetToMgmt::MoqEnabled, &[moq.enabled as u8]);
-        }
-        MgmtToNet::SetMoqEnabled => {
-            moq.enabled = value.first().copied().unwrap_or(0) != 0;
-            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
-        }
-        MgmtToNet::GetMoqExampleType => {
-            let type_byte: u8 = moq.current_mode.into();
-            write_tlv(mgmt_uart, NetToMgmt::MoqExampleType, &[type_byte]);
-        }
-        MgmtToNet::SetMoqExampleType => {
-            if let Some(&type_byte) = value.first() {
-                if let Ok(example_type) = MoqExampleType::try_from(type_byte) {
-                    moq.current_mode = example_type;
-                    write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
-                } else {
-                    write_tlv(mgmt_uart, NetToMgmt::Error, b"invalid type");
-                }
-            } else {
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"missing type");
-            }
-        }
-        MgmtToNet::GetMoqConfig => {
-            let example_name = match moq.current_mode {
-                MoqExampleType::Clock => "clock",
-                MoqExampleType::Chat => "chat",
-                MoqExampleType::Benchmark => "benchmark",
-            };
-            let text = format!(
-                "enabled={} type={} fps={} payload={} url={}",
-                moq.enabled, example_name, moq.benchmark_fps, moq.benchmark_payload_size, moq.relay_url
-            );
-            let mut config_text = heapless::Vec::<u8, 256>::new();
-            let _ = config_text.extend_from_slice(text.as_bytes());
-            write_tlv(mgmt_uart, NetToMgmt::MoqConfig, &config_text);
-        }
         MgmtToNet::GetBenchmarkFps => {
             write_tlv(mgmt_uart, NetToMgmt::BenchmarkFps, &moq.benchmark_fps.to_le_bytes());
         }
@@ -1013,30 +970,22 @@ fn handle_mgmt_message(
                 write_tlv(mgmt_uart, NetToMgmt::Error, b"invalid size");
             }
         }
-        MgmtToNet::StartMoqExample => {
-            // Start the configured example
-            match moq.current_mode {
-                MoqExampleType::Clock => {
-                    let _ = moq_cmd_tx.send(MoqCommand::RunClock);
-                }
-                MoqExampleType::Benchmark => {
-                    let _ = moq_cmd_tx.send(MoqCommand::RunBenchmark {
-                        fps: moq.benchmark_fps,
-                        payload_size: moq.benchmark_payload_size,
-                    });
-                }
-                MoqExampleType::Chat => {
-                    // Chat mode - just acknowledge, messages sent via SendChatMessage
-                    write_tlv(mgmt_uart, NetToMgmt::MoqExampleStarted, &[MoqExampleType::Chat.into()]);
-                    return;
-                }
-            }
-            let type_byte: u8 = moq.current_mode.into();
-            write_tlv(mgmt_uart, NetToMgmt::MoqExampleStarted, &[type_byte]);
+        MgmtToNet::RunClock => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunClock);
+            // Mode 0 = Clock
+            write_tlv(mgmt_uart, NetToMgmt::ModeStarted, &[0]);
         }
-        MgmtToNet::StopMoqExample => {
+        MgmtToNet::RunBenchmark => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunBenchmark {
+                fps: moq.benchmark_fps,
+                payload_size: moq.benchmark_payload_size,
+            });
+            // Mode 1 = Benchmark
+            write_tlv(mgmt_uart, NetToMgmt::ModeStarted, &[1]);
+        }
+        MgmtToNet::StopMode => {
             let _ = moq_cmd_tx.send(MoqCommand::StopMode);
-            write_tlv(mgmt_uart, NetToMgmt::MoqExampleStopped, &[]);
+            write_tlv(mgmt_uart, NetToMgmt::ModeStopped, &[]);
         }
         MgmtToNet::SendChatMessage => {
             if let Ok(message) = core::str::from_utf8(value) {

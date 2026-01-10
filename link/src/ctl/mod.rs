@@ -1505,56 +1505,6 @@ where
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
     }
 
-    /// Get MoQ enabled state from NET chip.
-    pub fn get_moq_enabled(&mut self) -> bool {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetMoqEnabled, &[]).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::MoqEnabled);
-        tlv.value.first().copied().unwrap_or(0) != 0
-    }
-
-    /// Set MoQ enabled state on NET chip.
-    pub fn set_moq_enabled(&mut self, enabled: bool) {
-        write_tlv(
-            &mut self.writer.net(),
-            MgmtToNet::SetMoqEnabled,
-            &[enabled as u8],
-        )
-        .unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
-    }
-
-    /// Get MoQ example type from NET chip.
-    pub fn get_moq_example_type(&mut self) -> u8 {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetMoqExampleType, &[]).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::MoqExampleType);
-        tlv.value.first().copied().unwrap_or(0)
-    }
-
-    /// Set MoQ example type on NET chip.
-    /// Type: 0=Clock, 1=Chat, 2=Benchmark
-    pub fn set_moq_example_type(&mut self, example_type: u8) {
-        write_tlv(
-            &mut self.writer.net(),
-            MgmtToNet::SetMoqExampleType,
-            &[example_type],
-        )
-        .unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
-    }
-
-    /// Get MoQ configuration summary from NET chip.
-    pub fn get_moq_config(&mut self) -> heapless::String<256> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetMoqConfig, &[]).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::MoqConfig);
-        let config_str = core::str::from_utf8(&tlv.value).expect("Invalid UTF-8");
-        config_str.try_into().expect("Config too long")
-    }
-
     /// Get benchmark FPS from NET chip.
     pub fn get_benchmark_fps(&mut self) -> u32 {
         write_tlv(&mut self.writer.net(), MgmtToNet::GetBenchmarkFps, &[]).unwrap();
@@ -1603,15 +1553,12 @@ where
         assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
     }
 
-    /// Start MoQ example on NET chip.
-    /// Returns the example type that was started, or an error message.
-    pub fn start_moq_example(&mut self) -> Result<u8, heapless::String<64>> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::StartMoqExample, &[]).unwrap();
+    /// Run clock mode on NET chip - subscribe to clock track and log times.
+    pub fn run_clock(&mut self) -> Result<(), heapless::String<64>> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::RunClock, &[]).unwrap();
         let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         match tlv.tlv_type {
-            NetToMgmt::MoqExampleStarted => {
-                Ok(tlv.value.first().copied().unwrap_or(0))
-            }
+            NetToMgmt::ModeStarted => Ok(()),
             NetToMgmt::Error => {
                 let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
                 Err(err.try_into().unwrap_or_default())
@@ -1620,12 +1567,26 @@ where
         }
     }
 
-    /// Stop MoQ example on NET chip.
-    pub fn stop_moq_example(&mut self) -> Result<(), heapless::String<64>> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::StopMoqExample, &[]).unwrap();
+    /// Run benchmark mode on NET chip - publish frames at configured FPS.
+    pub fn run_benchmark(&mut self) -> Result<(), heapless::String<64>> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::RunBenchmark, &[]).unwrap();
         let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         match tlv.tlv_type {
-            NetToMgmt::MoqExampleStopped => Ok(()),
+            NetToMgmt::ModeStarted => Ok(()),
+            NetToMgmt::Error => {
+                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+                Err(err.try_into().unwrap_or_default())
+            }
+            _ => Err("unexpected response".try_into().unwrap_or_default()),
+        }
+    }
+
+    /// Stop current running mode on NET chip.
+    pub fn stop_mode(&mut self) -> Result<(), heapless::String<64>> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::StopMode, &[]).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+        match tlv.tlv_type {
+            NetToMgmt::ModeStopped => Ok(()),
             NetToMgmt::Error => {
                 let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
                 Err(err.try_into().unwrap_or_default())

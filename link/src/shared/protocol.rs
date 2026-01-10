@@ -98,21 +98,11 @@ pub enum MgmtToNet {
     GetLoopback,
     /// Start WebSocket speed test
     WsSpeedTest,
-    // MoQ commands
+    // MoQ commands (client auto-connects to relay)
     /// Get MoQ relay URL
     GetMoqRelayUrl,
     /// Set MoQ relay URL (value: UTF-8 URL string)
     SetMoqRelayUrl,
-    /// Get MoQ enabled state
-    GetMoqEnabled,
-    /// Set MoQ enabled state (1 byte: 0=disabled, 1=enabled)
-    SetMoqEnabled,
-    /// Get MoQ example type
-    GetMoqExampleType,
-    /// Set MoQ example type (1 byte: 0=Clock, 1=Chat, 2=Benchmark)
-    SetMoqExampleType,
-    /// Get MoQ configuration summary
-    GetMoqConfig,
     /// Get benchmark target FPS (4 bytes LE)
     GetBenchmarkFps,
     /// Set benchmark target FPS (4 bytes LE, 0=burst mode)
@@ -121,10 +111,12 @@ pub enum MgmtToNet {
     GetBenchmarkPayloadSize,
     /// Set benchmark payload size (4 bytes LE)
     SetBenchmarkPayloadSize,
-    /// Start MoQ example
-    StartMoqExample,
-    /// Stop MoQ example
-    StopMoqExample,
+    /// Run clock mode - subscribe to clock track and log received times
+    RunClock,
+    /// Run benchmark mode - publish frames at configured FPS and size
+    RunBenchmark,
+    /// Stop current running mode
+    StopMode,
     /// Send chat message (value: UTF-8 message)
     SendChatMessage,
 }
@@ -150,20 +142,18 @@ pub enum NetToMgmt {
     // MoQ responses
     /// MoQ relay URL (value: UTF-8 URL string)
     MoqRelayUrl,
-    /// MoQ enabled state (1 byte: 0=disabled, 1=enabled)
-    MoqEnabled,
-    /// MoQ example type (1 byte: 0=Clock, 1=Chat, 2=Benchmark)
-    MoqExampleType,
-    /// MoQ configuration summary (value: text)
-    MoqConfig,
     /// Benchmark target FPS (4 bytes LE)
     BenchmarkFps,
     /// Benchmark payload size (4 bytes LE)
     BenchmarkPayloadSize,
-    /// MoQ example started (1 byte: example type)
-    MoqExampleStarted,
-    /// MoQ example stopped
-    MoqExampleStopped,
+    /// MoQ connected to relay
+    MoqConnected,
+    /// MoQ disconnected from relay
+    MoqDisconnected,
+    /// Mode started (1 byte: 0=Clock, 1=Benchmark)
+    ModeStarted,
+    /// Mode stopped
+    ModeStopped,
     /// Chat message sent confirmation
     ChatMessageSent,
     /// Chat message received (value: UTF-8 message)
