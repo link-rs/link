@@ -37,28 +37,31 @@
 //! ## Quick Start
 //!
 //! ```rust,ignore
-//! use quicr::{Client, ClientConfig, FullTrackName};
+//! use quicr::{ClientBuilder, FullTrackName, ObjectHeaders};
 //!
-//! // Create client
-//! let config = ClientConfig::builder()
+//! // Create and connect client
+//! let client = ClientBuilder::new()
 //!     .endpoint_id("my-client")
 //!     .connect_uri("moqt://relay.example.com:4433")
 //!     .build()?;
 //!
-//! let mut client = Client::new(config).await?;
-//!
-//! // Connect
 //! client.connect().await?;
 //!
 //! // Publish
-//! let track = FullTrackName::from_strings(&["audio", "room1"], "mic")?;
-//! let publisher = client.publish(&track).await?;
-//! publisher.send(&audio_data).await?;
+//! let track = FullTrackName::from_strings(&["audio", "room1"], "mic");
+//! let publisher = client.publish(track).await?;
+//! let headers = ObjectHeaders::new(0, 0); // group_id, object_id
+//! publisher.publish(&headers, &audio_data)?;
 //!
 //! // Subscribe
-//! let subscriber = client.subscribe(&track).await?;
-//! while let Some(obj) = subscriber.recv().await? {
-//!     // Handle received data
+//! let track = FullTrackName::from_strings(&["audio", "room1"], "mic");
+//! let mut subscriber = client.subscribe(track).await?;
+//! loop {
+//!     let obj = subscriber.recv().await;
+//!     // Handle received data in obj.data
+//!     if subscriber.is_done() {
+//!         break;
+//!     }
 //! }
 //! ```
 

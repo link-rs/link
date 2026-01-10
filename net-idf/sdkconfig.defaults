@@ -1,0 +1,40 @@
+# Rust often needs a bit of an extra main task stack size compared to C (the default is 3K)
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8000
+
+# Use this to set FreeRTOS kernel tick frequency to 1000 Hz (100 Hz by default).
+# This allows to use 1 ms granularity for thread sleeps (10 ms by default).
+#CONFIG_FREERTOS_HZ=1000
+
+# Workaround for https://github.com/espressif/esp-idf/issues/7631
+#CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
+#CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=n
+
+# C++ features required by libquicr
+# RTTI needed for std::thread typeinfo symbols
+CONFIG_COMPILER_CXX_RTTI=y
+CONFIG_COMPILER_CXX_EXCEPTIONS=y
+CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE=1024
+
+# C++ Standard Library - enable std::thread support via pthread
+CONFIG_LIBSTDCXX_ENABLE_PTHREAD=y
+
+# pthread stack - make sure threads have enough stack
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=16384
+CONFIG_PTHREAD_STACK_MIN=768
+
+# mbedTLS (for QUIC)
+CONFIG_MBEDTLS_HARDWARE_AES=y
+CONFIG_MBEDTLS_HARDWARE_SHA=y
+CONFIG_MBEDTLS_TLS_ENABLED=y
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# FreeRTOS
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_UNICORE=n
+
+# Watchdog timers
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
