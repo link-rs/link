@@ -1,4 +1,6 @@
-//! WiFi credential types shared between chips.
+//! WiFi credential types shared between ctl and net.
+//!
+//! This module is only compiled when the `ctl` or `net` feature is enabled.
 
 use heapless::String;
 use serde::{Deserialize, Serialize};
@@ -9,11 +11,11 @@ const MAX_SSID_LEN: usize = 32;
 /// Maximum length for WiFi password (63 bytes per WPA2 spec).
 const MAX_PASSWORD_LEN: usize = 63;
 
-/// Maximum number of WiFi credentials to store (only for net firmware).
+/// Maximum number of WiFi credentials to store.
 #[cfg(feature = "net")]
 pub const MAX_WIFI_SSIDS: usize = 8;
 
-/// Maximum length for relay URL (only for net firmware).
+/// Maximum length for relay URL.
 #[cfg(feature = "net")]
 pub const MAX_RELAY_URL_LEN: usize = 128;
 

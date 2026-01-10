@@ -38,3 +38,9 @@ CONFIG_FREERTOS_UNICORE=n
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# Storage / Flash (8MB flash)
+# Note: Custom partition table (partitions.csv) is used during flashing via CTL
+# See: make flash-net-idf or: ctl net flash <binary> --partition-table partitions.csv
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"

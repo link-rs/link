@@ -148,36 +148,23 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         },
         NetAction::Flash {
             file,
-            address,
-            compress: _compress, // Not used with espflash (stub handles compression internally)
-            no_verify,
+            partition_table,
         } => {
             println!("NET Flash (ESP32) - using espflash");
             println!("===================================\n");
 
-            let address: u32 = if address.starts_with("0x") || address.starts_with("0X") {
-                u32::from_str_radix(&address[2..], 16).map_err(|_| "Invalid hex address")?
-            } else {
-                address.parse().map_err(|_| "Invalid address")?
-            };
-
-            if address == 0x10000 {
-                println!("Note: Using default app address 0x10000 (standard ESP-IDF layout)");
-                println!("      Use --address to override if needed.\n");
-            }
-
-            if no_verify {
-                println!("Note: Verification disabled (--no-verify)\n");
-            }
-
             let firmware = std::fs::read(&file)?;
             println!("Firmware: {} ({} bytes)", file.display(), firmware.len());
-            println!("Flash address: 0x{:08X}", address);
+            if let Some(ref pt) = partition_table {
+                println!("Partition table: {}", pt.display());
+                println!("  (app address determined by partition table)");
+            } else {
+                println!("Partition table: default (single app at 0x10000)");
+            }
             println!("Resetting NET chip to bootloader mode...\n");
 
             let mut progress = FlashProgress::new();
-            let verify = !no_verify;
-            let result = app.flash_net(&firmware, address, verify, &mut progress);
+            let result = app.flash_net(&firmware, partition_table.as_deref(), &mut progress);
 
             progress.finish();
 

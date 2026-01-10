@@ -70,8 +70,10 @@ pub struct Tlv<T> {
 mod async_tlv {
     use super::*;
 
+    #[cfg(test)]
     type TlvVec = Vec<u8, { HEADER_SIZE + MAX_VALUE_SIZE }>;
 
+    #[cfg(test)]
     impl<T> Tlv<T> {
         /// Encode a TLV to bytes (header + value, no sync word).
         pub fn encode(tlv_type: T, value: &[u8]) -> TlvVec
