@@ -170,14 +170,10 @@ enum NetAction {
     Flash {
         file: std::path::PathBuf,
 
-        #[arg(short, long, default_value = "0x10000")]
-        address: String,
-
-        #[arg(short, long)]
-        compress: bool,
-
-        #[arg(long)]
-        no_verify: bool,
+        /// Path to a custom partition table (CSV or binary).
+        /// If not specified, the default partition table is used.
+        #[arg(short = 'P', long)]
+        partition_table: Option<std::path::PathBuf>,
     },
 
     Wifi {

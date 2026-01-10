@@ -1,4 +1,4 @@
-.PHONY: all preflight format flash-ui flash-mgmt flash-net clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl
+.PHONY: all preflight format flash-ui flash-mgmt flash-net flash-net-idf clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl
 
 CRATES = ui mgmt net ctl link web-ctl web-link bootloader echo-server
 
@@ -6,6 +6,8 @@ CRATES = ui mgmt net ctl link web-ctl web-link bootloader echo-server
 UI_BIN = ui/target/thumbv7em-none-eabihf/debug/ui.bin
 MGMT_BIN = mgmt/target/thumbv6m-none-eabi/debug/mgmt.bin
 NET_BIN = net/target/xtensa-esp32s3-none-elf/debug/net
+NET_IDF_BIN = net-idf/target/xtensa-esp32s3-espidf/debug/net-idf
+NET_IDF_PARTITIONS = net-idf/partitions.csv
 
 # Build everything: all firmwares, ctl, and web apps
 all: $(UI_BIN) $(MGMT_BIN) $(NET_BIN) ctl web-ctl web-link
@@ -49,9 +51,17 @@ flash-ui: $(UI_BIN)
 flash-mgmt: $(MGMT_BIN)
 	cd ctl && cargo run -- mgmt flash ../$(MGMT_BIN)
 
-# Flash NET chip (ESP32-S3)
+# Flash NET chip (ESP32-S3) - uses net/ crate (bare-metal)
 flash-net: $(NET_BIN)
 	cd ctl && cargo run -- net flash $(abspath $(NET_BIN))
+
+# Flash NET-IDF chip (ESP32-S3) - uses net-idf/ crate (ESP-IDF based)
+# Uses partition table for proper 8MB flash layout with 4MB app partition
+$(NET_IDF_BIN): FORCE
+	cd net-idf && cargo build
+
+flash-net-idf: $(NET_IDF_BIN)
+	cd ctl && cargo run -- net flash $(abspath $(NET_IDF_BIN)) --partition-table $(abspath $(NET_IDF_PARTITIONS))
 
 # Web CTL (WASM)
 web-ctl: $(UI_BIN) $(MGMT_BIN) $(NET_BIN)

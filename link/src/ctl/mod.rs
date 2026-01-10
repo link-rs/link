@@ -16,6 +16,7 @@ use espflash::image_format::idf::IdfBootloaderFormat;
 use espflash::target::Chip;
 use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, StopBits, UsbPortInfo};
 use std::io::{self, Read, Write};
+use std::path::Path;
 use std::time::Duration;
 use stm::Bootloader;
 
@@ -1384,11 +1385,13 @@ where
     ///
     /// The `firmware` parameter should be an ELF file - espflash converts it
     /// to IDF bootloader format. Progress is reported via the `ProgressCallbacks` trait.
+    ///
+    /// If `partition_table` is provided, it should be a path to a CSV or binary
+    /// partition table file. Otherwise, the default partition table is used.
     pub fn flash_net(
         &mut self,
         elf_data: &[u8],
-        _address: u32,
-        _verify: bool,
+        partition_table: Option<&Path>,
         progress: &mut dyn ProgressCallbacks,
     ) -> Result<(), EspflashError> {
         let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer);
@@ -1421,8 +1424,9 @@ where
         let flash_settings = FlashSettings::new(None, Some(info.flash_size), None);
         let flash_data = FlashData::new(flash_settings, 0, None, chip, info.crystal_frequency);
 
-        let image_format = IdfBootloaderFormat::new(elf_data, &flash_data, None, None, None, None)
-            .map_err(|e| EspflashError::Espflash(format!("IdfBootloaderFormat: {:?}", e)))?;
+        let image_format =
+            IdfBootloaderFormat::new(elf_data, &flash_data, partition_table, None, None, None)
+                .map_err(|e| EspflashError::Espflash(format!("IdfBootloaderFormat: {:?}", e)))?;
 
         flasher
             .load_image_to_flash(progress, image_format.into())
