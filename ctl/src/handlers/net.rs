@@ -1,6 +1,6 @@
 //! NET chip command handlers.
 
-use crate::{App, GetSetBool, GetSetString, NetAction, WifiAction};
+use crate::{App, GetSetBool, GetSetString, GetSetU32, NetAction, WifiAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::ProgressCallbacks;
 
@@ -262,6 +262,91 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Ok(())
             }
         },
+        // MoQ commands
+        NetAction::MoqRelayUrl { action } => match action.unwrap_or_default() {
+            GetSetString::Get => {
+                let url = app.get_moq_relay_url();
+                if url.is_empty() {
+                    println!("(not set)");
+                } else {
+                    println!("{}", url);
+                }
+                Ok(())
+            }
+            GetSetString::Set { value } => {
+                app.set_moq_relay_url(&value);
+                println!("MoQ relay URL set to {}", value);
+                Ok(())
+            }
+        },
+        NetAction::BenchmarkFps { action } => match action.unwrap_or_default() {
+            GetSetU32::Get => {
+                let fps = app.get_benchmark_fps();
+                if fps == 0 {
+                    println!("0 (burst mode)");
+                } else {
+                    println!("{}", fps);
+                }
+                Ok(())
+            }
+            GetSetU32::Set { value } => {
+                app.set_benchmark_fps(value);
+                if value == 0 {
+                    println!("Benchmark FPS set to burst mode");
+                } else {
+                    println!("Benchmark FPS set to {}", value);
+                }
+                Ok(())
+            }
+        },
+        NetAction::BenchmarkPayloadSize { action } => match action.unwrap_or_default() {
+            GetSetU32::Get => {
+                let size = app.get_benchmark_payload_size();
+                println!("{}", size);
+                Ok(())
+            }
+            GetSetU32::Set { value } => {
+                app.set_benchmark_payload_size(value);
+                println!("Benchmark payload size set to {}", value);
+                Ok(())
+            }
+        },
+        NetAction::RunClock => {
+            match app.run_clock() {
+                Ok(()) => {
+                    println!("Started clock mode (subscribing to clock track)");
+                    Ok(())
+                }
+                Err(e) => Err(format!("Failed to run clock: {}", e).into()),
+            }
+        }
+        NetAction::RunBenchmark => {
+            match app.run_benchmark() {
+                Ok(()) => {
+                    println!("Started benchmark mode (publishing frames)");
+                    Ok(())
+                }
+                Err(e) => Err(format!("Failed to run benchmark: {}", e).into()),
+            }
+        }
+        NetAction::StopMode => {
+            match app.stop_mode() {
+                Ok(()) => {
+                    println!("Stopped current mode");
+                    Ok(())
+                }
+                Err(e) => Err(format!("Failed to stop mode: {}", e).into()),
+            }
+        }
+        NetAction::Chat { message } => {
+            match app.send_chat_message(&message) {
+                Ok(()) => {
+                    println!("Chat message sent");
+                    Ok(())
+                }
+                Err(e) => Err(format!("Failed to send chat message: {}", e).into()),
+            }
+        }
     }
 }
 

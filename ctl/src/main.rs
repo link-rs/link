@@ -203,6 +203,43 @@ enum NetAction {
         #[command(subcommand)]
         action: Option<GetSetBool>,
     },
+
+    // MoQ commands (client auto-connects to relay)
+    #[command(name = "moq-relay-url")]
+    MoqRelayUrl {
+        #[command(subcommand)]
+        action: Option<GetSetString>,
+    },
+
+    #[command(name = "benchmark-fps")]
+    BenchmarkFps {
+        #[command(subcommand)]
+        action: Option<GetSetU32>,
+    },
+
+    #[command(name = "benchmark-payload-size")]
+    BenchmarkPayloadSize {
+        #[command(subcommand)]
+        action: Option<GetSetU32>,
+    },
+
+    /// Run clock mode - subscribe to clock track and log received times
+    #[command(name = "run-clock")]
+    RunClock,
+
+    /// Run benchmark mode - publish frames at configured FPS and size
+    #[command(name = "run-benchmark")]
+    RunBenchmark,
+
+    /// Stop current running mode
+    #[command(name = "stop-mode")]
+    StopMode,
+
+    #[command(name = "chat")]
+    Chat {
+        /// Chat message to send
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]

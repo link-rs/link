@@ -6,483 +6,430 @@
 //! - LED status indication
 //! - NVS storage for WiFi credentials and relay URL
 //! - Audio loopback mode
-//!
-//! Note: WebSocket functionality is not yet implemented in this version.
+//! - MoQ (Media over QUIC) transport via quicr
 
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
         gpio::{OutputPin, PinDriver},
         prelude::Peripherals,
+        task::block_on,
         uart::{self, UartDriver},
     },
     nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
 };
 use heapless::String;
 use link::{
-    net::{WifiSsid, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS},
+    net::{MoqExampleType, WifiSsid, MAX_MOQ_RELAY_URL_LEN, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS},
     uart_config, Color, MgmtToNet, NetToMgmt, NetToUi, UiToNet,
     HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD,
 };
-use log::{info, warn};
+use log::{error, info, warn};
+use quicr::{ClientBuilder, FullTrackName, ObjectHeaders, TrackNamespace, runtime::sleep_ms};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-/// NVS namespace for NET storage.
-const NVS_NAMESPACE: &str = "net";
+// ============================================================================
+// MoQ Command/Event Types
+// ============================================================================
 
-fn main() {
-    // Initialize ESP-IDF
-    esp_idf_svc::sys::link_patches();
-    esp_idf_svc::log::EspLogger::initialize_default();
+/// Commands sent to the MoQ task.
+#[derive(Clone)]
+enum MoqCommand {
+    /// Set the relay URL (triggers reconnect if changed).
+    SetRelayUrl(std::string::String),
+    /// Run clock mode - publish timestamps every second.
+    RunClock,
+    /// Run benchmark mode - publish at target FPS.
+    RunBenchmark { fps: u32, payload_size: u32 },
+    /// Send a chat message.
+    SendChat { message: std::string::String },
+    /// Stop the current mode.
+    StopMode,
+}
 
-    info!("net-idf: initializing");
+/// Events sent from the MoQ task back to the main loop.
+#[allow(dead_code)] // ChatReceived will be used when subscription is implemented
+enum MoqEvent {
+    /// Connected to relay.
+    Connected,
+    /// Disconnected from relay.
+    Disconnected,
+    /// Mode started.
+    ModeStarted { mode: MoqExampleType },
+    /// Mode stopped.
+    ModeStopped,
+    /// Error occurred.
+    Error { message: std::string::String },
+    /// Chat message sent successfully.
+    ChatSent,
+    /// Chat message received.
+    ChatReceived { message: std::string::String },
+}
 
-    let peripherals = Peripherals::take().unwrap();
-    let sys_loop = EspSystemEventLoop::take().unwrap();
-    let nvs_partition = EspDefaultNvsPartition::take().unwrap();
+/// Current mode the MoQ client is running.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum MoqMode {
+    #[default]
+    Idle,
+    Clock,
+    Benchmark { fps: u32, payload_size: u32 },
+}
 
-    // Initialize LED - RGB on GPIO 38, 37, 36 (active low)
-    let mut led_r = PinDriver::output(peripherals.pins.gpio38).unwrap();
-    let mut led_g = PinDriver::output(peripherals.pins.gpio37).unwrap();
-    let mut led_b = PinDriver::output(peripherals.pins.gpio36).unwrap();
+// ============================================================================
+// MoQ Configuration (stored in main loop)
+// ============================================================================
 
-    // Start with red LED (WiFi not connected)
-    set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Red);
+/// Runtime MoQ configuration.
+struct MoqConfig {
+    /// MoQ relay URL.
+    relay_url: String<MAX_MOQ_RELAY_URL_LEN>,
+    /// Target FPS for benchmark mode (0 = burst mode).
+    benchmark_fps: u32,
+    /// Payload size for benchmark mode.
+    benchmark_payload_size: u32,
+}
 
-    // Initialize UARTs
-    // MGMT UART: UART0, GPIO43 (TX), GPIO44 (RX)
-    let mgmt_uart_config = {
-        let mut config = uart::config::Config::new()
-            .baudrate(uart_config::MGMT_NET.baudrate.into())
-            .data_bits(uart::config::DataBits::DataBits8);
-
-        config = match uart_config::MGMT_NET.parity {
-            uart_config::Parity::None => config.parity_none(),
-            uart_config::Parity::Even => config.parity_even(),
-        };
-
-        config = match uart_config::MGMT_NET.stop_bits {
-            uart_config::StopBits::One => config.stop_bits(uart::config::StopBits::STOP1),
-            uart_config::StopBits::Two => config.stop_bits(uart::config::StopBits::STOP2),
-        };
-
-        config
-    };
-
-    let mgmt_uart = UartDriver::new(
-        peripherals.uart0,
-        peripherals.pins.gpio43, // TX
-        peripherals.pins.gpio44, // RX
-        Option::<GpioStub>::None,
-        Option::<GpioStub>::None,
-        &mgmt_uart_config,
-    )
-    .unwrap();
-
-    // UI UART: UART1, GPIO17 (TX), GPIO18 (RX)
-    let ui_uart_config = {
-        let mut config = uart::config::Config::new()
-            .baudrate(uart_config::UI_NET.baudrate.into())
-            .data_bits(uart::config::DataBits::DataBits8);
-
-        config = match uart_config::UI_NET.parity {
-            uart_config::Parity::None => config.parity_none(),
-            uart_config::Parity::Even => config.parity_even(),
-        };
-
-        config = match uart_config::UI_NET.stop_bits {
-            uart_config::StopBits::One => config.stop_bits(uart::config::StopBits::STOP1),
-            uart_config::StopBits::Two => config.stop_bits(uart::config::StopBits::STOP2),
-        };
-
-        config
-    };
-
-    let ui_uart = UartDriver::new(
-        peripherals.uart1,
-        peripherals.pins.gpio17, // TX
-        peripherals.pins.gpio18, // RX
-        Option::<GpioStub>::None,
-        Option::<GpioStub>::None,
-        &ui_uart_config,
-    )
-    .unwrap();
-
-    info!("net-idf: UARTs initialized");
-
-    // Initialize WiFi
-    let wifi =
-        esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs_partition.clone())).unwrap();
-    let mut wifi = esp_idf_svc::wifi::BlockingWifi::wrap(wifi, sys_loop).unwrap();
-
-    // Open NVS for storage
-    let nvs = match EspNvs::new(nvs_partition.clone(), NVS_NAMESPACE, true) {
-        Ok(nvs) => Some(nvs),
-        Err(e) => {
-            warn!("net-idf: failed to open NVS: {:?}", e);
-            None
-        }
-    };
-
-    // Load storage from NVS
-    let mut storage = NvsStorage::load(nvs);
-    info!(
-        "net-idf: loaded {} WiFi SSIDs from NVS",
-        storage.wifi_ssids.len()
-    );
-
-    // Loopback mode state
-    let mut loopback = false;
-
-    // Main event loop
-    info!("net-idf: starting main loop");
-
-    // For now, try to connect to WiFi if we have credentials
-    if !storage.wifi_ssids.is_empty() {
-        let wifi_ssid = &storage.wifi_ssids[0];
-        info!("net-idf: connecting to WiFi '{}'", wifi_ssid.ssid);
-
-        if let Err(e) = connect_wifi(&mut wifi, &wifi_ssid.ssid, &wifi_ssid.password) {
-            warn!("net-idf: WiFi connect failed: {:?}", e);
-        } else {
-            info!("net-idf: WiFi connected");
-            set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Yellow);
+impl Default for MoqConfig {
+    fn default() -> Self {
+        Self {
+            relay_url: String::new(),
+            benchmark_fps: 50,
+            benchmark_payload_size: 640,
         }
     }
+}
 
-    // Simple TLV handling loop
-    // Buffer size: sync word (4) + header (6) + max value
-    let mut mgmt_rx_buf = [0u8; SYNC_WORD.len() + HEADER_SIZE + MAX_VALUE_SIZE];
-    let mut ui_rx_buf = [0u8; SYNC_WORD.len() + HEADER_SIZE + MAX_VALUE_SIZE];
-    let mut mgmt_rx_pos = 0usize;
-    let mut ui_rx_pos = 0usize;
+// ============================================================================
+// MoQ Task
+// ============================================================================
+
+/// Device endpoint ID for MoQ connections.
+const MOQ_ENDPOINT_ID: &str = "hactar-link-net";
+
+/// Run the MoQ task in a separate thread.
+///
+/// This spawns a thread that handles MoQ connection and operations using
+/// ESP-IDF's native async support.
+fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
+    thread::Builder::new()
+        .name("moq".to_string())
+        .stack_size(32768)
+        .spawn(move || {
+            info!("MoQ task started");
+
+            // Run the async MoQ client loop
+            block_on(moq_task_loop(cmd_rx, event_tx));
+        })
+        .expect("failed to spawn MoQ thread");
+}
+
+/// Async MoQ task loop - handles connection, reconnection, and modes.
+async fn moq_task_loop(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
+    let mut relay_url: Option<std::string::String> = None;
+    let mut client: Option<quicr::Client> = None;
+    let mut current_mode = MoqMode::Idle;
+    let stop_flag = Arc::new(AtomicBool::new(false));
 
     loop {
-        // Check MGMT UART for incoming data
-        if let Some((msg_type, value)) =
-            try_read_tlv(&mgmt_uart, &mut mgmt_rx_buf, &mut mgmt_rx_pos)
-        {
-            if let Ok(tlv_type) = MgmtToNet::try_from(msg_type) {
-                handle_mgmt_message(
-                    tlv_type,
-                    &value,
-                    &mgmt_uart,
-                    &ui_uart,
-                    &mut storage,
-                    &mut loopback,
-                );
+        // Check for commands (non-blocking)
+        match cmd_rx.try_recv() {
+            Ok(MoqCommand::SetRelayUrl(url)) => {
+                if relay_url.as_ref() != Some(&url) {
+                    info!("MoQ: relay URL set to {}", url);
+                    relay_url = Some(url.clone());
+
+                    // Disconnect existing client if any
+                    if let Some(ref c) = client {
+                        let _ = c.disconnect().await;
+                        client = None;
+                        let _ = event_tx.send(MoqEvent::Disconnected);
+                    }
+
+                    // Try to connect with new URL
+                    match create_and_connect_client(&url).await {
+                        Ok(c) => {
+                            info!("MoQ: connected to {}", url);
+                            client = Some(c);
+                            let _ = event_tx.send(MoqEvent::Connected);
+                        }
+                        Err(e) => {
+                            error!("MoQ: failed to connect: {:?}", e);
+                            let _ = event_tx.send(MoqEvent::Error {
+                                message: format!("{:?}", e)
+                            });
+                        }
+                    }
+                }
+            }
+            Ok(MoqCommand::RunClock) => {
+                if client.is_some() && current_mode == MoqMode::Idle {
+                    info!("MoQ: starting clock mode");
+                    current_mode = MoqMode::Clock;
+                    stop_flag.store(false, Ordering::SeqCst);
+                    let _ = event_tx.send(MoqEvent::ModeStarted { mode: MoqExampleType::Clock });
+                } else if client.is_none() {
+                    let _ = event_tx.send(MoqEvent::Error {
+                        message: "not connected".to_string()
+                    });
+                }
+            }
+            Ok(MoqCommand::RunBenchmark { fps, payload_size }) => {
+                if client.is_some() && current_mode == MoqMode::Idle {
+                    info!("MoQ: starting benchmark mode (fps={}, size={})", fps, payload_size);
+                    current_mode = MoqMode::Benchmark { fps, payload_size };
+                    stop_flag.store(false, Ordering::SeqCst);
+                    let _ = event_tx.send(MoqEvent::ModeStarted { mode: MoqExampleType::Benchmark });
+                } else if client.is_none() {
+                    let _ = event_tx.send(MoqEvent::Error {
+                        message: "not connected".to_string()
+                    });
+                }
+            }
+            Ok(MoqCommand::SendChat { message }) => {
+                // TODO: Implement chat message sending
+                info!("MoQ: would send chat: {}", message);
+                let _ = event_tx.send(MoqEvent::ChatSent);
+            }
+            Ok(MoqCommand::StopMode) => {
+                if current_mode != MoqMode::Idle {
+                    info!("MoQ: stopping current mode");
+                    stop_flag.store(true, Ordering::SeqCst);
+                    current_mode = MoqMode::Idle;
+                    let _ = event_tx.send(MoqEvent::ModeStopped);
+                }
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                info!("MoQ: command channel closed, exiting");
+                break;
             }
         }
 
-        // Check UI UART for incoming data
-        if let Some((msg_type, value)) = try_read_tlv(&ui_uart, &mut ui_rx_buf, &mut ui_rx_pos) {
-            if let Ok(tlv_type) = UiToNet::try_from(msg_type) {
-                handle_ui_message(tlv_type, &value, &mgmt_uart, &ui_uart, loopback);
+        // Run current mode if active
+        if let Some(ref c) = client {
+            match current_mode {
+                MoqMode::Idle => {
+                    // Just yield
+                    sleep_ms(10).await;
+                }
+                MoqMode::Clock => {
+                    if let Err(e) = run_clock_tick(c, &stop_flag).await {
+                        error!("MoQ clock error: {:?}", e);
+                        current_mode = MoqMode::Idle;
+                        let _ = event_tx.send(MoqEvent::ModeStopped);
+                    }
+                }
+                MoqMode::Benchmark { fps, payload_size } => {
+                    if let Err(e) = run_benchmark_tick(c, fps, payload_size, &stop_flag).await {
+                        error!("MoQ benchmark error: {:?}", e);
+                        current_mode = MoqMode::Idle;
+                        let _ = event_tx.send(MoqEvent::ModeStopped);
+                    }
+                }
             }
-        }
-
-        // Small delay to prevent busy-waiting
-        thread::sleep(Duration::from_millis(1));
-    }
-}
-
-// GPIO stub type for UART driver (no CTS/RTS)
-type GpioStub = esp_idf_svc::hal::gpio::Gpio0;
-
-/// Set LED color (active low RGB LED)
-fn set_led_color<R: OutputPin, G: OutputPin, B: OutputPin>(
-    led_r: &mut PinDriver<'_, R, esp_idf_svc::hal::gpio::Output>,
-    led_g: &mut PinDriver<'_, G, esp_idf_svc::hal::gpio::Output>,
-    led_b: &mut PinDriver<'_, B, esp_idf_svc::hal::gpio::Output>,
-    color: Color,
-) {
-    // Active low: set_low() turns LED on, set_high() turns LED off
-    match color {
-        Color::Black => {
-            led_r.set_high().ok();
-            led_g.set_high().ok();
-            led_b.set_high().ok();
-        }
-        Color::Red => {
-            led_r.set_low().ok();
-            led_g.set_high().ok();
-            led_b.set_high().ok();
-        }
-        Color::Green => {
-            led_r.set_high().ok();
-            led_g.set_low().ok();
-            led_b.set_high().ok();
-        }
-        Color::Blue => {
-            led_r.set_high().ok();
-            led_g.set_high().ok();
-            led_b.set_low().ok();
-        }
-        Color::Yellow => {
-            led_r.set_low().ok();
-            led_g.set_low().ok();
-            led_b.set_high().ok();
-        }
-        Color::Cyan => {
-            led_r.set_high().ok();
-            led_g.set_low().ok();
-            led_b.set_low().ok();
-        }
-        Color::Magenta => {
-            led_r.set_low().ok();
-            led_g.set_high().ok();
-            led_b.set_low().ok();
-        }
-        Color::White => {
-            led_r.set_low().ok();
-            led_g.set_low().ok();
-            led_b.set_low().ok();
-        }
-    }
-}
-
-/// Connect to WiFi network
-fn connect_wifi(
-    wifi: &mut esp_idf_svc::wifi::BlockingWifi<esp_idf_svc::wifi::EspWifi<'static>>,
-    ssid: &str,
-    password: &str,
-) -> Result<(), esp_idf_svc::sys::EspError> {
-    use esp_idf_svc::wifi::{AuthMethod, ClientConfiguration, Configuration};
-
-    let config = Configuration::Client(ClientConfiguration {
-        ssid: ssid.try_into().unwrap(),
-        password: password.try_into().unwrap(),
-        auth_method: if password.is_empty() {
-            AuthMethod::None
         } else {
-            AuthMethod::WPA2Personal
-        },
-        ..Default::default()
-    });
+            // Not connected, just yield
+            sleep_ms(100).await;
 
-    wifi.set_configuration(&config)?;
-    wifi.start()?;
-    wifi.connect()?;
-    wifi.wait_netif_up()?;
+            // Try to reconnect if we have a URL
+            if let Some(ref url) = relay_url {
+                match create_and_connect_client(url).await {
+                    Ok(c) => {
+                        info!("MoQ: reconnected to {}", url);
+                        client = Some(c);
+                        let _ = event_tx.send(MoqEvent::Connected);
+                    }
+                    Err(_) => {
+                        // Will retry on next loop
+                    }
+                }
+            }
+        }
+    }
+}
 
+/// Create and connect a quicr client.
+async fn create_and_connect_client(relay_url: &str) -> Result<quicr::Client, quicr::Error> {
+    let client = ClientBuilder::new()
+        .endpoint_id(MOQ_ENDPOINT_ID)
+        .connect_uri(relay_url)
+        .build()?;
+
+    client.connect().await?;
+    Ok(client)
+}
+
+/// State for clock mode (persists across ticks).
+/// SAFETY: Only accessed from MoQ task thread.
+static mut CLOCK_STATE: ClockState = ClockState::new();
+
+struct ClockState {
+    track: Option<std::sync::Arc<quicr::PublishTrack>>,
+    group_id: u64,
+    last_publish: Option<std::time::Instant>,
+}
+
+impl ClockState {
+    const fn new() -> Self {
+        Self {
+            track: None,
+            group_id: 0,
+            last_publish: None,
+        }
+    }
+}
+
+/// Run one tick of clock mode.
+#[allow(static_mut_refs)]
+async fn run_clock_tick(
+    client: &quicr::Client,
+    stop_flag: &AtomicBool,
+) -> Result<(), quicr::Error> {
+    if stop_flag.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    // SAFETY: Only accessed from MoQ task thread
+    let state = unsafe { &mut CLOCK_STATE };
+
+    // Initialize track if needed
+    if state.track.is_none() {
+        let track_name = FullTrackName::from_strings(&["hactar", "clock"], "time");
+        let namespace = TrackNamespace::from_strings(&["hactar", "clock"]);
+        client.publish_namespace(&namespace);
+        state.track = Some(client.publish(track_name).await?);
+        info!("MoQ clock: track registered");
+    }
+
+    // Publish every second
+    let now = std::time::Instant::now();
+    let should_publish = state.last_publish
+        .map(|last| now.duration_since(last) >= Duration::from_secs(1))
+        .unwrap_or(true);
+
+    if should_publish {
+        if let Some(ref track) = state.track {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let payload = format!("{}.{:03}", timestamp.as_secs(), timestamp.subsec_millis());
+
+            let headers = ObjectHeaders::new(state.group_id, 0);
+            let _ = track.publish(&headers, payload.as_bytes());
+
+            state.group_id += 1;
+            state.last_publish = Some(now);
+        }
+    }
+
+    // Small yield
+    sleep_ms(10).await;
     Ok(())
 }
 
-/// Total frame size: sync (4) + header (6) + value
-const FRAME_HEADER_SIZE: usize = SYNC_WORD.len() + HEADER_SIZE;
+/// State for benchmark mode.
+static mut BENCHMARK_STATE: BenchmarkState = BenchmarkState::new();
 
-/// Try to read a TLV message from UART (non-blocking)
-/// Protocol: 4-byte sync "LINK" + 2-byte type (BE) + 4-byte length (BE) + value
-fn try_read_tlv(
-    uart: &UartDriver,
-    buf: &mut [u8],
-    pos: &mut usize,
-) -> Option<(u16, heapless::Vec<u8, MAX_VALUE_SIZE>)> {
-    // Try to read available bytes
-    let mut read_buf = [0u8; 64];
-    let len = uart.read(&mut read_buf, 0).unwrap_or(0);
-    if len > 0 {
-        let space = buf.len() - *pos;
-        let copy_len = len.min(space);
-        buf[*pos..*pos + copy_len].copy_from_slice(&read_buf[..copy_len]);
-        *pos += copy_len;
-    }
-
-    // Try to parse TLV - need at least sync word + header
-    if *pos >= FRAME_HEADER_SIZE {
-        // Check for sync word "LINK"
-        if buf[0..4] != SYNC_WORD {
-            // Sync error - try to find sync word in buffer
-            if let Some(idx) = buf[1..*pos].windows(4).position(|w| w == SYNC_WORD) {
-                let new_start = idx + 1;
-                buf.copy_within(new_start..*pos, 0);
-                *pos -= new_start;
-            } else {
-                // No sync word found, keep last 3 bytes (might be partial sync)
-                if *pos > 3 {
-                    buf.copy_within(*pos - 3..*pos, 0);
-                    *pos = 3;
-                }
-            }
-            return None;
-        }
-
-        // Parse header (after sync word): type u16 BE + length u32 BE
-        let msg_type = u16::from_be_bytes([buf[4], buf[5]]);
-        let length = u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]) as usize;
-
-        if length > MAX_VALUE_SIZE {
-            // Invalid length - skip this sync word and try again
-            buf.copy_within(4..*pos, 0);
-            *pos -= 4;
-            return None;
-        }
-
-        let total_len = FRAME_HEADER_SIZE + length;
-        if *pos >= total_len {
-            // Complete message
-            let mut value = heapless::Vec::new();
-            value
-                .extend_from_slice(&buf[FRAME_HEADER_SIZE..total_len])
-                .ok();
-
-            // Shift remaining data
-            buf.copy_within(total_len..*pos, 0);
-            *pos -= total_len;
-
-            return Some((msg_type, value));
-        }
-    }
-
-    None
+struct BenchmarkState {
+    track: Option<std::sync::Arc<quicr::PublishTrack>>,
+    group_id: u64,
+    last_publish: Option<std::time::Instant>,
+    last_report: Option<std::time::Instant>,
+    packets_sent: u64,
 }
 
-/// Write a TLV message to UART
-/// Protocol: 4-byte sync "LINK" + 2-byte type (BE) + 4-byte length (BE) + value
-fn write_tlv<T: Into<u16>>(uart: &UartDriver, msg_type: T, value: &[u8]) {
-    let msg_type: u16 = msg_type.into();
-
-    // Write sync word
-    uart.write(&SYNC_WORD).ok();
-
-    // Write header: type (2 bytes BE) + length (4 bytes BE)
-    let mut header = [0u8; HEADER_SIZE];
-    header[0..2].copy_from_slice(&msg_type.to_be_bytes());
-    header[2..6].copy_from_slice(&(value.len() as u32).to_be_bytes());
-    uart.write(&header).ok();
-
-    // Write value
-    if !value.is_empty() {
-        uart.write(value).ok();
-    }
-}
-
-/// Handle message from MGMT chip
-fn handle_mgmt_message(
-    msg_type: MgmtToNet,
-    value: &[u8],
-    mgmt_uart: &UartDriver,
-    ui_uart: &UartDriver,
-    storage: &mut NvsStorage,
-    loopback: &mut bool,
-) {
-    match msg_type {
-        MgmtToNet::Ping => {
-            info!("net-idf: MGMT ping, sending pong");
-            write_tlv(mgmt_uart, NetToMgmt::Pong, value);
-        }
-        MgmtToNet::CircularPing => {
-            info!("net-idf: MGMT circular ping -> UI");
-            write_tlv(ui_uart, NetToUi::CircularPing, value);
-        }
-        MgmtToNet::AddWifiSsid => {
-            info!("net-idf: add WiFi SSID");
-            if let Ok(wifi) = postcard::from_bytes::<WifiSsid>(value) {
-                if storage.add_wifi_ssid(&wifi.ssid, &wifi.password).is_ok() {
-                    if let Err(e) = storage.save() {
-                        warn!("net-idf: failed to save storage: {:?}", e);
-                        write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
-                        return;
-                    }
-                    write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
-                } else {
-                    write_tlv(mgmt_uart, NetToMgmt::Error, b"add");
-                }
-            } else {
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"deserialize");
-            }
-        }
-        MgmtToNet::GetWifiSsids => {
-            info!("net-idf: get WiFi SSIDs");
-            let mut buf = [0u8; 256];
-            if let Ok(serialized) = postcard::to_slice(&storage.wifi_ssids, &mut buf) {
-                write_tlv(mgmt_uart, NetToMgmt::WifiSsids, serialized);
-            }
-        }
-        MgmtToNet::ClearWifiSsids => {
-            info!("net-idf: clear WiFi SSIDs");
-            storage.wifi_ssids.clear();
-            if let Err(e) = storage.save() {
-                warn!("net-idf: failed to save storage: {:?}", e);
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
-                return;
-            }
-            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
-        }
-        MgmtToNet::GetRelayUrl => {
-            info!("net-idf: get relay URL");
-            write_tlv(mgmt_uart, NetToMgmt::RelayUrl, storage.relay_url.as_bytes());
-        }
-        MgmtToNet::SetRelayUrl => {
-            info!("net-idf: set relay URL");
-            if let Ok(url) = core::str::from_utf8(value) {
-                if let Ok(url_string) = String::try_from(url) {
-                    storage.relay_url = url_string;
-                    if let Err(e) = storage.save() {
-                        warn!("net-idf: failed to save storage: {:?}", e);
-                        write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
-                        return;
-                    }
-                    write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
-                } else {
-                    write_tlv(mgmt_uart, NetToMgmt::Error, b"url");
-                }
-            } else {
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
-            }
-        }
-        MgmtToNet::WsSend => {
-            info!("net-idf: WS send (not implemented)");
-            // WebSocket not implemented - just acknowledge
-        }
-        MgmtToNet::WsEchoTest => {
-            info!("net-idf: WS echo test (not implemented)");
-            // Send empty result (not connected)
-            write_tlv(mgmt_uart, NetToMgmt::WsEchoTestResult, &[]);
-        }
-        MgmtToNet::WsSpeedTest => {
-            info!("net-idf: WS speed test (not implemented)");
-            // Send empty result (not connected)
-            write_tlv(mgmt_uart, NetToMgmt::WsSpeedTestResult, &[]);
-        }
-        MgmtToNet::SetLoopback => {
-            let enabled = value.first().copied().unwrap_or(0) != 0;
-            info!("net-idf: set loopback = {}", enabled);
-            *loopback = enabled;
-            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
-        }
-        MgmtToNet::GetLoopback => {
-            info!("net-idf: get loopback = {}", *loopback);
-            write_tlv(mgmt_uart, NetToMgmt::Loopback, &[*loopback as u8]);
+impl BenchmarkState {
+    const fn new() -> Self {
+        Self {
+            track: None,
+            group_id: 0,
+            last_publish: None,
+            last_report: None,
+            packets_sent: 0,
         }
     }
 }
 
-/// Handle message from UI chip
-fn handle_ui_message(
-    msg_type: UiToNet,
-    value: &[u8],
-    mgmt_uart: &UartDriver,
-    ui_uart: &UartDriver,
-    loopback: bool,
-) {
-    match msg_type {
-        UiToNet::CircularPing => {
-            info!("net-idf: UI circular ping -> MGMT");
-            write_tlv(mgmt_uart, NetToMgmt::CircularPing, value);
-        }
-        UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
-            if loopback {
-                // Loopback mode: echo audio back to UI
-                write_tlv(ui_uart, NetToUi::AudioFrame, value);
-            } else {
-                // Would send to WebSocket if connected
-                // For now, just drop the frame
-            }
+/// Run one tick of benchmark mode.
+#[allow(static_mut_refs)]
+async fn run_benchmark_tick(
+    client: &quicr::Client,
+    fps: u32,
+    payload_size: u32,
+    stop_flag: &AtomicBool,
+) -> Result<(), quicr::Error> {
+    if stop_flag.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    // SAFETY: Only accessed from MoQ task thread
+    let state = unsafe { &mut BENCHMARK_STATE };
+
+    // Initialize track if needed
+    if state.track.is_none() {
+        let track_name = FullTrackName::from_strings(&["hactar", "benchmark"], "data");
+        let namespace = TrackNamespace::from_strings(&["hactar", "benchmark"]);
+        client.publish_namespace(&namespace);
+        state.track = Some(client.publish(track_name).await?);
+        state.last_report = Some(std::time::Instant::now());
+        info!("MoQ benchmark: track registered");
+    }
+
+    let now = std::time::Instant::now();
+
+    // Determine if we should publish based on FPS
+    let interval_us = if fps == 0 { 0 } else { 1_000_000 / fps as u64 };
+    let should_publish = if fps == 0 {
+        true // Burst mode
+    } else {
+        state.last_publish
+            .map(|last| now.duration_since(last).as_micros() as u64 >= interval_us)
+            .unwrap_or(true)
+    };
+
+    if should_publish {
+        if let Some(ref track) = state.track {
+            // Create payload
+            let payload: Vec<u8> = (0..payload_size as usize)
+                .map(|i| (i & 0xFF) as u8)
+                .collect();
+
+            let headers = ObjectHeaders::new(state.group_id, 0);
+            let _ = track.publish(&headers, &payload);
+
+            state.group_id += 1;
+            state.packets_sent += 1;
+            state.last_publish = Some(now);
         }
     }
+
+    // Report stats every second
+    if let Some(last_report) = state.last_report {
+        if now.duration_since(last_report) >= Duration::from_secs(1) {
+            let elapsed = now.duration_since(last_report).as_secs_f64();
+            let actual_fps = state.packets_sent as f64 / elapsed;
+            let throughput_kbps = (state.packets_sent as f64 * payload_size as f64 * 8.0) / elapsed / 1000.0;
+            info!("MoQ benchmark: {:.1} fps, {:.1} kbps", actual_fps, throughput_kbps);
+            state.last_report = Some(now);
+            state.packets_sent = 0;
+        }
+    }
+
+    // Small yield
+    sleep_ms(1).await;
+    Ok(())
 }
+
+// ============================================================================
+// NVS Storage
+// ============================================================================
+
+/// NVS namespace for NET storage.
+const NVS_NAMESPACE: &str = "net";
 
 /// NVS-backed storage implementation
 struct NvsStorage {
@@ -583,5 +530,490 @@ impl NvsStorage {
 
         self.wifi_ssids.push(wifi).map_err(|_| ())?;
         Ok(())
+    }
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() {
+    // Initialize ESP-IDF
+    esp_idf_svc::sys::link_patches();
+    esp_idf_svc::log::EspLogger::initialize_default();
+
+    info!("net-idf: initializing");
+
+    let peripherals = Peripherals::take().unwrap();
+    let sys_loop = EspSystemEventLoop::take().unwrap();
+    let nvs_partition = EspDefaultNvsPartition::take().unwrap();
+
+    // Initialize LED - RGB on GPIO 38, 37, 36 (active low)
+    let mut led_r = PinDriver::output(peripherals.pins.gpio38).unwrap();
+    let mut led_g = PinDriver::output(peripherals.pins.gpio37).unwrap();
+    let mut led_b = PinDriver::output(peripherals.pins.gpio36).unwrap();
+
+    // Start with red LED (WiFi not connected)
+    set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Red);
+
+    // Initialize UARTs
+    let mgmt_uart_config = {
+        let mut config = uart::config::Config::new()
+            .baudrate(uart_config::MGMT_NET.baudrate.into())
+            .data_bits(uart::config::DataBits::DataBits8);
+
+        config = match uart_config::MGMT_NET.parity {
+            uart_config::Parity::None => config.parity_none(),
+            uart_config::Parity::Even => config.parity_even(),
+        };
+
+        config = match uart_config::MGMT_NET.stop_bits {
+            uart_config::StopBits::One => config.stop_bits(uart::config::StopBits::STOP1),
+            uart_config::StopBits::Two => config.stop_bits(uart::config::StopBits::STOP2),
+        };
+
+        config
+    };
+
+    let mgmt_uart = UartDriver::new(
+        peripherals.uart0,
+        peripherals.pins.gpio43,
+        peripherals.pins.gpio44,
+        Option::<GpioStub>::None,
+        Option::<GpioStub>::None,
+        &mgmt_uart_config,
+    )
+    .unwrap();
+
+    let ui_uart_config = {
+        let mut config = uart::config::Config::new()
+            .baudrate(uart_config::UI_NET.baudrate.into())
+            .data_bits(uart::config::DataBits::DataBits8);
+
+        config = match uart_config::UI_NET.parity {
+            uart_config::Parity::None => config.parity_none(),
+            uart_config::Parity::Even => config.parity_even(),
+        };
+
+        config = match uart_config::UI_NET.stop_bits {
+            uart_config::StopBits::One => config.stop_bits(uart::config::StopBits::STOP1),
+            uart_config::StopBits::Two => config.stop_bits(uart::config::StopBits::STOP2),
+        };
+
+        config
+    };
+
+    let ui_uart = UartDriver::new(
+        peripherals.uart1,
+        peripherals.pins.gpio17,
+        peripherals.pins.gpio18,
+        Option::<GpioStub>::None,
+        Option::<GpioStub>::None,
+        &ui_uart_config,
+    )
+    .unwrap();
+
+    info!("net-idf: UARTs initialized");
+
+    // Initialize WiFi
+    let wifi = esp_idf_svc::wifi::EspWifi::new(
+        peripherals.modem,
+        sys_loop.clone(),
+        Some(nvs_partition.clone())
+    ).unwrap();
+    let mut wifi = esp_idf_svc::wifi::BlockingWifi::wrap(wifi, sys_loop).unwrap();
+
+    // Open NVS for storage
+    let nvs = match EspNvs::new(nvs_partition.clone(), NVS_NAMESPACE, true) {
+        Ok(nvs) => Some(nvs),
+        Err(e) => {
+            warn!("net-idf: failed to open NVS: {:?}", e);
+            None
+        }
+    };
+
+    // Load storage from NVS
+    let mut storage = NvsStorage::load(nvs);
+    info!("net-idf: loaded {} WiFi SSIDs from NVS", storage.wifi_ssids.len());
+
+    // Create MoQ channels and spawn task
+    let (moq_cmd_tx, moq_cmd_rx) = mpsc::channel::<MoqCommand>();
+    let (moq_event_tx, moq_event_rx) = mpsc::channel::<MoqEvent>();
+    spawn_moq_task(moq_cmd_rx, moq_event_tx);
+
+    // Loopback mode state
+    let mut loopback = false;
+
+    // MoQ configuration
+    let mut moq_config = MoqConfig::default();
+
+    // Try to connect to WiFi if we have credentials
+    if !storage.wifi_ssids.is_empty() {
+        let wifi_ssid = &storage.wifi_ssids[0];
+        info!("net-idf: connecting to WiFi '{}'", wifi_ssid.ssid);
+
+        if let Err(e) = connect_wifi(&mut wifi, &wifi_ssid.ssid, &wifi_ssid.password) {
+            warn!("net-idf: WiFi connect failed: {:?}", e);
+        } else {
+            info!("net-idf: WiFi connected");
+            set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Yellow);
+
+            // Send MoQ relay URL if configured
+            if !storage.relay_url.is_empty() {
+                let url = storage.relay_url.as_str().to_string();
+                let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(url));
+            }
+        }
+    }
+
+    info!("net-idf: starting main loop");
+
+    // TLV buffers
+    let mut mgmt_rx_buf = [0u8; SYNC_WORD.len() + HEADER_SIZE + MAX_VALUE_SIZE];
+    let mut ui_rx_buf = [0u8; SYNC_WORD.len() + HEADER_SIZE + MAX_VALUE_SIZE];
+    let mut mgmt_rx_pos = 0usize;
+    let mut ui_rx_pos = 0usize;
+
+    loop {
+        // Check MGMT UART for incoming data
+        if let Some((msg_type, value)) = try_read_tlv(&mgmt_uart, &mut mgmt_rx_buf, &mut mgmt_rx_pos) {
+            if let Ok(tlv_type) = MgmtToNet::try_from(msg_type) {
+                handle_mgmt_message(
+                    tlv_type,
+                    &value,
+                    &mgmt_uart,
+                    &ui_uart,
+                    &mut storage,
+                    &mut loopback,
+                    &mut moq_config,
+                    &moq_cmd_tx,
+                );
+            }
+        }
+
+        // Check UI UART for incoming data
+        if let Some((msg_type, value)) = try_read_tlv(&ui_uart, &mut ui_rx_buf, &mut ui_rx_pos) {
+            if let Ok(tlv_type) = UiToNet::try_from(msg_type) {
+                handle_ui_message(tlv_type, &value, &mgmt_uart, &ui_uart, loopback);
+            }
+        }
+
+        // Check MoQ events
+        match moq_event_rx.try_recv() {
+            Ok(MoqEvent::Connected) => {
+                info!("net-idf: MoQ connected");
+                set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
+            }
+            Ok(MoqEvent::Disconnected) => {
+                info!("net-idf: MoQ disconnected");
+                set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Yellow);
+            }
+            Ok(MoqEvent::ModeStarted { mode }) => {
+                info!("net-idf: MoQ mode started: {:?}", mode);
+            }
+            Ok(MoqEvent::ModeStopped) => {
+                info!("net-idf: MoQ mode stopped");
+            }
+            Ok(MoqEvent::Error { message }) => {
+                warn!("net-idf: MoQ error: {}", message);
+            }
+            Ok(MoqEvent::ChatSent) => {
+                info!("net-idf: chat sent");
+            }
+            Ok(MoqEvent::ChatReceived { message }) => {
+                info!("net-idf: chat received: {}", message);
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                error!("net-idf: MoQ event channel closed");
+            }
+        }
+
+        // Small delay to prevent busy-waiting
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+// GPIO stub type for UART driver (no CTS/RTS)
+type GpioStub = esp_idf_svc::hal::gpio::Gpio0;
+
+/// Set LED color (active low RGB LED)
+fn set_led_color<R: OutputPin, G: OutputPin, B: OutputPin>(
+    led_r: &mut PinDriver<'_, R, esp_idf_svc::hal::gpio::Output>,
+    led_g: &mut PinDriver<'_, G, esp_idf_svc::hal::gpio::Output>,
+    led_b: &mut PinDriver<'_, B, esp_idf_svc::hal::gpio::Output>,
+    color: Color,
+) {
+    // Active low: set_low() turns LED on, set_high() turns LED off
+    match color {
+        Color::Black => { led_r.set_high().ok(); led_g.set_high().ok(); led_b.set_high().ok(); }
+        Color::Red => { led_r.set_low().ok(); led_g.set_high().ok(); led_b.set_high().ok(); }
+        Color::Green => { led_r.set_high().ok(); led_g.set_low().ok(); led_b.set_high().ok(); }
+        Color::Blue => { led_r.set_high().ok(); led_g.set_high().ok(); led_b.set_low().ok(); }
+        Color::Yellow => { led_r.set_low().ok(); led_g.set_low().ok(); led_b.set_high().ok(); }
+        Color::Cyan => { led_r.set_high().ok(); led_g.set_low().ok(); led_b.set_low().ok(); }
+        Color::Magenta => { led_r.set_low().ok(); led_g.set_high().ok(); led_b.set_low().ok(); }
+        Color::White => { led_r.set_low().ok(); led_g.set_low().ok(); led_b.set_low().ok(); }
+    }
+}
+
+/// Connect to WiFi network
+fn connect_wifi(
+    wifi: &mut esp_idf_svc::wifi::BlockingWifi<esp_idf_svc::wifi::EspWifi<'static>>,
+    ssid: &str,
+    password: &str,
+) -> Result<(), esp_idf_svc::sys::EspError> {
+    use esp_idf_svc::wifi::{AuthMethod, ClientConfiguration, Configuration};
+
+    let config = Configuration::Client(ClientConfiguration {
+        ssid: ssid.try_into().unwrap(),
+        password: password.try_into().unwrap(),
+        auth_method: if password.is_empty() { AuthMethod::None } else { AuthMethod::WPA2Personal },
+        ..Default::default()
+    });
+
+    wifi.set_configuration(&config)?;
+    wifi.start()?;
+    wifi.connect()?;
+    wifi.wait_netif_up()?;
+
+    Ok(())
+}
+
+/// Total frame size: sync (4) + header (6) + value
+const FRAME_HEADER_SIZE: usize = SYNC_WORD.len() + HEADER_SIZE;
+
+/// Try to read a TLV message from UART (non-blocking)
+fn try_read_tlv(
+    uart: &UartDriver,
+    buf: &mut [u8],
+    pos: &mut usize,
+) -> Option<(u16, heapless::Vec<u8, MAX_VALUE_SIZE>)> {
+    // Try to read available bytes
+    let mut read_buf = [0u8; 64];
+    let len = uart.read(&mut read_buf, 0).unwrap_or(0);
+    if len > 0 {
+        let space = buf.len() - *pos;
+        let copy_len = len.min(space);
+        buf[*pos..*pos + copy_len].copy_from_slice(&read_buf[..copy_len]);
+        *pos += copy_len;
+    }
+
+    // Try to parse TLV
+    if *pos >= FRAME_HEADER_SIZE {
+        if buf[0..4] != SYNC_WORD {
+            // Sync error - try to find sync word
+            if let Some(idx) = buf[1..*pos].windows(4).position(|w| w == SYNC_WORD) {
+                let new_start = idx + 1;
+                buf.copy_within(new_start..*pos, 0);
+                *pos -= new_start;
+            } else {
+                if *pos > 3 {
+                    buf.copy_within(*pos - 3..*pos, 0);
+                    *pos = 3;
+                }
+            }
+            return None;
+        }
+
+        let msg_type = u16::from_be_bytes([buf[4], buf[5]]);
+        let length = u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]) as usize;
+
+        if length > MAX_VALUE_SIZE {
+            buf.copy_within(4..*pos, 0);
+            *pos -= 4;
+            return None;
+        }
+
+        let total_len = FRAME_HEADER_SIZE + length;
+        if *pos >= total_len {
+            let mut value = heapless::Vec::new();
+            value.extend_from_slice(&buf[FRAME_HEADER_SIZE..total_len]).ok();
+            buf.copy_within(total_len..*pos, 0);
+            *pos -= total_len;
+            return Some((msg_type, value));
+        }
+    }
+
+    None
+}
+
+/// Write a TLV message to UART
+fn write_tlv<T: Into<u16>>(uart: &UartDriver, msg_type: T, value: &[u8]) {
+    let msg_type: u16 = msg_type.into();
+    uart.write(&SYNC_WORD).ok();
+    let mut header = [0u8; HEADER_SIZE];
+    header[0..2].copy_from_slice(&msg_type.to_be_bytes());
+    header[2..6].copy_from_slice(&(value.len() as u32).to_be_bytes());
+    uart.write(&header).ok();
+    if !value.is_empty() {
+        uart.write(value).ok();
+    }
+}
+
+/// Handle message from MGMT chip
+fn handle_mgmt_message(
+    msg_type: MgmtToNet,
+    value: &[u8],
+    mgmt_uart: &UartDriver,
+    ui_uart: &UartDriver,
+    storage: &mut NvsStorage,
+    loopback: &mut bool,
+    moq: &mut MoqConfig,
+    moq_cmd_tx: &Sender<MoqCommand>,
+) {
+    match msg_type {
+        MgmtToNet::Ping => {
+            write_tlv(mgmt_uart, NetToMgmt::Pong, value);
+        }
+        MgmtToNet::CircularPing => {
+            write_tlv(ui_uart, NetToUi::CircularPing, value);
+        }
+        MgmtToNet::AddWifiSsid => {
+            if let Ok(wifi) = postcard::from_bytes::<WifiSsid>(value) {
+                if storage.add_wifi_ssid(&wifi.ssid, &wifi.password).is_ok() {
+                    if storage.save().is_ok() {
+                        write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                    } else {
+                        write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+                    }
+                } else {
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"add");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"deserialize");
+            }
+        }
+        MgmtToNet::GetWifiSsids => {
+            let mut buf = [0u8; 256];
+            if let Ok(serialized) = postcard::to_slice(&storage.wifi_ssids, &mut buf) {
+                write_tlv(mgmt_uart, NetToMgmt::WifiSsids, serialized);
+            }
+        }
+        MgmtToNet::ClearWifiSsids => {
+            storage.wifi_ssids.clear();
+            if storage.save().is_ok() {
+                write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+            }
+        }
+        MgmtToNet::GetRelayUrl => {
+            write_tlv(mgmt_uart, NetToMgmt::RelayUrl, storage.relay_url.as_bytes());
+        }
+        MgmtToNet::SetRelayUrl => {
+            if let Ok(url) = core::str::from_utf8(value) {
+                if let Ok(url_string) = String::try_from(url) {
+                    storage.relay_url = url_string;
+                    if storage.save().is_ok() {
+                        // Also send to MoQ task
+                        let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(url.to_string()));
+                        write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                    } else {
+                        write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+                    }
+                } else {
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"url");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
+            }
+        }
+        MgmtToNet::WsSend | MgmtToNet::WsEchoTest | MgmtToNet::WsSpeedTest => {
+            // WebSocket not implemented in ESP-IDF version
+            write_tlv(mgmt_uart, NetToMgmt::Error, b"not implemented");
+        }
+        MgmtToNet::SetLoopback => {
+            let enabled = value.first().copied().unwrap_or(0) != 0;
+            *loopback = enabled;
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
+        MgmtToNet::GetLoopback => {
+            write_tlv(mgmt_uart, NetToMgmt::Loopback, &[*loopback as u8]);
+        }
+        // MoQ commands
+        MgmtToNet::GetMoqRelayUrl => {
+            write_tlv(mgmt_uart, NetToMgmt::MoqRelayUrl, moq.relay_url.as_bytes());
+        }
+        MgmtToNet::SetMoqRelayUrl => {
+            if let Ok(url) = core::str::from_utf8(value) {
+                if let Ok(url_string) = String::try_from(url) {
+                    moq.relay_url = url_string;
+                    let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(url.to_string()));
+                    write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                } else {
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"url too long");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
+            }
+        }
+        MgmtToNet::GetBenchmarkFps => {
+            write_tlv(mgmt_uart, NetToMgmt::BenchmarkFps, &moq.benchmark_fps.to_le_bytes());
+        }
+        MgmtToNet::SetBenchmarkFps => {
+            if value.len() >= 4 {
+                moq.benchmark_fps = u32::from_le_bytes([value[0], value[1], value[2], value[3]]);
+                write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"invalid fps");
+            }
+        }
+        MgmtToNet::GetBenchmarkPayloadSize => {
+            write_tlv(mgmt_uart, NetToMgmt::BenchmarkPayloadSize, &moq.benchmark_payload_size.to_le_bytes());
+        }
+        MgmtToNet::SetBenchmarkPayloadSize => {
+            if value.len() >= 4 {
+                moq.benchmark_payload_size = u32::from_le_bytes([value[0], value[1], value[2], value[3]]);
+                write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"invalid size");
+            }
+        }
+        MgmtToNet::RunClock => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunClock);
+            // Mode 0 = Clock
+            write_tlv(mgmt_uart, NetToMgmt::ModeStarted, &[0]);
+        }
+        MgmtToNet::RunBenchmark => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunBenchmark {
+                fps: moq.benchmark_fps,
+                payload_size: moq.benchmark_payload_size,
+            });
+            // Mode 1 = Benchmark
+            write_tlv(mgmt_uart, NetToMgmt::ModeStarted, &[1]);
+        }
+        MgmtToNet::StopMode => {
+            let _ = moq_cmd_tx.send(MoqCommand::StopMode);
+            write_tlv(mgmt_uart, NetToMgmt::ModeStopped, &[]);
+        }
+        MgmtToNet::SendChatMessage => {
+            if let Ok(message) = core::str::from_utf8(value) {
+                let _ = moq_cmd_tx.send(MoqCommand::SendChat { message: message.to_string() });
+                write_tlv(mgmt_uart, NetToMgmt::ChatMessageSent, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
+            }
+        }
+    }
+}
+
+/// Handle message from UI chip
+fn handle_ui_message(
+    msg_type: UiToNet,
+    value: &[u8],
+    mgmt_uart: &UartDriver,
+    ui_uart: &UartDriver,
+    loopback: bool,
+) {
+    match msg_type {
+        UiToNet::CircularPing => {
+            write_tlv(mgmt_uart, NetToMgmt::CircularPing, value);
+        }
+        UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
+            if loopback {
+                write_tlv(ui_uart, NetToUi::AudioFrame, value);
+            }
+        }
     }
 }

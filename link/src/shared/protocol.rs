@@ -98,6 +98,27 @@ pub enum MgmtToNet {
     GetLoopback,
     /// Start WebSocket speed test
     WsSpeedTest,
+    // MoQ commands (client auto-connects to relay)
+    /// Get MoQ relay URL
+    GetMoqRelayUrl,
+    /// Set MoQ relay URL (value: UTF-8 URL string)
+    SetMoqRelayUrl,
+    /// Get benchmark target FPS (4 bytes LE)
+    GetBenchmarkFps,
+    /// Set benchmark target FPS (4 bytes LE, 0=burst mode)
+    SetBenchmarkFps,
+    /// Get benchmark payload size (4 bytes LE)
+    GetBenchmarkPayloadSize,
+    /// Set benchmark payload size (4 bytes LE)
+    SetBenchmarkPayloadSize,
+    /// Run clock mode - subscribe to clock track and log received times
+    RunClock,
+    /// Run benchmark mode - publish frames at configured FPS and size
+    RunBenchmark,
+    /// Stop current running mode
+    StopMode,
+    /// Send chat message (value: UTF-8 message)
+    SendChatMessage,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -118,6 +139,25 @@ pub enum NetToMgmt {
     WsSpeedTestResult,
     /// Loopback mode status (1 byte: 0=off, 1=on)
     Loopback,
+    // MoQ responses
+    /// MoQ relay URL (value: UTF-8 URL string)
+    MoqRelayUrl,
+    /// Benchmark target FPS (4 bytes LE)
+    BenchmarkFps,
+    /// Benchmark payload size (4 bytes LE)
+    BenchmarkPayloadSize,
+    /// MoQ connected to relay
+    MoqConnected,
+    /// MoQ disconnected from relay
+    MoqDisconnected,
+    /// Mode started (1 byte: 0=Clock, 1=Benchmark)
+    ModeStarted,
+    /// Mode stopped
+    ModeStopped,
+    /// Chat message sent confirmation
+    ChatMessageSent,
+    /// Chat message received (value: UTF-8 message)
+    ChatMessageReceived,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

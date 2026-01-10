@@ -5,7 +5,10 @@ mod storage;
 // Re-export jitter buffer from shared for backwards compatibility (only with audio-buffer)
 #[cfg(feature = "audio-buffer")]
 pub use crate::shared::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
-pub use storage::{MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, NetStorage, WifiSsid};
+pub use storage::{
+    MoqError, MoqExampleType, MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_RELAY_URL_LEN, MAX_MOQ_TRACK_NAME_LEN,
+    MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, NetStorage, WifiSsid,
+};
 
 use crate::info;
 #[cfg(feature = "audio-buffer")]
@@ -402,6 +405,22 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             info!("net: get loopback = {}", *loopback);
             to_mgmt
                 .must_write_tlv(NetToMgmt::Loopback, &[*loopback as u8])
+                .await;
+        }
+        // MoQ commands - not supported in bare-metal firmware (uses WebSocket, not MoQ)
+        MgmtToNet::GetMoqRelayUrl
+        | MgmtToNet::SetMoqRelayUrl
+        | MgmtToNet::GetBenchmarkFps
+        | MgmtToNet::SetBenchmarkFps
+        | MgmtToNet::GetBenchmarkPayloadSize
+        | MgmtToNet::SetBenchmarkPayloadSize
+        | MgmtToNet::RunClock
+        | MgmtToNet::RunBenchmark
+        | MgmtToNet::StopMode
+        | MgmtToNet::SendChatMessage => {
+            info!("net: moq command not supported in bare-metal firmware");
+            to_mgmt
+                .must_write_tlv(NetToMgmt::Error, b"moq not supported")
                 .await;
         }
     }

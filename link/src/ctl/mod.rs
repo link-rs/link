@@ -1479,4 +1479,138 @@ where
             security_info,
         })
     }
+
+    // =========================================================================
+    // MoQ commands
+    // =========================================================================
+
+    /// Get MoQ relay URL from NET chip.
+    pub fn get_moq_relay_url(&mut self) -> heapless::String<128> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::GetMoqRelayUrl, &[]).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+        assert_eq!(tlv.tlv_type, NetToMgmt::MoqRelayUrl);
+        let url_str = core::str::from_utf8(&tlv.value).expect("Invalid UTF-8");
+        url_str.try_into().expect("URL too long")
+    }
+
+    /// Set MoQ relay URL on NET chip.
+    pub fn set_moq_relay_url(&mut self, url: &str) {
+        write_tlv(
+            &mut self.writer.net(),
+            MgmtToNet::SetMoqRelayUrl,
+            url.as_bytes(),
+        )
+        .unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+    }
+
+    /// Get benchmark FPS from NET chip.
+    pub fn get_benchmark_fps(&mut self) -> u32 {
+        write_tlv(&mut self.writer.net(), MgmtToNet::GetBenchmarkFps, &[]).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+        assert_eq!(tlv.tlv_type, NetToMgmt::BenchmarkFps);
+        if tlv.value.len() >= 4 {
+            u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]])
+        } else {
+            0
+        }
+    }
+
+    /// Set benchmark FPS on NET chip.
+    pub fn set_benchmark_fps(&mut self, fps: u32) {
+        write_tlv(
+            &mut self.writer.net(),
+            MgmtToNet::SetBenchmarkFps,
+            &fps.to_le_bytes(),
+        )
+        .unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+    }
+
+    /// Get benchmark payload size from NET chip.
+    pub fn get_benchmark_payload_size(&mut self) -> u32 {
+        write_tlv(&mut self.writer.net(), MgmtToNet::GetBenchmarkPayloadSize, &[]).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+        assert_eq!(tlv.tlv_type, NetToMgmt::BenchmarkPayloadSize);
+        if tlv.value.len() >= 4 {
+            u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]])
+        } else {
+            0
+        }
+    }
+
+    /// Set benchmark payload size on NET chip.
+    pub fn set_benchmark_payload_size(&mut self, size: u32) {
+        write_tlv(
+            &mut self.writer.net(),
+            MgmtToNet::SetBenchmarkPayloadSize,
+            &size.to_le_bytes(),
+        )
+        .unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+    }
+
+    /// Run clock mode on NET chip - subscribe to clock track and log times.
+    pub fn run_clock(&mut self) -> Result<(), heapless::String<64>> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::RunClock, &[]).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+        match tlv.tlv_type {
+            NetToMgmt::ModeStarted => Ok(()),
+            NetToMgmt::Error => {
+                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+                Err(err.try_into().unwrap_or_default())
+            }
+            _ => Err("unexpected response".try_into().unwrap_or_default()),
+        }
+    }
+
+    /// Run benchmark mode on NET chip - publish frames at configured FPS.
+    pub fn run_benchmark(&mut self) -> Result<(), heapless::String<64>> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::RunBenchmark, &[]).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+        match tlv.tlv_type {
+            NetToMgmt::ModeStarted => Ok(()),
+            NetToMgmt::Error => {
+                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+                Err(err.try_into().unwrap_or_default())
+            }
+            _ => Err("unexpected response".try_into().unwrap_or_default()),
+        }
+    }
+
+    /// Stop current running mode on NET chip.
+    pub fn stop_mode(&mut self) -> Result<(), heapless::String<64>> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::StopMode, &[]).unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+        match tlv.tlv_type {
+            NetToMgmt::ModeStopped => Ok(()),
+            NetToMgmt::Error => {
+                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+                Err(err.try_into().unwrap_or_default())
+            }
+            _ => Err("unexpected response".try_into().unwrap_or_default()),
+        }
+    }
+
+    /// Send a chat message via MoQ.
+    pub fn send_chat_message(&mut self, message: &str) -> Result<(), heapless::String<64>> {
+        write_tlv(
+            &mut self.writer.net(),
+            MgmtToNet::SendChatMessage,
+            message.as_bytes(),
+        )
+        .unwrap();
+        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+        match tlv.tlv_type {
+            NetToMgmt::ChatMessageSent => Ok(()),
+            NetToMgmt::Error => {
+                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+                Err(err.try_into().unwrap_or_default())
+            }
+            _ => Err("unexpected response".try_into().unwrap_or_default()),
+        }
+    }
 }
