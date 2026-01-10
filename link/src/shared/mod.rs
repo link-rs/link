@@ -16,6 +16,9 @@ pub mod mocks;
 pub mod protocol;
 pub mod tlv;
 pub mod uart_config;
+
+// WiFi types - only used by ctl and net
+#[cfg(any(feature = "ctl", feature = "net"))]
 pub mod wifi;
 
 // Re-export the info macro (no-op when defmt is disabled)
@@ -35,8 +38,8 @@ pub use protocol::*;
 
 // TLV types - core types used by all
 pub use tlv::{MAX_VALUE_SIZE, Tlv};
-// Sync TLV constants - only used by ctl (firmware uses async traits)
-#[cfg(feature = "ctl")]
+// Sync TLV constants - used by ctl and esp-idf (bare-metal firmware uses async traits)
+#[cfg(any(feature = "ctl", feature = "esp-idf"))]
 pub use tlv::{HEADER_SIZE, SYNC_WORD};
 // Async TLV traits and types - for firmware modules
 #[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]

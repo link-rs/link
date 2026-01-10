@@ -20,6 +20,10 @@ pub(crate) mod shared;
 // Re-export commonly used types at the crate root for convenience
 pub use shared::{Color, InvertedPin, Led, MAX_VALUE_SIZE};
 
+// Re-export TLV constants for sync implementations (ctl, esp-idf)
+#[cfg(any(feature = "ctl", feature = "esp-idf"))]
+pub use shared::{HEADER_SIZE, SYNC_WORD};
+
 // Re-export uart_config module for chip firmware
 pub use shared::uart_config;
 

@@ -1,6 +1,6 @@
 .PHONY: all preflight format flash-ui flash-mgmt flash-net flash-net-idf clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl
 
-CRATES = ui mgmt net ctl link web-ctl web-link bootloader echo-server
+CRATES = ui mgmt net net-idf ctl link web-ctl web-link bootloader echo-server
 
 # Output paths (targets configured in each crate's .cargo/config.toml)
 UI_BIN = ui/target/thumbv7em-none-eabihf/debug/ui.bin
@@ -9,8 +9,8 @@ NET_BIN = net/target/xtensa-esp32s3-none-elf/debug/net
 NET_IDF_BIN = net-idf/target/xtensa-esp32s3-espidf/debug/net-idf
 NET_IDF_PARTITIONS = net-idf/partitions.csv
 
-# Build everything: all firmwares, ctl, and web apps
-all: $(UI_BIN) $(MGMT_BIN) $(NET_BIN) ctl web-ctl web-link
+# Build all firmwares and control program
+all: $(UI_BIN) $(MGMT_BIN) $(NET_BIN) $(NET_IDF_BIN) ctl
 	@echo "Build complete."
 
 # Preflight checks: build everything, run tests, check formatting
@@ -91,6 +91,7 @@ clean:
 	cd ui && cargo clean
 	cd mgmt && cargo clean
 	cd net && cargo clean
+	cd net-idf && cargo clean
 	cd ctl && cargo clean
 	cd web-ctl && cargo clean
 	-cd web-link && cargo clean

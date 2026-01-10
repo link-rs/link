@@ -29,6 +29,7 @@ trace-tlv = ["defmt"]  # Verbose TLV read/write logging
 std = ["dep:md-5", "dep:miniz_oxide"]
 audio-buffer = ["dep:embassy-time"]  # Enable jitter buffering for audio playback
 sframe = ["ui"]  # SFrame encryption (RFC 9605) - not yet integrated
+esp-idf = ["std"]  # ESP-IDF std environment - uses esp-idf's critical-section impl
 
 [dependencies]
 defmt = { version = "1", optional = true }
@@ -39,7 +40,7 @@ embedded-io-async = "0.6"
 futures = { version = "0.3", default-features = false, features = ["async-await"] }
 heapless = { version = "0.9", features = ["serde"] }
 num_enum = { version = "0.7.5", default-features = false }
-portable-atomic = { version = "1", features = ["critical-section"] }
+portable-atomic = { version = "1" }  # critical-section feature conflicts with esp-idf, so we don't enable it by default
 serde = { version = "1", default-features = false, features = ["derive"] }
 postcard = "1"
 embedded-storage = "0.3"
