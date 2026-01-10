@@ -1,6 +1,6 @@
 //! NET chip command handlers.
 
-use crate::{App, GetSetBool, GetSetString, NetAction, WifiAction};
+use crate::{App, GetSetBool, GetSetString, GetSetU32, MoqTypeAction, NetAction, WifiAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::ProgressCallbacks;
 
@@ -262,6 +262,137 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Ok(())
             }
         },
+        // MoQ commands
+        NetAction::MoqRelayUrl { action } => match action.unwrap_or_default() {
+            GetSetString::Get => {
+                let url = app.get_moq_relay_url();
+                if url.is_empty() {
+                    println!("(not set)");
+                } else {
+                    println!("{}", url);
+                }
+                Ok(())
+            }
+            GetSetString::Set { value } => {
+                app.set_moq_relay_url(&value);
+                println!("MoQ relay URL set to {}", value);
+                Ok(())
+            }
+        },
+        NetAction::MoqEnabled { action } => match action.unwrap_or_default() {
+            GetSetBool::Get => {
+                let enabled = app.get_moq_enabled();
+                println!("{}", enabled);
+                Ok(())
+            }
+            GetSetBool::Set { value } => {
+                app.set_moq_enabled(value);
+                println!("MoQ enabled set to {}", value);
+                Ok(())
+            }
+        },
+        NetAction::MoqType { action } => match action.unwrap_or_default() {
+            MoqTypeAction::Get => {
+                let type_byte = app.get_moq_example_type();
+                let type_name = match type_byte {
+                    0 => "clock",
+                    1 => "chat",
+                    2 => "benchmark",
+                    _ => "unknown",
+                };
+                println!("{}", type_name);
+                Ok(())
+            }
+            MoqTypeAction::Set { value } => {
+                let type_byte = match value.to_lowercase().as_str() {
+                    "clock" | "0" => 0,
+                    "chat" | "1" => 1,
+                    "benchmark" | "bench" | "2" => 2,
+                    _ => {
+                        return Err(format!("Unknown type '{}'. Use: clock, chat, or benchmark", value).into());
+                    }
+                };
+                app.set_moq_example_type(type_byte);
+                let type_name = match type_byte {
+                    0 => "clock",
+                    1 => "chat",
+                    2 => "benchmark",
+                    _ => "unknown",
+                };
+                println!("MoQ example type set to {}", type_name);
+                Ok(())
+            }
+        },
+        NetAction::MoqConfig => {
+            let config = app.get_moq_config();
+            println!("{}", config);
+            Ok(())
+        }
+        NetAction::BenchmarkFps { action } => match action.unwrap_or_default() {
+            GetSetU32::Get => {
+                let fps = app.get_benchmark_fps();
+                if fps == 0 {
+                    println!("0 (burst mode)");
+                } else {
+                    println!("{}", fps);
+                }
+                Ok(())
+            }
+            GetSetU32::Set { value } => {
+                app.set_benchmark_fps(value);
+                if value == 0 {
+                    println!("Benchmark FPS set to burst mode");
+                } else {
+                    println!("Benchmark FPS set to {}", value);
+                }
+                Ok(())
+            }
+        },
+        NetAction::BenchmarkPayloadSize { action } => match action.unwrap_or_default() {
+            GetSetU32::Get => {
+                let size = app.get_benchmark_payload_size();
+                println!("{}", size);
+                Ok(())
+            }
+            GetSetU32::Set { value } => {
+                app.set_benchmark_payload_size(value);
+                println!("Benchmark payload size set to {}", value);
+                Ok(())
+            }
+        },
+        NetAction::MoqStart => {
+            match app.start_moq_example() {
+                Ok(type_byte) => {
+                    let type_name = match type_byte {
+                        0 => "clock",
+                        1 => "chat",
+                        2 => "benchmark",
+                        _ => "unknown",
+                    };
+                    println!("Started MoQ {} example", type_name);
+                    Ok(())
+                }
+                Err(e) => Err(format!("Failed to start MoQ example: {}", e).into()),
+            }
+        }
+        NetAction::MoqStop => {
+            match app.stop_moq_example() {
+                Ok(()) => {
+                    println!("Stopped MoQ example");
+                    Ok(())
+                }
+                Err(e) => Err(format!("Failed to stop MoQ example: {}", e).into()),
+            }
+        }
+        NetAction::Chat { message } => {
+            match app.send_chat_message(&message) {
+                Ok(()) => {
+                    println!("Chat message sent");
+                    Ok(())
+                }
+                Err(e) => Err(format!("Failed to send chat message: {}", e).into()),
+            }
+        }
     }
 }
 

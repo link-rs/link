@@ -203,12 +203,69 @@ enum NetAction {
         #[command(subcommand)]
         action: Option<GetSetBool>,
     },
+
+    // MoQ commands
+    #[command(name = "moq-relay-url")]
+    MoqRelayUrl {
+        #[command(subcommand)]
+        action: Option<GetSetString>,
+    },
+
+    #[command(name = "moq-enabled")]
+    MoqEnabled {
+        #[command(subcommand)]
+        action: Option<GetSetBool>,
+    },
+
+    #[command(name = "moq-type")]
+    MoqType {
+        #[command(subcommand)]
+        action: Option<MoqTypeAction>,
+    },
+
+    #[command(name = "moq-config")]
+    MoqConfig,
+
+    #[command(name = "benchmark-fps")]
+    BenchmarkFps {
+        #[command(subcommand)]
+        action: Option<GetSetU32>,
+    },
+
+    #[command(name = "benchmark-payload-size")]
+    BenchmarkPayloadSize {
+        #[command(subcommand)]
+        action: Option<GetSetU32>,
+    },
+
+    #[command(name = "moq-start")]
+    MoqStart,
+
+    #[command(name = "moq-stop")]
+    MoqStop,
+
+    #[command(name = "chat")]
+    Chat {
+        /// Chat message to send
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
 enum WifiAction {
     Add { ssid: String, password: String },
     Clear,
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+pub enum MoqTypeAction {
+    #[default]
+    Get,
+    /// Set MoQ example type (clock, chat, benchmark)
+    Set {
+        /// Example type: clock, chat, or benchmark
+        value: String,
+    },
 }
 
 /// Open a serial port with standard settings
