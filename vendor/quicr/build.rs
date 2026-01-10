@@ -7,8 +7,8 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
-    if cfg!(feature = "esp-idf-component") {
-        build_esp_idf_component();
+    if cfg!(feature = "esp-idf") {
+        build_esp_idf();
     } else {
         build_native();
     }
@@ -201,15 +201,15 @@ fn build_native() {
         .expect("Couldn't write bindings!");
 }
 
-/// Generate bindings for ESP-IDF component build.
+/// Generate bindings for ESP-IDF build.
 /// The C++ libraries are built by esp-idf-sys via extra_components.
-fn build_esp_idf_component() {
+fn build_esp_idf() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let ffi_header = manifest_dir.join("ffi/include/quicr_ffi.h");
 
     println!("cargo:rerun-if-changed=ffi/include/quicr_ffi.h");
-    println!("cargo:warning=quicr: esp-idf-component build, expecting libquicr from ESP-IDF");
+    println!("cargo:warning=quicr: ESP-IDF build, expecting libquicr from ESP-IDF component");
 
     // Use 32-bit ARM target for bindgen since ESP32 is 32-bit.
     // Using 64-bit host target causes struct size mismatches.

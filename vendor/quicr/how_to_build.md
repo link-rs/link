@@ -24,12 +24,11 @@ cargo build
 | `mbedtls` | Use MbedTLS for crypto (default) |
 | `openssl` | Use OpenSSL for crypto |
 | `boringssl` | Use BoringSSL for crypto |
-| `esp-idf-component` | ESP-IDF build via component system |
-| `esp32s3`, `esp32c3`, etc. | ESP32 chip variants (bare-metal) |
+| `esp-idf` | ESP-IDF build via component system |
 
 ## ESP-IDF Build
 
-For ESP32 with ESP-IDF framework, use the `esp-idf-component` feature. This integrates with ESP-IDF's build system - libquicr is built as an ESP-IDF component, not by this crate's build.rs.
+For ESP32 with ESP-IDF framework, use the `esp-idf` feature. This integrates with ESP-IDF's build system - libquicr is built as an ESP-IDF component, not by this crate's build.rs.
 
 ### Setup
 
@@ -42,7 +41,7 @@ For ESP32 with ESP-IDF framework, use the `esp-idf-component` feature. This inte
 2. Enable the feature in Cargo.toml:
    ```toml
    [dependencies]
-   quicr = { path = "../vendor/quicr", features = ["esp-idf-component"] }
+   quicr = { path = "../vendor/quicr", features = ["esp-idf"] }
    ```
 
 3. Build with cargo as normal - esp-idf-sys will build libquicr as a component.
@@ -52,7 +51,7 @@ For ESP32 with ESP-IDF framework, use the `esp-idf-component` feature. This inte
 ```
 ┌─────────────────────────────────────────────────────┐
 │  Your ESP-IDF Rust Project                          │
-│    Cargo.toml: quicr = { features = ["esp-idf-component"] }
+│    Cargo.toml: quicr = { features = ["esp-idf"] }
 └─────────────────────────────────────────────────────┘
                          │
                          ▼

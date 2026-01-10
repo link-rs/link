@@ -30,7 +30,7 @@ std = [
 
 # ESP-IDF component build - libquicr is built as an ESP-IDF component via esp-idf-sys
 # Requires: quicr esp-component/ directory added to ESP-IDF's EXTRA_COMPONENT_DIRS
-esp-idf-component = ["std"]
+esp-idf = ["std"]
 
 # TLS backend selection - choose one
 mbedtls = []
