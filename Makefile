@@ -1,4 +1,4 @@
-.PHONY: all preflight format flash-ui flash-mgmt flash-net flash-net-idf clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl
+.PHONY: all preflight format flash-ui flash-mgmt flash-net flash-net-idf flash-all clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl
 
 CRATES = ui mgmt net net-idf ctl link web-ctl web-link bootloader echo-server
 
@@ -62,6 +62,16 @@ $(NET_IDF_BIN): FORCE
 
 flash-net-idf: $(NET_IDF_BIN)
 	cd ctl && cargo run -- net flash $(abspath $(NET_IDF_BIN)) --partition-table $(abspath $(NET_IDF_PARTITIONS))
+
+# Flash all chips in sequence: MGMT, UI, NET-IDF
+flash-all: $(MGMT_BIN) $(UI_BIN) $(NET_IDF_BIN)
+	@echo "Flashing MGMT..."
+	cd ctl && cargo run -- mgmt flash ../$(MGMT_BIN)
+	@echo "Flashing UI..."
+	cd ctl && cargo run -- ui flash ../$(UI_BIN)
+	@echo "Flashing NET-IDF..."
+	cd ctl && cargo run -- net flash $(abspath $(NET_IDF_BIN)) --partition-table $(abspath $(NET_IDF_PARTITIONS))
+	@echo "All chips flashed."
 
 # Web CTL (WASM)
 web-ctl: $(UI_BIN) $(MGMT_BIN) $(NET_BIN)
