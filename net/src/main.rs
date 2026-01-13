@@ -836,7 +836,7 @@ where
     let mut connection_ok = true;
 
     // Jitter buffer for smoothing output
-    let mut jitter_buffer: JitterBuffer<PACKET_SIZE> = JitterBuffer::new();
+    let mut jitter_buffer: JitterBuffer = JitterBuffer::new();
 
     // Phase 1: Send packets at 20ms intervals (50 fps) while also receiving
     let mut next_send_time = Instant::now();

@@ -3,7 +3,8 @@
 //! Buffers incoming frames and outputs them at a steady rate to absorb
 //! network jitter.
 
-use heapless::Vec;
+extern crate alloc;
+use alloc::vec::Vec;
 
 /// Maximum number of frames the buffer can hold.
 pub const BUFFER_FRAMES: usize = 32; // 640ms at 20ms/frame
@@ -23,12 +24,10 @@ pub enum JitterState {
 }
 
 /// Fixed jitter buffer for audio frames.
-///
-/// Generic over frame size N (in bytes).
 #[derive(Debug)]
-pub struct JitterBuffer<const N: usize> {
+pub struct JitterBuffer {
     /// Ring buffer of frames. None = empty slot.
-    frames: [Option<Vec<u8, N>>; BUFFER_FRAMES],
+    frames: [Option<Vec<u8>>; BUFFER_FRAMES],
     /// Next position to write incoming frame.
     write_idx: usize,
     /// Next position to read for playback.
@@ -65,13 +64,13 @@ pub struct JitterStats {
     pub state: JitterState,
 }
 
-impl<const N: usize> Default for JitterBuffer<N> {
+impl Default for JitterBuffer {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const N: usize> JitterBuffer<N> {
+impl JitterBuffer {
     /// Create a new empty jitter buffer.
     pub fn new() -> Self {
         Self {
@@ -114,13 +113,7 @@ impl<const N: usize> JitterBuffer<N> {
             return false;
         }
 
-        let mut frame = Vec::new();
-        if frame.extend_from_slice(data).is_err() {
-            // Frame too large for our buffer
-            return false;
-        }
-
-        self.frames[self.write_idx] = Some(frame);
+        self.frames[self.write_idx] = Some(data.to_vec());
         self.write_idx = (self.write_idx + 1) % BUFFER_FRAMES;
         self.level += 1;
 
@@ -132,7 +125,7 @@ impl<const N: usize> JitterBuffer<N> {
     /// Call this at a steady rate (e.g., every 20ms).
     /// Returns None if buffer is empty or still buffering (play silence).
     /// Returns Some(frame) if a frame is available.
-    pub fn pop(&mut self) -> Option<Vec<u8, N>> {
+    pub fn pop(&mut self) -> Option<Vec<u8>> {
         match self.state {
             JitterState::Buffering => {
                 if self.level >= MIN_START_LEVEL {
@@ -158,7 +151,7 @@ impl<const N: usize> JitterBuffer<N> {
     }
 
     /// Take a frame from the read position.
-    fn take_frame(&mut self) -> Option<Vec<u8, N>> {
+    fn take_frame(&mut self) -> Option<Vec<u8>> {
         let frame = self.frames[self.read_idx].take();
         if frame.is_some() {
             self.read_idx = (self.read_idx + 1) % BUFFER_FRAMES;
@@ -197,14 +190,14 @@ mod tests {
 
     #[test]
     fn test_initial_state() {
-        let buf: JitterBuffer<64> = JitterBuffer::new();
+        let buf: JitterBuffer = JitterBuffer::new();
         assert_eq!(buf.level(), 0);
         assert_eq!(buf.state(), JitterState::Buffering);
     }
 
     #[test]
     fn test_buffering_until_min_level() {
-        let mut buf: JitterBuffer<64> = JitterBuffer::new();
+        let mut buf: JitterBuffer = JitterBuffer::new();
 
         // Push frames but don't reach MIN_START_LEVEL
         for i in 0..MIN_START_LEVEL - 1 {
@@ -224,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_underrun_resets_to_buffering() {
-        let mut buf: JitterBuffer<64> = JitterBuffer::new();
+        let mut buf: JitterBuffer = JitterBuffer::new();
 
         // Fill to MIN_START_LEVEL
         for i in 0..MIN_START_LEVEL {
@@ -244,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_overrun() {
-        let mut buf: JitterBuffer<64> = JitterBuffer::new();
+        let mut buf: JitterBuffer = JitterBuffer::new();
 
         // Fill buffer completely
         for i in 0..BUFFER_FRAMES {
@@ -258,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_fifo_order() {
-        let mut buf: JitterBuffer<64> = JitterBuffer::new();
+        let mut buf: JitterBuffer = JitterBuffer::new();
 
         // Push MIN_START_LEVEL frames with distinct data
         for i in 0..MIN_START_LEVEL {
@@ -274,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_reset() {
-        let mut buf: JitterBuffer<64> = JitterBuffer::new();
+        let mut buf: JitterBuffer = JitterBuffer::new();
 
         // Fill and start playing
         for i in 0..MIN_START_LEVEL {

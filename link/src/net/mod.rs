@@ -179,7 +179,7 @@ where
         let mut loopback = false;
         let mut wifi_connected = false;
         let mut ws_connected = false;
-        let mut audio_buffer: JitterBuffer<MAX_VALUE_SIZE> = JitterBuffer::new();
+        let mut audio_buffer: JitterBuffer = JitterBuffer::new();
         let mut ticker = Ticker::every(Duration::from_millis(20));
         info!("net: ready to handle events (audio buffering enabled)");
         loop {
@@ -620,12 +620,12 @@ async fn handle_ws<M, U, LR, LG, LB>(
 /// Handle WebSocket events with audio buffering.
 /// Audio frames are pushed to the jitter buffer instead of being sent directly to UI.
 #[cfg(feature = "audio-buffer")]
-async fn handle_ws_buffered<M, LR, LG, LB, const N: usize>(
+async fn handle_ws_buffered<M, LR, LG, LB>(
     event: WsEvent,
     to_mgmt: &mut M,
     led: &mut Led<LR, LG, LB>,
     ws_mode: &mut WsMode,
-    audio_buffer: &mut JitterBuffer<N>,
+    audio_buffer: &mut JitterBuffer,
     wifi_connected: &mut bool,
     ws_connected: &mut bool,
 ) where
