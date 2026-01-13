@@ -1444,13 +1444,6 @@ where
         let mut flasher = Flasher::connect(connection, false, false, true, None, Some(115_200))
             .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
-        println!("About to erase");
-
-        // Erase flash before writing to avoid MD5 verification timeouts
-        flasher
-            .erase_flash()
-            .map_err(|e| EspflashError::Espflash(format!("erase_flash: {:?}", e)))?;
-
         println!("About to flash");
 
         // Actually flash
