@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runner script that resets the chip via OpenOCD before running probe-rs
+# Runner script that flashes and runs the chip via OpenOCD
 
 set -e
 
@@ -10,8 +10,9 @@ if [ -z "$ELF_FILE" ]; then
     exit 1
 fi
 
-# Reset the chip via OpenOCD
-openocd -f board/esp32s3-ftdi.cfg -c "init; reset halt; exit" 2>/dev/null
+# Convert ELF to binary
+BIN_FILE="${ELF_FILE}.bin"
+esptool.py --chip esp32s3 elf2image --flash_mode dio --flash_size 8MB -o "$BIN_FILE" "$ELF_FILE"
 
-# Run with probe-rs
-exec probe-rs run --chip=esp32s3 --probe=0403:6010 --preverify --always-print-stacktrace --no-location --catch-hardfault "$ELF_FILE"
+# Flash at app address (0x10000) via OpenOCD
+openocd -f board/esp32s3-ftdi.cfg -c "program_esp $BIN_FILE 0x10000 verify reset exit"
