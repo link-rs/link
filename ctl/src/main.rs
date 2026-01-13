@@ -240,6 +240,12 @@ enum NetAction {
         /// Chat message to send
         message: String,
     },
+
+    /// Reset the NET chip
+    Reset {
+        /// Reset action: "bootloader" to enter bootloader mode, or nothing/anything else for user mode
+        action: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]

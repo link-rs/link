@@ -347,6 +347,18 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Err(e) => Err(format!("Failed to send chat message: {}", e).into()),
             }
         }
+        NetAction::Reset { action } => match action.as_deref() {
+            Some("bootloader") => {
+                app.reset_net_to_bootloader();
+                println!("NET chip reset to bootloader mode");
+                Ok(())
+            }
+            _ => {
+                app.reset_net_to_user();
+                println!("NET chip reset");
+                Ok(())
+            }
+        },
     }
 }
 

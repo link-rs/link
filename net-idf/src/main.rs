@@ -539,21 +539,29 @@ impl NvsStorage {
 
 fn main() {
     // Initialize ESP-IDF
+    println!("[NET] main() entry");
     esp_idf_svc::sys::link_patches();
+    println!("[NET] link_patches done");
     esp_idf_svc::log::EspLogger::initialize_default();
+    println!("[NET] logger initialized");
 
     info!("net-idf: initializing");
 
+    println!("[NET] taking peripherals");
     let peripherals = Peripherals::take().unwrap();
+    println!("[NET] taking sys_loop");
     let sys_loop = EspSystemEventLoop::take().unwrap();
+    println!("[NET] taking nvs_partition");
     let nvs_partition = EspDefaultNvsPartition::take().unwrap();
 
     // Initialize LED - RGB on GPIO 38, 37, 36 (active low)
+    println!("[NET] initializing LEDs");
     let mut led_r = PinDriver::output(peripherals.pins.gpio38).unwrap();
     let mut led_g = PinDriver::output(peripherals.pins.gpio37).unwrap();
     let mut led_b = PinDriver::output(peripherals.pins.gpio36).unwrap();
 
     // Start with red LED (WiFi not connected)
+    println!("[NET] setting LED to red");
     set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Red);
 
     // Initialize UARTs
@@ -575,6 +583,7 @@ fn main() {
         config
     };
 
+    println!("[NET] creating MGMT UART");
     let mgmt_uart = UartDriver::new(
         peripherals.uart0,
         peripherals.pins.gpio43,
@@ -584,6 +593,7 @@ fn main() {
         &mgmt_uart_config,
     )
     .unwrap();
+    println!("[NET] MGMT UART created");
 
     let ui_uart_config = {
         let mut config = uart::config::Config::new()
@@ -603,6 +613,7 @@ fn main() {
         config
     };
 
+    println!("[NET] creating UI UART");
     let ui_uart = UartDriver::new(
         peripherals.uart1,
         peripherals.pins.gpio17,
@@ -612,16 +623,20 @@ fn main() {
         &ui_uart_config,
     )
     .unwrap();
+    println!("[NET] UI UART created");
 
     info!("net-idf: UARTs initialized");
 
     // Initialize WiFi
+    println!("[NET] creating EspWifi");
     let wifi = esp_idf_svc::wifi::EspWifi::new(
         peripherals.modem,
         sys_loop.clone(),
         Some(nvs_partition.clone())
     ).unwrap();
+    println!("[NET] wrapping BlockingWifi");
     let mut wifi = esp_idf_svc::wifi::BlockingWifi::wrap(wifi, sys_loop).unwrap();
+    println!("[NET] WiFi initialized");
 
     // Open NVS for storage
     let nvs = match EspNvs::new(nvs_partition.clone(), NVS_NAMESPACE, true) {
@@ -637,9 +652,12 @@ fn main() {
     info!("net-idf: loaded {} WiFi SSIDs from NVS", storage.wifi_ssids.len());
 
     // Create MoQ channels and spawn task
+    println!("[NET] creating MoQ channels");
     let (moq_cmd_tx, moq_cmd_rx) = mpsc::channel::<MoqCommand>();
     let (moq_event_tx, moq_event_rx) = mpsc::channel::<MoqEvent>();
+    println!("[NET] spawning MoQ task");
     spawn_moq_task(moq_cmd_rx, moq_event_tx);
+    println!("[NET] MoQ task spawned");
 
     // Loopback mode state
     let mut loopback = false;
