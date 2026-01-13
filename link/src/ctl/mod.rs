@@ -1249,6 +1249,17 @@ where
     }
 }
 
+impl<R, W> TunnelSerialPort<'_, R, W>
+where
+    R: Read + Send + SetTimeout,
+    W: Write + Send,
+{
+    /// Propagate timeout to underlying serial port.
+    fn propagate_timeout(&mut self, timeout: Duration) -> std::io::Result<()> {
+        self.reader.inner_mut().set_timeout(timeout)
+    }
+}
+
 impl<R, W> io::Read for TunnelSerialPort<'_, R, W>
 where
     R: Read + Send,
@@ -1284,7 +1295,7 @@ where
 
 impl<R, W> SerialPort for TunnelSerialPort<'_, R, W>
 where
-    R: Read + Send,
+    R: Read + Send + SetTimeout,
     W: Write + Send,
 {
     fn name(&self) -> Option<String> {
@@ -1326,7 +1337,9 @@ where
     }
     fn set_timeout(&mut self, timeout: Duration) -> serialport::Result<()> {
         self.timeout = timeout;
-        Ok(())
+        // Propagate to underlying serial port so reads use the correct timeout
+        self.propagate_timeout(timeout)
+            .map_err(|e| serialport::Error::new(serialport::ErrorKind::Io(e.kind()), e.to_string()))
     }
     fn write_request_to_send(&mut self, level: bool) -> serialport::Result<()> {
         let rst = !level; // RTS HIGH = RST LOW
@@ -1375,10 +1388,24 @@ where
     }
 }
 
+/// Trait for types that support setting a read timeout.
+pub trait SetTimeout {
+    fn set_timeout(&mut self, timeout: Duration) -> std::io::Result<()>;
+}
+
+// Implement for BufReader wrapping SerialPort
+impl SetTimeout for std::io::BufReader<Box<dyn serialport::SerialPort>> {
+    fn set_timeout(&mut self, timeout: Duration) -> std::io::Result<()> {
+        self.get_mut()
+            .set_timeout(timeout)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+    }
+}
+
 // NET chip operations (ESP32)
 impl<R, W> App<R, W>
 where
-    R: Read + Send,
+    R: Read + Send + SetTimeout,
     W: Write + Send,
 {
     /// Flash firmware to the NET chip (ESP32).
@@ -1411,11 +1438,22 @@ where
             115_200,
         );
 
+        println!("About to connect");
+
         // Pass explicit 115200 baud rate to prevent espflash from changing it
-        // (the tunnel through MGMT doesn't support baud rate changes)
         let mut flasher = Flasher::connect(connection, false, false, true, None, Some(115_200))
             .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
+        println!("About to erase");
+
+        // Erase flash before writing to avoid MD5 verification timeouts
+        flasher
+            .erase_flash()
+            .map_err(|e| EspflashError::Espflash(format!("erase_flash: {:?}", e)))?;
+
+        println!("About to flash");
+
+        // Actually flash
         let info = flasher
             .device_info()
             .map_err(|e| EspflashError::Espflash(format!("device_info: {:?}", e)))?;
@@ -1427,11 +1465,6 @@ where
         let image_format =
             IdfBootloaderFormat::new(elf_data, &flash_data, partition_table, None, None, None)
                 .map_err(|e| EspflashError::Espflash(format!("IdfBootloaderFormat: {:?}", e)))?;
-
-        // Erase flash before writing to avoid MD5 verification timeouts
-        flasher
-            .erase_flash()
-            .map_err(|e| EspflashError::Espflash(format!("erase_flash: {:?}", e)))?;
 
         flasher
             .load_image_to_flash(progress, image_format.into())
