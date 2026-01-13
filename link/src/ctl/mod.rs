@@ -1413,7 +1413,7 @@ where
 
         // Pass explicit 115200 baud rate to prevent espflash from changing it
         // (the tunnel through MGMT doesn't support baud rate changes)
-        let mut flasher = Flasher::connect(connection, false, true, true, None, Some(115_200))
+        let mut flasher = Flasher::connect(connection, false, false, true, None, Some(115_200))
             .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
         let info = flasher
@@ -1427,6 +1427,11 @@ where
         let image_format =
             IdfBootloaderFormat::new(elf_data, &flash_data, partition_table, None, None, None)
                 .map_err(|e| EspflashError::Espflash(format!("IdfBootloaderFormat: {:?}", e)))?;
+
+        // Erase flash before writing to avoid MD5 verification timeouts
+        flasher
+            .erase_flash()
+            .map_err(|e| EspflashError::Espflash(format!("erase_flash: {:?}", e)))?;
 
         flasher
             .load_image_to_flash(progress, image_format.into())
@@ -1531,7 +1536,12 @@ where
 
     /// Get benchmark payload size from NET chip.
     pub fn get_benchmark_payload_size(&mut self) -> u32 {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetBenchmarkPayloadSize, &[]).unwrap();
+        write_tlv(
+            &mut self.writer.net(),
+            MgmtToNet::GetBenchmarkPayloadSize,
+            &[],
+        )
+        .unwrap();
         let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, NetToMgmt::BenchmarkPayloadSize);
         if tlv.value.len() >= 4 {
