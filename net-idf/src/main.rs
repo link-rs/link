@@ -74,8 +74,6 @@ enum MoqEvent {
 
 /// Runtime MoQ configuration.
 struct MoqConfig {
-    /// MoQ relay URL.
-    relay_url: String,
     /// Target FPS for benchmark mode (0 = burst mode).
     benchmark_fps: u32,
     /// Payload size for benchmark mode.
@@ -85,7 +83,6 @@ struct MoqConfig {
 impl Default for MoqConfig {
     fn default() -> Self {
         Self {
-            relay_url: String::new(),
             benchmark_fps: 50,
             benchmark_payload_size: 640,
         }
@@ -120,6 +117,8 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
             info!("MoQ task started");
 
             let mut client: Option<quicr::Client> = None;
+            let mut relay_url: Option<String> = None;
+            let mut last_reconnect_attempt: Option<Instant> = None;
             let mut mode = MoqMode::Idle;
 
             // Clock mode state
@@ -139,9 +138,18 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                 match cmd_rx.try_recv() {
                     Ok(MoqCommand::SetRelayUrl(url)) => {
                         info!("MoQ: setting relay URL to {}", url);
-                        // Stop any running mode
+                        // Stop any running mode and disconnect existing client
                         mode = MoqMode::Idle;
                         clock_track = None;
+                        benchmark_track = None;
+                        if client.is_some() {
+                            client = None;
+                            let _ = event_tx.send(MoqEvent::Disconnected);
+                        }
+
+                        // Store URL for reconnection
+                        relay_url = Some(url.clone());
+                        last_reconnect_attempt = None;
 
                         match ClientBuilder::new()
                             .endpoint_id(MOQ_ENDPOINT_ID)
@@ -161,11 +169,13 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                         let _ = event_tx.send(MoqEvent::Error {
                                             message: format!("{:?}", e),
                                         });
+                                        last_reconnect_attempt = Some(Instant::now());
                                     }
                                 }
                             }
                             Err(e) => {
                                 warn!("MoQ: failed to create client: {:?}", e);
+                                last_reconnect_attempt = Some(Instant::now());
                             }
                         }
                     }
@@ -312,6 +322,43 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                     info!("MoQ benchmark: {:.1} fps, {:.1} kbps", actual_fps, throughput_kbps);
                                     last_benchmark_report = Some(now);
                                     benchmark_packets_sent = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Reconnection logic: if we have a URL but no client, try to reconnect
+                if client.is_none() {
+                    if let Some(ref url) = relay_url {
+                        let now = Instant::now();
+                        let should_reconnect = last_reconnect_attempt
+                            .map(|last| now.duration_since(last) >= Duration::from_secs(5))
+                            .unwrap_or(true);
+
+                        if should_reconnect {
+                            info!("MoQ: attempting reconnection to {}", url);
+                            last_reconnect_attempt = Some(now);
+
+                            match ClientBuilder::new()
+                                .endpoint_id(MOQ_ENDPOINT_ID)
+                                .connect_uri(url)
+                                .build()
+                            {
+                                Ok(c) => {
+                                    match block_on(c.connect()) {
+                                        Ok(()) => {
+                                            info!("MoQ: reconnected to {}", url);
+                                            client = Some(c);
+                                            let _ = event_tx.send(MoqEvent::Connected);
+                                        }
+                                        Err(e) => {
+                                            warn!("MoQ: reconnect failed: {:?}", e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("MoQ: failed to create client for reconnect: {:?}", e);
                                 }
                             }
                         }
@@ -904,6 +951,7 @@ fn main() {
                     &mut storage,
                     &mut loopback,
                     &mut moq_config,
+                    &moq_cmd_tx,
                 );
             }
         }
@@ -946,9 +994,6 @@ fn main() {
                 warn!("net-idf: MoQ event channel closed");
             }
         }
-
-        // Keep moq_cmd_tx alive for future MGMT command handling
-        let _ = &moq_cmd_tx;
 
         // Small delay to prevent busy-waiting
         thread::sleep(Duration::from_millis(1));
@@ -1083,6 +1128,7 @@ fn handle_mgmt_message(
     storage: &mut NvsStorage,
     loopback: &mut bool,
     moq: &mut MoqConfig,
+    moq_cmd_tx: &Sender<MoqCommand>,
 ) {
     match msg_type {
         MgmtToNet::Ping => {
@@ -1126,6 +1172,8 @@ fn handle_mgmt_message(
             if let Ok(url) = core::str::from_utf8(value) {
                 storage.relay_url = url.to_string();
                 if storage.save().is_ok() {
+                    // Also trigger MoQ connection to new relay
+                    let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(url.to_string()));
                     write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
                 } else {
                     write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
@@ -1146,15 +1194,20 @@ fn handle_mgmt_message(
         MgmtToNet::GetLoopback => {
             write_tlv(mgmt_uart, NetToMgmt::Loopback, &[*loopback as u8]);
         }
-        // MoQ commands - TEMPORARILY DISABLED
+        // MoQ commands (relay URL uses storage - there's only one relay type)
         MgmtToNet::GetMoqRelayUrl => {
-            write_tlv(mgmt_uart, NetToMgmt::MoqRelayUrl, moq.relay_url.as_bytes());
+            write_tlv(mgmt_uart, NetToMgmt::MoqRelayUrl, storage.relay_url.as_bytes());
         }
         MgmtToNet::SetMoqRelayUrl => {
             if let Ok(url) = core::str::from_utf8(value) {
-                moq.relay_url = url.to_string();
-                // MoQ disabled - just store locally
-                write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                storage.relay_url = url.to_string();
+                if storage.save().is_ok() {
+                    // Trigger connection to new relay
+                    let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(url.to_string()));
+                    write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                } else {
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+                }
             } else {
                 write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
             }
@@ -1181,9 +1234,24 @@ fn handle_mgmt_message(
                 write_tlv(mgmt_uart, NetToMgmt::Error, b"invalid size");
             }
         }
-        MgmtToNet::RunClock | MgmtToNet::RunBenchmark | MgmtToNet::StopMode | MgmtToNet::SendChatMessage => {
-            // MoQ disabled for debugging
-            write_tlv(mgmt_uart, NetToMgmt::Error, b"moq disabled");
+        MgmtToNet::RunClock => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunClock);
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
+        MgmtToNet::RunBenchmark => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunBenchmark {
+                fps: moq.benchmark_fps,
+                payload_size: moq.benchmark_payload_size,
+            });
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
+        MgmtToNet::StopMode => {
+            let _ = moq_cmd_tx.send(MoqCommand::StopMode);
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
+        MgmtToNet::SendChatMessage => {
+            // Chat not implemented yet
+            write_tlv(mgmt_uart, NetToMgmt::Error, b"not implemented");
         }
     }
 }
