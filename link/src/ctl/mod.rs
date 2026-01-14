@@ -1511,6 +1511,40 @@ where
         })
     }
 
+    /// Erase the NET chip's entire flash.
+    pub fn erase_net(&mut self) -> Result<(), EspflashError> {
+        let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer);
+        let port_info = UsbPortInfo {
+            vid: 0x303A,
+            pid: 0x1002,
+            serial_number: Some("MGMT_BRIDGE".to_string()),
+            manufacturer: Some("Link".to_string()),
+            product: Some("MGMT Bridge".to_string()),
+        };
+
+        let connection = Connection::new(
+            port,
+            port_info,
+            ResetAfterOperation::HardReset,
+            ResetBeforeOperation::DefaultReset,
+            115_200,
+        );
+
+        let mut flasher = Flasher::connect(connection, false, false, true, None, Some(115_200))
+            .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
+
+        flasher
+            .erase_flash()
+            .map_err(|e| EspflashError::Espflash(format!("erase_flash: {:?}", e)))?;
+
+        flasher
+            .connection()
+            .reset()
+            .map_err(|e| EspflashError::Espflash(format!("reset: {:?}", e)))?;
+
+        Ok(())
+    }
+
     // =========================================================================
     // MoQ commands
     // =========================================================================

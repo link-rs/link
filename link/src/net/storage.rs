@@ -118,8 +118,8 @@ where
         }
 
         let wifi = WifiSsid {
-            ssid: String::try_from(ssid).map_err(|_| ())?,
-            password: String::try_from(password).map_err(|_| ())?,
+            ssid: ssid.to_string(),
+            password: password.to_string(),
         };
 
         self.data.wifi_ssids.push(wifi).map_err(|_| ())?;

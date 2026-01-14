@@ -26,16 +26,19 @@ experimental = ["esp-idf-svc/experimental"]
 log = "0.4"
 esp-idf-svc = { version = "0.51" }
 embassy-time = { version = "0.5", features = ["generic-queue-8"] }
-quicr = { version = "0.1.0", path = "../vendor/quicr", features = ["esp-idf"] }
+# TEMPORARILY DISABLED: quicr may be causing pre-main crash
+# quicr = { version = "0.1.0", path = "../vendor/quicr", features = ["esp-idf"] }
 link = { path = "../link", default-features = false, features = ["net", "esp-idf"] }
 heapless = { version = "0.9", features = ["serde"] }
-postcard = "1"
+postcard = { version = "1", features = ["alloc"] }
 embedded-io = "0.6"
+embedded-svc = { version = "0.28.1", default-features = false }
 
 [build-dependencies]
 embuild = "0.33"
 
-[package.metadata.esp-idf-sys]
-extra_components = [
-    { component_dirs = "../vendor/quicr/esp-component" }
-]
+# TEMPORARILY DISABLED: quicr may be causing pre-main crash
+# [package.metadata.esp-idf-sys]
+# extra_components = [
+#     { component_dirs = "../vendor/quicr/esp-component" }
+# ]

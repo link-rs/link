@@ -246,6 +246,16 @@ enum NetAction {
         /// Reset action: "bootloader" to enter bootloader mode, or nothing/anything else for user mode
         action: Option<String>,
     },
+
+    /// Erase the NET chip's flash via OpenOCD
+    Erase,
+
+    /// Monitor data from NET chip (prints FromNet TLVs)
+    Monitor {
+        /// Reset the chip before monitoring
+        #[arg(long)]
+        reset: bool,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]

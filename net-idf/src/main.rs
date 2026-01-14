@@ -13,29 +13,29 @@ use esp_idf_svc::{
     hal::{
         gpio::{OutputPin, PinDriver},
         prelude::Peripherals,
-        task::block_on,
         uart::{self, UartDriver},
     },
     nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
 };
-use heapless::String;
 use link::{
-    net::{MoqExampleType, WifiSsid, MAX_MOQ_RELAY_URL_LEN, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS},
+    net::{WifiSsid, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS},
     uart_config, Color, MgmtToNet, NetToMgmt, NetToUi, UiToNet,
     HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD,
 };
-use log::{error, info, warn};
-use quicr::{ClientBuilder, FullTrackName, ObjectHeaders, TrackNamespace, runtime::sleep_ms};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use log::{info, warn};
+// TEMPORARILY DISABLED: quicr may be causing pre-main crash
+// use quicr::{ClientBuilder, FullTrackName, ObjectHeaders, TrackNamespace, runtime::sleep_ms};
+// use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+// use std::sync::atomic::{AtomicBool, Ordering};
+// use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 // ============================================================================
-// MoQ Command/Event Types
+// MoQ Command/Event Types - TEMPORARILY DISABLED
 // ============================================================================
 
+/*
 /// Commands sent to the MoQ task.
 #[derive(Clone)]
 enum MoqCommand {
@@ -78,6 +78,7 @@ enum MoqMode {
     Clock,
     Benchmark { fps: u32, payload_size: u32 },
 }
+*/
 
 // ============================================================================
 // MoQ Configuration (stored in main loop)
@@ -86,7 +87,7 @@ enum MoqMode {
 /// Runtime MoQ configuration.
 struct MoqConfig {
     /// MoQ relay URL.
-    relay_url: String<MAX_MOQ_RELAY_URL_LEN>,
+    relay_url: String,
     /// Target FPS for benchmark mode (0 = burst mode).
     benchmark_fps: u32,
     /// Payload size for benchmark mode.
@@ -108,13 +109,18 @@ impl Default for MoqConfig {
 // ============================================================================
 
 /// Device endpoint ID for MoQ connections.
+#[allow(dead_code)]
 const MOQ_ENDPOINT_ID: &str = "hactar-link-net";
 
+// TEMPORARILY DISABLED: spawn_moq_task - quicr may be causing pre-main crash
+/*
 /// Run the MoQ task in a separate thread.
 ///
 /// This spawns a thread that handles MoQ connection and operations using
 /// ESP-IDF's native async support.
-fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
+fn spawn_moq_task(_cmd_rx: Receiver<MoqCommand>, _event_tx: Sender<MoqEvent>) {
+    // TEMPORARILY DISABLED: quicr may be causing pre-main crash
+    info!("MoQ task DISABLED for debugging");
     thread::Builder::new()
         .name("moq".to_string())
         .stack_size(32768)
@@ -126,7 +132,10 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
         })
         .expect("failed to spawn MoQ thread");
 }
+*/
 
+// TEMPORARILY DISABLED: All quicr-dependent code commented out for debugging
+/*
 /// Async MoQ task loop - handles connection, reconnection, and modes.
 async fn moq_task_loop(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
     let mut relay_url: Option<std::string::String> = None;
@@ -423,6 +432,7 @@ async fn run_benchmark_tick(
     sleep_ms(1).await;
     Ok(())
 }
+*/ // END TEMPORARILY DISABLED quicr code
 
 // ============================================================================
 // NVS Storage
@@ -435,7 +445,7 @@ const NVS_NAMESPACE: &str = "net";
 struct NvsStorage {
     nvs: Option<EspNvs<NvsDefault>>,
     wifi_ssids: heapless::Vec<WifiSsid, MAX_WIFI_SSIDS>,
-    relay_url: String<MAX_RELAY_URL_LEN>,
+    relay_url: String,
 }
 
 // NVS key names (max 15 chars)
@@ -474,10 +484,8 @@ impl NvsStorage {
             match nvs.get_blob(NVS_KEY_RELAY_URL, &mut url_buf) {
                 Ok(Some(data)) => {
                     if let Ok(url) = core::str::from_utf8(data) {
-                        if let Ok(url_string) = String::try_from(url) {
-                            storage.relay_url = url_string;
-                            info!("net-idf: loaded relay URL from NVS: {}", storage.relay_url);
-                        }
+                        storage.relay_url = url.to_string();
+                        info!("net-idf: loaded relay URL from NVS: {}", storage.relay_url);
                     }
                 }
                 Ok(None) => {
@@ -500,9 +508,8 @@ impl NvsStorage {
         };
 
         // Save WiFi SSIDs
-        let mut buf = [0u8; 512];
-        if let Ok(serialized) = postcard::to_slice(&self.wifi_ssids, &mut buf) {
-            nvs.set_blob(NVS_KEY_WIFI_SSIDS, serialized)?;
+        if let Ok(serialized) = postcard::to_allocvec(&self.wifi_ssids) {
+            nvs.set_blob(NVS_KEY_WIFI_SSIDS, &serialized)?;
             info!("net-idf: saved {} WiFi SSIDs to NVS", self.wifi_ssids.len());
         }
 
@@ -524,8 +531,8 @@ impl NvsStorage {
         }
 
         let wifi = WifiSsid {
-            ssid: String::try_from(ssid).map_err(|_| ())?,
-            password: String::try_from(password).map_err(|_| ())?,
+            ssid: ssid.to_string(),
+            password: password.to_string(),
         };
 
         self.wifi_ssids.push(wifi).map_err(|_| ())?;
@@ -538,30 +545,21 @@ impl NvsStorage {
 // ============================================================================
 
 fn main() {
-    // Initialize ESP-IDF
-    println!("[NET] main() entry");
     esp_idf_svc::sys::link_patches();
-    println!("[NET] link_patches done");
     esp_idf_svc::log::EspLogger::initialize_default();
-    println!("[NET] logger initialized");
 
     info!("net-idf: initializing");
 
-    println!("[NET] taking peripherals");
     let peripherals = Peripherals::take().unwrap();
-    println!("[NET] taking sys_loop");
     let sys_loop = EspSystemEventLoop::take().unwrap();
-    println!("[NET] taking nvs_partition");
     let nvs_partition = EspDefaultNvsPartition::take().unwrap();
 
     // Initialize LED - RGB on GPIO 38, 37, 36 (active low)
-    println!("[NET] initializing LEDs");
     let mut led_r = PinDriver::output(peripherals.pins.gpio38).unwrap();
     let mut led_g = PinDriver::output(peripherals.pins.gpio37).unwrap();
     let mut led_b = PinDriver::output(peripherals.pins.gpio36).unwrap();
 
     // Start with red LED (WiFi not connected)
-    println!("[NET] setting LED to red");
     set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Red);
 
     // Initialize UARTs
@@ -583,7 +581,6 @@ fn main() {
         config
     };
 
-    println!("[NET] creating MGMT UART");
     let mgmt_uart = UartDriver::new(
         peripherals.uart0,
         peripherals.pins.gpio43,
@@ -593,7 +590,6 @@ fn main() {
         &mgmt_uart_config,
     )
     .unwrap();
-    println!("[NET] MGMT UART created");
 
     let ui_uart_config = {
         let mut config = uart::config::Config::new()
@@ -613,7 +609,6 @@ fn main() {
         config
     };
 
-    println!("[NET] creating UI UART");
     let ui_uart = UartDriver::new(
         peripherals.uart1,
         peripherals.pins.gpio17,
@@ -623,20 +618,16 @@ fn main() {
         &ui_uart_config,
     )
     .unwrap();
-    println!("[NET] UI UART created");
 
     info!("net-idf: UARTs initialized");
 
     // Initialize WiFi
-    println!("[NET] creating EspWifi");
     let wifi = esp_idf_svc::wifi::EspWifi::new(
         peripherals.modem,
         sys_loop.clone(),
         Some(nvs_partition.clone())
     ).unwrap();
-    println!("[NET] wrapping BlockingWifi");
     let mut wifi = esp_idf_svc::wifi::BlockingWifi::wrap(wifi, sys_loop).unwrap();
-    println!("[NET] WiFi initialized");
 
     // Open NVS for storage
     let nvs = match EspNvs::new(nvs_partition.clone(), NVS_NAMESPACE, true) {
@@ -651,13 +642,15 @@ fn main() {
     let mut storage = NvsStorage::load(nvs);
     info!("net-idf: loaded {} WiFi SSIDs from NVS", storage.wifi_ssids.len());
 
-    // Create MoQ channels and spawn task
+    // TEMPORARILY DISABLED: MoQ channels and task - quicr may be causing pre-main crash
+    /*
     println!("[NET] creating MoQ channels");
     let (moq_cmd_tx, moq_cmd_rx) = mpsc::channel::<MoqCommand>();
     let (moq_event_tx, moq_event_rx) = mpsc::channel::<MoqEvent>();
     println!("[NET] spawning MoQ task");
     spawn_moq_task(moq_cmd_rx, moq_event_tx);
     println!("[NET] MoQ task spawned");
+    */
 
     // Loopback mode state
     let mut loopback = false;
@@ -674,13 +667,15 @@ fn main() {
             warn!("net-idf: WiFi connect failed: {:?}", e);
         } else {
             info!("net-idf: WiFi connected");
-            set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Yellow);
+            set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
 
-            // Send MoQ relay URL if configured
+            // TEMPORARILY DISABLED: MoQ relay URL send
+            /*
             if !storage.relay_url.is_empty() {
                 let url = storage.relay_url.as_str().to_string();
                 let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(url));
             }
+            */
         }
     }
 
@@ -704,7 +699,6 @@ fn main() {
                     &mut storage,
                     &mut loopback,
                     &mut moq_config,
-                    &moq_cmd_tx,
                 );
             }
         }
@@ -716,7 +710,8 @@ fn main() {
             }
         }
 
-        // Check MoQ events
+        // TEMPORARILY DISABLED: MoQ event handling
+        /*
         match moq_event_rx.try_recv() {
             Ok(MoqEvent::Connected) => {
                 info!("net-idf: MoQ connected");
@@ -746,6 +741,7 @@ fn main() {
                 error!("net-idf: MoQ event channel closed");
             }
         }
+        */
 
         // Small delay to prevent busy-waiting
         thread::sleep(Duration::from_millis(1));
@@ -781,12 +777,14 @@ fn connect_wifi(
     ssid: &str,
     password: &str,
 ) -> Result<(), esp_idf_svc::sys::EspError> {
-    use esp_idf_svc::wifi::{AuthMethod, ClientConfiguration, Configuration};
+    use embedded_svc::wifi::{AuthMethod, ClientConfiguration, Configuration};
 
     let config = Configuration::Client(ClientConfiguration {
         ssid: ssid.try_into().unwrap(),
+        bssid: None,
+        auth_method: AuthMethod::WPA2Personal,
         password: password.try_into().unwrap(),
-        auth_method: if password.is_empty() { AuthMethod::None } else { AuthMethod::WPA2Personal },
+        channel: None,
         ..Default::default()
     });
 
@@ -878,7 +876,6 @@ fn handle_mgmt_message(
     storage: &mut NvsStorage,
     loopback: &mut bool,
     moq: &mut MoqConfig,
-    moq_cmd_tx: &Sender<MoqCommand>,
 ) {
     match msg_type {
         MgmtToNet::Ping => {
@@ -903,9 +900,8 @@ fn handle_mgmt_message(
             }
         }
         MgmtToNet::GetWifiSsids => {
-            let mut buf = [0u8; 256];
-            if let Ok(serialized) = postcard::to_slice(&storage.wifi_ssids, &mut buf) {
-                write_tlv(mgmt_uart, NetToMgmt::WifiSsids, serialized);
+            if let Ok(serialized) = postcard::to_allocvec(&storage.wifi_ssids) {
+                write_tlv(mgmt_uart, NetToMgmt::WifiSsids, &serialized);
             }
         }
         MgmtToNet::ClearWifiSsids => {
@@ -921,17 +917,11 @@ fn handle_mgmt_message(
         }
         MgmtToNet::SetRelayUrl => {
             if let Ok(url) = core::str::from_utf8(value) {
-                if let Ok(url_string) = String::try_from(url) {
-                    storage.relay_url = url_string;
-                    if storage.save().is_ok() {
-                        // Also send to MoQ task
-                        let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(url.to_string()));
-                        write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
-                    } else {
-                        write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
-                    }
+                storage.relay_url = url.to_string();
+                if storage.save().is_ok() {
+                    write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
                 } else {
-                    write_tlv(mgmt_uart, NetToMgmt::Error, b"url");
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
                 }
             } else {
                 write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
@@ -949,19 +939,15 @@ fn handle_mgmt_message(
         MgmtToNet::GetLoopback => {
             write_tlv(mgmt_uart, NetToMgmt::Loopback, &[*loopback as u8]);
         }
-        // MoQ commands
+        // MoQ commands - TEMPORARILY DISABLED
         MgmtToNet::GetMoqRelayUrl => {
             write_tlv(mgmt_uart, NetToMgmt::MoqRelayUrl, moq.relay_url.as_bytes());
         }
         MgmtToNet::SetMoqRelayUrl => {
             if let Ok(url) = core::str::from_utf8(value) {
-                if let Ok(url_string) = String::try_from(url) {
-                    moq.relay_url = url_string;
-                    let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(url.to_string()));
-                    write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
-                } else {
-                    write_tlv(mgmt_uart, NetToMgmt::Error, b"url too long");
-                }
+                moq.relay_url = url.to_string();
+                // MoQ disabled - just store locally
+                write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
             } else {
                 write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
             }
@@ -988,30 +974,9 @@ fn handle_mgmt_message(
                 write_tlv(mgmt_uart, NetToMgmt::Error, b"invalid size");
             }
         }
-        MgmtToNet::RunClock => {
-            let _ = moq_cmd_tx.send(MoqCommand::RunClock);
-            // Mode 0 = Clock
-            write_tlv(mgmt_uart, NetToMgmt::ModeStarted, &[0]);
-        }
-        MgmtToNet::RunBenchmark => {
-            let _ = moq_cmd_tx.send(MoqCommand::RunBenchmark {
-                fps: moq.benchmark_fps,
-                payload_size: moq.benchmark_payload_size,
-            });
-            // Mode 1 = Benchmark
-            write_tlv(mgmt_uart, NetToMgmt::ModeStarted, &[1]);
-        }
-        MgmtToNet::StopMode => {
-            let _ = moq_cmd_tx.send(MoqCommand::StopMode);
-            write_tlv(mgmt_uart, NetToMgmt::ModeStopped, &[]);
-        }
-        MgmtToNet::SendChatMessage => {
-            if let Ok(message) = core::str::from_utf8(value) {
-                let _ = moq_cmd_tx.send(MoqCommand::SendChat { message: message.to_string() });
-                write_tlv(mgmt_uart, NetToMgmt::ChatMessageSent, &[]);
-            } else {
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
-            }
+        MgmtToNet::RunClock | MgmtToNet::RunBenchmark | MgmtToNet::StopMode | MgmtToNet::SendChatMessage => {
+            // MoQ disabled for debugging
+            write_tlv(mgmt_uart, NetToMgmt::Error, b"moq disabled");
         }
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::{App, GetSetBool, GetSetString, GetSetU32, NetAction, WifiAction};
 use indicatif::{ProgressBar, ProgressStyle};
-use link::ctl::ProgressCallbacks;
+use link::ctl::{ProgressCallbacks, SetTimeout};
 
 /// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
 struct FlashProgress {
@@ -359,6 +359,78 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Ok(())
             }
         },
+        NetAction::Erase => {
+            println!("Erasing NET chip flash...");
+            match app.erase_net() {
+                Ok(()) => {
+                    println!("Flash erased successfully");
+                    Ok(())
+                }
+                Err(e) => Err(format!("Failed to erase flash: {}", e).into()),
+            }
+        }
+        NetAction::Monitor { reset } => {
+            if reset {
+                println!("Resetting NET chip...");
+                app.reset_net_to_user();
+            }
+            println!("Monitoring NET chip (ESC to stop)...\n");
+
+            // Set a short timeout for non-blocking reads
+            if let Err(e) = app
+                .reader_mut()
+                .inner_mut()
+                .set_timeout(std::time::Duration::from_millis(100))
+            {
+                eprintln!("Warning: couldn't set timeout: {}", e);
+            }
+
+            use crossterm::event::{self, Event, KeyCode, KeyEvent};
+            use crossterm::terminal;
+            use std::io::Write;
+
+            // Enable raw mode to capture ESC
+            terminal::enable_raw_mode()?;
+
+            let result = (|| {
+                loop {
+                    // Check for key press (non-blocking)
+                    if event::poll(std::time::Duration::from_millis(0))? {
+                        if let Event::Key(KeyEvent { code: KeyCode::Esc, .. }) = event::read()? {
+                            return Ok(());
+                        }
+                    }
+
+                    // Check for TLV data
+                    match app.reader_mut().read_tlv() {
+                        Ok(Some(tlv)) => {
+                            if tlv.tlv_type == link::MgmtToCtl::FromNet {
+                                std::io::stdout().write_all(&tlv.value).ok();
+                                std::io::stdout().flush().ok();
+                            }
+                        }
+                        Ok(None) => {
+                            // Timeout, continue
+                        }
+                        Err(e) => {
+                            // Check if it's just a timeout
+                            if let link::ctl::TlvReadError::Io(ref io_err) = e {
+                                if io_err.kind() == std::io::ErrorKind::TimedOut {
+                                    continue;
+                                }
+                            }
+                            return Err(format!("Read error: {:?}", e).into());
+                        }
+                    }
+                }
+            })();
+
+            // Always restore terminal mode
+            terminal::disable_raw_mode()?;
+            println!("\nMonitor stopped.");
+
+            result
+        }
     }
 }
 

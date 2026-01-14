@@ -17,6 +17,10 @@ BOOTLOADER="${ELF_DIR}/bootloader.bin"
 PARTITION_TABLE="${ELF_DIR}/partition-table.bin"
 BINARY="${ELF_DIR}/net-idf.bin"
 
+# Convert ELF to binary
+echo "Converting ELF to binary..."
+esptool.py --chip esp32s3 elf2image --flash_mode dio --flash_size 8MB -o "$BINARY" "$ELF_FILE"
+
 # Flash bootloader at 0x0, partition table at 0x8000, and app at 0x10000
 openocd -f board/esp32s3-ftdi.cfg \
     -c "program_esp $BOOTLOADER 0x0 verify" \
