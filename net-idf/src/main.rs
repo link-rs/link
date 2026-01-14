@@ -13,6 +13,7 @@ use esp_idf_svc::{
     hal::{
         gpio::{OutputPin, PinDriver},
         prelude::Peripherals,
+        task::block_on,
         uart::{self, UartDriver},
     },
     nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
@@ -23,62 +24,49 @@ use link::{
     HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD,
 };
 use log::{info, warn};
-// TEMPORARILY DISABLED: quicr may be causing pre-main crash
-// use quicr::{ClientBuilder, FullTrackName, ObjectHeaders, TrackNamespace, runtime::sleep_ms};
-// use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-// use std::sync::atomic::{AtomicBool, Ordering};
-// use std::sync::Arc;
+use quicr::{ClientBuilder, FullTrackName, ObjectHeaders, TrackNamespace};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
 // ============================================================================
-// MoQ Command/Event Types - TEMPORARILY DISABLED
+// MoQ Command/Event Types
 // ============================================================================
 
-/*
 /// Commands sent to the MoQ task.
 #[derive(Clone)]
+#[allow(dead_code)]
 enum MoqCommand {
     /// Set the relay URL (triggers reconnect if changed).
-    SetRelayUrl(std::string::String),
+    SetRelayUrl(String),
     /// Run clock mode - publish timestamps every second.
     RunClock,
     /// Run benchmark mode - publish at target FPS.
     RunBenchmark { fps: u32, payload_size: u32 },
     /// Send a chat message.
-    SendChat { message: std::string::String },
+    SendChat { message: String },
     /// Stop the current mode.
     StopMode,
 }
 
 /// Events sent from the MoQ task back to the main loop.
-#[allow(dead_code)] // ChatReceived will be used when subscription is implemented
+#[allow(dead_code)]
 enum MoqEvent {
     /// Connected to relay.
     Connected,
     /// Disconnected from relay.
     Disconnected,
     /// Mode started.
-    ModeStarted { mode: MoqExampleType },
+    ModeStarted,
     /// Mode stopped.
     ModeStopped,
     /// Error occurred.
-    Error { message: std::string::String },
+    Error { message: String },
     /// Chat message sent successfully.
     ChatSent,
     /// Chat message received.
-    ChatReceived { message: std::string::String },
+    ChatReceived { message: String },
 }
-
-/// Current mode the MoQ client is running.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-enum MoqMode {
-    #[default]
-    Idle,
-    Clock,
-    Benchmark { fps: u32, payload_size: u32 },
-}
-*/
 
 // ============================================================================
 // MoQ Configuration (stored in main loop)
@@ -109,10 +97,234 @@ impl Default for MoqConfig {
 // ============================================================================
 
 /// Device endpoint ID for MoQ connections.
-#[allow(dead_code)]
 const MOQ_ENDPOINT_ID: &str = "hactar-link-net";
 
-// TEMPORARILY DISABLED: spawn_moq_task - quicr may be causing pre-main crash
+/// Current mode the MoQ task is running.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum MoqMode {
+    #[default]
+    Idle,
+    Clock,
+    Benchmark { fps: u32, payload_size: u32 },
+}
+
+/// Spawn the MoQ task in a separate thread.
+fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
+    use std::sync::mpsc::TryRecvError;
+    use std::time::Instant;
+
+    thread::Builder::new()
+        .name("moq".to_string())
+        .stack_size(32768)
+        .spawn(move || {
+            info!("MoQ task started");
+
+            let mut client: Option<quicr::Client> = None;
+            let mut mode = MoqMode::Idle;
+
+            // Clock mode state
+            let mut clock_track: Option<std::sync::Arc<quicr::PublishTrack>> = None;
+            let mut clock_group_id: u64 = 0;
+            let mut last_clock_publish: Option<Instant> = None;
+
+            // Benchmark mode state
+            let mut benchmark_track: Option<std::sync::Arc<quicr::PublishTrack>> = None;
+            let mut benchmark_group_id: u64 = 0;
+            let mut last_benchmark_publish: Option<Instant> = None;
+            let mut last_benchmark_report: Option<Instant> = None;
+            let mut benchmark_packets_sent: u64 = 0;
+
+            loop {
+                // Check for commands (non-blocking)
+                match cmd_rx.try_recv() {
+                    Ok(MoqCommand::SetRelayUrl(url)) => {
+                        info!("MoQ: setting relay URL to {}", url);
+                        // Stop any running mode
+                        mode = MoqMode::Idle;
+                        clock_track = None;
+
+                        match ClientBuilder::new()
+                            .endpoint_id(MOQ_ENDPOINT_ID)
+                            .connect_uri(&url)
+                            .build()
+                        {
+                            Ok(c) => {
+                                info!("MoQ: client created, connecting...");
+                                match block_on(c.connect()) {
+                                    Ok(()) => {
+                                        info!("MoQ: connected to {}", url);
+                                        client = Some(c);
+                                        let _ = event_tx.send(MoqEvent::Connected);
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ: failed to connect: {:?}", e);
+                                        let _ = event_tx.send(MoqEvent::Error {
+                                            message: format!("{:?}", e),
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("MoQ: failed to create client: {:?}", e);
+                            }
+                        }
+                    }
+                    Ok(MoqCommand::RunClock) => {
+                        if let Some(ref c) = client {
+                            if mode == MoqMode::Idle {
+                                info!("MoQ: starting clock mode");
+                                let namespace = TrackNamespace::from_strings(&["hactar", "clock"]);
+                                c.publish_namespace(&namespace);
+                                let track_name = FullTrackName::from_strings(&["hactar", "clock"], "time");
+                                match block_on(c.publish(track_name)) {
+                                    Ok(track) => {
+                                        clock_track = Some(track);
+                                        clock_group_id = 0;
+                                        last_clock_publish = None;
+                                        mode = MoqMode::Clock;
+                                        let _ = event_tx.send(MoqEvent::ModeStarted);
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ: failed to create clock track: {:?}", e);
+                                        let _ = event_tx.send(MoqEvent::Error {
+                                            message: format!("{:?}", e),
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("MoQ: cannot start clock mode - not connected");
+                            let _ = event_tx.send(MoqEvent::Error {
+                                message: "not connected".to_string(),
+                            });
+                        }
+                    }
+                    Ok(MoqCommand::RunBenchmark { fps, payload_size }) => {
+                        if let Some(ref c) = client {
+                            if mode == MoqMode::Idle {
+                                info!("MoQ: starting benchmark mode (fps={}, size={})", fps, payload_size);
+                                let namespace = TrackNamespace::from_strings(&["hactar", "benchmark"]);
+                                c.publish_namespace(&namespace);
+                                let track_name = FullTrackName::from_strings(&["hactar", "benchmark"], "data");
+                                match block_on(c.publish(track_name)) {
+                                    Ok(track) => {
+                                        benchmark_track = Some(track);
+                                        benchmark_group_id = 0;
+                                        last_benchmark_publish = None;
+                                        last_benchmark_report = Some(Instant::now());
+                                        benchmark_packets_sent = 0;
+                                        mode = MoqMode::Benchmark { fps, payload_size };
+                                        let _ = event_tx.send(MoqEvent::ModeStarted);
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ: failed to create benchmark track: {:?}", e);
+                                        let _ = event_tx.send(MoqEvent::Error {
+                                            message: format!("{:?}", e),
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("MoQ: cannot start benchmark mode - not connected");
+                            let _ = event_tx.send(MoqEvent::Error {
+                                message: "not connected".to_string(),
+                            });
+                        }
+                    }
+                    Ok(MoqCommand::StopMode) => {
+                        if mode != MoqMode::Idle {
+                            info!("MoQ: stopping mode");
+                            mode = MoqMode::Idle;
+                            clock_track = None;
+                            benchmark_track = None;
+                            let _ = event_tx.send(MoqEvent::ModeStopped);
+                        }
+                    }
+                    Ok(cmd) => {
+                        info!("MoQ: received command: {:?}", std::mem::discriminant(&cmd));
+                    }
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => {
+                        info!("MoQ: command channel closed, exiting");
+                        break;
+                    }
+                }
+
+                // Run mode-specific logic
+                match mode {
+                    MoqMode::Idle => {}
+                    MoqMode::Clock => {
+                        if let Some(ref track) = clock_track {
+                            let now = Instant::now();
+                            let should_publish = last_clock_publish
+                                .map(|last| now.duration_since(last) >= Duration::from_secs(1))
+                                .unwrap_or(true);
+
+                            if should_publish {
+                                let timestamp = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default();
+                                let payload = format!("{}.{:03}", timestamp.as_secs(), timestamp.subsec_millis());
+
+                                let headers = ObjectHeaders::new(clock_group_id, 0);
+                                let _ = track.publish(&headers, payload.as_bytes());
+
+                                info!("MoQ clock: published {}", payload);
+                                clock_group_id += 1;
+                                last_clock_publish = Some(now);
+                            }
+                        }
+                    }
+                    MoqMode::Benchmark { fps, payload_size } => {
+                        if let Some(ref track) = benchmark_track {
+                            let now = Instant::now();
+
+                            // Determine if we should publish based on FPS
+                            let interval_us = if fps == 0 { 0 } else { 1_000_000 / fps as u64 };
+                            let should_publish = if fps == 0 {
+                                true // Burst mode
+                            } else {
+                                last_benchmark_publish
+                                    .map(|last| now.duration_since(last).as_micros() as u64 >= interval_us)
+                                    .unwrap_or(true)
+                            };
+
+                            if should_publish {
+                                // Create payload (heap allocated)
+                                let payload: Vec<u8> = (0..payload_size as usize)
+                                    .map(|i| (i & 0xFF) as u8)
+                                    .collect();
+
+                                let headers = ObjectHeaders::new(benchmark_group_id, 0);
+                                let _ = track.publish(&headers, &payload);
+
+                                benchmark_group_id += 1;
+                                benchmark_packets_sent += 1;
+                                last_benchmark_publish = Some(now);
+                            }
+
+                            // Report stats every second
+                            if let Some(last_report) = last_benchmark_report {
+                                if now.duration_since(last_report) >= Duration::from_secs(1) {
+                                    let elapsed = now.duration_since(last_report).as_secs_f64();
+                                    let actual_fps = benchmark_packets_sent as f64 / elapsed;
+                                    let throughput_kbps = (benchmark_packets_sent as f64 * payload_size as f64 * 8.0) / elapsed / 1000.0;
+                                    info!("MoQ benchmark: {:.1} fps, {:.1} kbps", actual_fps, throughput_kbps);
+                                    last_benchmark_report = Some(now);
+                                    benchmark_packets_sent = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                thread::sleep(Duration::from_millis(1));
+            }
+        })
+        .expect("failed to spawn MoQ thread");
+}
+
+// TEMPORARILY DISABLED: Full MoQ task implementation
 /*
 /// Run the MoQ task in a separate thread.
 ///
@@ -642,15 +854,10 @@ fn main() {
     let mut storage = NvsStorage::load(nvs);
     info!("net-idf: loaded {} WiFi SSIDs from NVS", storage.wifi_ssids.len());
 
-    // TEMPORARILY DISABLED: MoQ channels and task - quicr may be causing pre-main crash
-    /*
-    println!("[NET] creating MoQ channels");
+    // MoQ channels and task
     let (moq_cmd_tx, moq_cmd_rx) = mpsc::channel::<MoqCommand>();
     let (moq_event_tx, moq_event_rx) = mpsc::channel::<MoqEvent>();
-    println!("[NET] spawning MoQ task");
     spawn_moq_task(moq_cmd_rx, moq_event_tx);
-    println!("[NET] MoQ task spawned");
-    */
 
     // Loopback mode state
     let mut loopback = false;
@@ -669,13 +876,11 @@ fn main() {
             info!("net-idf: WiFi connected");
             set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
 
-            // TEMPORARILY DISABLED: MoQ relay URL send
-            /*
+            // Connect to MoQ relay if URL is stored
             if !storage.relay_url.is_empty() {
-                let url = storage.relay_url.as_str().to_string();
-                let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(url));
+                info!("net-idf: connecting to MoQ relay: {}", storage.relay_url);
+                let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(storage.relay_url.clone()));
             }
-            */
         }
     }
 
@@ -710,8 +915,8 @@ fn main() {
             }
         }
 
-        // TEMPORARILY DISABLED: MoQ event handling
-        /*
+        // MoQ event handling
+        use std::sync::mpsc::TryRecvError;
         match moq_event_rx.try_recv() {
             Ok(MoqEvent::Connected) => {
                 info!("net-idf: MoQ connected");
@@ -721,8 +926,8 @@ fn main() {
                 info!("net-idf: MoQ disconnected");
                 set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Yellow);
             }
-            Ok(MoqEvent::ModeStarted { mode }) => {
-                info!("net-idf: MoQ mode started: {:?}", mode);
+            Ok(MoqEvent::ModeStarted) => {
+                info!("net-idf: MoQ mode started");
             }
             Ok(MoqEvent::ModeStopped) => {
                 info!("net-idf: MoQ mode stopped");
@@ -738,10 +943,12 @@ fn main() {
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                error!("net-idf: MoQ event channel closed");
+                warn!("net-idf: MoQ event channel closed");
             }
         }
-        */
+
+        // Keep moq_cmd_tx alive for future MGMT command handling
+        let _ = &moq_cmd_tx;
 
         // Small delay to prevent busy-waiting
         thread::sleep(Duration::from_millis(1));
