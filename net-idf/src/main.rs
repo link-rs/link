@@ -921,7 +921,7 @@ fn main() {
             warn!("net-idf: WiFi connect failed: {:?}", e);
         } else {
             info!("net-idf: WiFi connected");
-            set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
+            set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Yellow);
 
             // Connect to MoQ relay if URL is stored
             if !storage.relay_url.is_empty() {
