@@ -777,6 +777,26 @@ extern "C" bool quicr_publish_track_can_publish(const QuicrPublishTrackHandler* 
     }
 }
 
+extern "C" bool quicr_publish_track_get_track_alias(const QuicrPublishTrackHandler* handler, uint64_t* out_track_alias) {
+    if (!handler || !handler->handler || !out_track_alias) {
+        return false;
+    }
+    try {
+        auto alias = handler->handler->GetTrackAlias();
+        if (alias.has_value()) {
+            *out_track_alias = alias.value();
+            return true;
+        }
+        return false;
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return false;
+    } catch (...) {
+        set_error("unknown C++ exception in quicr_publish_track_get_track_alias");
+        return false;
+    }
+}
+
 // =============================================================================
 // Subscribe Track Functions
 // =============================================================================
