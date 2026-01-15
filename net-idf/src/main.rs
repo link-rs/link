@@ -20,8 +20,8 @@ use esp_idf_svc::{
 };
 use link::{
     net::{WifiSsid, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS},
-    uart_config, Color, MgmtToNet, NetToMgmt, NetToUi, UiToNet,
-    HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD,
+    uart_config, Color, MgmtToNet, NetToMgmt, NetToUi, UiToNet, HEADER_SIZE, MAX_VALUE_SIZE,
+    SYNC_WORD,
 };
 use log::{info, warn};
 use quicr::{ClientBuilder, FullTrackName, ObjectHeaders, TrackNamespace};
@@ -102,7 +102,10 @@ enum MoqMode {
     #[default]
     Idle,
     Clock,
-    Benchmark { fps: u32, payload_size: u32 },
+    Benchmark {
+        fps: u32,
+        payload_size: u32,
+    },
 }
 
 /// Spawn the MoQ task in a separate thread.
@@ -185,7 +188,8 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                 info!("MoQ: starting clock mode");
                                 let namespace = TrackNamespace::from_strings(&["hactar", "clock"]);
                                 c.publish_namespace(&namespace);
-                                let track_name = FullTrackName::from_strings(&["hactar", "clock"], "time");
+                                let track_name =
+                                    FullTrackName::from_strings(&["hactar", "clock"], "time");
                                 match block_on(c.publish(track_name)) {
                                     Ok(track) => {
                                         clock_track = Some(track);
@@ -212,10 +216,15 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                     Ok(MoqCommand::RunBenchmark { fps, payload_size }) => {
                         if let Some(ref c) = client {
                             if mode == MoqMode::Idle {
-                                info!("MoQ: starting benchmark mode (fps={}, size={})", fps, payload_size);
-                                let namespace = TrackNamespace::from_strings(&["hactar", "benchmark"]);
+                                info!(
+                                    "MoQ: starting benchmark mode (fps={}, size={})",
+                                    fps, payload_size
+                                );
+                                let namespace =
+                                    TrackNamespace::from_strings(&["hactar", "benchmark"]);
                                 c.publish_namespace(&namespace);
-                                let track_name = FullTrackName::from_strings(&["hactar", "benchmark"], "data");
+                                let track_name =
+                                    FullTrackName::from_strings(&["hactar", "benchmark"], "data");
                                 match block_on(c.publish(track_name)) {
                                     Ok(track) => {
                                         benchmark_track = Some(track);
@@ -274,13 +283,22 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                 let timestamp = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default();
-                                let payload = format!("{}.{:03}", timestamp.as_secs(), timestamp.subsec_millis());
+                                let payload = format!(
+                                    "{}.{:03}",
+                                    timestamp.as_secs(),
+                                    timestamp.subsec_millis()
+                                );
 
                                 let headers = ObjectHeaders::new(clock_group_id, 0);
                                 let _ = track.publish(&headers, payload.as_bytes());
 
-                                info!("MoQ clock: published {} (ns={}, name={}, alias={:?})",
-                                    payload, track.track_name().namespace, String::from_utf8_lossy(&track.track_name().name), track.track_alias());
+                                info!(
+                                    "MoQ clock: published {} (ns={}, name={}, alias={:?})",
+                                    payload,
+                                    track.track_name().namespace,
+                                    String::from_utf8_lossy(&track.track_name().name),
+                                    track.track_alias()
+                                );
                                 clock_group_id += 1;
                                 last_clock_publish = Some(now);
                             }
@@ -296,7 +314,9 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                 true // Burst mode
                             } else {
                                 last_benchmark_publish
-                                    .map(|last| now.duration_since(last).as_micros() as u64 >= interval_us)
+                                    .map(|last| {
+                                        now.duration_since(last).as_micros() as u64 >= interval_us
+                                    })
                                     .unwrap_or(true)
                             };
 
@@ -319,8 +339,14 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                 if now.duration_since(last_report) >= Duration::from_secs(1) {
                                     let elapsed = now.duration_since(last_report).as_secs_f64();
                                     let actual_fps = benchmark_packets_sent as f64 / elapsed;
-                                    let throughput_kbps = (benchmark_packets_sent as f64 * payload_size as f64 * 8.0) / elapsed / 1000.0;
-                                    info!("MoQ benchmark: {:.1} fps, {:.1} kbps", actual_fps, throughput_kbps);
+                                    let throughput_kbps =
+                                        (benchmark_packets_sent as f64 * payload_size as f64 * 8.0)
+                                            / elapsed
+                                            / 1000.0;
+                                    info!(
+                                        "MoQ benchmark: {:.1} fps, {:.1} kbps",
+                                        actual_fps, throughput_kbps
+                                    );
                                     last_benchmark_report = Some(now);
                                     benchmark_packets_sent = 0;
                                 }
@@ -346,18 +372,16 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                 .connect_uri(url)
                                 .build()
                             {
-                                Ok(c) => {
-                                    match block_on(c.connect()) {
-                                        Ok(()) => {
-                                            info!("MoQ: reconnected to {}", url);
-                                            client = Some(c);
-                                            let _ = event_tx.send(MoqEvent::Connected);
-                                        }
-                                        Err(e) => {
-                                            warn!("MoQ: reconnect failed: {:?}", e);
-                                        }
+                                Ok(c) => match block_on(c.connect()) {
+                                    Ok(()) => {
+                                        info!("MoQ: reconnected to {}", url);
+                                        client = Some(c);
+                                        let _ = event_tx.send(MoqEvent::Connected);
                                     }
-                                }
+                                    Err(e) => {
+                                        warn!("MoQ: reconnect failed: {:?}", e);
+                                    }
+                                },
                                 Err(e) => {
                                     warn!("MoQ: failed to create client for reconnect: {:?}", e);
                                 }
@@ -726,9 +750,14 @@ impl NvsStorage {
             let mut buf = [0u8; 512];
             match nvs.get_blob(NVS_KEY_WIFI_SSIDS, &mut buf) {
                 Ok(Some(data)) => {
-                    if let Ok(ssids) = postcard::from_bytes::<heapless::Vec<WifiSsid, MAX_WIFI_SSIDS>>(data) {
+                    if let Ok(ssids) =
+                        postcard::from_bytes::<heapless::Vec<WifiSsid, MAX_WIFI_SSIDS>>(data)
+                    {
                         storage.wifi_ssids = ssids;
-                        info!("net-idf: loaded {} WiFi SSIDs from NVS", storage.wifi_ssids.len());
+                        info!(
+                            "net-idf: loaded {} WiFi SSIDs from NVS",
+                            storage.wifi_ssids.len()
+                        );
                     }
                 }
                 Ok(None) => {
@@ -885,8 +914,9 @@ fn main() {
     let wifi = esp_idf_svc::wifi::EspWifi::new(
         peripherals.modem,
         sys_loop.clone(),
-        Some(nvs_partition.clone())
-    ).unwrap();
+        Some(nvs_partition.clone()),
+    )
+    .unwrap();
     let mut wifi = esp_idf_svc::wifi::BlockingWifi::wrap(wifi, sys_loop).unwrap();
 
     // Open NVS for storage
@@ -900,7 +930,10 @@ fn main() {
 
     // Load storage from NVS
     let mut storage = NvsStorage::load(nvs);
-    info!("net-idf: loaded {} WiFi SSIDs from NVS", storage.wifi_ssids.len());
+    info!(
+        "net-idf: loaded {} WiFi SSIDs from NVS",
+        storage.wifi_ssids.len()
+    );
 
     // MoQ channels and task
     let (moq_cmd_tx, moq_cmd_rx) = mpsc::channel::<MoqCommand>();
@@ -942,7 +975,9 @@ fn main() {
 
     loop {
         // Check MGMT UART for incoming data
-        if let Some((msg_type, value)) = try_read_tlv(&mgmt_uart, &mut mgmt_rx_buf, &mut mgmt_rx_pos) {
+        if let Some((msg_type, value)) =
+            try_read_tlv(&mgmt_uart, &mut mgmt_rx_buf, &mut mgmt_rx_pos)
+        {
             if let Ok(tlv_type) = MgmtToNet::try_from(msg_type) {
                 handle_mgmt_message(
                     tlv_type,
@@ -1013,14 +1048,46 @@ fn set_led_color<R: OutputPin, G: OutputPin, B: OutputPin>(
 ) {
     // Active low: set_low() turns LED on, set_high() turns LED off
     match color {
-        Color::Black => { led_r.set_high().ok(); led_g.set_high().ok(); led_b.set_high().ok(); }
-        Color::Red => { led_r.set_low().ok(); led_g.set_high().ok(); led_b.set_high().ok(); }
-        Color::Green => { led_r.set_high().ok(); led_g.set_low().ok(); led_b.set_high().ok(); }
-        Color::Blue => { led_r.set_high().ok(); led_g.set_high().ok(); led_b.set_low().ok(); }
-        Color::Yellow => { led_r.set_low().ok(); led_g.set_low().ok(); led_b.set_high().ok(); }
-        Color::Cyan => { led_r.set_high().ok(); led_g.set_low().ok(); led_b.set_low().ok(); }
-        Color::Magenta => { led_r.set_low().ok(); led_g.set_high().ok(); led_b.set_low().ok(); }
-        Color::White => { led_r.set_low().ok(); led_g.set_low().ok(); led_b.set_low().ok(); }
+        Color::Black => {
+            led_r.set_high().ok();
+            led_g.set_high().ok();
+            led_b.set_high().ok();
+        }
+        Color::Red => {
+            led_r.set_low().ok();
+            led_g.set_high().ok();
+            led_b.set_high().ok();
+        }
+        Color::Green => {
+            led_r.set_high().ok();
+            led_g.set_low().ok();
+            led_b.set_high().ok();
+        }
+        Color::Blue => {
+            led_r.set_high().ok();
+            led_g.set_high().ok();
+            led_b.set_low().ok();
+        }
+        Color::Yellow => {
+            led_r.set_low().ok();
+            led_g.set_low().ok();
+            led_b.set_high().ok();
+        }
+        Color::Cyan => {
+            led_r.set_high().ok();
+            led_g.set_low().ok();
+            led_b.set_low().ok();
+        }
+        Color::Magenta => {
+            led_r.set_low().ok();
+            led_g.set_high().ok();
+            led_b.set_low().ok();
+        }
+        Color::White => {
+            led_r.set_low().ok();
+            led_g.set_low().ok();
+            led_b.set_low().ok();
+        }
     }
 }
 
@@ -1097,7 +1164,9 @@ fn try_read_tlv(
         let total_len = FRAME_HEADER_SIZE + length;
         if *pos >= total_len {
             let mut value = heapless::Vec::new();
-            value.extend_from_slice(&buf[FRAME_HEADER_SIZE..total_len]).ok();
+            value
+                .extend_from_slice(&buf[FRAME_HEADER_SIZE..total_len])
+                .ok();
             buf.copy_within(total_len..*pos, 0);
             *pos -= total_len;
             return Some((msg_type, value));
@@ -1197,7 +1266,11 @@ fn handle_mgmt_message(
         }
         // MoQ commands (relay URL uses storage - there's only one relay type)
         MgmtToNet::GetMoqRelayUrl => {
-            write_tlv(mgmt_uart, NetToMgmt::MoqRelayUrl, storage.relay_url.as_bytes());
+            write_tlv(
+                mgmt_uart,
+                NetToMgmt::MoqRelayUrl,
+                storage.relay_url.as_bytes(),
+            );
         }
         MgmtToNet::SetMoqRelayUrl => {
             if let Ok(url) = core::str::from_utf8(value) {
@@ -1214,7 +1287,11 @@ fn handle_mgmt_message(
             }
         }
         MgmtToNet::GetBenchmarkFps => {
-            write_tlv(mgmt_uart, NetToMgmt::BenchmarkFps, &moq.benchmark_fps.to_le_bytes());
+            write_tlv(
+                mgmt_uart,
+                NetToMgmt::BenchmarkFps,
+                &moq.benchmark_fps.to_le_bytes(),
+            );
         }
         MgmtToNet::SetBenchmarkFps => {
             if value.len() >= 4 {
@@ -1225,11 +1302,16 @@ fn handle_mgmt_message(
             }
         }
         MgmtToNet::GetBenchmarkPayloadSize => {
-            write_tlv(mgmt_uart, NetToMgmt::BenchmarkPayloadSize, &moq.benchmark_payload_size.to_le_bytes());
+            write_tlv(
+                mgmt_uart,
+                NetToMgmt::BenchmarkPayloadSize,
+                &moq.benchmark_payload_size.to_le_bytes(),
+            );
         }
         MgmtToNet::SetBenchmarkPayloadSize => {
             if value.len() >= 4 {
-                moq.benchmark_payload_size = u32::from_le_bytes([value[0], value[1], value[2], value[3]]);
+                moq.benchmark_payload_size =
+                    u32::from_le_bytes([value[0], value[1], value[2], value[3]]);
                 write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
             } else {
                 write_tlv(mgmt_uart, NetToMgmt::Error, b"invalid size");

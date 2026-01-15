@@ -19,7 +19,10 @@ impl FlashProgress {
                 .unwrap()
                 .progress_chars("#>-"),
         );
-        Self { pb, verifying: false }
+        Self {
+            pb,
+            verifying: false,
+        }
     }
 
     fn finish(self) {
@@ -311,42 +314,34 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Ok(())
             }
         },
-        NetAction::RunClock => {
-            match app.run_clock() {
-                Ok(()) => {
-                    println!("Started clock mode (subscribing to clock track)");
-                    Ok(())
-                }
-                Err(e) => Err(format!("Failed to run clock: {}", e).into()),
+        NetAction::RunClock => match app.run_clock() {
+            Ok(()) => {
+                println!("Started clock mode (subscribing to clock track)");
+                Ok(())
             }
-        }
-        NetAction::RunBenchmark => {
-            match app.run_benchmark() {
-                Ok(()) => {
-                    println!("Started benchmark mode (publishing frames)");
-                    Ok(())
-                }
-                Err(e) => Err(format!("Failed to run benchmark: {}", e).into()),
+            Err(e) => Err(format!("Failed to run clock: {}", e).into()),
+        },
+        NetAction::RunBenchmark => match app.run_benchmark() {
+            Ok(()) => {
+                println!("Started benchmark mode (publishing frames)");
+                Ok(())
             }
-        }
-        NetAction::StopMode => {
-            match app.stop_mode() {
-                Ok(()) => {
-                    println!("Stopped current mode");
-                    Ok(())
-                }
-                Err(e) => Err(format!("Failed to stop mode: {}", e).into()),
+            Err(e) => Err(format!("Failed to run benchmark: {}", e).into()),
+        },
+        NetAction::StopMode => match app.stop_mode() {
+            Ok(()) => {
+                println!("Stopped current mode");
+                Ok(())
             }
-        }
-        NetAction::Chat { message } => {
-            match app.send_chat_message(&message) {
-                Ok(()) => {
-                    println!("Chat message sent");
-                    Ok(())
-                }
-                Err(e) => Err(format!("Failed to send chat message: {}", e).into()),
+            Err(e) => Err(format!("Failed to stop mode: {}", e).into()),
+        },
+        NetAction::Chat { message } => match app.send_chat_message(&message) {
+            Ok(()) => {
+                println!("Chat message sent");
+                Ok(())
             }
-        }
+            Err(e) => Err(format!("Failed to send chat message: {}", e).into()),
+        },
         NetAction::Reset { action } => match action.as_deref() {
             Some("bootloader") => {
                 app.reset_net_to_bootloader();
@@ -396,7 +391,10 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 loop {
                     // Check for key press (non-blocking)
                     if event::poll(std::time::Duration::from_millis(0))? {
-                        if let Event::Key(KeyEvent { code: KeyCode::Esc, .. }) = event::read()? {
+                        if let Event::Key(KeyEvent {
+                            code: KeyCode::Esc, ..
+                        }) = event::read()?
+                        {
                             return Ok(());
                         }
                     }

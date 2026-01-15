@@ -7,8 +7,8 @@ extern crate alloc;
 pub mod stm;
 
 use crate::shared::{
-    CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, Tlv, UiToMgmt, WifiSsid, HEADER_SIZE,
-    MAX_VALUE_SIZE, SYNC_WORD,
+    CtlToMgmt, HEADER_SIZE, MAX_VALUE_SIZE, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, SYNC_WORD,
+    Tlv, UiToMgmt, WifiSsid,
 };
 use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
 use espflash::flasher::{FlashData, FlashSettings, Flasher};
@@ -1238,25 +1238,98 @@ where
     R: Read + Send,
     W: Write + Send,
 {
-    fn new(reader: &'a mut MgmtReader<R>, writer: &'a mut MgmtWriter<W>) -> Self {
+    fn new(reader: &'a mut MgmtReader<R>, writer: &'a mut MgmtWriter<W>, baud_rate: u32) -> Self {
         TunnelSerialPort {
             reader,
             writer,
             read_buffer: Vec::new(),
             timeout: Duration::from_secs(3),
-            baud_rate: 115_200,
+            baud_rate,
         }
     }
 }
 
 impl<R, W> TunnelSerialPort<'_, R, W>
 where
-    R: Read + Send + SetTimeout,
-    W: Write + Send,
+    R: Read + Send + SetTimeout + SetBaudRate,
+    W: Write + Send + SetBaudRate,
 {
     /// Propagate timeout to underlying serial port.
     fn propagate_timeout(&mut self, timeout: Duration) -> std::io::Result<()> {
         self.reader.inner_mut().set_timeout(timeout)
+    }
+
+    /// Change the baud rate on both CTL-MGMT and MGMT-NET links.
+    ///
+    /// This sends commands to MGMT to change both UART baud rates,
+    /// then updates the local serial port to match.
+    fn change_baud_rate(&mut self, baud_rate: u32) -> std::io::Result<()> {
+        println!(
+            "TunnelSerialPort: changing baud rate from {} to {}",
+            self.baud_rate, baud_rate
+        );
+        let baud_bytes = baud_rate.to_le_bytes();
+
+        // 1. Send SetNetBaudRate to change MGMT-NET link
+        //    ACK comes back at current CTL-MGMT rate
+        self.writer
+            .write_tlv(CtlToMgmt::SetNetBaudRate, &baud_bytes)?;
+
+        // Wait for ACK from MGMT
+        loop {
+            match read_tlv::<MgmtToCtl, _>(self.reader.inner_mut()) {
+                Ok(Some(tlv)) if tlv.tlv_type == MgmtToCtl::Ack => break,
+                Ok(Some(_)) => continue, // Ignore other messages
+                Ok(None) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "timeout waiting for SetNetBaudRate ACK",
+                    ));
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("{:?}", e),
+                    ));
+                }
+            }
+        }
+
+        // 2. Send SetCtlBaudRate to change CTL-MGMT link
+        //    ACK comes back at OLD rate, then MGMT switches
+        self.writer
+            .write_tlv(CtlToMgmt::SetCtlBaudRate, &baud_bytes)?;
+
+        // Wait for ACK from MGMT
+        loop {
+            match read_tlv::<MgmtToCtl, _>(self.reader.inner_mut()) {
+                Ok(Some(tlv)) if tlv.tlv_type == MgmtToCtl::Ack => break,
+                Ok(Some(_)) => continue, // Ignore other messages
+                Ok(None) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "timeout waiting for SetCtlBaudRate ACK",
+                    ));
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("{:?}", e),
+                    ));
+                }
+            }
+        }
+
+        // Small delay for MGMT to complete the baud rate switch
+        std::thread::sleep(Duration::from_millis(10));
+
+        // 3. Update local serial port baud rate
+        self.reader.inner_mut().set_baud_rate(baud_rate)?;
+        self.writer.inner_mut().set_baud_rate(baud_rate)?;
+
+        self.baud_rate = baud_rate;
+        println!("TunnelSerialPort: baud rate changed to {}", baud_rate);
+        Ok(())
     }
 }
 
@@ -1295,8 +1368,8 @@ where
 
 impl<R, W> SerialPort for TunnelSerialPort<'_, R, W>
 where
-    R: Read + Send + SetTimeout,
-    W: Write + Send,
+    R: Read + Send + SetTimeout + SetBaudRate,
+    W: Write + Send + SetBaudRate,
 {
     fn name(&self) -> Option<String> {
         Some("tunnel".to_string())
@@ -1320,8 +1393,9 @@ where
         self.timeout
     }
     fn set_baud_rate(&mut self, baud_rate: u32) -> serialport::Result<()> {
-        self.baud_rate = baud_rate;
-        Ok(())
+        // Actually change the baud rate on both CTL-MGMT and MGMT-NET links
+        self.change_baud_rate(baud_rate)
+            .map_err(|e| serialport::Error::new(serialport::ErrorKind::Io(e.kind()), e.to_string()))
     }
     fn set_data_bits(&mut self, _: DataBits) -> serialport::Result<()> {
         Ok(())
@@ -1402,11 +1476,34 @@ impl SetTimeout for std::io::BufReader<Box<dyn serialport::SerialPort>> {
     }
 }
 
+/// Trait for types that support setting the baud rate.
+pub trait SetBaudRate {
+    fn set_baud_rate(&mut self, baud_rate: u32) -> std::io::Result<()>;
+}
+
+// Implement for BufReader wrapping SerialPort
+impl SetBaudRate for std::io::BufReader<Box<dyn serialport::SerialPort>> {
+    fn set_baud_rate(&mut self, baud_rate: u32) -> std::io::Result<()> {
+        self.get_mut()
+            .set_baud_rate(baud_rate)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+    }
+}
+
+// Implement for BufWriter wrapping SerialPort
+impl SetBaudRate for std::io::BufWriter<Box<dyn serialport::SerialPort>> {
+    fn set_baud_rate(&mut self, baud_rate: u32) -> std::io::Result<()> {
+        self.get_mut()
+            .set_baud_rate(baud_rate)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+    }
+}
+
 // NET chip operations (ESP32)
 impl<R, W> App<R, W>
 where
-    R: Read + Send + SetTimeout,
-    W: Write + Send,
+    R: Read + Send + SetTimeout + SetBaudRate,
+    W: Write + Send + SetBaudRate,
 {
     /// Flash firmware to the NET chip (ESP32).
     ///
@@ -1421,7 +1518,9 @@ where
         partition_table: Option<&Path>,
         progress: &mut dyn ProgressCallbacks,
     ) -> Result<(), EspflashError> {
-        let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer);
+        const INITIAL_BAUD: u32 = 115_200;
+
+        let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer, INITIAL_BAUD);
         let port_info = UsbPortInfo {
             vid: 0x303A,
             pid: 0x1002,
@@ -1435,13 +1534,13 @@ where
             port_info,
             ResetAfterOperation::HardReset,
             ResetBeforeOperation::DefaultReset,
-            115_200,
+            INITIAL_BAUD,
         );
 
         println!("About to connect");
 
-        // Pass explicit 115200 baud rate to prevent espflash from changing it
-        let mut flasher = Flasher::connect(connection, false, false, true, None, Some(115_200))
+        // Allow espflash to negotiate higher baud rate (up to 460800)
+        let mut flasher = Flasher::connect(connection, false, false, true, None, Some(460_800))
             .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
         println!("About to flash");
@@ -1468,6 +1567,34 @@ where
             .reset()
             .map_err(|e| EspflashError::Espflash(format!("reset: {:?}", e)))?;
 
+        // Drop flasher to release borrows on self.reader/self.writer
+        drop(flasher);
+
+        // Restore baud rate to initial value
+        // espflash may have changed it to a higher rate during flashing
+        println!("Restoring baud rate to {}", INITIAL_BAUD);
+        self.restore_baud_rate(INITIAL_BAUD)
+            .map_err(|e| EspflashError::Espflash(format!("restore baud rate: {:?}", e)))?;
+
+        Ok(())
+    }
+
+    /// Restore baud rate on both CTL-MGMT and MGMT-NET links.
+    fn restore_baud_rate(&mut self, baud_rate: u32) -> std::io::Result<()> {
+        // Change MGMT-NET baud rate
+        self.set_net_baud_rate(baud_rate);
+
+        // Change CTL-MGMT baud rate (ACK comes at old rate, then MGMT switches)
+        self.set_ctl_baud_rate(baud_rate);
+
+        // Small delay for MGMT to complete the baud rate switch
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Update local serial port baud rate
+        self.reader.inner_mut().set_baud_rate(baud_rate)?;
+        self.writer.inner_mut().set_baud_rate(baud_rate)?;
+
+        println!("Baud rate restored to {}", baud_rate);
         Ok(())
     }
 
@@ -1476,7 +1603,7 @@ where
     /// Returns detailed device information including chip type, revision,
     /// flash size, features, MAC address, and security info.
     pub fn get_net_bootloader_info(&mut self) -> Result<EspflashDeviceInfo, EspflashError> {
-        let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer);
+        let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer, 115_200);
         let port_info = UsbPortInfo {
             vid: 0,
             pid: 0,
@@ -1513,7 +1640,7 @@ where
 
     /// Erase the NET chip's entire flash.
     pub fn erase_net(&mut self) -> Result<(), EspflashError> {
-        let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer);
+        let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer, 115_200);
         let port_info = UsbPortInfo {
             vid: 0x303A,
             pid: 0x1002,

@@ -6,13 +6,11 @@ mod storage;
 #[cfg(feature = "audio-buffer")]
 pub use crate::shared::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
 pub use storage::{
-    MoqError, MoqExampleType, MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_RELAY_URL_LEN, MAX_MOQ_TRACK_NAME_LEN,
-    MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, NetStorage, WifiSsid,
+    MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_RELAY_URL_LEN, MAX_MOQ_TRACK_NAME_LEN, MAX_RELAY_URL_LEN,
+    MAX_WIFI_SSIDS, MoqError, MoqExampleType, NetStorage, WifiSsid,
 };
 
 use crate::info;
-#[cfg(feature = "audio-buffer")]
-use crate::shared::MAX_VALUE_SIZE;
 use crate::shared::{
     Channel, Color, CriticalSectionRawMutex, Led, MgmtToNet, NetToMgmt, NetToUi, RawMutex,
     Receiver, Sender, Tlv, UiToNet, WriteTlv, read_tlv_loop,

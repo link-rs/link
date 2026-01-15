@@ -12,7 +12,10 @@ macro_rules! trace {
     ($($arg:tt)*) => { defmt::debug!($($arg)*) };
 }
 
-#[cfg(all(not(feature = "trace-tlv"), any(feature = "mgmt", feature = "net", feature = "ui")))]
+#[cfg(all(
+    not(feature = "trace-tlv"),
+    any(feature = "mgmt", feature = "net", feature = "ui")
+))]
 macro_rules! trace {
     ($($arg:tt)*) => {};
 }

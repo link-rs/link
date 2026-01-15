@@ -9,7 +9,7 @@ pub use crate::shared::wifi::{MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, WifiSsid};
 
 // Re-export MoQ types from shared
 pub use crate::shared::moq::{
-    MoqError, MoqExampleType, MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_RELAY_URL_LEN, MAX_MOQ_TRACK_NAME_LEN,
+    MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_RELAY_URL_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampleType,
 };
 
 /// Persistent storage data for the NET chip.
@@ -118,8 +118,8 @@ where
         }
 
         let wifi = WifiSsid {
-            ssid: ssid.to_string(),
-            password: password.to_string(),
+            ssid: ssid.try_into().map_err(|_| ())?,
+            password: password.try_into().map_err(|_| ())?,
         };
 
         self.data.wifi_ssids.push(wifi).map_err(|_| ())?;

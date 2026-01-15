@@ -11,10 +11,10 @@ use crate::shared::mocks::{
     MockFlash, MockPin, SyncReader, SyncWriter, TrackingPin, async_async_channel,
     mock_i2c_with_eeprom, mock_led_pins, sync_async_channel,
 };
-use std::sync::atomic::{AtomicU32, Ordering};
 use crate::{ctl, mgmt, net, ui};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Run a test with the full device stack.
@@ -100,7 +100,9 @@ where
 /// Test harness that provides access to tracked GPIO operations.
 async fn device_test_with_gpio_tracking<F>(test_fn: F)
 where
-    F: FnOnce(ctl::App<SyncReader, SyncWriter>, Arc<Mutex<Vec<(&'static str, GpioOp)>>>) + Send + 'static,
+    F: FnOnce(ctl::App<SyncReader, SyncWriter>, Arc<Mutex<Vec<(&'static str, GpioOp)>>>)
+        + Send
+        + 'static,
 {
     // CTL <-> MGMT: sync on CTL side, async on MGMT side
     let ((ctl_reader, ctl_writer), (mgmt_from_ctl, mgmt_to_ctl)) = sync_async_channel();

@@ -3,7 +3,7 @@
 use crate::{App, GetSetU32, MgmtAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::FlashPhase;
-use link::{CtlToMgmt, MgmtToCtl, HEADER_SIZE, SYNC_WORD};
+use link::{CtlToMgmt, HEADER_SIZE, MgmtToCtl, SYNC_WORD};
 use serialport::SerialPort;
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -186,7 +186,9 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
             match action {
                 GetSetU32::Get => {
                     // MGMT doesn't currently support querying baud rate
-                    println!("Get not implemented - MGMT protocol doesn't support baud rate queries");
+                    println!(
+                        "Get not implemented - MGMT protocol doesn't support baud rate queries"
+                    );
                     Ok(())
                 }
                 GetSetU32::Set { value } => {
@@ -202,7 +204,9 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
             match action {
                 GetSetU32::Get => {
                     // MGMT doesn't currently support querying baud rate
-                    println!("Get not implemented - MGMT protocol doesn't support baud rate queries");
+                    println!(
+                        "Get not implemented - MGMT protocol doesn't support baud rate queries"
+                    );
                     Ok(())
                 }
                 GetSetU32::Set { value } => {
@@ -246,7 +250,10 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
 
             // If a baud rate was specified, change to it first
             let test_baud = if let Some(new_baud) = baud {
-                println!("Changing baud rate from {} to {}...", initial_baud, new_baud);
+                println!(
+                    "Changing baud rate from {} to {}...",
+                    initial_baud, new_baud
+                );
 
                 // Send command to MGMT (ACK is sent before rate change)
                 app.set_ctl_baud_rate(new_baud);
@@ -336,7 +343,10 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
 
             println!("\nSpeed Test Results:");
             println!("  Baud rate:          {} bps", test_baud);
-            println!("  Duration:           {:.2} seconds", send_elapsed.as_secs_f64());
+            println!(
+                "  Duration:           {:.2} seconds",
+                send_elapsed.as_secs_f64()
+            );
             println!("  Payload size:       {} bytes", payload_size);
             println!("  Packets sent:       {}", packets_sent);
             println!("  Packets received:   {}", packets_received);
@@ -344,7 +354,10 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
             if send_errors > 0 {
                 println!("  Send errors:        {}", send_errors);
             }
-            println!("  Packet rate:        {:.1} packets/sec", packets_per_second);
+            println!(
+                "  Packet rate:        {:.1} packets/sec",
+                packets_per_second
+            );
             println!(
                 "  Throughput:         {:.0} bits/sec ({:.1}% efficiency)",
                 bits_per_second, efficiency

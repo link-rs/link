@@ -457,10 +457,7 @@ fn mgmt_handler(
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
 
-fn ui_handler(
-    args: ArgMatches,
-    app: &mut App,
-) -> Result<Option<String>, reedline_repl_rs::Error> {
+fn ui_handler(args: ArgMatches, app: &mut App) -> Result<Option<String>, reedline_repl_rs::Error> {
     let action = UiAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
     dispatch(Command::Ui { action }, app)
@@ -468,10 +465,7 @@ fn ui_handler(
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
 
-fn net_handler(
-    args: ArgMatches,
-    app: &mut App,
-) -> Result<Option<String>, reedline_repl_rs::Error> {
+fn net_handler(args: ArgMatches, app: &mut App) -> Result<Option<String>, reedline_repl_rs::Error> {
     let action = NetAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
     dispatch(Command::Net { action }, app)

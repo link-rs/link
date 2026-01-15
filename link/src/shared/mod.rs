@@ -17,8 +17,8 @@ pub mod protocol;
 pub mod tlv;
 pub mod uart_config;
 
-// MoQ types - only used by ctl and net
-#[cfg(any(feature = "ctl", feature = "net"))]
+// MoQ types - only used by net
+#[cfg(feature = "net")]
 pub mod moq;
 
 // WiFi types - only used by ctl and net
@@ -50,10 +50,12 @@ pub use tlv::{HEADER_SIZE, SYNC_WORD};
 #[allow(unused_imports)] // Re-exported for public API
 pub use tlv::{ReadTlv, Value, WriteTlv};
 
-// MoQ types - used by ctl and net
-#[cfg(any(feature = "ctl", feature = "net"))]
+// MoQ types - used by net
+#[cfg(feature = "net")]
 #[allow(unused_imports)] // Re-exported for public API
-pub use moq::{MoqError, MoqExampleType, MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_RELAY_URL_LEN, MAX_MOQ_TRACK_NAME_LEN};
+pub use moq::{
+    MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_RELAY_URL_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampleType,
+};
 
 // WiFi types - WifiSsid used by ctl and net
 #[cfg(any(feature = "ctl", feature = "net"))]

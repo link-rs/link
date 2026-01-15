@@ -2,8 +2,8 @@
 
 use crate::info;
 use crate::shared::{
-    uart_config::SetBaudRate, Color, CtlToMgmt, Led, MgmtToCtl, MgmtToNet, MgmtToUi, ReadTlv, Tlv,
-    Value, WriteTlv,
+    Color, CtlToMgmt, Led, MgmtToCtl, MgmtToNet, MgmtToUi, ReadTlv, Tlv, Value, WriteTlv,
+    uart_config::SetBaudRate,
 };
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use embedded_hal_async::delay::DelayNs;
@@ -151,22 +151,7 @@ enum BaudRateChange {
 }
 
 #[allow(unreachable_code)]
-pub async fn run<
-    W,
-    R,
-    RA,
-    GA,
-    BA,
-    RB,
-    GB,
-    BB,
-    UiBoot0,
-    UiBoot1,
-    UiRst,
-    NetBoot,
-    NetRst,
-    D,
->(
+pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
     to_ctl: W,
     mut from_ctl: R,
     mut to_ui: W,

@@ -1,6 +1,6 @@
 .PHONY: all preflight format flash-ui flash-mgmt flash-net flash-net-idf flash-all clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl
 
-CRATES = ui mgmt net net-idf ctl link web-ctl web-link bootloader echo-server
+CRATES = ui mgmt net net-idf ctl link web-ctl web-link echo-server
 
 # Output paths (targets configured in each crate's .cargo/config.toml)
 UI_BIN = ui/target/thumbv7em-none-eabihf/debug/ui.bin
