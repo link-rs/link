@@ -381,6 +381,22 @@ impl PublishTrack {
         unsafe { ffi::quicr_publish_track_can_publish(self.handler.as_ptr()) }
     }
 
+    /// Get the track alias if set
+    ///
+    /// The track alias is assigned by the relay when subscribers connect.
+    /// Returns None if no alias has been assigned yet.
+    pub fn track_alias(&self) -> Option<u64> {
+        let mut alias: u64 = 0;
+        let has_alias = unsafe {
+            ffi::quicr_publish_track_get_track_alias(self.handler.as_ptr(), &mut alias)
+        };
+        if has_alias {
+            Some(alias)
+        } else {
+            None
+        }
+    }
+
     /// Publish an object
     pub fn publish(&self, headers: &ObjectHeaders, data: impl AsRef<[u8]>) -> Result<PublishObjectStatus> {
         let data = data.as_ref();

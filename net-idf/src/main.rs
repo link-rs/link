@@ -279,7 +279,8 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                 let headers = ObjectHeaders::new(clock_group_id, 0);
                                 let _ = track.publish(&headers, payload.as_bytes());
 
-                                info!("MoQ clock: published {}", payload);
+                                info!("MoQ clock: published {} (ns={}, name={}, alias={:?})",
+                                    payload, track.track_name().namespace, String::from_utf8_lossy(&track.track_name().name), track.track_alias());
                                 clock_group_id += 1;
                                 last_clock_publish = Some(now);
                             }

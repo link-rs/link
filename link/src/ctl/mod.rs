@@ -1628,7 +1628,7 @@ where
         write_tlv(&mut self.writer.net(), MgmtToNet::RunClock, &[]).unwrap();
         let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         match tlv.tlv_type {
-            NetToMgmt::ModeStarted => Ok(()),
+            NetToMgmt::Ack | NetToMgmt::ModeStarted => Ok(()),
             NetToMgmt::Error => {
                 let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
                 Err(err.try_into().unwrap_or_default())
@@ -1642,7 +1642,7 @@ where
         write_tlv(&mut self.writer.net(), MgmtToNet::RunBenchmark, &[]).unwrap();
         let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         match tlv.tlv_type {
-            NetToMgmt::ModeStarted => Ok(()),
+            NetToMgmt::Ack | NetToMgmt::ModeStarted => Ok(()),
             NetToMgmt::Error => {
                 let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
                 Err(err.try_into().unwrap_or_default())
@@ -1656,7 +1656,7 @@ where
         write_tlv(&mut self.writer.net(), MgmtToNet::StopMode, &[]).unwrap();
         let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
         match tlv.tlv_type {
-            NetToMgmt::ModeStopped => Ok(()),
+            NetToMgmt::Ack | NetToMgmt::ModeStopped => Ok(()),
             NetToMgmt::Error => {
                 let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
                 Err(err.try_into().unwrap_or_default())

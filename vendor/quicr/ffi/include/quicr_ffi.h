@@ -308,6 +308,11 @@ QuicrPublishStatus quicr_publish_track_get_status(const QuicrPublishTrackHandler
 /// Checks if publishing is currently allowed.
 bool quicr_publish_track_can_publish(const QuicrPublishTrackHandler* handler);
 
+/// Gets the track alias if set.
+/// Returns true if the track alias is available, false otherwise.
+/// If true, the track alias value is written to *out_track_alias.
+bool quicr_publish_track_get_track_alias(const QuicrPublishTrackHandler* handler, uint64_t* out_track_alias);
+
 // =============================================================================
 // Subscribe Track Functions
 // =============================================================================
