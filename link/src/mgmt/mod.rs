@@ -279,6 +279,10 @@ where
     };
 
     let ctl_task = async {
+        // Speed test state
+        let mut speed_test_packets: u32 = 0;
+        let mut speed_test_bytes: u32 = 0;
+
         loop {
             let tlv = match from_ctl.read_tlv().await {
                 Ok(Some(tlv)) => tlv,
@@ -287,6 +291,34 @@ where
 
             // Save tlv_type before moving tlv
             let tlv_type = tlv.tlv_type;
+
+            // Handle speed test messages directly (no response needed for data packets)
+            match tlv_type {
+                CtlToMgmt::SpeedTestData => {
+                    speed_test_packets += 1;
+                    speed_test_bytes += tlv.value.len() as u32;
+                    continue; // Don't process further, just count
+                }
+                CtlToMgmt::SpeedTestDone => {
+                    info!(
+                        "mgmt: speed test done, packets={}, bytes={}",
+                        speed_test_packets, speed_test_bytes
+                    );
+                    // Send back results
+                    let mut result = [0u8; 8];
+                    result[0..4].copy_from_slice(&speed_test_packets.to_le_bytes());
+                    result[4..8].copy_from_slice(&speed_test_bytes.to_le_bytes());
+                    let mut to_ctl = to_ctl.lock().await;
+                    to_ctl
+                        .must_write_tlv(MgmtToCtl::SpeedTestResult, &result)
+                        .await;
+                    // Reset counters for next test
+                    speed_test_packets = 0;
+                    speed_test_bytes = 0;
+                    continue;
+                }
+                _ => {}
+            }
 
             // Blink appropriate LED blue for outgoing data
             match tlv_type {
@@ -479,6 +511,10 @@ where
             // Change CTL TX baud rate; caller will update RX after returning
             to_ctl.set_baud_rate(baud_rate).await;
             BaudRateChange::Ctl(baud_rate)
+        }
+        // Speed test messages are handled directly in ctl_task before calling handle_ctl
+        CtlToMgmt::SpeedTestData | CtlToMgmt::SpeedTestDone => {
+            unreachable!("speed test messages handled in ctl_task")
         }
     }
 }

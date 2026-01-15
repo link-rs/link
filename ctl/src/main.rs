@@ -86,6 +86,22 @@ enum MgmtAction {
         #[command(subcommand)]
         action: Option<GetSetU32>,
     },
+    /// Run a speed test on the CTL-MGMT UART link.
+    /// Sends packets as fast as possible for the duration, then reports results.
+    #[command(name = "speed-test")]
+    SpeedTest {
+        /// Baud rate to use for the test (default: current baud rate)
+        #[arg(short, long)]
+        baud: Option<u32>,
+
+        /// Duration of the test in seconds (default: 1)
+        #[arg(short, long, default_value = "1")]
+        duration: u32,
+
+        /// Payload size in bytes (default: 64, max: 640)
+        #[arg(short, long, default_value = "64")]
+        size: usize,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]

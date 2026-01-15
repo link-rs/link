@@ -34,6 +34,10 @@ pub enum CtlToMgmt {
     /// Set CTL UART baud rate (4 bytes: u32 little-endian)
     /// ACK is sent before the baud rate change takes effect.
     SetCtlBaudRate,
+    /// Speed test data packet (value contains test payload)
+    SpeedTestData,
+    /// Speed test done signal (no payload)
+    SpeedTestDone,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -49,6 +53,8 @@ pub enum MgmtToCtl {
     WsEchoTestResult,
     /// WebSocket speed test results
     WsSpeedTestResult,
+    /// CTL-MGMT speed test results (8 bytes: packet_count u32 LE, total_bytes u32 LE)
+    SpeedTestResult,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
