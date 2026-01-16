@@ -1676,27 +1676,6 @@ where
     // MoQ commands
     // =========================================================================
 
-    /// Get MoQ relay URL from NET chip.
-    pub fn get_moq_relay_url(&mut self) -> heapless::String<128> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetMoqRelayUrl, &[]).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::MoqRelayUrl);
-        let url_str = core::str::from_utf8(&tlv.value).expect("Invalid UTF-8");
-        url_str.try_into().expect("URL too long")
-    }
-
-    /// Set MoQ relay URL on NET chip.
-    pub fn set_moq_relay_url(&mut self, url: &str) {
-        write_tlv(
-            &mut self.writer.net(),
-            MgmtToNet::SetMoqRelayUrl,
-            url.as_bytes(),
-        )
-        .unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
-    }
-
     /// Get benchmark FPS from NET chip.
     pub fn get_benchmark_fps(&mut self) -> u32 {
         write_tlv(&mut self.writer.net(), MgmtToNet::GetBenchmarkFps, &[]).unwrap();

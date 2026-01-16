@@ -105,10 +105,6 @@ pub enum MgmtToNet {
     /// Start WebSocket speed test
     WsSpeedTest,
     // MoQ commands (client auto-connects to relay)
-    /// Get MoQ relay URL
-    GetMoqRelayUrl,
-    /// Set MoQ relay URL (value: UTF-8 URL string)
-    SetMoqRelayUrl,
     /// Get benchmark target FPS (4 bytes LE)
     GetBenchmarkFps,
     /// Set benchmark target FPS (4 bytes LE, 0=burst mode)
@@ -146,8 +142,6 @@ pub enum NetToMgmt {
     /// Loopback mode status (1 byte: 0=off, 1=on)
     Loopback,
     // MoQ responses
-    /// MoQ relay URL (value: UTF-8 URL string)
-    MoqRelayUrl,
     /// Benchmark target FPS (4 bytes LE)
     BenchmarkFps,
     /// Benchmark payload size (4 bytes LE)

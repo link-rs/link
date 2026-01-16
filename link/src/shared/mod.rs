@@ -53,9 +53,7 @@ pub use tlv::{ReadTlv, Value, WriteTlv};
 // MoQ types - used by net
 #[cfg(feature = "net")]
 #[allow(unused_imports)] // Re-exported for public API
-pub use moq::{
-    MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_RELAY_URL_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampleType,
-};
+pub use moq::{MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampleType};
 
 // WiFi types - WifiSsid used by ctl and net
 #[cfg(any(feature = "ctl", feature = "net"))]

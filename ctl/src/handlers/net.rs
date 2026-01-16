@@ -266,22 +266,6 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             }
         },
         // MoQ commands
-        NetAction::MoqRelayUrl { action } => match action.unwrap_or_default() {
-            GetSetString::Get => {
-                let url = app.get_moq_relay_url();
-                if url.is_empty() {
-                    println!("(not set)");
-                } else {
-                    println!("{}", url);
-                }
-                Ok(())
-            }
-            GetSetString::Set { value } => {
-                app.set_moq_relay_url(&value);
-                println!("MoQ relay URL set to {}", value);
-                Ok(())
-            }
-        },
         NetAction::BenchmarkFps { action } => match action.unwrap_or_default() {
             GetSetU32::Get => {
                 let fps = app.get_benchmark_fps();

@@ -1264,28 +1264,7 @@ fn handle_mgmt_message(
         MgmtToNet::GetLoopback => {
             write_tlv(mgmt_uart, NetToMgmt::Loopback, &[*loopback as u8]);
         }
-        // MoQ commands (relay URL uses storage - there's only one relay type)
-        MgmtToNet::GetMoqRelayUrl => {
-            write_tlv(
-                mgmt_uart,
-                NetToMgmt::MoqRelayUrl,
-                storage.relay_url.as_bytes(),
-            );
-        }
-        MgmtToNet::SetMoqRelayUrl => {
-            if let Ok(url) = core::str::from_utf8(value) {
-                storage.relay_url = url.to_string();
-                if storage.save().is_ok() {
-                    // Trigger connection to new relay
-                    let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(url.to_string()));
-                    write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
-                } else {
-                    write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
-                }
-            } else {
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
-            }
-        }
+        // MoQ commands
         MgmtToNet::GetBenchmarkFps => {
             write_tlv(
                 mgmt_uart,

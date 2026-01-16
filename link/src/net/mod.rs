@@ -6,8 +6,8 @@ mod storage;
 #[cfg(feature = "audio-buffer")]
 pub use crate::shared::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
 pub use storage::{
-    MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_RELAY_URL_LEN, MAX_MOQ_TRACK_NAME_LEN, MAX_RELAY_URL_LEN,
-    MAX_WIFI_SSIDS, MoqError, MoqExampleType, NetStorage, WifiSsid,
+    MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, MoqError,
+    MoqExampleType, NetStorage, WifiSsid,
 };
 
 use crate::info;
@@ -406,9 +406,7 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
                 .await;
         }
         // MoQ commands - not supported in bare-metal firmware (uses WebSocket, not MoQ)
-        MgmtToNet::GetMoqRelayUrl
-        | MgmtToNet::SetMoqRelayUrl
-        | MgmtToNet::GetBenchmarkFps
+        MgmtToNet::GetBenchmarkFps
         | MgmtToNet::SetBenchmarkFps
         | MgmtToNet::GetBenchmarkPayloadSize
         | MgmtToNet::SetBenchmarkPayloadSize

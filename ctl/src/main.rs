@@ -221,12 +221,6 @@ enum NetAction {
     },
 
     // MoQ commands (client auto-connects to relay)
-    #[command(name = "moq-relay-url")]
-    MoqRelayUrl {
-        #[command(subcommand)]
-        action: Option<GetSetString>,
-    },
-
     #[command(name = "benchmark-fps")]
     BenchmarkFps {
         #[command(subcommand)]

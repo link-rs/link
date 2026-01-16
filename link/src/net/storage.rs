@@ -9,7 +9,7 @@ pub use crate::shared::wifi::{MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, WifiSsid};
 
 // Re-export MoQ types from shared
 pub use crate::shared::moq::{
-    MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_RELAY_URL_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampleType,
+    MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampleType,
 };
 
 /// Persistent storage data for the NET chip.

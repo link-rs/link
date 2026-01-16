@@ -4,9 +4,6 @@
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-/// Maximum length for MoQ relay URL.
-pub const MAX_MOQ_RELAY_URL_LEN: usize = 128;
-
 /// Maximum length for MoQ namespace.
 pub const MAX_MOQ_NAMESPACE_LEN: usize = 64;
 
