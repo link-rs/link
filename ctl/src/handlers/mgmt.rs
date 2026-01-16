@@ -29,7 +29,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
     match action {
         MgmtAction::Ping { data } => {
             println!("Sending MGMT ping with data: {}", data);
-            app.mgmt_ping(data.as_bytes());
+            app.mgmt_ping(data.as_bytes())?;
             println!("Received pong!");
             Ok(())
         }
@@ -193,7 +193,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
                 }
                 GetSetU32::Set { value } => {
                     println!("Setting NET UART baud rate to {}", value);
-                    app.set_net_baud_rate(value);
+                    app.set_net_baud_rate(value)?;
                     println!("NET baud rate set to {}", value);
                     Ok(())
                 }
@@ -213,7 +213,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
                     println!("Setting CTL UART baud rate to {}", value);
 
                     // Send command to MGMT (ACK is sent before rate change)
-                    app.set_ctl_baud_rate(value);
+                    app.set_ctl_baud_rate(value)?;
 
                     // Now change local serial port baud rate to match
                     let reader_port: &mut Box<dyn SerialPort> =
@@ -256,7 +256,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
                 );
 
                 // Send command to MGMT (ACK is sent before rate change)
-                app.set_ctl_baud_rate(new_baud);
+                app.set_ctl_baud_rate(new_baud)?;
 
                 // Now change local serial port baud rate to match
                 let reader_port: &mut Box<dyn SerialPort> = app.reader_mut().inner_mut().get_mut();
@@ -366,7 +366,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
             // Restore original baud rate if we changed it
             if baud.is_some() && initial_baud != test_baud {
                 println!("\nRestoring baud rate to {}...", initial_baud);
-                app.set_ctl_baud_rate(initial_baud);
+                app.set_ctl_baud_rate(initial_baud)?;
 
                 let reader_port: &mut Box<dyn SerialPort> = app.reader_mut().inner_mut().get_mut();
                 reader_port.set_baud_rate(initial_baud)?;

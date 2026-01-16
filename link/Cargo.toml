@@ -15,7 +15,7 @@ tokio = { version = "1.48.0", features = ["full"] }
 mgmt = []
 net = []
 ui = []
-ctl = ["std", "dep:espflash", "dep:serialport", "dep:log"]  # ctl requires std and espflash for NET flashing
+ctl = ["std", "dep:espflash", "dep:serialport", "dep:log", "dep:thiserror"]  # ctl requires std and espflash for NET flashing
 
 # All modules enabled - for development and testing
 all = ["mgmt", "net", "ui", "ctl"]
@@ -57,3 +57,4 @@ audio-codec-algorithms = { version = "0.7", default-features = false }
 espflash = { path = "../vendor/espflash/espflash", optional = true, default-features = false, features = ["serialport"] }
 serialport = { version = "4.8.1", optional = true }
 log = { version = "0.4", optional = true }
+thiserror = { version = "2", optional = true }

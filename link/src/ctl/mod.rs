@@ -182,6 +182,63 @@ pub enum TlvReadError<E> {
     TooLong,
 }
 
+/// Errors from CTL operations.
+#[derive(Debug, thiserror::Error)]
+pub enum CtlError {
+    /// I/O error during communication.
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Received an invalid TLV type.
+    #[error("invalid TLV type")]
+    InvalidType,
+
+    /// TLV value too long.
+    #[error("TLV value too long")]
+    TooLong,
+
+    /// Unexpected end of stream.
+    #[error("unexpected end of stream")]
+    UnexpectedEof,
+
+    /// Received unexpected TLV type (expected vs actual).
+    #[error("unexpected response: expected {expected}, got {actual}")]
+    UnexpectedResponse {
+        expected: &'static str,
+        actual: String,
+    },
+
+    /// Data mismatch (e.g., ping/pong data doesn't match).
+    #[error("data mismatch")]
+    DataMismatch,
+
+    /// Invalid response length.
+    #[error("invalid response length: expected {expected}, got {actual}")]
+    InvalidLength { expected: usize, actual: usize },
+
+    /// Device returned an error.
+    #[error("device error: {0}")]
+    DeviceError(String),
+
+    /// Invalid UTF-8 in response.
+    #[error("invalid UTF-8 in response")]
+    InvalidUtf8,
+
+    /// Timeout waiting for response.
+    #[error("timeout")]
+    Timeout,
+}
+
+impl<E: Into<std::io::Error>> From<TlvReadError<E>> for CtlError {
+    fn from(e: TlvReadError<E>) -> Self {
+        match e {
+            TlvReadError::Io(io) => CtlError::Io(io.into()),
+            TlvReadError::InvalidType => CtlError::InvalidType,
+            TlvReadError::TooLong => CtlError::TooLong,
+        }
+    }
+}
+
 /// Read a TLV packet from a sync reader.
 /// Scans for sync word, then reads header and value.
 fn read_tlv<T, R>(reader: &mut R) -> Result<Option<Tlv<T>>, TlvReadError<std::io::Error>>
@@ -239,19 +296,27 @@ where
 }
 
 /// Write a TLV packet to a sync writer.
+///
+/// This function buffers the entire TLV before writing to ensure atomic delivery
+/// through tunnel writers that wrap each write call.
 fn write_tlv<T, W>(writer: &mut W, tlv_type: T, value: &[u8]) -> std::io::Result<()>
 where
     T: Into<u16>,
     W: Write,
 {
     let type_val: u16 = tlv_type.into();
-    writer.write_all(&SYNC_WORD)?;
 
-    let mut header = [0u8; HEADER_SIZE];
-    header[0..2].copy_from_slice(&type_val.to_be_bytes());
-    header[2..6].copy_from_slice(&(value.len() as u32).to_be_bytes());
-    writer.write_all(&header)?;
-    writer.write_all(value)?;
+    // Buffer the entire TLV packet before writing
+    // This ensures TunnelWriter sends it as a single unit
+    let total_len = SYNC_WORD.len() + HEADER_SIZE + value.len();
+    let mut buf = vec![0u8; total_len];
+
+    buf[..4].copy_from_slice(&SYNC_WORD);
+    buf[4..6].copy_from_slice(&type_val.to_be_bytes());
+    buf[6..10].copy_from_slice(&(value.len() as u32).to_be_bytes());
+    buf[10..].copy_from_slice(value);
+
+    writer.write_all(&buf)?;
     writer.flush()?;
     Ok(())
 }
@@ -502,11 +567,29 @@ where
         &mut self.writer
     }
 
-    pub fn mgmt_ping(&mut self, data: &[u8]) {
-        write_tlv(&mut self.writer, CtlToMgmt::Ping, data).unwrap();
-        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, MgmtToCtl::Pong);
-        assert_eq!(&tlv.value, data);
+    /// Ping the MGMT chip directly.
+    ///
+    /// Skips any FromNet/FromUi TLVs that may be pending before the Pong.
+    pub fn mgmt_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer, CtlToMgmt::Ping, data)?;
+        loop {
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+            match tlv.tlv_type {
+                MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue, // Skip tunneled messages
+                MgmtToCtl::Pong => {
+                    if tlv.value.as_slice() != data {
+                        return Err(CtlError::DataMismatch);
+                    }
+                    return Ok(());
+                }
+                other => {
+                    return Err(CtlError::UnexpectedResponse {
+                        expected: "Pong",
+                        actual: format!("{:?}", other),
+                    });
+                }
+            }
+        }
     }
 
     /// Send a Hello handshake to detect if a valid device is connected.
@@ -538,173 +621,310 @@ where
         true
     }
 
-    pub fn ui_ping(&mut self, data: &[u8]) {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::Ping, data).unwrap();
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, UiToMgmt::Pong);
-        assert_eq!(&tlv.value, data);
+    /// Ping the UI chip through the MGMT tunnel.
+    pub fn ui_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::Ping, data)?;
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != UiToMgmt::Pong {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Pong",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.as_slice() != data {
+            return Err(CtlError::DataMismatch);
+        }
+        Ok(())
     }
 
-    pub fn net_ping(&mut self, data: &[u8]) {
-        write_tlv(&mut self.writer.net(), MgmtToNet::Ping, data).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::Pong);
-        assert_eq!(&tlv.value, data);
+    /// Ping the NET chip through the MGMT tunnel.
+    pub fn net_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::Ping, data)?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::Pong {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Pong",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.as_slice() != data {
+            return Err(CtlError::DataMismatch);
+        }
+        Ok(())
     }
 
-    pub fn ui_first_circular_ping(&mut self, data: &[u8]) {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::CircularPing, data).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::CircularPing);
-        assert_eq!(&tlv.value, data);
+    /// Send a circular ping starting from UI (UI -> NET -> MGMT -> CTL).
+    pub fn ui_first_circular_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::CircularPing, data)?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::CircularPing {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "CircularPing",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.as_slice() != data {
+            return Err(CtlError::DataMismatch);
+        }
+        Ok(())
     }
 
-    pub fn net_first_circular_ping(&mut self, data: &[u8]) {
-        write_tlv(&mut self.writer.net(), MgmtToNet::CircularPing, data).unwrap();
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, UiToMgmt::CircularPing);
-        assert_eq!(&tlv.value, data);
+    /// Send a circular ping starting from NET (NET -> UI -> MGMT -> CTL).
+    pub fn net_first_circular_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::CircularPing, data)?;
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != UiToMgmt::CircularPing {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "CircularPing",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.as_slice() != data {
+            return Err(CtlError::DataMismatch);
+        }
+        Ok(())
     }
 
     /// Get the version stored in UI chip EEPROM.
-    pub fn get_version(&mut self) -> u32 {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::GetVersion, &[]).unwrap();
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, UiToMgmt::Version);
-        assert_eq!(tlv.value.len(), 4);
-        u32::from_be_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]])
+    pub fn get_version(&mut self) -> Result<u32, CtlError> {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::GetVersion, &[])?;
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != UiToMgmt::Version {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Version",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 4 {
+            return Err(CtlError::InvalidLength {
+                expected: 4,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(u32::from_be_bytes([
+            tlv.value[0],
+            tlv.value[1],
+            tlv.value[2],
+            tlv.value[3],
+        ]))
     }
 
     /// Set the version stored in UI chip EEPROM.
-    pub fn set_version(&mut self, version: u32) {
+    pub fn set_version(&mut self, version: u32) -> Result<(), CtlError> {
         write_tlv(
             &mut self.writer.ui(),
             MgmtToUi::SetVersion,
             &version.to_be_bytes(),
-        )
-        .unwrap();
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, UiToMgmt::Ack);
+        )?;
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != UiToMgmt::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Get the SFrame key stored in UI chip EEPROM.
-    pub fn get_sframe_key(&mut self) -> [u8; 16] {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::GetSFrameKey, &[]).unwrap();
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, UiToMgmt::SFrameKey);
-        assert_eq!(tlv.value.len(), 16);
+    pub fn get_sframe_key(&mut self) -> Result<[u8; 16], CtlError> {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::GetSFrameKey, &[])?;
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != UiToMgmt::SFrameKey {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "SFrameKey",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 16 {
+            return Err(CtlError::InvalidLength {
+                expected: 16,
+                actual: tlv.value.len(),
+            });
+        }
         let mut key = [0u8; 16];
         key.copy_from_slice(&tlv.value);
-        key
+        Ok(key)
     }
 
     /// Set the SFrame key stored in UI chip EEPROM.
-    pub fn set_sframe_key(&mut self, key: &[u8; 16]) {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::SetSFrameKey, key).unwrap();
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, UiToMgmt::Ack);
+    pub fn set_sframe_key(&mut self, key: &[u8; 16]) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::SetSFrameKey, key)?;
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != UiToMgmt::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Set UI chip loopback mode.
     /// When enabled, mic audio goes directly to speaker instead of to NET.
-    pub fn ui_set_loopback(&mut self, enabled: bool) {
+    pub fn ui_set_loopback(&mut self, enabled: bool) -> Result<(), CtlError> {
         write_tlv(
             &mut self.writer.ui(),
             MgmtToUi::SetLoopback,
             &[enabled as u8],
-        )
-        .unwrap();
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, UiToMgmt::Ack);
+        )?;
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != UiToMgmt::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Get UI chip loopback mode.
-    pub fn ui_get_loopback(&mut self) -> bool {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::GetLoopback, &[]).unwrap();
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, UiToMgmt::Loopback);
-        tlv.value.first().copied().unwrap_or(0) != 0
+    pub fn ui_get_loopback(&mut self) -> Result<bool, CtlError> {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::GetLoopback, &[])?;
+        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != UiToMgmt::Loopback {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Loopback",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(tlv.value.first().copied().unwrap_or(0) != 0)
     }
 
     /// Set NET chip loopback mode.
     /// When enabled, audio from UI goes back to UI through jitter buffer instead of to WebSocket.
-    pub fn net_set_loopback(&mut self, enabled: bool) {
+    pub fn net_set_loopback(&mut self, enabled: bool) -> Result<(), CtlError> {
         write_tlv(
             &mut self.writer.net(),
             MgmtToNet::SetLoopback,
             &[enabled as u8],
-        )
-        .unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+        )?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Get NET chip loopback mode.
-    pub fn net_get_loopback(&mut self) -> bool {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetLoopback, &[]).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::Loopback);
-        tlv.value.first().copied().unwrap_or(0) != 0
+    pub fn net_get_loopback(&mut self) -> Result<bool, CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::GetLoopback, &[])?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::Loopback {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Loopback",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(tlv.value.first().copied().unwrap_or(0) != 0)
     }
 
     /// Add a WiFi SSID and password pair to NET chip storage.
-    pub fn add_wifi_ssid(&mut self, ssid: &str, password: &str) {
+    pub fn add_wifi_ssid(&mut self, ssid: &str, password: &str) -> Result<(), CtlError> {
         let wifi = WifiSsid {
-            ssid: ssid.try_into().expect("SSID too long"),
-            password: password.try_into().expect("Password too long"),
+            ssid: ssid.try_into().map_err(|_| CtlError::TooLong)?,
+            password: password.try_into().map_err(|_| CtlError::TooLong)?,
         };
         let mut buf = [0u8; 128];
-        let serialized = postcard::to_slice(&wifi, &mut buf).expect("Serialization failed");
-        write_tlv(&mut self.writer.net(), MgmtToNet::AddWifiSsid, serialized).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+        let serialized = postcard::to_slice(&wifi, &mut buf).map_err(|_| CtlError::TooLong)?;
+        write_tlv(&mut self.writer.net(), MgmtToNet::AddWifiSsid, serialized)?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Get all WiFi SSIDs from NET chip storage.
-    pub fn get_wifi_ssids(&mut self) -> heapless::Vec<WifiSsid, 8> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetWifiSsids, &[]).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::WifiSsids);
-        postcard::from_bytes(&tlv.value).expect("Deserialization failed")
+    pub fn get_wifi_ssids(&mut self) -> Result<heapless::Vec<WifiSsid, 8>, CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::GetWifiSsids, &[])?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::WifiSsids {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "WifiSsids",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        postcard::from_bytes(&tlv.value).map_err(|_| CtlError::InvalidUtf8)
     }
 
     /// Clear all WiFi SSIDs from NET chip storage.
-    pub fn clear_wifi_ssids(&mut self) {
-        write_tlv(&mut self.writer.net(), MgmtToNet::ClearWifiSsids, &[]).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+    pub fn clear_wifi_ssids(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::ClearWifiSsids, &[])?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Get the relay URL from NET chip storage.
-    pub fn get_relay_url(&mut self) -> heapless::String<128> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetRelayUrl, &[]).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::RelayUrl);
-        let url_str = core::str::from_utf8(&tlv.value).expect("Invalid UTF-8");
-        url_str.try_into().expect("URL too long")
+    pub fn get_relay_url(&mut self) -> Result<heapless::String<128>, CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::GetRelayUrl, &[])?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::RelayUrl {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "RelayUrl",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        let url_str = core::str::from_utf8(&tlv.value).map_err(|_| CtlError::InvalidUtf8)?;
+        url_str.try_into().map_err(|_| CtlError::TooLong)
     }
 
     /// Set the relay URL in NET chip storage.
-    pub fn set_relay_url(&mut self, url: &str) {
+    pub fn set_relay_url(&mut self, url: &str) -> Result<(), CtlError> {
         write_tlv(
             &mut self.writer.net(),
             MgmtToNet::SetRelayUrl,
             url.as_bytes(),
-        )
-        .unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+        )?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Send data over WebSocket and verify echo response.
     ///
     /// This sends data to the relay server via WebSocket and expects the same
     /// data back (assumes an echo server). Useful for testing WS connectivity.
-    pub fn ws_ping(&mut self, data: &[u8]) {
-        write_tlv(&mut self.writer.net(), MgmtToNet::WsSend, data).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::WsReceived);
-        assert_eq!(&tlv.value, data);
+    pub fn ws_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::WsSend, data)?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::WsReceived {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "WsReceived",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.as_slice() != data {
+            return Err(CtlError::DataMismatch);
+        }
+        Ok(())
     }
 
     /// Run WebSocket echo test to measure bidirectional throughput.
@@ -715,13 +935,19 @@ where
     /// 3. Measures jitter before and after the jitter buffer
     ///
     /// Returns EchoTestResults with raw and buffered jitter measurements.
-    pub fn ws_echo_test(&mut self) -> EchoTestResults {
+    pub fn ws_echo_test(&mut self) -> Result<EchoTestResults, CtlError> {
         // Tunnel through MGMT to NET (like ws_ping does)
-        write_tlv(&mut self.writer.net(), MgmtToNet::WsEchoTest, &[]).unwrap();
+        write_tlv(&mut self.writer.net(), MgmtToNet::WsEchoTest, &[])?;
 
         // Wait for result from NET (tunneled through MGMT as FromNet)
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::WsEchoTestResult);
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::WsEchoTestResult {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "WsEchoTestResult",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
 
         // Parse result:
         // - sent (1 byte)
@@ -770,14 +996,14 @@ where
             }
         }
 
-        EchoTestResults {
+        Ok(EchoTestResults {
             sent,
             received,
             buffered_output,
             underruns,
             raw_jitter_us,
             buffered_jitter_us,
-        }
+        })
     }
 
     /// Run a WebSocket speed test.
@@ -786,13 +1012,19 @@ where
     /// then waits up to 2 seconds to receive responses.
     ///
     /// Returns SpeedTestResults with timing information.
-    pub fn ws_speed_test(&mut self) -> SpeedTestResults {
+    pub fn ws_speed_test(&mut self) -> Result<SpeedTestResults, CtlError> {
         // Tunnel through MGMT to NET
-        write_tlv(&mut self.writer.net(), MgmtToNet::WsSpeedTest, &[]).unwrap();
+        write_tlv(&mut self.writer.net(), MgmtToNet::WsSpeedTest, &[])?;
 
         // Wait for result from NET (tunneled through MGMT as FromNet)
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::WsSpeedTestResult);
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::WsSpeedTestResult {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "WsSpeedTestResult",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
 
         // Parse result: sent (1), received (1), send_time_ms (4), recv_time_ms (4)
         let sent = tlv.value.get(0).copied().unwrap_or(0);
@@ -808,12 +1040,12 @@ where
             0
         };
 
-        SpeedTestResults {
+        Ok(SpeedTestResults {
             sent,
             received,
             send_time_ms,
             recv_time_ms,
-        }
+        })
     }
 
     /// Get bootloader information from the MGMT chip.
@@ -948,90 +1180,123 @@ where
     ///
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins
     /// to put the UI chip into bootloader mode.
-    pub fn reset_ui_to_bootloader(&mut self) {
-        write_tlv(&mut self.writer, CtlToMgmt::ResetUiToBootloader, &[]).unwrap();
-        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+    pub fn reset_ui_to_bootloader(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer, CtlToMgmt::ResetUiToBootloader, &[])?;
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Reset the UI chip into user mode (normal operation).
     ///
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins
     /// to put the UI chip back into normal user mode.
-    pub fn reset_ui_to_user(&mut self) {
-        write_tlv(&mut self.writer, CtlToMgmt::ResetUiToUser, &[]).unwrap();
-        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+    pub fn reset_ui_to_user(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer, CtlToMgmt::ResetUiToUser, &[])?;
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Hold the UI chip in reset.
     ///
     /// Sends a command to MGMT to assert the RST pin low, keeping the
     /// UI chip in reset until released.
-    pub fn hold_ui_reset(&mut self) {
-        write_tlv(&mut self.writer, CtlToMgmt::HoldUiReset, &[]).unwrap();
-        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+    pub fn hold_ui_reset(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer, CtlToMgmt::HoldUiReset, &[])?;
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Reset the NET chip into bootloader mode.
     ///
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins
     /// to put the NET chip into bootloader mode.
-    pub fn reset_net_to_bootloader(&mut self) {
+    pub fn reset_net_to_bootloader(&mut self) -> Result<(), CtlError> {
         eprintln!("[debug] Sending ResetNetToBootloader command to MGMT...");
-        write_tlv(&mut self.writer, CtlToMgmt::ResetNetToBootloader, &[]).unwrap();
+        write_tlv(&mut self.writer, CtlToMgmt::ResetNetToBootloader, &[])?;
         // Read TLVs, skipping any FromNet (boot messages from NET chip) until we get the Ack
         for i in 0..100 {
             eprintln!("[trace] Waiting for Ack (attempt {})", i);
-            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
             eprintln!("[trace] Received TLV: {:?}", tlv.tlv_type);
             match tlv.tlv_type {
                 MgmtToCtl::Ack => {
                     eprintln!("[debug] Received Ack from MGMT");
-                    return;
+                    return Ok(());
                 }
                 MgmtToCtl::FromNet => {
                     eprintln!("[trace] Skipping FromNet TLV ({} bytes)", tlv.value.len());
                     continue;
                 }
-                other => panic!("unexpected TLV type: {:?}", other),
+                other => {
+                    return Err(CtlError::UnexpectedResponse {
+                        expected: "Ack",
+                        actual: format!("{:?}", other),
+                    });
+                }
             }
         }
-        panic!("gave up waiting for Ack after discarding 100 FromNet TLVs");
+        Err(CtlError::Timeout)
     }
 
     /// Reset the NET chip into user mode (normal operation).
     ///
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins
     /// to put the NET chip back into normal user mode.
-    pub fn reset_net_to_user(&mut self) {
-        write_tlv(&mut self.writer, CtlToMgmt::ResetNetToUser, &[]).unwrap();
+    pub fn reset_net_to_user(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer, CtlToMgmt::ResetNetToUser, &[])?;
         // Read TLVs, skipping any FromNet (boot messages from NET chip) until we get the Ack
         for _ in 0..100 {
-            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
-                MgmtToCtl::Ack => return,
+                MgmtToCtl::Ack => return Ok(()),
                 MgmtToCtl::FromNet => continue,
-                other => panic!("unexpected TLV type: {:?}", other),
+                other => {
+                    return Err(CtlError::UnexpectedResponse {
+                        expected: "Ack",
+                        actual: format!("{:?}", other),
+                    });
+                }
             }
         }
-        panic!("gave up waiting for Ack after discarding 100 FromNet TLVs");
+        Err(CtlError::Timeout)
     }
 
     /// Set the NET UART baud rate on the MGMT chip.
     ///
     /// This changes the baud rate between MGMT and NET chips.
     /// The change takes effect immediately after MGMT processes the command.
-    pub fn set_net_baud_rate(&mut self, baud_rate: u32) {
+    pub fn set_net_baud_rate(&mut self, baud_rate: u32) -> Result<(), CtlError> {
         write_tlv(
             &mut self.writer,
             CtlToMgmt::SetNetBaudRate,
             &baud_rate.to_le_bytes(),
-        )
-        .unwrap();
-        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+        )?;
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Set the CTL UART baud rate on the MGMT chip.
@@ -1040,16 +1305,21 @@ where
     /// IMPORTANT: The ACK is sent at the old baud rate before the change takes effect.
     /// After calling this, the caller must change their own serial port baud rate
     /// to match before continuing communication.
-    pub fn set_ctl_baud_rate(&mut self, baud_rate: u32) {
+    pub fn set_ctl_baud_rate(&mut self, baud_rate: u32) -> Result<(), CtlError> {
         write_tlv(
             &mut self.writer,
             CtlToMgmt::SetCtlBaudRate,
             &baud_rate.to_le_bytes(),
-        )
-        .unwrap();
+        )?;
         // Read ACK at current baud rate (before MGMT switches)
-        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, MgmtToCtl::Ack);
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Get bootloader information from the UI chip.
@@ -1072,7 +1342,7 @@ where
         D: FnOnce(u64),
     {
         // Reset UI chip into bootloader mode
-        self.reset_ui_to_bootloader();
+        let _ = self.reset_ui_to_bootloader();
 
         // Wait for bootloader to be ready
         delay_ms(1000);
@@ -1081,7 +1351,7 @@ where
         let result = self.query_ui_bootloader();
 
         // Always reset UI chip back to user mode
-        self.reset_ui_to_user();
+        let _ = self.reset_ui_to_user();
 
         result
     }
@@ -1142,7 +1412,7 @@ where
         D: FnOnce(u64),
     {
         // Reset UI chip into bootloader mode
-        self.reset_ui_to_bootloader();
+        let _ = self.reset_ui_to_bootloader();
 
         // Wait for bootloader to be ready
         delay_ms(100);
@@ -1151,7 +1421,7 @@ where
         let result = self.do_flash_ui(firmware, &mut progress);
 
         // Always reset UI chip back to user mode
-        self.reset_ui_to_user();
+        let _ = self.reset_ui_to_user();
 
         result
     }
@@ -1580,12 +1850,12 @@ where
     }
 
     /// Restore baud rate on both CTL-MGMT and MGMT-NET links.
-    fn restore_baud_rate(&mut self, baud_rate: u32) -> std::io::Result<()> {
+    fn restore_baud_rate(&mut self, baud_rate: u32) -> Result<(), CtlError> {
         // Change MGMT-NET baud rate
-        self.set_net_baud_rate(baud_rate);
+        self.set_net_baud_rate(baud_rate)?;
 
         // Change CTL-MGMT baud rate (ACK comes at old rate, then MGMT switches)
-        self.set_ctl_baud_rate(baud_rate);
+        self.set_ctl_baud_rate(baud_rate)?;
 
         // Small delay for MGMT to complete the baud rate switch
         std::thread::sleep(Duration::from_millis(10));
@@ -1677,116 +1947,154 @@ where
     // =========================================================================
 
     /// Get benchmark FPS from NET chip.
-    pub fn get_benchmark_fps(&mut self) -> u32 {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetBenchmarkFps, &[]).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::BenchmarkFps);
-        if tlv.value.len() >= 4 {
+    pub fn get_benchmark_fps(&mut self) -> Result<u32, CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::GetBenchmarkFps, &[])?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::BenchmarkFps {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "BenchmarkFps",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(if tlv.value.len() >= 4 {
             u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]])
         } else {
             0
-        }
+        })
     }
 
     /// Set benchmark FPS on NET chip.
-    pub fn set_benchmark_fps(&mut self, fps: u32) {
+    pub fn set_benchmark_fps(&mut self, fps: u32) -> Result<(), CtlError> {
         write_tlv(
             &mut self.writer.net(),
             MgmtToNet::SetBenchmarkFps,
             &fps.to_le_bytes(),
-        )
-        .unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+        )?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Get benchmark payload size from NET chip.
-    pub fn get_benchmark_payload_size(&mut self) -> u32 {
+    pub fn get_benchmark_payload_size(&mut self) -> Result<u32, CtlError> {
         write_tlv(
             &mut self.writer.net(),
             MgmtToNet::GetBenchmarkPayloadSize,
             &[],
-        )
-        .unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::BenchmarkPayloadSize);
-        if tlv.value.len() >= 4 {
+        )?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::BenchmarkPayloadSize {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "BenchmarkPayloadSize",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(if tlv.value.len() >= 4 {
             u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]])
         } else {
             0
-        }
+        })
     }
 
     /// Set benchmark payload size on NET chip.
-    pub fn set_benchmark_payload_size(&mut self, size: u32) {
+    pub fn set_benchmark_payload_size(&mut self, size: u32) -> Result<(), CtlError> {
         write_tlv(
             &mut self.writer.net(),
             MgmtToNet::SetBenchmarkPayloadSize,
             &size.to_le_bytes(),
-        )
-        .unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
-        assert_eq!(tlv.tlv_type, NetToMgmt::Ack);
+        )?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Run clock mode on NET chip - subscribe to clock track and log times.
-    pub fn run_clock(&mut self) -> Result<(), heapless::String<64>> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::RunClock, &[]).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+    pub fn run_clock(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::RunClock, &[])?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
         match tlv.tlv_type {
             NetToMgmt::Ack | NetToMgmt::ModeStarted => Ok(()),
             NetToMgmt::Error => {
                 let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
-                Err(err.try_into().unwrap_or_default())
+                Err(CtlError::DeviceError(err.to_string()))
             }
-            _ => Err("unexpected response".try_into().unwrap_or_default()),
+            other => Err(CtlError::UnexpectedResponse {
+                expected: "Ack or ModeStarted",
+                actual: format!("{:?}", other),
+            }),
         }
     }
 
     /// Run benchmark mode on NET chip - publish frames at configured FPS.
-    pub fn run_benchmark(&mut self) -> Result<(), heapless::String<64>> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::RunBenchmark, &[]).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+    pub fn run_benchmark(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::RunBenchmark, &[])?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
         match tlv.tlv_type {
             NetToMgmt::Ack | NetToMgmt::ModeStarted => Ok(()),
             NetToMgmt::Error => {
                 let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
-                Err(err.try_into().unwrap_or_default())
+                Err(CtlError::DeviceError(err.to_string()))
             }
-            _ => Err("unexpected response".try_into().unwrap_or_default()),
+            other => Err(CtlError::UnexpectedResponse {
+                expected: "Ack or ModeStarted",
+                actual: format!("{:?}", other),
+            }),
         }
     }
 
     /// Stop current running mode on NET chip.
-    pub fn stop_mode(&mut self) -> Result<(), heapless::String<64>> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::StopMode, &[]).unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+    pub fn stop_mode(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::StopMode, &[])?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
         match tlv.tlv_type {
             NetToMgmt::Ack | NetToMgmt::ModeStopped => Ok(()),
             NetToMgmt::Error => {
                 let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
-                Err(err.try_into().unwrap_or_default())
+                Err(CtlError::DeviceError(err.to_string()))
             }
-            _ => Err("unexpected response".try_into().unwrap_or_default()),
+            other => Err(CtlError::UnexpectedResponse {
+                expected: "Ack or ModeStopped",
+                actual: format!("{:?}", other),
+            }),
         }
     }
 
     /// Send a chat message via MoQ.
-    pub fn send_chat_message(&mut self, message: &str) -> Result<(), heapless::String<64>> {
+    pub fn send_chat_message(&mut self, message: &str) -> Result<(), CtlError> {
         write_tlv(
             &mut self.writer.net(),
             MgmtToNet::SendChatMessage,
             message.as_bytes(),
-        )
-        .unwrap();
-        let tlv: Tlv<NetToMgmt> = read_tlv(&mut self.reader.net()).unwrap().unwrap();
+        )?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
         match tlv.tlv_type {
             NetToMgmt::ChatMessageSent => Ok(()),
             NetToMgmt::Error => {
                 let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
-                Err(err.try_into().unwrap_or_default())
+                Err(CtlError::DeviceError(err.to_string()))
             }
-            _ => Err("unexpected response".try_into().unwrap_or_default()),
+            other => Err(CtlError::UnexpectedResponse {
+                expected: "ChatMessageSent",
+                actual: format!("{:?}", other),
+            }),
         }
     }
 }

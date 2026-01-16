@@ -58,7 +58,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
     match action {
         NetAction::Ping { data } => {
             println!("Sending NET ping with data: {}", data);
-            app.net_ping(data.as_bytes());
+            app.net_ping(data.as_bytes())?;
             println!("Received pong!");
             Ok(())
         }
@@ -116,7 +116,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         }
         NetAction::Wifi { action } => match action {
             None => {
-                let ssids = app.get_wifi_ssids();
+                let ssids = app.get_wifi_ssids()?;
                 if ssids.is_empty() {
                     println!("No WiFi networks configured");
                 } else {
@@ -127,24 +127,24 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Ok(())
             }
             Some(WifiAction::Add { ssid, password }) => {
-                app.add_wifi_ssid(&ssid, &password);
+                app.add_wifi_ssid(&ssid, &password)?;
                 println!("Added WiFi network: {}", ssid);
                 Ok(())
             }
             Some(WifiAction::Clear) => {
-                app.clear_wifi_ssids();
+                app.clear_wifi_ssids()?;
                 println!("Cleared all WiFi networks");
                 Ok(())
             }
         },
         NetAction::RelayUrl { action } => match action.unwrap_or_default() {
             GetSetString::Get => {
-                let url = app.get_relay_url();
+                let url = app.get_relay_url()?;
                 println!("{}", url);
                 Ok(())
             }
             GetSetString::Set { value } => {
-                app.set_relay_url(&value);
+                app.set_relay_url(&value)?;
                 println!("Relay URL set to {}", value);
                 Ok(())
             }
@@ -182,7 +182,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         }
         NetAction::WsPing { data } => {
             println!("Sending WebSocket ping with data: {}", data);
-            app.ws_ping(data.as_bytes());
+            app.ws_ping(data.as_bytes())?;
             println!("Received echo response!");
             Ok(())
         }
@@ -190,7 +190,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             println!("Running WebSocket echo test...");
             println!("  Sending 50 packets (640 bytes each) at 20ms intervals (50 fps)\n");
 
-            let results = app.ws_echo_test();
+            let results = app.ws_echo_test()?;
 
             println!("Results:");
             println!("  Packets sent:           {}", results.sent);
@@ -229,7 +229,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             println!("Running WebSocket speed test...");
             println!("  Sending 50 packets (640 bytes each) as fast as possible\n");
 
-            let results = app.ws_speed_test();
+            let results = app.ws_speed_test()?;
 
             println!("Results:");
             println!("  Packets sent:     {}", results.sent);
@@ -255,20 +255,25 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         }
         NetAction::Loopback { action } => match action.unwrap_or_default() {
             GetSetBool::Get => {
-                let enabled = app.net_get_loopback();
+                let enabled = app.net_get_loopback()?;
                 println!("{}", enabled);
                 Ok(())
             }
-            GetSetBool::Set { value } => {
-                app.net_set_loopback(value);
-                println!("NET loopback set to {}", value);
+            GetSetBool::Set => {
+                app.net_set_loopback(true)?;
+                println!("NET loopback enabled");
+                Ok(())
+            }
+            GetSetBool::Unset => {
+                app.net_set_loopback(false)?;
+                println!("NET loopback disabled");
                 Ok(())
             }
         },
         // MoQ commands
         NetAction::BenchmarkFps { action } => match action.unwrap_or_default() {
             GetSetU32::Get => {
-                let fps = app.get_benchmark_fps();
+                let fps = app.get_benchmark_fps()?;
                 if fps == 0 {
                     println!("0 (burst mode)");
                 } else {
@@ -277,7 +282,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Ok(())
             }
             GetSetU32::Set { value } => {
-                app.set_benchmark_fps(value);
+                app.set_benchmark_fps(value)?;
                 if value == 0 {
                     println!("Benchmark FPS set to burst mode");
                 } else {
@@ -288,12 +293,12 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         },
         NetAction::BenchmarkPayloadSize { action } => match action.unwrap_or_default() {
             GetSetU32::Get => {
-                let size = app.get_benchmark_payload_size();
+                let size = app.get_benchmark_payload_size()?;
                 println!("{}", size);
                 Ok(())
             }
             GetSetU32::Set { value } => {
-                app.set_benchmark_payload_size(value);
+                app.set_benchmark_payload_size(value)?;
                 println!("Benchmark payload size set to {}", value);
                 Ok(())
             }
@@ -328,12 +333,12 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         },
         NetAction::Reset { action } => match action.as_deref() {
             Some("bootloader") => {
-                app.reset_net_to_bootloader();
+                app.reset_net_to_bootloader()?;
                 println!("NET chip reset to bootloader mode");
                 Ok(())
             }
             _ => {
-                app.reset_net_to_user();
+                app.reset_net_to_user()?;
                 println!("NET chip reset");
                 Ok(())
             }
@@ -351,7 +356,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         NetAction::Monitor { reset } => {
             if reset {
                 println!("Resetting NET chip...");
-                app.reset_net_to_user();
+                app.reset_net_to_user()?;
             }
             println!("Monitoring NET chip (ESC to stop)...\n");
 

@@ -189,7 +189,7 @@ where
 #[tokio::test]
 async fn ctl_mgmt_ping() {
     device_test(|mut ctl| {
-        ctl.mgmt_ping(b"hello mgmt");
+        ctl.mgmt_ping(b"hello mgmt").unwrap();
     })
     .await;
 }
@@ -197,7 +197,7 @@ async fn ctl_mgmt_ping() {
 #[tokio::test]
 async fn ctl_ui_ping() {
     device_test(|mut ctl| {
-        ctl.ui_ping(b"hello ui");
+        ctl.ui_ping(b"hello ui").unwrap();
     })
     .await;
 }
@@ -205,7 +205,7 @@ async fn ctl_ui_ping() {
 #[tokio::test]
 async fn ctl_net_ping() {
     device_test(|mut ctl| {
-        ctl.net_ping(b"hello net");
+        ctl.net_ping(b"hello net").unwrap();
     })
     .await;
 }
@@ -213,7 +213,7 @@ async fn ctl_net_ping() {
 #[tokio::test]
 async fn ui_first_circular_ping() {
     device_test(|mut ctl| {
-        ctl.ui_first_circular_ping(b"hello ui circular");
+        ctl.ui_first_circular_ping(b"hello ui circular").unwrap();
     })
     .await;
 }
@@ -221,7 +221,7 @@ async fn ui_first_circular_ping() {
 #[tokio::test]
 async fn net_first_circular_ping() {
     device_test(|mut ctl| {
-        ctl.net_first_circular_ping(b"hello net circular");
+        ctl.net_first_circular_ping(b"hello net circular").unwrap();
     })
     .await;
 }
@@ -229,7 +229,7 @@ async fn net_first_circular_ping() {
 #[tokio::test]
 async fn get_version_default() {
     device_test(|mut ctl| {
-        let version = ctl.get_version();
+        let version = ctl.get_version().unwrap();
         assert_eq!(version, 0xffffffff);
     })
     .await;
@@ -238,8 +238,8 @@ async fn get_version_default() {
 #[tokio::test]
 async fn set_and_get_version() {
     device_test(|mut ctl| {
-        ctl.set_version(0x12345678);
-        let version = ctl.get_version();
+        ctl.set_version(0x12345678).unwrap();
+        let version = ctl.get_version().unwrap();
         assert_eq!(version, 0x12345678);
     })
     .await;
@@ -248,7 +248,7 @@ async fn set_and_get_version() {
 #[tokio::test]
 async fn get_sframe_key_default() {
     device_test(|mut ctl| {
-        let key = ctl.get_sframe_key();
+        let key = ctl.get_sframe_key().unwrap();
         assert_eq!(key, [0xff; 16]);
     })
     .await;
@@ -261,8 +261,8 @@ async fn set_and_get_sframe_key() {
             0x5b, 0x9f, 0x37, 0xb1, 0x54, 0x6b, 0x61, 0xf9, 0x14, 0xda, 0x9f, 0x55, 0x7a, 0x8f,
             0xe2, 0x15,
         ];
-        ctl.set_sframe_key(&key);
-        let result = ctl.get_sframe_key();
+        ctl.set_sframe_key(&key).unwrap();
+        let result = ctl.get_sframe_key().unwrap();
         assert_eq!(result, key);
     })
     .await;
@@ -271,7 +271,7 @@ async fn set_and_get_sframe_key() {
 #[tokio::test]
 async fn get_wifi_ssids_default() {
     device_test(|mut ctl| {
-        let ssids = ctl.get_wifi_ssids();
+        let ssids = ctl.get_wifi_ssids().unwrap();
         assert!(ssids.is_empty());
     })
     .await;
@@ -280,8 +280,8 @@ async fn get_wifi_ssids_default() {
 #[tokio::test]
 async fn add_and_get_wifi_ssid() {
     device_test(|mut ctl| {
-        ctl.add_wifi_ssid("MyNetwork", "MyPassword");
-        let ssids = ctl.get_wifi_ssids();
+        ctl.add_wifi_ssid("MyNetwork", "MyPassword").unwrap();
+        let ssids = ctl.get_wifi_ssids().unwrap();
         assert_eq!(ssids.len(), 1);
         assert_eq!(ssids[0].ssid.as_str(), "MyNetwork");
         assert_eq!(ssids[0].password.as_str(), "MyPassword");
@@ -292,10 +292,10 @@ async fn add_and_get_wifi_ssid() {
 #[tokio::test]
 async fn clear_wifi_ssids() {
     device_test(|mut ctl| {
-        ctl.add_wifi_ssid("Network1", "Pass1");
-        ctl.add_wifi_ssid("Network2", "Pass2");
-        ctl.clear_wifi_ssids();
-        let ssids = ctl.get_wifi_ssids();
+        ctl.add_wifi_ssid("Network1", "Pass1").unwrap();
+        ctl.add_wifi_ssid("Network2", "Pass2").unwrap();
+        ctl.clear_wifi_ssids().unwrap();
+        let ssids = ctl.get_wifi_ssids().unwrap();
         assert!(ssids.is_empty());
     })
     .await;
@@ -304,7 +304,7 @@ async fn clear_wifi_ssids() {
 #[tokio::test]
 async fn get_relay_url_default() {
     device_test(|mut ctl| {
-        let url = ctl.get_relay_url();
+        let url = ctl.get_relay_url().unwrap();
         assert_eq!(url.as_str(), "");
     })
     .await;
@@ -313,8 +313,8 @@ async fn get_relay_url_default() {
 #[tokio::test]
 async fn set_and_get_relay_url() {
     device_test(|mut ctl| {
-        ctl.set_relay_url("wss://relay.example.com/stream");
-        let url = ctl.get_relay_url();
+        ctl.set_relay_url("wss://relay.example.com/stream").unwrap();
+        let url = ctl.get_relay_url().unwrap();
         assert_eq!(url.as_str(), "wss://relay.example.com/stream");
     })
     .await;
@@ -323,7 +323,7 @@ async fn set_and_get_relay_url() {
 #[tokio::test]
 async fn reset_ui_to_bootloader_gpio_sequence() {
     device_test_with_gpio_tracking(|mut ctl, gpio_ops| {
-        ctl.reset_ui_to_bootloader();
+        ctl.reset_ui_to_bootloader().unwrap();
 
         let ops = gpio_ops.lock().unwrap();
         // First 2 ops are MGMT startup releasing both chips from reset
@@ -342,7 +342,7 @@ async fn reset_ui_to_bootloader_gpio_sequence() {
 #[tokio::test]
 async fn reset_ui_to_user_gpio_sequence() {
     device_test_with_gpio_tracking(|mut ctl, gpio_ops| {
-        ctl.reset_ui_to_user();
+        ctl.reset_ui_to_user().unwrap();
 
         let ops = gpio_ops.lock().unwrap();
         // First 2 ops are MGMT startup releasing both chips from reset
@@ -361,7 +361,7 @@ async fn reset_ui_to_user_gpio_sequence() {
 #[tokio::test]
 async fn reset_net_to_bootloader_gpio_sequence() {
     device_test_with_gpio_tracking(|mut ctl, gpio_ops| {
-        ctl.reset_net_to_bootloader();
+        ctl.reset_net_to_bootloader().unwrap();
 
         let ops = gpio_ops.lock().unwrap();
         // First 2 ops are MGMT startup releasing both chips from reset
@@ -385,7 +385,7 @@ async fn reset_net_to_bootloader_gpio_sequence() {
 #[tokio::test]
 async fn reset_net_to_user_gpio_sequence() {
     device_test_with_gpio_tracking(|mut ctl, gpio_ops| {
-        ctl.reset_net_to_user();
+        ctl.reset_net_to_user().unwrap();
 
         let ops = gpio_ops.lock().unwrap();
         // First 2 ops are MGMT startup releasing both chips from reset
@@ -514,7 +514,7 @@ async fn set_net_baud_rate() {
         assert_eq!(net_baud.load(Ordering::SeqCst), 115200);
 
         // Set NET baud rate
-        ctl.set_net_baud_rate(460800);
+        ctl.set_net_baud_rate(460800).unwrap();
 
         // Verify NET changed, CTL unchanged
         assert_eq!(net_baud.load(Ordering::SeqCst), 460800);
@@ -531,7 +531,7 @@ async fn set_ctl_baud_rate() {
         assert_eq!(net_baud.load(Ordering::SeqCst), 115200);
 
         // Set CTL baud rate
-        ctl.set_ctl_baud_rate(230400);
+        ctl.set_ctl_baud_rate(230400).unwrap();
 
         // Verify CTL changed, NET unchanged
         assert_eq!(ctl_baud.load(Ordering::SeqCst), 230400);
@@ -548,12 +548,12 @@ async fn set_both_baud_rates() {
         assert_eq!(net_baud.load(Ordering::SeqCst), 115200);
 
         // Set NET baud rate first
-        ctl.set_net_baud_rate(921600);
+        ctl.set_net_baud_rate(921600).unwrap();
         assert_eq!(net_baud.load(Ordering::SeqCst), 921600);
         assert_eq!(ctl_baud.load(Ordering::SeqCst), 115200);
 
         // Then set CTL baud rate
-        ctl.set_ctl_baud_rate(460800);
+        ctl.set_ctl_baud_rate(460800).unwrap();
         assert_eq!(net_baud.load(Ordering::SeqCst), 921600);
         assert_eq!(ctl_baud.load(Ordering::SeqCst), 460800);
     })

@@ -160,9 +160,8 @@ enum GetSetHex {
 enum GetSetBool {
     #[default]
     Get,
-    Set {
-        value: bool,
-    },
+    Set,
+    Unset,
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
@@ -426,10 +425,10 @@ fn dispatch(cmd: Command, app: &mut App) -> Result<(), Box<dyn std::error::Error
         Command::CircularPing { reverse, data } => {
             if reverse {
                 println!("Sending NET-first circular ping with data: {}", data);
-                app.net_first_circular_ping(data.as_bytes());
+                app.net_first_circular_ping(data.as_bytes())?;
             } else {
                 println!("Sending UI-first circular ping with data: {}", data);
-                app.ui_first_circular_ping(data.as_bytes());
+                app.ui_first_circular_ping(data.as_bytes())?;
             }
             println!("Completed circular ping!");
             Ok(())

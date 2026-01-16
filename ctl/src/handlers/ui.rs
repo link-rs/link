@@ -10,7 +10,7 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
     match action {
         UiAction::Ping { data } => {
             println!("Sending UI ping with data: {}", data);
-            app.ui_ping(data.as_bytes());
+            app.ui_ping(data.as_bytes())?;
             println!("Received pong!");
             Ok(())
         }
@@ -132,19 +132,19 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
         }
         UiAction::Version { action } => match action.unwrap_or_default() {
             GetSetU32::Get => {
-                let version = app.get_version();
+                let version = app.get_version()?;
                 println!("{}", version);
                 Ok(())
             }
             GetSetU32::Set { value } => {
-                app.set_version(value);
+                app.set_version(value)?;
                 println!("Version set to {}", value);
                 Ok(())
             }
         },
         UiAction::SFrameKey { action } => match action.unwrap_or_default() {
             GetSetHex::Get => {
-                let key = app.get_sframe_key();
+                let key = app.get_sframe_key()?;
                 println!("{}", hex::encode(key));
                 Ok(())
             }
@@ -155,36 +155,41 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
                 }
                 let mut key_array = [0u8; 16];
                 key_array.copy_from_slice(&key_bytes);
-                app.set_sframe_key(&key_array);
+                app.set_sframe_key(&key_array)?;
                 println!("SFrame key set to {}", value);
                 Ok(())
             }
         },
         UiAction::Loopback { action } => match action.unwrap_or_default() {
             GetSetBool::Get => {
-                let enabled = app.ui_get_loopback();
+                let enabled = app.ui_get_loopback()?;
                 println!("{}", enabled);
                 Ok(())
             }
-            GetSetBool::Set { value } => {
-                app.ui_set_loopback(value);
-                println!("UI loopback set to {}", value);
+            GetSetBool::Set => {
+                app.ui_set_loopback(true)?;
+                println!("UI loopback enabled");
+                Ok(())
+            }
+            GetSetBool::Unset => {
+                app.ui_set_loopback(false)?;
+                println!("UI loopback disabled");
                 Ok(())
             }
         },
         UiAction::Reset { action } => match action.as_deref() {
             Some("hold") => {
-                app.hold_ui_reset();
+                app.hold_ui_reset()?;
                 println!("UI chip held in reset");
                 Ok(())
             }
             Some("release") => {
-                app.reset_ui_to_user();
+                app.reset_ui_to_user()?;
                 println!("UI chip released from reset");
                 Ok(())
             }
             _ => {
-                app.reset_ui_to_user();
+                app.reset_ui_to_user()?;
                 println!("UI chip reset");
                 Ok(())
             }
