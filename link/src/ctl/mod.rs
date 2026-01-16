@@ -295,6 +295,31 @@ where
     Ok(Some(Tlv { tlv_type, value }))
 }
 
+/// Read a TLV from the UI tunnel, silently skipping any Log messages.
+///
+/// This function reads TLVs from the UI tunnel and silently discards any
+/// `UiToMgmt::Log` messages. It continues reading until it receives
+/// a non-Log TLV, which it returns.
+///
+/// To see Log messages, use the `ui monitor` command.
+fn read_tlv_ui<R: Read>(
+    reader: &mut TunnelReader<'_, R>,
+) -> Result<Option<Tlv<UiToMgmt>>, TlvReadError<std::io::Error>> {
+    loop {
+        let tlv: Tlv<UiToMgmt> = match read_tlv(reader)? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        if tlv.tlv_type == UiToMgmt::Log {
+            // Silently skip log messages - use `ui monitor` to see them
+            continue;
+        }
+
+        return Ok(Some(tlv));
+    }
+}
+
 /// Write a TLV packet to a sync writer.
 ///
 /// This function buffers the entire TLV before writing to ensure atomic delivery
@@ -484,6 +509,33 @@ impl<R: Read> MgmtReader<R> {
     pub fn inner_mut(&mut self) -> &mut R {
         &mut self.from_mgmt
     }
+
+    /// Read a Log message from the UI chip.
+    ///
+    /// This uses the TunnelReader which buffers FromUi TLV values and handles
+    /// batching/splitting correctly. Non-FromUi TLVs (like FromNet) are skipped
+    /// by the TunnelReader.
+    ///
+    /// Returns `Ok(Some(message))` if a Log TLV was received,
+    /// `Ok(None)` if timeout or non-Log TLV was received,
+    /// or an error if reading failed.
+    pub fn read_ui_log(&mut self) -> Result<Option<String>, TlvReadError<std::io::Error>> {
+        // Use TunnelReader which handles buffering and skips non-FromUi TLVs
+        let tlv: Tlv<UiToMgmt> = match read_tlv(&mut self.ui())? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        if tlv.tlv_type == UiToMgmt::Log {
+            match core::str::from_utf8(&tlv.value) {
+                Ok(msg) => Ok(Some(msg.to_string())),
+                Err(_) => Ok(Some(format!("<invalid utf8: {:?}>", tlv.value.as_slice()))),
+            }
+        } else {
+            // Non-log UI TLV - discard it
+            Ok(None)
+        }
+    }
 }
 
 /// Encapsulates the write side of MGMT communication.
@@ -624,7 +676,8 @@ where
     /// Ping the UI chip through the MGMT tunnel.
     pub fn ui_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
         write_tlv(&mut self.writer.ui(), MgmtToUi::Ping, data)?;
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        let tlv: Tlv<UiToMgmt> =
+            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::Pong {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Pong",
@@ -674,7 +727,8 @@ where
     /// Send a circular ping starting from NET (NET -> UI -> MGMT -> CTL).
     pub fn net_first_circular_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
         write_tlv(&mut self.writer.net(), MgmtToNet::CircularPing, data)?;
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        let tlv: Tlv<UiToMgmt> =
+            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::CircularPing {
             return Err(CtlError::UnexpectedResponse {
                 expected: "CircularPing",
@@ -690,7 +744,8 @@ where
     /// Get the version stored in UI chip EEPROM.
     pub fn get_version(&mut self) -> Result<u32, CtlError> {
         write_tlv(&mut self.writer.ui(), MgmtToUi::GetVersion, &[])?;
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        let tlv: Tlv<UiToMgmt> =
+            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::Version {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Version",
@@ -718,7 +773,8 @@ where
             MgmtToUi::SetVersion,
             &version.to_be_bytes(),
         )?;
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        let tlv: Tlv<UiToMgmt> =
+            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -731,7 +787,8 @@ where
     /// Get the SFrame key stored in UI chip EEPROM.
     pub fn get_sframe_key(&mut self) -> Result<[u8; 16], CtlError> {
         write_tlv(&mut self.writer.ui(), MgmtToUi::GetSFrameKey, &[])?;
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        let tlv: Tlv<UiToMgmt> =
+            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::SFrameKey {
             return Err(CtlError::UnexpectedResponse {
                 expected: "SFrameKey",
@@ -752,7 +809,8 @@ where
     /// Set the SFrame key stored in UI chip EEPROM.
     pub fn set_sframe_key(&mut self, key: &[u8; 16]) -> Result<(), CtlError> {
         write_tlv(&mut self.writer.ui(), MgmtToUi::SetSFrameKey, key)?;
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        let tlv: Tlv<UiToMgmt> =
+            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -770,7 +828,8 @@ where
             MgmtToUi::SetLoopback,
             &[enabled as u8],
         )?;
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        let tlv: Tlv<UiToMgmt> =
+            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -783,7 +842,8 @@ where
     /// Get UI chip loopback mode.
     pub fn ui_get_loopback(&mut self) -> Result<bool, CtlError> {
         write_tlv(&mut self.writer.ui(), MgmtToUi::GetLoopback, &[])?;
-        let tlv: Tlv<UiToMgmt> = read_tlv(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        let tlv: Tlv<UiToMgmt> =
+            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::Loopback {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Loopback",

@@ -2,6 +2,7 @@
 
 mod audio;
 mod eeprom;
+mod log;
 #[cfg(feature = "sframe")]
 mod sframe;
 
@@ -9,12 +10,14 @@ pub use audio::{
     AudioError, AudioSystem, ENCODED_FRAME_SIZE, FRAME_SIZE, Frame, STEREO_FRAME_SIZE, StereoFrame,
 };
 pub use eeprom::Eeprom;
+pub use log::{LogMessage, LogSender, MAX_LOG_SIZE};
 
 use crate::info;
 use crate::shared::{
     Channel, Color, CriticalSectionRawMutex, Led, MgmtToUi, NetToUi, Sender, Tlv, UiToMgmt,
     UiToNet, WriteTlv, read_tlv_loop,
 };
+use core::fmt::Write as FmtWrite;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::StatefulOutputPin;
 use embedded_hal::i2c::I2c;
@@ -111,12 +114,18 @@ where
                 }
                 Event::ButtonDown(button) => {
                     info!("ui: button {:?} down", button);
+                    let mut buf = LogMessage::new();
+                    let _ = write!(buf, "button {:?} down", button);
+                    to_mgmt.must_write_tlv(UiToMgmt::Log, buf.as_bytes()).await;
                     if active_button.is_none() {
                         active_button = Some(button);
                     }
                 }
                 Event::ButtonUp(button) => {
                     info!("ui: button {:?} up", button);
+                    let mut buf = LogMessage::new();
+                    let _ = write!(buf, "button {:?} up", button);
+                    to_mgmt.must_write_tlv(UiToMgmt::Log, buf.as_bytes()).await;
                     if active_button == Some(button) {
                         active_button = None;
                     }

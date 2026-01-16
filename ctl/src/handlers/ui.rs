@@ -2,7 +2,8 @@
 
 use crate::{App, GetSetBool, GetSetHex, GetSetU32, UiAction};
 use indicatif::{ProgressBar, ProgressStyle};
-use link::ctl::FlashPhase;
+use link::ctl::{FlashPhase, SetTimeout};
+use std::io::Write;
 use std::thread;
 use std::time::Duration;
 
@@ -194,5 +195,68 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
                 Ok(())
             }
         },
+        UiAction::Monitor { reset } => {
+            if reset {
+                println!("Resetting UI chip...");
+                app.reset_ui_to_user()?;
+            }
+            println!("Monitoring UI chip logs (ESC to stop)...\n");
+
+            // Set a short timeout for non-blocking reads
+            if let Err(e) = app
+                .reader_mut()
+                .inner_mut()
+                .set_timeout(Duration::from_millis(100))
+            {
+                eprintln!("Warning: couldn't set timeout: {}", e);
+            }
+
+            use crossterm::event::{self, Event, KeyCode, KeyEvent};
+            use crossterm::terminal;
+
+            // Enable raw mode to capture ESC
+            terminal::enable_raw_mode()?;
+
+            let result = (|| {
+                loop {
+                    // Check for key press (non-blocking)
+                    if event::poll(Duration::from_millis(0))? {
+                        if let Event::Key(KeyEvent {
+                            code: KeyCode::Esc, ..
+                        }) = event::read()?
+                        {
+                            return Ok(());
+                        }
+                    }
+
+                    // Check for TLV data from UI
+                    match app.reader_mut().read_ui_log() {
+                        Ok(Some(msg)) => {
+                            // Use \r\n for raw terminal mode
+                            print!("[UI] {}\r\n", msg);
+                            std::io::stdout().flush().ok();
+                        }
+                        Ok(None) => {
+                            // Timeout or non-log TLV, continue
+                        }
+                        Err(e) => {
+                            // Check if it's just a timeout
+                            if let link::ctl::TlvReadError::Io(ref io_err) = e {
+                                if io_err.kind() == std::io::ErrorKind::TimedOut {
+                                    continue;
+                                }
+                            }
+                            return Err(format!("Read error: {:?}", e).into());
+                        }
+                    }
+                }
+            })();
+
+            // Always restore terminal mode
+            terminal::disable_raw_mode()?;
+            println!("\nMonitor stopped.");
+
+            result
+        }
     }
 }

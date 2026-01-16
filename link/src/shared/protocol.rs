@@ -83,6 +83,8 @@ pub enum UiToMgmt {
     Error,
     /// Loopback mode status (1 byte: 0=off, 1=on)
     Loopback,
+    /// Debug log message (UTF-8 string)
+    Log,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

@@ -136,6 +136,13 @@ enum UiAction {
     Reset {
         action: Option<String>,
     },
+
+    /// Monitor log messages from UI chip
+    Monitor {
+        /// Reset the chip before monitoring
+        #[arg(long)]
+        reset: bool,
+    },
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]

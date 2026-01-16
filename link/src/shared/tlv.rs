@@ -97,6 +97,7 @@ mod async_tlv {
         Io(E),
         InvalidType,
         TooLong,
+        UnexpectedEof,
     }
 
     #[allow(async_fn_in_trait)]
@@ -187,6 +188,79 @@ mod async_tlv {
 
             Ok(Some(Tlv { tlv_type, value }))
         }
+    }
+
+    /// Read a complete TLV as raw bytes (sync + header + value) into a buffer.
+    ///
+    /// Returns the number of bytes read on success.
+    /// This is useful for forwarding TLVs without parsing them.
+    pub async fn read_tlv_raw<R: Read>(
+        reader: &mut R,
+        buffer: &mut Value,
+    ) -> Result<usize, ReadError<R::Error>> {
+        trace!("read_tlv_raw: scanning for sync word");
+
+        // Scan for sync word, draining any garbage
+        let mut matched = 0usize;
+        while matched < SYNC_WORD.len() {
+            let mut byte = [0u8; 1];
+            let Ok(1) = reader.read(&mut byte).await else {
+                continue;
+            };
+
+            if byte[0] == SYNC_WORD[matched] {
+                matched += 1;
+            } else {
+                matched = 0;
+                if byte[0] == SYNC_WORD[0] {
+                    matched = 1;
+                }
+            }
+        }
+
+        // Read header
+        let mut header = [0u8; HEADER_SIZE];
+        match reader.read_exact(&mut header).await {
+            Ok(()) => {}
+            Err(ReadExactError::UnexpectedEof) => {
+                return Err(ReadError::UnexpectedEof);
+            }
+            Err(ReadExactError::Other(e)) => {
+                return Err(ReadError::Io(e));
+            }
+        }
+
+        // Parse length from header (we don't need to validate type for raw forwarding)
+        let length = Length::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
+
+        if length > MAX_VALUE_SIZE {
+            return Err(ReadError::TooLong);
+        }
+
+        // Calculate total size and resize buffer
+        let total = SYNC_WORD.len() + HEADER_SIZE + length;
+        if buffer.resize(total, 0).is_err() {
+            return Err(ReadError::TooLong);
+        }
+
+        // Copy sync word and header into buffer
+        buffer[..SYNC_WORD.len()].copy_from_slice(&SYNC_WORD);
+        buffer[SYNC_WORD.len()..SYNC_WORD.len() + HEADER_SIZE].copy_from_slice(&header);
+
+        // Read value directly into buffer
+        let value_start = SYNC_WORD.len() + HEADER_SIZE;
+        match reader.read_exact(&mut buffer[value_start..]).await {
+            Ok(()) => {}
+            Err(ReadExactError::UnexpectedEof) => {
+                return Err(ReadError::UnexpectedEof);
+            }
+            Err(ReadExactError::Other(e)) => {
+                return Err(ReadError::Io(e));
+            }
+        }
+
+        trace!("read_tlv_raw: complete, {} bytes", total);
+        Ok(total)
     }
 
     #[allow(async_fn_in_trait)]
