@@ -43,10 +43,8 @@ impl StereoFrame {
     pub fn encode(&self) -> Frame {
         let mut encoded = Frame::default();
         for i in 0..ENCODED_FRAME_SIZE {
-            // XXX: The codec's left input (the active mic) appears on odd indices
-            // (i * 2 + 1), which is the right channel position in I2S. This seems
-            // backwards but works. The even indices (i * 2) contain silence.
-            let sample = self.0[i * 2 + 1] as i16;
+            // Left channel (even indices) contains the microphone input
+            let sample = self.0[i * 2] as i16;
             encoded.0[i] = encode_alaw(sample);
         }
         encoded
