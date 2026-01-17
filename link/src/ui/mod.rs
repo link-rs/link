@@ -17,7 +17,7 @@ use crate::shared::{
     Channel, Color, CriticalSectionRawMutex, Led, MgmtToUi, NetToUi, Sender, Tlv, UiToMgmt,
     UiToNet, WriteTlv, read_tlv_loop,
 };
-use core::fmt::Write as FmtWrite;
+use crate::tlv_log;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::StatefulOutputPin;
 use embedded_hal::i2c::I2c;
@@ -86,6 +86,11 @@ where
     let playback_channel: Channel<CriticalSectionRawMutex, Frame, PLAYBACK_QUEUE_SIZE> =
         Channel::new();
 
+    // Queue for log messages (to MGMT)
+    const LOG_QUEUE_SIZE: usize = 8;
+    let log_channel: Channel<CriticalSectionRawMutex, LogMessage, LOG_QUEUE_SIZE> = Channel::new();
+    let log_sender = log_channel.sender();
+
     let handle_task = async {
         info!("ui: ready to handle events");
 
@@ -114,18 +119,14 @@ where
                 }
                 Event::ButtonDown(button) => {
                     info!("ui: button {:?} down", button);
-                    let mut buf = LogMessage::new();
-                    let _ = write!(buf, "button {:?} down", button);
-                    to_mgmt.must_write_tlv(UiToMgmt::Log, buf.as_bytes()).await;
+                    tlv_log!(log_sender, "button {:?} down", button);
                     if active_button.is_none() {
                         active_button = Some(button);
                     }
                 }
                 Event::ButtonUp(button) => {
                     info!("ui: button {:?} up", button);
-                    let mut buf = LogMessage::new();
-                    let _ = write!(buf, "button {:?} up", button);
-                    to_mgmt.must_write_tlv(UiToMgmt::Log, buf.as_bytes()).await;
+                    tlv_log!(log_sender, "button {:?} up", button);
                     if active_button == Some(button) {
                         active_button = None;
                     }
@@ -146,6 +147,11 @@ where
                         }
                     }
                 }
+            }
+
+            // Drain any pending log messages
+            while let Ok(msg) = log_channel.try_receive() {
+                to_mgmt.must_write_tlv(UiToMgmt::Log, msg.as_bytes()).await;
             }
         }
     };
