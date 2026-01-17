@@ -16,25 +16,35 @@ use defmt::{debug, error, info, trace, warn};
 #[cfg(all(not(feature = "defmt-logging"), feature = "std"))]
 use log::{debug, error, info, trace, warn};
 #[cfg(all(not(feature = "defmt-logging"), not(feature = "std")))]
-macro_rules! debug { ($($arg:tt)*) => {}; }
+macro_rules! debug {
+    ($($arg:tt)*) => {};
+}
 #[cfg(all(not(feature = "defmt-logging"), not(feature = "std")))]
-macro_rules! error { ($($arg:tt)*) => {}; }
+macro_rules! error {
+    ($($arg:tt)*) => {};
+}
 #[cfg(all(not(feature = "defmt-logging"), not(feature = "std")))]
-macro_rules! info { ($($arg:tt)*) => {}; }
+macro_rules! info {
+    ($($arg:tt)*) => {};
+}
 #[cfg(all(not(feature = "defmt-logging"), not(feature = "std")))]
-macro_rules! trace { ($($arg:tt)*) => {}; }
+macro_rules! trace {
+    ($($arg:tt)*) => {};
+}
 #[cfg(all(not(feature = "defmt-logging"), not(feature = "std")))]
-macro_rules! warn { ($($arg:tt)*) => {}; }
+macro_rules! warn {
+    ($($arg:tt)*) => {};
+}
 
-#[cfg(feature = "std")]
-use std::ffi::c_void;
 #[cfg(not(feature = "std"))]
 use crate::ffi::c_void;
-
 #[cfg(feature = "std")]
-use std::ffi::{c_char, CStr};
+use std::ffi::c_void;
+
 #[cfg(not(feature = "std"))]
 use core::ffi::{c_char, CStr};
+#[cfg(feature = "std")]
+use std::ffi::{c_char, CStr};
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
@@ -95,8 +105,12 @@ impl From<ffi::QuicrSubscribeStatus> for SubscribeStatus {
             ffi::QuicrSubscribeStatus_QUICR_SUBSCRIBE_STATUS_NEW_GROUP_REQUESTED => {
                 SubscribeStatus::NewGroupRequested
             }
-            ffi::QuicrSubscribeStatus_QUICR_SUBSCRIBE_STATUS_CANCELLED => SubscribeStatus::Cancelled,
-            ffi::QuicrSubscribeStatus_QUICR_SUBSCRIBE_STATUS_DONE_BY_FIN => SubscribeStatus::DoneByFin,
+            ffi::QuicrSubscribeStatus_QUICR_SUBSCRIBE_STATUS_CANCELLED => {
+                SubscribeStatus::Cancelled
+            }
+            ffi::QuicrSubscribeStatus_QUICR_SUBSCRIBE_STATUS_DONE_BY_FIN => {
+                SubscribeStatus::DoneByFin
+            }
             ffi::QuicrSubscribeStatus_QUICR_SUBSCRIBE_STATUS_DONE_BY_RESET => {
                 SubscribeStatus::DoneByReset
             }
@@ -286,7 +300,10 @@ impl SubscribeTrack {
 
     /// Wait until subscription is active
     pub async fn wait_ready(&self) -> Result<()> {
-        debug!("Waiting for subscription to be ready: {:?}", self.track_name);
+        debug!(
+            "Waiting for subscription to be ready: {:?}",
+            self.track_name
+        );
         loop {
             let status = self.status();
             match status {
@@ -372,9 +389,16 @@ extern "C" fn subscribe_status_changed_callback(
     let data = unsafe { &*(user_data as *const SubscribeCallbackData) };
 
     #[cfg(feature = "std")]
-    debug!("[SUBSCRIBE STATUS] {} -> {:?}", data.track_name, rust_status);
+    debug!(
+        "[SUBSCRIBE STATUS] {} -> {:?}",
+        data.track_name, rust_status
+    );
     #[cfg(not(feature = "std"))]
-    debug!("[SUBSCRIBE STATUS] {} -> {:?}", data.track_name.as_str(), rust_status);
+    debug!(
+        "[SUBSCRIBE STATUS] {} -> {:?}",
+        data.track_name.as_str(),
+        rust_status
+    );
 
     data.status_signal.signal(rust_status);
 }
@@ -402,7 +426,9 @@ extern "C" fn object_received_callback(
     let obj_headers = ObjectHeaders::from(headers);
     trace!(
         "Object received: group={}, object={}, payload_size={}",
-        obj_headers.group_id, obj_headers.object_id, payload.len()
+        obj_headers.group_id,
+        obj_headers.object_id,
+        payload.len()
     );
 
     let object = ReceivedObject {
@@ -415,10 +441,7 @@ extern "C" fn object_received_callback(
     }
 }
 
-extern "C" fn subscribe_error_callback(
-    user_data: *mut c_void,
-    error_msg: *const c_char,
-) {
+extern "C" fn subscribe_error_callback(user_data: *mut c_void, error_msg: *const c_char) {
     #[cfg(feature = "std")]
     let track_name: String = if user_data.is_null() {
         "<unknown>".to_string()
@@ -438,7 +461,11 @@ extern "C" fn subscribe_error_callback(
     let msg = if error_msg.is_null() {
         "<null error message>"
     } else {
-        unsafe { CStr::from_ptr(error_msg).to_str().unwrap_or("<invalid utf8>") }
+        unsafe {
+            CStr::from_ptr(error_msg)
+                .to_str()
+                .unwrap_or("<invalid utf8>")
+        }
     };
 
     error!("C++ exception in subscribe track {}: {}", track_name, msg);
@@ -511,7 +538,7 @@ impl SubscribeTrackBuilder {
             use crate::runtime::Channel;
 
             // Create leaked channel for object delivery
-            const BUFFER_SIZE: usize = 256;
+            const BUFFER_SIZE: usize = 64;
             let channel: &'static Channel<ReceivedObject, BUFFER_SIZE> =
                 Box::leak(Box::new(Channel::new()));
 
@@ -534,7 +561,9 @@ impl SubscribeTrackBuilder {
 
         #[cfg(not(feature = "std"))]
         {
-            Err(Error::config("build() requires std feature; use build_with_signals() for no_std"))
+            Err(Error::config(
+                "build() requires std feature; use build_with_signals() for no_std",
+            ))
         }
     }
 

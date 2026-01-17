@@ -1349,14 +1349,19 @@ where
             CtlToMgmt::SetNetBaudRate,
             &baud_rate.to_le_bytes(),
         )?;
-        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
-        if tlv.tlv_type != MgmtToCtl::Ack {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "Ack",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
+        loop {
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+            match tlv.tlv_type {
+                MgmtToCtl::Ack => return Ok(()),
+                MgmtToCtl::FromNet | MgmtToCtl::FromUi => continue,
+                other => {
+                    return Err(CtlError::UnexpectedResponse {
+                        expected: "Ack",
+                        actual: format!("{:?}", other),
+                    });
+                }
+            }
         }
-        Ok(())
     }
 
     /// Set the CTL UART baud rate on the MGMT chip.
@@ -1372,14 +1377,19 @@ where
             &baud_rate.to_le_bytes(),
         )?;
         // Read ACK at current baud rate (before MGMT switches)
-        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
-        if tlv.tlv_type != MgmtToCtl::Ack {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "Ack",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
+        loop {
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+            match tlv.tlv_type {
+                MgmtToCtl::Ack => return Ok(()),
+                MgmtToCtl::FromNet | MgmtToCtl::FromUi => continue,
+                other => {
+                    return Err(CtlError::UnexpectedResponse {
+                        expected: "Ack",
+                        actual: format!("{:?}", other),
+                    });
+                }
+            }
         }
-        Ok(())
     }
 
     /// Get bootloader information from the UI chip.
@@ -2131,6 +2141,24 @@ where
             }
             other => Err(CtlError::UnexpectedResponse {
                 expected: "Ack or ModeStopped",
+                actual: format!("{:?}", other),
+            }),
+        }
+    }
+
+    /// Run MoQ loopback mode on NET chip - publish audio to MoQ and subscribe to same track.
+    pub fn run_moq_loopback(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::RunMoqLoopback, &[])?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        match tlv.tlv_type {
+            NetToMgmt::Ack | NetToMgmt::ModeStarted => Ok(()),
+            NetToMgmt::Error => {
+                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+                Err(CtlError::DeviceError(err.to_string()))
+            }
+            other => Err(CtlError::UnexpectedResponse {
+                expected: "Ack or ModeStarted",
                 actual: format!("{:?}", other),
             }),
         }

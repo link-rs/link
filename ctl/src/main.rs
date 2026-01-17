@@ -251,6 +251,10 @@ enum NetAction {
     #[command(name = "stop-mode")]
     StopMode,
 
+    /// Run MoQ loopback mode - publish audio to MoQ and subscribe to same track
+    #[command(name = "run-loopback")]
+    RunMoqLoopback,
+
     #[command(name = "chat")]
     Chat {
         /// Chat message to send

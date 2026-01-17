@@ -324,6 +324,13 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             }
             Err(e) => Err(format!("Failed to stop mode: {}", e).into()),
         },
+        NetAction::RunMoqLoopback => match app.run_moq_loopback() {
+            Ok(()) => {
+                println!("Started MoQ loopback mode (publish and subscribe to same track)");
+                Ok(())
+            }
+            Err(e) => Err(format!("Failed to run MoQ loopback: {}", e).into()),
+        },
         NetAction::Chat { message } => match app.send_chat_message(&message) {
             Ok(()) => {
                 println!("Chat message sent");

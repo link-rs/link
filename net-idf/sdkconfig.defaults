@@ -1,13 +1,66 @@
-# Rust often needs a bit of an extra main task stack size compared to C (the default is 3K)
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8000
+# # Rust often needs a bit of an extra main task stack size compared to C (the default is 3K)
+# CONFIG_ESP_MAIN_TASK_STACK_SIZE=8000
+# 
+# # Use this to set FreeRTOS kernel tick frequency to 1000 Hz (100 Hz by default).
+# # This allows to use 1 ms granularity for thread sleeps (10 ms by default).
+# #CONFIG_FREERTOS_HZ=1000
+# 
+# # Workaround for https://github.com/espressif/esp-idf/issues/7631
+# #CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
+# #CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=n
+# 
+# # C++ features required by libquicr
+# # RTTI needed for std::thread typeinfo symbols
+# CONFIG_COMPILER_CXX_RTTI=y
+# CONFIG_COMPILER_CXX_EXCEPTIONS=y
+# CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE=1024
+# 
+# # C++ Standard Library - enable std::thread support via pthread
+# CONFIG_LIBSTDCXX_ENABLE_PTHREAD=y
+# 
+# # pthread stack - make sure threads have enough stack
+# CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=16384
+# CONFIG_PTHREAD_STACK_MIN=768
+# 
+# # mbedTLS (for QUIC)
+# CONFIG_MBEDTLS_HARDWARE_AES=y
+# CONFIG_MBEDTLS_HARDWARE_SHA=y
+# CONFIG_MBEDTLS_TLS_ENABLED=y
+# 
+# # Logging
+# CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# 
+# # FreeRTOS
+# CONFIG_FREERTOS_HZ=1000
+# CONFIG_FREERTOS_UNICORE=n
+# 
+# # Watchdog timers
+# CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+# CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+# CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+# 
+# # Panic handler - print info and halt (don't reboot immediately)
+# CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
+# CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
+# 
+# # Enable backtrace on panic
+# CONFIG_ESP_SYSTEM_USE_EH_FRAME=y
+# 
+# # Storage / Flash (8MB flash)
+# CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+# 
+# # Custom partition table with larger app partition
+# # Path is relative to esp-idf-sys build output directory
+# CONFIG_PARTITION_TABLE_CUSTOM=y
+# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../../../../partitions.csv"
 
-# Use this to set FreeRTOS kernel tick frequency to 1000 Hz (100 Hz by default).
-# This allows to use 1 ms granularity for thread sleeps (10 ms by default).
-#CONFIG_FREERTOS_HZ=1000
+# ESP32-S3 configuration for NET firmware with ESP-IDF
 
-# Workaround for https://github.com/espressif/esp-idf/issues/7631
-#CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
-#CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=n
+# Rust-specific settings
+# Chip revision 0 for compatibility (board is v0.2)
+CONFIG_ESP32S3_REV_MIN_0=y
+CONFIG_ESP32S3_REV_MIN_FULL=0
 
 # C++ features required by libquicr
 # RTTI needed for std::thread typeinfo symbols
@@ -18,17 +71,64 @@ CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE=1024
 # C++ Standard Library - enable std::thread support via pthread
 CONFIG_LIBSTDCXX_ENABLE_PTHREAD=y
 
-# pthread stack - make sure threads have enough stack
+# SPIRAM (PSRAM) configuration - based on hactar reference
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_40M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# Reduce internal-only threshold to push more allocations to SPIRAM
+# Set very low to force most allocations to SPIRAM
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=256
+# Reserve internal RAM for DMA/critical allocations (matches hactar)
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+# Allow task stacks in SPIRAM for large pthread stacks
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
+
+# Memory configuration - larger main stack for our Rust async runtime
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+# pthread stack - reduced to fit in internal RAM
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=16384
 CONFIG_PTHREAD_STACK_MIN=768
+
+# WiFi configuration
+CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=8
+CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP32_WIFI_TX_BUFFER_TYPE=1
+CONFIG_ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_ESP32_WIFI_AMPDU_TX_ENABLED=y
+CONFIG_ESP32_WIFI_AMPDU_RX_ENABLED=y
+
+# TCP/IP Stack
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_SO_REUSE=y
+CONFIG_LWIP_SO_REUSE_RXTOALL=y
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760
+CONFIG_LWIP_TCP_WND_DEFAULT=5760
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=16
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=32
 
 # mbedTLS (for QUIC)
 CONFIG_MBEDTLS_HARDWARE_AES=y
 CONFIG_MBEDTLS_HARDWARE_SHA=y
 CONFIG_MBEDTLS_TLS_ENABLED=y
 
+# Storage / Flash (8MB flash with 4MB app partition)
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+CONFIG_PARTITION_TABLE_SINGLE_APP=n
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../../../../partitions.csv"
+
+# UART (for CTL communication)
+CONFIG_UART_ISR_IN_IRAM=y
+
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 
 # FreeRTOS
 CONFIG_FREERTOS_HZ=1000
@@ -38,19 +138,3 @@ CONFIG_FREERTOS_UNICORE=n
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
-
-# Panic handler - print info and halt (don't reboot immediately)
-CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
-CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
-
-# Enable backtrace on panic
-CONFIG_ESP_SYSTEM_USE_EH_FRAME=y
-
-# Storage / Flash (8MB flash)
-CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
-
-# Custom partition table with larger app partition
-# Path is relative to esp-idf-sys build output directory
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../../../../partitions.csv"

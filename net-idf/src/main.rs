@@ -24,7 +24,7 @@ use link::{
     SYNC_WORD,
 };
 use log::{info, warn};
-use quicr::{ClientBuilder, FullTrackName, ObjectHeaders, TrackNamespace};
+use quicr::{ClientBuilder, FullTrackName, ObjectHeaders, Subscription, TrackNamespace};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
@@ -47,6 +47,10 @@ enum MoqCommand {
     SendChat { message: String },
     /// Stop the current mode.
     StopMode,
+    /// Run MoQ loopback mode - publish audio to MoQ and subscribe to same track.
+    RunMoqLoopback,
+    /// Audio frame to publish (only used in MoQ loopback mode).
+    AudioFrame { data: Vec<u8> },
 }
 
 /// Events sent from the MoQ task back to the main loop.
@@ -66,6 +70,8 @@ enum MoqEvent {
     ChatSent,
     /// Chat message received.
     ChatReceived { message: String },
+    /// Audio frame received from MoQ subscription (for loopback mode).
+    AudioReceived { data: Vec<u8> },
 }
 
 // ============================================================================
@@ -106,6 +112,8 @@ enum MoqMode {
         fps: u32,
         payload_size: u32,
     },
+    /// MoQ loopback - publish audio to MoQ and subscribe to same track.
+    MoqLoopback,
 }
 
 /// Spawn the MoQ task in a separate thread.
@@ -115,7 +123,7 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
 
     thread::Builder::new()
         .name("moq".to_string())
-        .stack_size(32768)
+        .stack_size(16384)
         .spawn(move || {
             info!("MoQ task started");
 
@@ -136,6 +144,11 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
             let mut last_benchmark_report: Option<Instant> = None;
             let mut benchmark_packets_sent: u64 = 0;
 
+            // MoQ loopback mode state
+            let mut loopback_pub_track: Option<std::sync::Arc<quicr::PublishTrack>> = None;
+            let mut loopback_subscription: Option<Subscription> = None;
+            let mut loopback_group_id: u64 = 0;
+
             loop {
                 // Check for commands (non-blocking)
                 match cmd_rx.try_recv() {
@@ -145,6 +158,8 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                         mode = MoqMode::Idle;
                         clock_track = None;
                         benchmark_track = None;
+                        loopback_pub_track = None;
+                        loopback_subscription = None;
                         if client.is_some() {
                             client = None;
                             let _ = event_tx.send(MoqEvent::Disconnected);
@@ -256,11 +271,79 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                             mode = MoqMode::Idle;
                             clock_track = None;
                             benchmark_track = None;
+                            loopback_pub_track = None;
+                            loopback_subscription = None;
                             let _ = event_tx.send(MoqEvent::ModeStopped);
                         }
                     }
-                    Ok(cmd) => {
-                        info!("MoQ: received command: {:?}", std::mem::discriminant(&cmd));
+                    Ok(MoqCommand::RunMoqLoopback) => {
+                        if let Some(ref c) = client {
+                            if mode == MoqMode::Idle {
+                                info!("MoQ: starting MoQ loopback mode");
+                                let namespace =
+                                    TrackNamespace::from_strings(&["hactar", "loopback"]);
+                                c.publish_namespace(&namespace);
+
+                                // Create publish track
+                                let pub_track_name =
+                                    FullTrackName::from_strings(&["hactar", "loopback"], "audio");
+                                match block_on(c.publish(pub_track_name.clone())) {
+                                    Ok(track) => {
+                                        loopback_pub_track = Some(track);
+                                        loopback_group_id = 0;
+                                        info!("MoQ loopback: publish track created");
+
+                                        // Create subscribe track to same namespace/track
+                                        match block_on(c.subscribe(pub_track_name)) {
+                                            Ok(sub_track) => {
+                                                loopback_subscription = Some(sub_track);
+                                                mode = MoqMode::MoqLoopback;
+                                                let _ = event_tx.send(MoqEvent::ModeStarted);
+                                                info!("MoQ loopback: subscribe track created");
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    "MoQ: failed to create loopback subscribe track: {:?}",
+                                                    e
+                                                );
+                                                loopback_pub_track = None;
+                                                let _ = event_tx.send(MoqEvent::Error {
+                                                    message: format!("{:?}", e),
+                                                });
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "MoQ: failed to create loopback publish track: {:?}",
+                                            e
+                                        );
+                                        let _ = event_tx.send(MoqEvent::Error {
+                                            message: format!("{:?}", e),
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("MoQ: cannot start MoQ loopback mode - not connected");
+                            let _ = event_tx.send(MoqEvent::Error {
+                                message: "not connected".to_string(),
+                            });
+                        }
+                    }
+                    Ok(MoqCommand::AudioFrame { data }) => {
+                        // Only publish if in MoQ loopback mode
+                        if mode == MoqMode::MoqLoopback {
+                            if let Some(ref track) = loopback_pub_track {
+                                let headers = ObjectHeaders::new(loopback_group_id, 0);
+                                let _ = track.publish(&headers, &data);
+                                loopback_group_id += 1;
+                            }
+                        }
+                    }
+                    Ok(MoqCommand::SendChat { .. }) => {
+                        // Chat not implemented
+                        info!("MoQ: chat not implemented");
                     }
                     Err(TryRecvError::Empty) => {}
                     Err(TryRecvError::Disconnected) => {
@@ -350,6 +433,36 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                     last_benchmark_report = Some(now);
                                     benchmark_packets_sent = 0;
                                 }
+                            }
+                        }
+                    }
+                    MoqMode::MoqLoopback => {
+                        // Poll subscription for received objects
+                        if let Some(ref mut subscription) = loopback_subscription {
+                            // Try to receive with a short timeout to avoid blocking
+                            use std::future::Future;
+                            use std::pin::Pin;
+                            use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+                            // Create a simple waker that does nothing (for polling)
+                            static VTABLE: RawWakerVTable = RawWakerVTable::new(
+                                |_| RawWaker::new(std::ptr::null(), &VTABLE),
+                                |_| {},
+                                |_| {},
+                                |_| {},
+                            );
+                            let waker =
+                                unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
+                            let mut cx = Context::from_waker(&waker);
+
+                            // Poll the recv future once (non-blocking check)
+                            let mut recv_future = subscription.recv();
+                            let pinned = unsafe { Pin::new_unchecked(&mut recv_future) };
+                            if let Poll::Ready(object) = pinned.poll(&mut cx) {
+                                // Forward audio data to main loop
+                                let _ = event_tx.send(MoqEvent::AudioReceived {
+                                    data: object.payload().to_vec(),
+                                });
                             }
                         }
                     }
@@ -848,7 +961,7 @@ fn main() {
     let mut led_g = PinDriver::output(peripherals.pins.gpio37).unwrap();
     let mut led_b = PinDriver::output(peripherals.pins.gpio36).unwrap();
 
-    // Start with red LED (WiFi not connected)
+    // LED colors: Red=default/no WiFi, Green=WiFi connected, Blue=MoQ connected
     set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Red);
 
     // Initialize UARTs
@@ -955,7 +1068,7 @@ fn main() {
             warn!("net-idf: WiFi connect failed: {:?}", e);
         } else {
             info!("net-idf: WiFi connected");
-            set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Yellow);
+            set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
 
             // Connect to MoQ relay if URL is stored
             if !storage.relay_url.is_empty() {
@@ -995,7 +1108,14 @@ fn main() {
         // Check UI UART for incoming data
         if let Some((msg_type, value)) = try_read_tlv(&ui_uart, &mut ui_rx_buf, &mut ui_rx_pos) {
             if let Ok(tlv_type) = UiToNet::try_from(msg_type) {
-                handle_ui_message(tlv_type, &value, &mgmt_uart, &ui_uart, loopback);
+                handle_ui_message(
+                    tlv_type,
+                    &value,
+                    &mgmt_uart,
+                    &ui_uart,
+                    loopback,
+                    &moq_cmd_tx,
+                );
             }
         }
 
@@ -1004,11 +1124,11 @@ fn main() {
         match moq_event_rx.try_recv() {
             Ok(MoqEvent::Connected) => {
                 info!("net-idf: MoQ connected");
-                set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
+                set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Blue);
             }
             Ok(MoqEvent::Disconnected) => {
                 info!("net-idf: MoQ disconnected");
-                set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Yellow);
+                set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
             }
             Ok(MoqEvent::ModeStarted) => {
                 info!("net-idf: MoQ mode started");
@@ -1024,6 +1144,10 @@ fn main() {
             }
             Ok(MoqEvent::ChatReceived { message }) => {
                 info!("net-idf: chat received: {}", message);
+            }
+            Ok(MoqEvent::AudioReceived { data }) => {
+                // Forward received audio to UI chip
+                write_tlv(&ui_uart, NetToUi::AudioFrame, &data);
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
@@ -1315,6 +1439,10 @@ fn handle_mgmt_message(
             // Chat not implemented yet
             write_tlv(mgmt_uart, NetToMgmt::Error, b"not implemented");
         }
+        MgmtToNet::RunMoqLoopback => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunMoqLoopback);
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
     }
 }
 
@@ -1325,6 +1453,7 @@ fn handle_ui_message(
     mgmt_uart: &UartDriver,
     ui_uart: &UartDriver,
     loopback: bool,
+    moq_cmd_tx: &Sender<MoqCommand>,
 ) {
     match msg_type {
         UiToNet::CircularPing => {
@@ -1332,8 +1461,13 @@ fn handle_ui_message(
         }
         UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
             if loopback {
+                // Local loopback - forward directly to UI
                 write_tlv(ui_uart, NetToUi::AudioFrame, value);
             }
+            // Always send to MoQ task - it will only publish if in MoQ loopback mode
+            let _ = moq_cmd_tx.send(MoqCommand::AudioFrame {
+                data: value.to_vec(),
+            });
         }
     }
 }

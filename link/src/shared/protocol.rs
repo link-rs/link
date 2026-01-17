@@ -123,6 +123,8 @@ pub enum MgmtToNet {
     StopMode,
     /// Send chat message (value: UTF-8 message)
     SendChatMessage,
+    /// Run MoQ loopback mode - publish audio to MoQ and subscribe to same track
+    RunMoqLoopback,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

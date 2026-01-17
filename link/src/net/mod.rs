@@ -413,7 +413,8 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
         | MgmtToNet::RunClock
         | MgmtToNet::RunBenchmark
         | MgmtToNet::StopMode
-        | MgmtToNet::SendChatMessage => {
+        | MgmtToNet::SendChatMessage
+        | MgmtToNet::RunMoqLoopback => {
             info!("net: moq command not supported in bare-metal firmware");
             to_mgmt
                 .must_write_tlv(NetToMgmt::Error, b"moq not supported")
