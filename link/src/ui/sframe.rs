@@ -70,13 +70,57 @@ pub enum Error {
 }
 
 /// Derived key material for SFrame encryption/decryption
-pub struct KeyMaterial {
+struct KeyMaterial {
     /// The key identifier
     kid: u64,
     /// The derived AEAD key (16 bytes for AES-128-GCM)
     key: [u8; KEY_SIZE],
     /// The derived salt for nonce formation (12 bytes)
     salt: [u8; NONCE_SIZE],
+}
+
+/// SFrame encryption/decryption state with automatic counter management
+pub struct SFrameState {
+    key_material: KeyMaterial,
+    counter: u64,
+}
+
+impl SFrameState {
+    /// Create a new SFrameState by deriving key material from a base key.
+    pub fn new(base_key: &[u8; KEY_SIZE], kid: u64) -> Self {
+        Self {
+            key_material: KeyMaterial::derive(base_key, kid),
+            counter: 0,
+        }
+    }
+
+    /// Reset the state with a new base key, resetting the counter to 0.
+    pub fn reset(&mut self, base_key: &[u8; KEY_SIZE], kid: u64) {
+        self.key_material = KeyMaterial::derive(base_key, kid);
+        self.counter = 0;
+    }
+
+    /// Protect a plaintext in place using SFrame.
+    ///
+    /// Automatically increments the internal counter after successful encryption.
+    pub fn protect<const N: usize>(
+        &mut self,
+        metadata: &[u8],
+        buf: &mut Vec<u8, N>,
+    ) -> Result<(), Error> {
+        self.key_material.protect(self.counter, metadata, buf)?;
+        self.counter += 1;
+        Ok(())
+    }
+
+    /// Unprotect an SFrame ciphertext in place.
+    pub fn unprotect<const N: usize>(
+        &self,
+        metadata: &[u8],
+        buf: &mut Vec<u8, N>,
+    ) -> Result<(), Error> {
+        self.key_material.unprotect(metadata, buf)
+    }
 }
 
 impl KeyMaterial {
@@ -482,6 +526,25 @@ mod tests {
         km.protect(ctr, metadata, &mut buf).unwrap();
 
         km.unprotect(metadata, &mut buf).unwrap();
+
+        assert_eq!(&buf[..], plaintext);
+    }
+
+    #[test]
+    fn test_sframe_state_round_trip() {
+        let base_key = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef,
+        ];
+        let plaintext = b"Hello, SFrame!";
+
+        let mut state = SFrameState::new(&base_key, 0);
+
+        let mut buf: Vec<u8, 128> = Vec::new();
+        buf.extend_from_slice(plaintext).unwrap();
+        state.protect(&[], &mut buf).unwrap();
+
+        state.unprotect(&[], &mut buf).unwrap();
 
         assert_eq!(&buf[..], plaintext);
     }

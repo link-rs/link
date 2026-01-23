@@ -3,10 +3,9 @@
 mod audio;
 mod eeprom;
 mod log;
-#[cfg(feature = "sframe")]
 mod sframe;
-#[cfg(feature = "sframe")]
-pub use sframe::KeyMaterial;
+
+pub use sframe::SFrameState;
 
 pub use audio::{
     AudioError, AudioSystem, Frame, StereoFrame, ENCODED_FRAME_SIZE, FRAME_SIZE, STEREO_FRAME_SIZE,
@@ -97,19 +96,18 @@ where
     // Shared loopback mode (atomic for cross-task access)
     let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
 
-    // Flag to indicate SFrame key needs re-derivation (set when key is changed via SetSFrameKey)
-    #[cfg(feature = "sframe")]
-    let sframe_key_dirty = portable_atomic::AtomicBool::new(true);
-
     let handle_task = async {
         info!("ui: ready to handle events");
 
         // Track which button is currently held (if any)
         let mut active_button: Option<Button> = None;
 
-        // SFrame state for encryption loopback
-        #[cfg(feature = "sframe")]
-        let mut sframe_state: Option<(sframe::KeyMaterial, u64)> = None; // (key_material, counter)
+        // SFrame state for encryption - initialize from EEPROM key at startup
+        let mut sframe_state = {
+            let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
+            let base_key = eeprom.get_sframe_key().unwrap_or([0u8; 16]);
+            sframe::SFrameState::new(&base_key, 0)
+        };
 
         loop {
             match channel.receive().await {
@@ -121,8 +119,7 @@ where
                         &mut i2c,
                         &mut delay,
                         &loopback_mode,
-                        #[cfg(feature = "sframe")]
-                        &sframe_key_dirty,
+                        &mut sframe_state,
                     )
                     .await
                 }
@@ -145,69 +142,52 @@ where
                         active_button = None;
                     }
                 }
-                Event::AudioFrame(frame) => {
-                    // Audio frame read from microphone (already A-law encoded)
-                    // Only process if a button is held
-                    if let Some(button) = active_button {
-                        let mode = LoopbackMode::try_from(loopback_mode.load(Ordering::Relaxed))
-                            .unwrap_or(LoopbackMode::Off);
+                Event::AudioFrame(frame) => 'audio: {
+                    let Some(button) = active_button else {
+                        break 'audio;
+                    };
 
-                        match mode {
-                            LoopbackMode::Off => {
-                                // Normal: send to NET
-                                let tlv_type = match button {
-                                    Button::A => UiToNet::AudioFrameA,
-                                    Button::B => UiToNet::AudioFrameB,
-                                };
-                                to_net.must_write_tlv(tlv_type, frame.as_bytes()).await;
-                            }
-                            LoopbackMode::Raw => {
-                                // Raw loopback is handled in audio_task, nothing to do here
-                            }
-                            LoopbackMode::Alaw => {
-                                // Alaw loopback: send directly to speaker (encode then decode)
-                                playback_channel.send(frame).await;
-                            }
-                            #[cfg(feature = "sframe")]
-                            LoopbackMode::Sframe => {
-                                // SFrame loopback: encrypt then decrypt
-                                // Re-derive key material if dirty or not yet initialized
-                                if sframe_state.is_none()
-                                    || sframe_key_dirty.load(Ordering::Relaxed)
-                                {
-                                    let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
-                                    if let Ok(base_key) = eeprom.get_sframe_key() {
-                                        let key_material = sframe::KeyMaterial::derive(&base_key, 0);
-                                        sframe_state = Some((key_material, 0));
-                                        sframe_key_dirty.store(false, Ordering::Relaxed);
-                                    }
-                                }
+                    let mode = LoopbackMode::try_from(loopback_mode.load(Ordering::Relaxed))
+                        .unwrap_or(LoopbackMode::Off);
 
-                                if let Some((ref key_material, ref mut counter)) = sframe_state {
-                                    // Copy frame to buffer for in-place encryption
-                                    let mut buf: heapless::Vec<u8, 256> = heapless::Vec::new();
-                                    if buf.extend_from_slice(frame.as_bytes()).is_ok() {
-                                        // Protect (encrypt)
-                                        if key_material.protect(*counter, &[], &mut buf).is_ok() {
-                                            *counter += 1;
-                                            // Unprotect (decrypt)
-                                            if key_material.unprotect(&[], &mut buf).is_ok() {
-                                                // Convert back to Frame and play
-                                                if let Some(decrypted_frame) = Frame::from_bytes(&buf) {
-                                                    playback_channel.send(decrypted_frame).await;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            #[cfg(not(feature = "sframe"))]
-                            LoopbackMode::Sframe => {
-                                // SFrame not enabled, fall back to Alaw loopback
-                                playback_channel.send(frame).await;
-                            }
-                        }
+                    // Raw loopback is handled in audio_task
+                    if mode == LoopbackMode::Raw {
+                        break 'audio;
                     }
+
+                    // Alaw loopback: play directly (no encryption)
+                    if mode == LoopbackMode::Alaw {
+                        playback_channel.send(frame).await;
+                        break 'audio;
+                    }
+
+                    // Encrypt the frame
+                    let mut buf: heapless::Vec<u8, 256> = heapless::Vec::new();
+                    let _ = buf.extend_from_slice(frame.as_bytes());
+                    if sframe_state.protect(&[], &mut buf).is_err() {
+                        break 'audio;
+                    }
+
+                    // SFrame loopback: decrypt and play locally
+                    if mode == LoopbackMode::Sframe {
+                        if sframe_state.unprotect(&[], &mut buf).is_ok() {
+                            if let Some(decrypted_frame) = Frame::from_bytes(&buf) {
+                                playback_channel.send(decrypted_frame).await;
+                            } else {
+                                tlv_log!(log_sender, "Failed to convert decrypted -> frame");
+                            }
+                        } else {
+                            tlv_log!(log_sender, "Failed to decrypt");
+                        }
+                        break 'audio;
+                    }
+
+                    // Normal: send encrypted frame to NET
+                    let tlv_type = match button {
+                        Button::A => UiToNet::AudioFrameA,
+                        Button::B => UiToNet::AudioFrameB,
+                    };
+                    to_net.must_write_tlv(tlv_type, &buf).await;
                 }
             }
 
@@ -334,7 +314,7 @@ async fn handle_mgmt<M, N, I, D>(
     i2c: &mut I,
     delay: &mut D,
     loopback_mode: &AtomicU8,
-    #[cfg(feature = "sframe")] sframe_key_dirty: &portable_atomic::AtomicBool,
+    sframe_state: &mut sframe::SFrameState,
 ) where
     M: WriteTlv<UiToMgmt>,
     N: WriteTlv<UiToNet>,
@@ -403,9 +383,8 @@ async fn handle_mgmt<M, N, I, D>(
                 to_mgmt.must_write_tlv(UiToMgmt::Error, b"eeprom").await;
                 return;
             }
-            // Mark SFrame key as dirty so it gets re-derived on next use
-            #[cfg(feature = "sframe")]
-            sframe_key_dirty.store(true, Ordering::Relaxed);
+            // Derive new key material and reset counter
+            sframe_state.reset(&key, 0);
             to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
         }
         MgmtToUi::SetLoopback => {
@@ -505,6 +484,7 @@ mod tests {
         };
 
         let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+        let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
             &mut to_mgmt,
@@ -512,6 +492,7 @@ mod tests {
             &mut i2c,
             &mut delay,
             &loopback_mode,
+            &mut sframe_state,
         )
         .await;
 
@@ -536,6 +517,7 @@ mod tests {
         };
 
         let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+        let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
             &mut to_mgmt,
@@ -543,6 +525,7 @@ mod tests {
             &mut i2c,
             &mut delay,
             &loopback_mode,
+            &mut sframe_state,
         )
         .await;
 
@@ -574,6 +557,7 @@ mod tests {
         };
 
         let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+        let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
             &mut to_mgmt,
@@ -581,6 +565,7 @@ mod tests {
             &mut i2c,
             &mut delay,
             &loopback_mode,
+            &mut sframe_state,
         )
         .await;
 
@@ -609,6 +594,7 @@ mod tests {
         };
 
         let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+        let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
             &mut to_mgmt,
@@ -616,6 +602,7 @@ mod tests {
             &mut i2c,
             &mut delay,
             &loopback_mode,
+            &mut sframe_state,
         )
         .await;
 
@@ -642,6 +629,7 @@ mod tests {
         };
 
         let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+        let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
             &mut to_mgmt,
@@ -649,6 +637,7 @@ mod tests {
             &mut i2c,
             &mut delay,
             &loopback_mode,
+            &mut sframe_state,
         )
         .await;
 
@@ -675,6 +664,7 @@ mod tests {
         };
 
         let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+        let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
             &mut to_mgmt,
@@ -682,6 +672,7 @@ mod tests {
             &mut i2c,
             &mut delay,
             &loopback_mode,
+            &mut sframe_state,
         )
         .await;
 
@@ -808,9 +799,14 @@ mod audio_streaming_tests {
             frames.len()
         );
 
-        // Each frame should be 160 bytes (20ms at 8kHz A-law)
+        // Each frame should be 177-178 bytes (160 A-law + 1-2 SFrame header + 16 auth tag)
+        // Header size varies: 1 byte when counter < 8, 2 bytes when counter >= 8
         for frame in frames.iter() {
-            assert_eq!(frame.len(), 160, "Frame should be 160 bytes");
+            assert!(
+                frame.len() >= 177 && frame.len() <= 178,
+                "Frame should be 177-178 bytes (encrypted), got {}",
+                frame.len()
+            );
         }
     }
 
@@ -929,9 +925,14 @@ mod audio_streaming_tests {
             frames.len()
         );
 
-        // Each frame should be 160 bytes (20ms at 8kHz A-law)
+        // Each frame should be 177-178 bytes (160 A-law + 1-2 SFrame header + 16 auth tag)
+        // Header size varies: 1 byte when counter < 8, 2 bytes when counter >= 8
         for frame in frames.iter() {
-            assert_eq!(frame.len(), 160, "Frame should be 160 bytes");
+            assert!(
+                frame.len() >= 177 && frame.len() <= 178,
+                "Frame should be 177-178 bytes (encrypted), got {}",
+                frame.len()
+            );
         }
     }
 
