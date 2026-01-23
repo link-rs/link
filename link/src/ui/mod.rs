@@ -173,11 +173,7 @@ where
                         if sframe_state.unprotect(&[], &mut buf).is_ok() {
                             if let Some(decrypted_frame) = Frame::from_bytes(&buf) {
                                 playback_channel.send(decrypted_frame).await;
-                            } else {
-                                tlv_log!(log_sender, "Failed to convert decrypted -> frame");
                             }
-                        } else {
-                            tlv_log!(log_sender, "Failed to decrypt");
                         }
                         break 'audio;
                     }
