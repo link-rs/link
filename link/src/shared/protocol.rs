@@ -2,6 +2,20 @@
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
+/// Loopback mode for audio testing on the UI chip.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum LoopbackMode {
+    /// No loopback - normal operation, audio sent to NET
+    #[default]
+    Off = 0,
+    /// Raw loopback - before A-law encoding (stereo PCM directly to speaker)
+    Raw = 1,
+    /// A-law loopback - after encoding, before SFrame (encode then decode)
+    Alaw = 2,
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum CtlToMgmt {
@@ -66,7 +80,7 @@ pub enum MgmtToUi {
     SetVersion,
     GetSFrameKey,
     SetSFrameKey,
-    /// Set loopback mode (1 byte: 0=off, 1=on)
+    /// Set loopback mode (1 byte: LoopbackMode)
     SetLoopback,
     /// Get loopback mode
     GetLoopback,
@@ -81,7 +95,7 @@ pub enum UiToMgmt {
     SFrameKey,
     Ack,
     Error,
-    /// Loopback mode status (1 byte: 0=off, 1=on)
+    /// Loopback mode status (1 byte: LoopbackMode)
     Loopback,
     /// Debug log message (UTF-8 string)
     Log,

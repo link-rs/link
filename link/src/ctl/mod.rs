@@ -7,8 +7,8 @@ extern crate alloc;
 pub mod stm;
 
 use crate::shared::{
-    CtlToMgmt, HEADER_SIZE, MAX_VALUE_SIZE, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, SYNC_WORD,
-    Tlv, UiToMgmt, WifiSsid,
+    CtlToMgmt, HEADER_SIZE, LoopbackMode, MAX_VALUE_SIZE, MgmtToCtl, MgmtToNet, MgmtToUi,
+    NetToMgmt, SYNC_WORD, Tlv, UiToMgmt, WifiSsid,
 };
 use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
 use espflash::flasher::{FlashData, FlashSettings, Flasher};
@@ -821,12 +821,11 @@ where
     }
 
     /// Set UI chip loopback mode.
-    /// When enabled, mic audio goes directly to speaker instead of to NET.
-    pub fn ui_set_loopback(&mut self, enabled: bool) -> Result<(), CtlError> {
+    pub fn ui_set_loopback(&mut self, mode: LoopbackMode) -> Result<(), CtlError> {
         write_tlv(
             &mut self.writer.ui(),
             MgmtToUi::SetLoopback,
-            &[enabled as u8],
+            &[mode as u8],
         )?;
         let tlv: Tlv<UiToMgmt> =
             read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
@@ -840,7 +839,7 @@ where
     }
 
     /// Get UI chip loopback mode.
-    pub fn ui_get_loopback(&mut self) -> Result<bool, CtlError> {
+    pub fn ui_get_loopback(&mut self) -> Result<LoopbackMode, CtlError> {
         write_tlv(&mut self.writer.ui(), MgmtToUi::GetLoopback, &[])?;
         let tlv: Tlv<UiToMgmt> =
             read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
@@ -850,7 +849,8 @@ where
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        Ok(tlv.value.first().copied().unwrap_or(0) != 0)
+        let mode_byte = tlv.value.first().copied().unwrap_or(0);
+        Ok(LoopbackMode::try_from(mode_byte).unwrap_or(LoopbackMode::Off))
     }
 
     /// Set NET chip loopback mode.

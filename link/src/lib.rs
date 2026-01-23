@@ -29,7 +29,7 @@ pub use shared::uart_config;
 
 // Re-export protocol types
 pub use shared::protocol::{
-    CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, NetToUi, UiToMgmt, UiToNet,
+    CtlToMgmt, LoopbackMode, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, NetToUi, UiToMgmt, UiToNet,
 };
 
 // Re-export logging macros (crate-internal, no-op when defmt disabled)

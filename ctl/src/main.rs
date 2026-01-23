@@ -130,7 +130,7 @@ enum UiAction {
 
     Loopback {
         #[command(subcommand)]
-        action: Option<GetSetBool>,
+        action: Option<LoopbackAction>,
     },
 
     Reset {
@@ -178,6 +178,15 @@ enum GetSetString {
     Set {
         value: String,
     },
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+enum LoopbackAction {
+    #[default]
+    Get,
+    Off,
+    Raw,
+    Alaw,
 }
 
 #[derive(Debug, Clone, Subcommand)]

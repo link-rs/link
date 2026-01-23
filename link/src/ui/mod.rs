@@ -7,15 +7,15 @@ mod log;
 mod sframe;
 
 pub use audio::{
-    AudioError, AudioSystem, ENCODED_FRAME_SIZE, FRAME_SIZE, Frame, STEREO_FRAME_SIZE, StereoFrame,
+    AudioError, AudioSystem, Frame, StereoFrame, ENCODED_FRAME_SIZE, FRAME_SIZE, STEREO_FRAME_SIZE,
 };
 pub use eeprom::Eeprom;
 pub use log::{LogMessage, LogSender, MAX_LOG_SIZE};
 
 use crate::info;
 use crate::shared::{
-    Channel, Color, CriticalSectionRawMutex, Led, MgmtToUi, NetToUi, Sender, Tlv, UiToMgmt,
-    UiToNet, WriteTlv, read_tlv_loop,
+    read_tlv_loop, Channel, Color, CriticalSectionRawMutex, Led, LoopbackMode, MgmtToUi, NetToUi,
+    Sender, Tlv, UiToMgmt, UiToNet, WriteTlv,
 };
 use crate::tlv_log;
 use embedded_hal::delay::DelayNs;
@@ -23,6 +23,7 @@ use embedded_hal::digital::StatefulOutputPin;
 use embedded_hal::i2c::I2c;
 use embedded_hal_async::digital::Wait;
 use embedded_io_async::{Read, Write};
+use portable_atomic::{AtomicU8, Ordering};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -91,13 +92,14 @@ where
     let log_channel: Channel<CriticalSectionRawMutex, LogMessage, LOG_QUEUE_SIZE> = Channel::new();
     let log_sender = log_channel.sender();
 
+    // Shared loopback mode (atomic for cross-task access)
+    let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+
     let handle_task = async {
         info!("ui: ready to handle events");
 
         // Track which button is currently held (if any)
         let mut active_button: Option<Button> = None;
-        // Loopback mode: mic audio goes directly to speaker instead of NET
-        let mut loopback = false;
 
         loop {
             match channel.receive().await {
@@ -108,7 +110,7 @@ where
                         &mut to_net,
                         &mut i2c,
                         &mut delay,
-                        &mut loopback,
+                        &loopback_mode,
                     )
                     .await
                 }
@@ -132,18 +134,36 @@ where
                     }
                 }
                 Event::AudioFrame(frame) => {
-                    // Audio frame read from microphone
+                    // Audio frame read from microphone (already A-law encoded)
+                    // Only process if a button is held
                     if let Some(button) = active_button {
-                        if loopback {
-                            // Loopback: send directly to speaker
-                            playback_channel.send(frame).await;
-                        } else {
-                            // Normal: send to NET
-                            let tlv_type = match button {
-                                Button::A => UiToNet::AudioFrameA,
-                                Button::B => UiToNet::AudioFrameB,
-                            };
-                            to_net.must_write_tlv(tlv_type, frame.as_bytes()).await;
+                        // XXX(RLB) This works
+                        // playback_channel.send(frame).await;
+
+                        let mode = LoopbackMode::try_from(loopback_mode.load(Ordering::Relaxed))
+                            .unwrap_or(LoopbackMode::Off);
+
+                        use core::fmt::Write;
+                        let mut buf = crate::ui::LogMessage::new();
+                        let _ = core::write!(buf, "LoopbackMode: {:?}", mode);
+                        to_mgmt.must_write_tlv(UiToMgmt::Log, buf.as_bytes()).await;
+
+                        match mode {
+                            LoopbackMode::Off => {
+                                // Normal: send to NET
+                                let tlv_type = match button {
+                                    Button::A => UiToNet::AudioFrameA,
+                                    Button::B => UiToNet::AudioFrameB,
+                                };
+                                to_net.must_write_tlv(tlv_type, frame.as_bytes()).await;
+                            }
+                            LoopbackMode::Raw => {
+                                // Raw loopback is handled in audio_task, nothing to do here
+                            }
+                            LoopbackMode::Alaw => {
+                                // Alaw loopback: send directly to speaker (encode then decode)
+                                playback_channel.send(frame).await;
+                            }
                         }
                     }
                 }
@@ -175,12 +195,31 @@ where
                 .await;
         }
 
+        // Buffer for raw loopback (previous frame's rx becomes next frame's tx)
+        let mut raw_loopback_frame = StereoFrame::default();
+
         loop {
+            let mode = LoopbackMode::try_from(loopback_mode.load(Ordering::Relaxed))
+                .unwrap_or(LoopbackMode::Off);
+
+            // Raw loopback: bypass encode/decode, just echo stereo directly
+            if mode == LoopbackMode::Raw {
+                let mut rx_stereo = StereoFrame::default();
+                if audio_system
+                    .read_write(&raw_loopback_frame, &mut rx_stereo)
+                    .await
+                    .is_ok()
+                {
+                    raw_loopback_frame = rx_stereo;
+                }
+                continue;
+            }
+
             // Wait for a frame with timeout (25% of 80ms frame time = 20ms)
             // This gives frames a chance to arrive while limiting latency
             #[cfg(feature = "audio-buffer")]
             let tx_stereo = {
-                use embassy_time::{Duration, with_timeout};
+                use embassy_time::{with_timeout, Duration};
                 match with_timeout(Duration::from_millis(20), playback_channel.receive()).await {
                     Ok(frame) => frame.decode_to_stereo(),
                     Err(_timeout) => StereoFrame::default(),
@@ -253,7 +292,7 @@ async fn handle_mgmt<M, N, I, D>(
     to_net: &mut N,
     i2c: &mut I,
     delay: &mut D,
-    loopback: &mut bool,
+    loopback_mode: &AtomicU8,
 ) where
     M: WriteTlv<UiToMgmt>,
     N: WriteTlv<UiToNet>,
@@ -325,16 +364,16 @@ async fn handle_mgmt<M, N, I, D>(
             to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
         }
         MgmtToUi::SetLoopback => {
-            let enabled = tlv.value.first().copied().unwrap_or(0) != 0;
-            info!("ui: set loopback = {}", enabled);
-            *loopback = enabled;
+            let mode_byte = tlv.value.first().copied().unwrap_or(0);
+            let mode = LoopbackMode::try_from(mode_byte).unwrap_or(LoopbackMode::Off);
+            info!("ui: set loopback = {:?}", mode);
+            loopback_mode.store(mode as u8, Ordering::Relaxed);
             to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
         }
         MgmtToUi::GetLoopback => {
-            info!("ui: get loopback = {}", *loopback);
-            to_mgmt
-                .must_write_tlv(UiToMgmt::Loopback, &[*loopback as u8])
-                .await;
+            let mode = loopback_mode.load(Ordering::Relaxed);
+            info!("ui: get loopback = {}", mode);
+            to_mgmt.must_write_tlv(UiToMgmt::Loopback, &[mode]).await;
         }
     }
 }
@@ -365,7 +404,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::mocks::{MockDelay, mock_i2c_with_eeprom};
+    use crate::shared::mocks::{mock_i2c_with_eeprom, MockDelay};
     use crate::shared::{Tlv, Value};
 
     /// Mock writer that captures TLVs
@@ -420,14 +459,14 @@ mod tests {
             value: Value::new(),
         };
 
-        let mut loopback = false;
+        let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
         handle_mgmt(
             tlv,
             &mut to_mgmt,
             &mut to_net,
             &mut i2c,
             &mut delay,
-            &mut loopback,
+            &loopback_mode,
         )
         .await;
 
@@ -451,14 +490,14 @@ mod tests {
             value,
         };
 
-        let mut loopback = false;
+        let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
         handle_mgmt(
             tlv,
             &mut to_mgmt,
             &mut to_net,
             &mut i2c,
             &mut delay,
-            &mut loopback,
+            &loopback_mode,
         )
         .await;
 
@@ -489,14 +528,14 @@ mod tests {
             value: Value::new(),
         };
 
-        let mut loopback = false;
+        let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
         handle_mgmt(
             tlv,
             &mut to_mgmt,
             &mut to_net,
             &mut i2c,
             &mut delay,
-            &mut loopback,
+            &loopback_mode,
         )
         .await;
 
@@ -524,14 +563,14 @@ mod tests {
             value,
         };
 
-        let mut loopback = false;
+        let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
         handle_mgmt(
             tlv,
             &mut to_mgmt,
             &mut to_net,
             &mut i2c,
             &mut delay,
-            &mut loopback,
+            &loopback_mode,
         )
         .await;
 
@@ -557,14 +596,14 @@ mod tests {
             value,
         };
 
-        let mut loopback = false;
+        let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
         handle_mgmt(
             tlv,
             &mut to_mgmt,
             &mut to_net,
             &mut i2c,
             &mut delay,
-            &mut loopback,
+            &loopback_mode,
         )
         .await;
 
@@ -590,14 +629,14 @@ mod tests {
             value,
         };
 
-        let mut loopback = false;
+        let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
         handle_mgmt(
             tlv,
             &mut to_mgmt,
             &mut to_net,
             &mut i2c,
             &mut delay,
-            &mut loopback,
+            &loopback_mode,
         )
         .await;
 
@@ -612,11 +651,11 @@ mod tests {
 #[cfg(test)]
 mod audio_streaming_tests {
     use super::*;
-    use crate::shared::ReadTlv;
     use crate::shared::mocks::{
-        ControllableButton, MockAudioStream, MockButton, MockDelay, mock_i2c_with_eeprom,
-        mock_led_pins,
+        mock_i2c_with_eeprom, mock_led_pins, ControllableButton, MockAudioStream, MockButton,
+        MockDelay,
     };
+    use crate::shared::ReadTlv;
     use embedded_io_adapters::futures_03::FromFutures;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -1010,7 +1049,7 @@ mod audio_streaming_tests {
     #[tokio::test]
     async fn net_audio_frame_plays_out() {
         use crate::shared::mocks::CapturingAudioStream;
-        use crate::shared::{MIN_START_LEVEL, WriteTlv};
+        use crate::shared::{WriteTlv, MIN_START_LEVEL};
         use audio_codec_algorithms::{decode_alaw, encode_alaw};
 
         let (ui_to_mgmt, _mgmt_from_ui) = channel();
@@ -1089,7 +1128,7 @@ mod audio_streaming_tests {
     #[tokio::test]
     async fn multiple_net_audio_frames_play_in_order() {
         use crate::shared::mocks::CapturingAudioStream;
-        use crate::shared::{MIN_START_LEVEL, WriteTlv};
+        use crate::shared::{WriteTlv, MIN_START_LEVEL};
         use audio_codec_algorithms::{decode_alaw, encode_alaw};
 
         let (ui_to_mgmt, _mgmt_from_ui) = channel();

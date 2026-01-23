@@ -1,6 +1,7 @@
 //! UI chip command handlers.
 
-use crate::{App, GetSetBool, GetSetHex, GetSetU32, UiAction};
+use crate::{App, GetSetHex, GetSetU32, LoopbackAction, UiAction};
+use link::LoopbackMode;
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::{FlashPhase, SetTimeout};
 use std::io::Write;
@@ -162,19 +163,24 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
             }
         },
         UiAction::Loopback { action } => match action.unwrap_or_default() {
-            GetSetBool::Get => {
-                let enabled = app.ui_get_loopback()?;
-                println!("{}", enabled);
+            LoopbackAction::Get => {
+                let mode = app.ui_get_loopback()?;
+                println!("{:?}", mode);
                 Ok(())
             }
-            GetSetBool::Set => {
-                app.ui_set_loopback(true)?;
-                println!("UI loopback enabled");
+            LoopbackAction::Off => {
+                app.ui_set_loopback(LoopbackMode::Off)?;
+                println!("UI loopback: off");
                 Ok(())
             }
-            GetSetBool::Unset => {
-                app.ui_set_loopback(false)?;
-                println!("UI loopback disabled");
+            LoopbackAction::Raw => {
+                app.ui_set_loopback(LoopbackMode::Raw)?;
+                println!("UI loopback: raw");
+                Ok(())
+            }
+            LoopbackAction::Alaw => {
+                app.ui_set_loopback(LoopbackMode::Alaw)?;
+                println!("UI loopback: alaw");
                 Ok(())
             }
         },
