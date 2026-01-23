@@ -183,6 +183,11 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
                 println!("UI loopback: alaw");
                 Ok(())
             }
+            LoopbackAction::Sframe => {
+                app.ui_set_loopback(LoopbackMode::Sframe)?;
+                println!("UI loopback: sframe");
+                Ok(())
+            }
         },
         UiAction::Reset { action } => match action.as_deref() {
             Some("hold") => {

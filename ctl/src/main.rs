@@ -187,6 +187,7 @@ enum LoopbackAction {
     Off,
     Raw,
     Alaw,
+    Sframe,
 }
 
 #[derive(Debug, Clone, Subcommand)]

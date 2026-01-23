@@ -990,7 +990,7 @@ where
     /// Run WebSocket echo test to measure bidirectional throughput.
     ///
     /// This test:
-    /// 1. Sends 50 packets (640 bytes each) at 20ms intervals (50 fps)
+    /// 1. Sends 50 packets (160 bytes each) at 20ms intervals (50 fps)
     /// 2. Expects the echo server to return each packet
     /// 3. Measures jitter before and after the jitter buffer
     ///

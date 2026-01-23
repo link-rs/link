@@ -25,7 +25,8 @@ use embedded_storage::{ReadStorage, Storage};
 use heapless::{String, Vec};
 
 /// Maximum size for WebSocket message payload.
-pub const MAX_WS_PAYLOAD: usize = 640;
+/// Matches the audio frame size (160 bytes = 20ms at 8kHz).
+pub const MAX_WS_PAYLOAD: usize = 160;
 
 /// Number of packets to send in echo test (1 second at 20ms interval = 50 fps).
 pub const ECHO_TEST_PACKET_COUNT: usize = 50;
@@ -943,7 +944,7 @@ mod tests {
 
         // Simulate audio frame from UI (button A) with loopback disabled
         let audio_data: heapless::Vec<u8, { crate::shared::MAX_VALUE_SIZE }> =
-            heapless::Vec::from_slice(&[0xAA; 640]).unwrap();
+            heapless::Vec::from_slice(&[0xAA; 160]).unwrap();
         let tlv = Tlv {
             tlv_type: UiToNet::AudioFrameA,
             value: audio_data,
@@ -956,7 +957,7 @@ mod tests {
         // Should have queued a WsCommand::Send
         let cmd = channel.receiver().try_receive().unwrap();
         match cmd {
-            WsCommand::Send(data) => assert_eq!(data.len(), 640),
+            WsCommand::Send(data) => assert_eq!(data.len(), 160),
             _ => panic!("Expected WsCommand::Send"),
         }
     }
@@ -968,7 +969,7 @@ mod tests {
 
         // Simulate audio frame from UI (button A) with loopback enabled
         let audio_data: heapless::Vec<u8, { crate::shared::MAX_VALUE_SIZE }> =
-            heapless::Vec::from_slice(&[0xAA; 640]).unwrap();
+            heapless::Vec::from_slice(&[0xAA; 160]).unwrap();
         let tlv = Tlv {
             tlv_type: UiToNet::AudioFrameA,
             value: audio_data,
@@ -978,7 +979,7 @@ mod tests {
 
         // Should return loopback audio when loopback is enabled
         assert!(result.is_some());
-        assert_eq!(result.unwrap().len(), 640);
+        assert_eq!(result.unwrap().len(), 160);
         // Should NOT have queued a WsCommand
         assert!(channel.receiver().try_receive().is_err());
     }

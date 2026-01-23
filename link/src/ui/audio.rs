@@ -16,7 +16,8 @@ use embedded_hal::i2c::I2c;
 
 /// Size of an encoded audio frame in bytes (A-law mono samples).
 /// This is the transmitted frame size over the network.
-pub const ENCODED_FRAME_SIZE: usize = 640;
+/// At 8kHz sample rate, 160 samples = 20ms of audio.
+pub const ENCODED_FRAME_SIZE: usize = 160;
 
 /// Size of stereo I2S frame in 16-bit samples.
 /// Contains ENCODED_FRAME_SIZE stereo pairs (L/R interleaved).

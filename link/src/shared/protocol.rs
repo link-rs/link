@@ -14,6 +14,8 @@ pub enum LoopbackMode {
     Raw = 1,
     /// A-law loopback - after encoding, before SFrame (encode then decode)
     Alaw = 2,
+    /// SFrame loopback - full encryption round-trip (encode → encrypt → decrypt → decode)
+    Sframe = 3,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
