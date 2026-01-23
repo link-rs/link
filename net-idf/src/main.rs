@@ -1250,7 +1250,7 @@ fn try_read_tlv(
     pos: &mut usize,
 ) -> Option<(u16, heapless::Vec<u8, MAX_VALUE_SIZE>)> {
     // Try to read available bytes
-    let mut read_buf = [0u8; 64];
+    let mut read_buf = [0u8; 512];
     let len = uart.read(&mut read_buf, 0).unwrap_or(0);
     if len > 0 {
         let space = buf.len() - *pos;
@@ -1463,11 +1463,12 @@ fn handle_ui_message(
             if loopback {
                 // Local loopback - forward directly to UI
                 write_tlv(ui_uart, NetToUi::AudioFrame, value);
+            } else {
+                // Only send to MoQ task when not in local loopback mode
+                let _ = moq_cmd_tx.send(MoqCommand::AudioFrame {
+                    data: value.to_vec(),
+                });
             }
-            // Always send to MoQ task - it will only publish if in MoQ loopback mode
-            let _ = moq_cmd_tx.send(MoqCommand::AudioFrame {
-                data: value.to_vec(),
-            });
         }
     }
 }
