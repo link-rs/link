@@ -15,8 +15,8 @@ pub use log::{LogMessage, LogSender, MAX_LOG_SIZE};
 
 use crate::info;
 use crate::shared::{
-    read_tlv_loop, Channel, Color, CriticalSectionRawMutex, Led, LoopbackMode, MgmtToUi, NetToUi,
-    Sender, Tlv, UiToMgmt, UiToNet, WriteTlv,
+    chunk, read_tlv_loop, Channel, ChannelId, Color, CriticalSectionRawMutex, Led, LoopbackMode,
+    MgmtToUi, NetToUi, Sender, Tlv, UiToMgmt, UiToNet, WriteTlv,
 };
 use crate::tlv_log;
 use embedded_hal::delay::DelayNs;
@@ -33,12 +33,16 @@ pub enum Button {
     B,
 }
 
+/// Buffer capacity for audio frames through the event channel.
+/// Sized for: audio (160) + chunk header (10) + SFrame header (17) + tag (16) = 203
+const AUDIO_BUF_SIZE: usize = 256;
+
 enum Event {
     Mgmt(Tlv<MgmtToUi>),
     Net(Tlv<NetToUi>),
     ButtonDown(Button),
     ButtonUp(Button),
-    AudioFrame(Frame),
+    AudioFrame(heapless::Vec<u8, AUDIO_BUF_SIZE>),
     AudioError(AudioError),
 }
 
@@ -127,11 +131,25 @@ where
                 Event::Net(tlv) => {
                     // Handle audio frames specially - they need decryption
                     if tlv.tlv_type == NetToUi::AudioFrame {
+                        // New hactar format: channel_id (1 byte) + encrypted chunk
+                        if tlv.value.len() < 2 {
+                            continue;
+                        }
+
+                        // Extract channel_id (plaintext first byte)
+                        let _channel_id = tlv.value[0];
+
+                        // Decrypt the rest (SFrame header + encrypted chunk + auth tag)
                         let mut buf: heapless::Vec<u8, 256> = heapless::Vec::new();
-                        let _ = buf.extend_from_slice(&tlv.value);
+                        let _ = buf.extend_from_slice(&tlv.value[1..]);
                         if sframe_state.unprotect(&[], &mut buf).is_ok() {
-                            if let Some(frame) = Frame::from_bytes(&buf) {
-                                playback_channel.send(frame).await;
+                            // Parse chunk to extract audio data
+                            if let Some(parsed) = chunk::parse_chunk(&buf) {
+                                let audio_data = &buf[parsed.audio_offset
+                                    ..parsed.audio_offset + parsed.audio_length];
+                                if let Some(frame) = Frame::from_bytes(audio_data) {
+                                    playback_channel.send(frame).await;
+                                }
                             }
                         }
                     } else if let Some(frame) = handle_net(tlv, &mut to_mgmt).await {
@@ -186,7 +204,8 @@ where
                             .await;
                     }
                 }
-                Event::AudioFrame(frame) => 'audio: {
+                Event::AudioFrame(mut buf) => 'audio: {
+                    // buf contains 160 bytes of A-law encoded audio from audio_task
                     let Some(button) = active_button else {
                         break 'audio;
                     };
@@ -201,15 +220,36 @@ where
 
                     // Alaw loopback: play directly (no encryption)
                     if mode == LoopbackMode::Alaw {
-                        // XXX(RLB) Not sure why this yield is necessary, but it seems to be.
-                        embassy_futures::yield_now().await;
-                        playback_channel.send(frame).await;
+                        to_mgmt.must_write_tlv(UiToMgmt::Log, b"wtf").await;
+                        if let Some(frame) = Frame::from_bytes(&buf) {
+                            // XXX(RLB) Not sure why this yield is necessary, but it seems to be.
+                            embassy_futures::yield_now().await;
+                            playback_channel.send(frame).await;
+                        }
                         break 'audio;
                     }
 
-                    // Encrypt the frame
-                    let mut buf: heapless::Vec<u8, 256> = heapless::Vec::new();
-                    let _ = buf.extend_from_slice(frame.as_bytes());
+                    /*
+                    // Determine channel based on button
+                    let channel_id = match button {
+                        Button::A => ChannelId::Ptt,
+                        Button::B => ChannelId::PttAi,
+                    };
+
+                    // Prepend chunk header in-place based on channel type
+                    let header_ok = match channel_id {
+                        ChannelId::Ptt => chunk::prepend_media_header(&mut buf, false).is_ok(),
+                        ChannelId::PttAi => {
+                            // TODO: Track request_id for AI requests
+                            chunk::prepend_ai_request_header(&mut buf, 0, false).is_ok()
+                        }
+                        ChannelId::ChatAi => false, // Not used for audio
+                    };
+                    if !header_ok {
+                        break 'audio;
+                    }
+
+                    // Encrypt in-place (prepends SFrame header, appends auth tag)
                     if sframe_state.protect(&[], &mut buf).is_err() {
                         break 'audio;
                     }
@@ -217,19 +257,25 @@ where
                     // SFrame loopback: decrypt and play locally
                     if mode == LoopbackMode::Sframe {
                         if sframe_state.unprotect(&[], &mut buf).is_ok() {
-                            if let Some(decrypted_frame) = Frame::from_bytes(&buf) {
-                                playback_channel.send(decrypted_frame).await;
+                            if let Some(parsed) = chunk::parse_chunk(&buf) {
+                                let audio_data =
+                                    &buf[parsed.audio_offset..parsed.audio_offset + parsed.audio_length];
+                                if let Some(frame) = Frame::from_bytes(audio_data) {
+                                    // XXX(RLB) Same yield needed as Alaw loopback
+                                    embassy_futures::yield_now().await;
+                                    playback_channel.send(frame).await;
+                                }
                             }
                         }
                         break 'audio;
                     }
 
-                    // Normal: send encrypted frame to NET
-                    let tlv_type = match button {
-                        Button::A => UiToNet::AudioFrameA,
-                        Button::B => UiToNet::AudioFrameB,
-                    };
-                    to_net.must_write_tlv(tlv_type, &buf).await;
+                    // Send to NET: channel_id (plaintext) + encrypted chunk
+                    let channel_id_byte = [channel_id as u8];
+                    to_net
+                        .must_write_tlv_parts(UiToNet::AudioFrame, &[&channel_id_byte, &buf])
+                        .await;
+                    */
                 }
             }
 
@@ -294,11 +340,13 @@ where
             // Do the I2S read/write cycle
             match audio_system.read_write(&tx_stereo, &mut rx_stereo).await {
                 Ok(_) => {
-                    // Encode stereo to A-law mono for transmission
-                    let encoded_frame = rx_stereo.encode();
+                    // Encode stereo to A-law mono into a buffer that can be extended
+                    // in handle_task with chunk headers and encryption
+                    let mut buf: heapless::Vec<u8, AUDIO_BUF_SIZE> = heapless::Vec::new();
+                    rx_stereo.encode_into(&mut buf);
                     // Try to send the recorded frame - drop if channel is full
                     // This prevents blocking the audio task if event handler is slow
-                    let _ = channel.try_send(Event::AudioFrame(encoded_frame));
+                    let _ = channel.try_send(Event::AudioFrame(buf));
                 }
                 Err(e) => {
                     // Report I2S error for diagnostics
@@ -748,6 +796,7 @@ mod audio_streaming_tests {
     }
 
     /// Collector for TLVs received from the UI chip.
+    /// Routes frames to frames_a (Ptt) or frames_b (PttAi) based on channel_id.
     struct TlvCollector {
         frames_a: Arc<Mutex<Vec<Vec<u8>>>>,
         frames_b: Arc<Mutex<Vec<Vec<u8>>>>,
@@ -770,16 +819,32 @@ mod audio_streaming_tests {
         }
 
         async fn collect_from(&self, mut reader: Reader) {
-            use crate::shared::Tlv;
+            use crate::shared::{ChannelId, Tlv};
             loop {
                 let result: Result<Option<Tlv<UiToNet>>, _> = reader.read_tlv().await;
                 if let Ok(Some(tlv)) = result {
                     match tlv.tlv_type {
+                        // Legacy formats (backwards compatibility)
                         UiToNet::AudioFrameA => {
                             self.frames_a.lock().unwrap().push(tlv.value.to_vec());
                         }
                         UiToNet::AudioFrameB => {
                             self.frames_b.lock().unwrap().push(tlv.value.to_vec());
+                        }
+                        // New hactar format: channel_id (1 byte) + encrypted chunk
+                        UiToNet::AudioFrame => {
+                            if let Some(&channel_id) = tlv.value.first() {
+                                let payload = tlv.value[1..].to_vec();
+                                match ChannelId::try_from(channel_id) {
+                                    Ok(ChannelId::Ptt) => {
+                                        self.frames_a.lock().unwrap().push(payload);
+                                    }
+                                    Ok(ChannelId::PttAi) => {
+                                        self.frames_b.lock().unwrap().push(payload);
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -841,12 +906,13 @@ mod audio_streaming_tests {
             frames.len()
         );
 
-        // Each frame should be 177-178 bytes (160 A-law + 1-2 SFrame header + 16 auth tag)
-        // Header size varies: 1 byte when counter < 8, 2 bytes when counter >= 8
+        // Each frame should be 183-184 bytes:
+        // 6 (chunk header) + 160 (A-law audio) + 1-2 (SFrame header) + 16 (auth tag)
+        // SFrame header size varies: 1 byte when counter < 8, 2 bytes when counter >= 8
         for frame in frames.iter() {
             assert!(
-                frame.len() >= 177 && frame.len() <= 178,
-                "Frame should be 177-178 bytes (encrypted), got {}",
+                frame.len() >= 183 && frame.len() <= 184,
+                "Frame should be 183-184 bytes (encrypted chunk), got {}",
                 frame.len()
             );
         }
@@ -959,7 +1025,7 @@ mod audio_streaming_tests {
             } => {}
         }
 
-        // Should have received AudioFrameB TLVs
+        // Should have received AudioFrameB TLVs (PttAi channel)
         let frames = frames_b.lock().unwrap();
         assert!(
             frames.len() >= 2,
@@ -967,12 +1033,13 @@ mod audio_streaming_tests {
             frames.len()
         );
 
-        // Each frame should be 177-178 bytes (160 A-law + 1-2 SFrame header + 16 auth tag)
-        // Header size varies: 1 byte when counter < 8, 2 bytes when counter >= 8
+        // Each frame should be 187-188 bytes:
+        // 10 (AIRequest chunk header) + 160 (A-law audio) + 1-2 (SFrame header) + 16 (auth tag)
+        // SFrame header size varies: 1 byte when counter < 8, 2 bytes when counter >= 8
         for frame in frames.iter() {
             assert!(
-                frame.len() >= 177 && frame.len() <= 178,
-                "Frame should be 177-178 bytes (encrypted), got {}",
+                frame.len() >= 187 && frame.len() <= 188,
+                "Frame should be 187-188 bytes (encrypted AIRequest chunk), got {}",
                 frame.len()
             );
         }
@@ -1134,12 +1201,30 @@ mod audio_streaming_tests {
         );
     }
 
-    /// Helper to encrypt a frame for testing (uses default EEPROM key of all 0xFF)
-    fn encrypt_frame_for_test(frame: &crate::ui::Frame, sframe: &mut sframe::SFrameState) -> heapless::Vec<u8, 256> {
-        let mut buf: heapless::Vec<u8, 256> = heapless::Vec::new();
-        buf.extend_from_slice(frame.as_bytes()).unwrap();
-        sframe.protect(&[], &mut buf).unwrap();
-        buf
+    /// Helper to encrypt a frame for testing in hactar format.
+    /// Returns: channel_id (1 byte) + encrypted chunk (SFrame header + encrypted data + auth tag)
+    fn encrypt_frame_for_test(
+        frame: &crate::ui::Frame,
+        sframe: &mut sframe::SFrameState,
+    ) -> heapless::Vec<u8, 256> {
+        use crate::shared::{chunk, ChannelId};
+
+        // Serialize frame into chunk format
+        let mut chunk_buf = [0u8; 200];
+        let chunk_len = chunk::serialize_media_chunk(frame.as_bytes(), false, &mut chunk_buf);
+
+        // Encrypt the chunk
+        let mut encrypted: heapless::Vec<u8, 256> = heapless::Vec::new();
+        encrypted
+            .extend_from_slice(&chunk_buf[..chunk_len])
+            .unwrap();
+        sframe.protect(&[], &mut encrypted).unwrap();
+
+        // Build output: channel_id (plaintext) + encrypted chunk
+        let mut out: heapless::Vec<u8, 256> = heapless::Vec::new();
+        out.push(ChannelId::Ptt as u8).unwrap();
+        out.extend_from_slice(&encrypted).unwrap();
+        out
     }
 
     #[tokio::test]

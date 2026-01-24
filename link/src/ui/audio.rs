@@ -13,6 +13,7 @@
 
 use audio_codec_algorithms::{decode_alaw, encode_alaw};
 use embedded_hal::i2c::I2c;
+use heapless::Vec;
 
 /// Size of an encoded audio frame in bytes (A-law mono samples).
 /// This is the transmitted frame size over the network.
@@ -49,6 +50,17 @@ impl StereoFrame {
             encoded.0[i] = encode_alaw(sample);
         }
         encoded
+    }
+
+    /// Encode directly into a heapless::Vec buffer.
+    /// The buffer is cleared and filled with ENCODED_FRAME_SIZE A-law bytes.
+    pub fn encode_into<const N: usize>(&self, buf: &mut heapless::Vec<u8, N>) {
+        buf.clear();
+        for i in 0..ENCODED_FRAME_SIZE {
+            // Left channel (even indices) contains the microphone input
+            let sample = self.0[i * 2] as i16;
+            let _ = buf.push(encode_alaw(sample));
+        }
     }
 
     /// Create from mono samples by duplicating to stereo.

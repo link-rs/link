@@ -190,19 +190,41 @@ mod async_tlv {
     }
 
     #[allow(async_fn_in_trait)]
-    pub trait WriteTlv<T: Into<u16>> {
+    pub trait WriteTlv<T: Into<u16> + Copy> {
         type Error: core::fmt::Debug;
 
         async fn write_tlv(&mut self, tlv_type: T, value: &[u8]) -> Result<(), Self::Error>;
 
+        /// Write a TLV from multiple data segments without concatenating them first.
+        /// The total value length is the sum of all segment lengths.
+        ///
+        /// Default implementation concatenates parts into a temporary buffer.
+        /// Implementations for actual writers should override to write parts directly.
+        async fn write_tlv_parts(
+            &mut self,
+            tlv_type: T,
+            parts: &[&[u8]],
+        ) -> Result<(), Self::Error> {
+            // Default: concatenate into a buffer and call write_tlv
+            let mut buf: Vec<u8, MAX_VALUE_SIZE> = Vec::new();
+            for part in parts {
+                let _ = buf.extend_from_slice(part);
+            }
+            self.write_tlv(tlv_type, &buf).await
+        }
+
         async fn must_write_tlv(&mut self, tlv_type: T, value: &[u8]) {
             self.write_tlv(tlv_type, value).await.unwrap()
+        }
+
+        async fn must_write_tlv_parts(&mut self, tlv_type: T, parts: &[&[u8]]) {
+            self.write_tlv_parts(tlv_type, parts).await.unwrap()
         }
     }
 
     impl<T, W> WriteTlv<T> for W
     where
-        T: Into<u16>,
+        T: Into<u16> + Copy,
         W: Write,
     {
         type Error = W::Error;
@@ -218,6 +240,30 @@ mod async_tlv {
             let header = encode_header(type_val, value.len());
             self.write_all(&header).await?;
             self.write_all(&value).await?;
+            self.flush().await?;
+            trace!("write complete");
+            Ok(())
+        }
+
+        async fn write_tlv_parts(
+            &mut self,
+            tlv_type: T,
+            parts: &[&[u8]],
+        ) -> Result<(), W::Error> {
+            let type_val: u16 = tlv_type.into();
+            let total_len: usize = parts.iter().map(|p| p.len()).sum();
+            trace!(
+                "write sync + type={:#06x}, length={:#x} (parts={})",
+                type_val,
+                total_len,
+                parts.len()
+            );
+            self.write_all(&SYNC_WORD).await?;
+            let header = encode_header(type_val, total_len);
+            self.write_all(&header).await?;
+            for part in parts {
+                self.write_all(part).await?;
+            }
             self.flush().await?;
             trace!("write complete");
             Ok(())
