@@ -125,7 +125,16 @@ where
                     .await
                 }
                 Event::Net(tlv) => {
-                    if let Some(frame) = handle_net(tlv, &mut to_mgmt).await {
+                    // Handle audio frames specially - they need decryption
+                    if tlv.tlv_type == NetToUi::AudioFrame {
+                        let mut buf: heapless::Vec<u8, 256> = heapless::Vec::new();
+                        let _ = buf.extend_from_slice(&tlv.value);
+                        if sframe_state.unprotect(&[], &mut buf).is_ok() {
+                            if let Some(frame) = Frame::from_bytes(&buf) {
+                                playback_channel.send(frame).await;
+                            }
+                        }
+                    } else if let Some(frame) = handle_net(tlv, &mut to_mgmt).await {
                         playback_channel.send(frame).await;
                     }
                 }
