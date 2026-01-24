@@ -442,20 +442,23 @@ where
             None
         }
         UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
-            /* XXX
-            let energy: u32 = tlv
-                .value
-                .iter()
-                .map(|&b| (b as i8).unsigned_abs() as u32)
-                .sum();
-            info!(
-                "net: ui audio {} bytes, energy={}, data={:02x}",
-                tlv.value.len(),
-                energy,
-                tlv.value.as_slice()
-            );
-            */
+            let Ok(payload) = heapless::Vec::try_from(tlv.value.as_slice()) else {
+                info!("net: audio payload too large");
+                return None;
+            };
 
+            if loopback {
+                // Return audio data for loopback to jitter buffer
+                Some(payload)
+            } else {
+                // Send to WebSocket
+                ws_cmd_tx.send(WsCommand::Send(payload)).await;
+                None
+            }
+        }
+        UiToNet::AudioFrame => {
+            // New hactar format: channel_id (1 byte) + encrypted payload
+            // For now, handle same as legacy but payload includes channel_id prefix
             let Ok(payload) = heapless::Vec::try_from(tlv.value.as_slice()) else {
                 info!("net: audio payload too large");
                 return None;

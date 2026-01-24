@@ -2,6 +2,33 @@
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
+/// Channel ID for routing messages (matches hactar ui_net_link.hh)
+#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum ChannelId {
+    /// Push-to-talk audio (human voice) - Button A
+    Ptt = 0,
+    /// AI audio channel (AI-generated voice) - Button B
+    PttAi = 1,
+    // Chat = 2 is reserved but not implemented
+    /// AI text/JSON responses for track reconfiguration
+    ChatAi = 3,
+}
+
+/// Message type within a chunk (matches hactar ui_net_link.hh)
+#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum MessageType {
+    /// Regular audio data
+    Media = 1,
+    /// Audio to AI
+    AiRequest = 2,
+    /// Response from AI
+    AiResponse = 3,
+}
+
 /// Loopback mode for audio testing on the UI chip.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -184,10 +211,13 @@ pub enum NetToMgmt {
 #[repr(u16)]
 pub enum UiToNet {
     CircularPing = 0x60,
-    /// Audio frame from button A press
+    /// Legacy: Audio frame from button A press (no channel_id prefix)
     AudioFrameA,
-    /// Audio frame from button B press
+    /// Legacy: Audio frame from button B press (no channel_id prefix)
     AudioFrameB,
+    /// Audio frame with channel_id prefix + encrypted chunk (hactar format)
+    /// Format: [channel_id: u8][sframe_header][encrypted_chunk][auth_tag]
+    AudioFrame,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

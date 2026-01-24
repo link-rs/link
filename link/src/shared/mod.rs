@@ -1,5 +1,7 @@
 //! Shared types and utilities used across all chips.
 
+pub mod chunk;
+
 // Jitter buffer - only for net firmware with audio-buffer or tests
 #[cfg(any(all(feature = "net", feature = "audio-buffer"), test))]
 pub mod jitter_buffer;

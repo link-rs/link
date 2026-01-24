@@ -1470,5 +1470,16 @@ fn handle_ui_message(
                 });
             }
         }
+        UiToNet::AudioFrame => {
+            // New hactar format: channel_id (1 byte) + encrypted payload
+            // Handle same as legacy for now
+            if loopback {
+                write_tlv(ui_uart, NetToUi::AudioFrame, value);
+            } else {
+                let _ = moq_cmd_tx.send(MoqCommand::AudioFrame {
+                    data: value.to_vec(),
+                });
+            }
+        }
     }
 }

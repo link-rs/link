@@ -1134,6 +1134,14 @@ mod audio_streaming_tests {
         );
     }
 
+    /// Helper to encrypt a frame for testing (uses default EEPROM key of all 0xFF)
+    fn encrypt_frame_for_test(frame: &crate::ui::Frame, sframe: &mut sframe::SFrameState) -> heapless::Vec<u8, 256> {
+        let mut buf: heapless::Vec<u8, 256> = heapless::Vec::new();
+        buf.extend_from_slice(frame.as_bytes()).unwrap();
+        sframe.protect(&[], &mut buf).unwrap();
+        buf
+    }
+
     #[tokio::test]
     async fn net_audio_frame_plays_out() {
         use crate::shared::mocks::CapturingAudioStream;
@@ -1146,6 +1154,9 @@ mod audio_streaming_tests {
         let (mut net_to_ui, ui_from_net) = channel();
 
         let (audio_stream, written_frames) = CapturingAudioStream::new();
+
+        // Create SFrame state with default EEPROM key (all 0xFF, not zeros)
+        let mut sframe_state = sframe::SFrameState::new(&[0xff; 16], 0);
 
         tokio::select! {
             _ = run(
@@ -1168,8 +1179,9 @@ mod audio_streaming_tests {
                 // Send enough frames to fill jitter buffer past MIN_START_LEVEL
                 for _ in 0..MIN_START_LEVEL {
                     let padding_frame = crate::ui::Frame::default();
+                    let encrypted = encrypt_frame_for_test(&padding_frame, &mut sframe_state);
                     net_to_ui
-                        .write_tlv(crate::shared::NetToUi::AudioFrame, padding_frame.as_bytes())
+                        .write_tlv(crate::shared::NetToUi::AudioFrame, &encrypted)
                         .await
                         .unwrap();
                 }
@@ -1181,9 +1193,10 @@ mod audio_streaming_tests {
                 test_frame.0[1] = encode_alaw(2000);
                 test_frame.0[159] = encode_alaw(3000); // Last sample in 160-byte frame
 
-                // Send the audio frame from NET to UI
+                // Encrypt and send the audio frame from NET to UI
+                let encrypted = encrypt_frame_for_test(&test_frame, &mut sframe_state);
                 net_to_ui
-                    .write_tlv(crate::shared::NetToUi::AudioFrame, test_frame.as_bytes())
+                    .write_tlv(crate::shared::NetToUi::AudioFrame, &encrypted)
                     .await
                     .unwrap();
 
@@ -1226,6 +1239,9 @@ mod audio_streaming_tests {
 
         let (audio_stream, written_frames) = CapturingAudioStream::new();
 
+        // Create SFrame state with default EEPROM key (all 0xFF, not zeros)
+        let mut sframe_state = sframe::SFrameState::new(&[0xff; 16], 0);
+
         // Pre-compute expected decoded values for markers 1000, 2000, 3000
         let markers: Vec<(u8, u16)> = (0..3)
             .map(|i| {
@@ -1257,8 +1273,9 @@ mod audio_streaming_tests {
                 // Send padding frames to fill jitter buffer past MIN_START_LEVEL
                 for _ in 0..MIN_START_LEVEL {
                     let padding_frame = crate::ui::Frame::default();
+                    let encrypted = encrypt_frame_for_test(&padding_frame, &mut sframe_state);
                     net_to_ui
-                        .write_tlv(crate::shared::NetToUi::AudioFrame, padding_frame.as_bytes())
+                        .write_tlv(crate::shared::NetToUi::AudioFrame, &encrypted)
                         .await
                         .unwrap();
                 }
@@ -1267,8 +1284,9 @@ mod audio_streaming_tests {
                 for (alaw, _) in &markers {
                     let mut frame = crate::ui::Frame::default();
                     frame.0[0] = *alaw;
+                    let encrypted = encrypt_frame_for_test(&frame, &mut sframe_state);
                     net_to_ui
-                        .write_tlv(crate::shared::NetToUi::AudioFrame, frame.as_bytes())
+                        .write_tlv(crate::shared::NetToUi::AudioFrame, &encrypted)
                         .await
                         .unwrap();
                     // Small delay between sends
