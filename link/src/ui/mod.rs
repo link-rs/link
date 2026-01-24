@@ -39,6 +39,7 @@ enum Event {
     ButtonDown(Button),
     ButtonUp(Button),
     AudioFrame(Frame),
+    AudioError(AudioError),
 }
 
 #[allow(unreachable_code)]
@@ -142,6 +143,40 @@ where
                         active_button = None;
                     }
                 }
+                Event::AudioError(e) => {
+                    // Count errors but only log periodically to avoid feedback loop
+                    static ERROR_COUNT: portable_atomic::AtomicU32 =
+                        portable_atomic::AtomicU32::new(0);
+                    static LAST_ERROR: portable_atomic::AtomicU8 =
+                        portable_atomic::AtomicU8::new(0);
+
+                    let error_type = match e {
+                        AudioError::Overrun => 1u8,
+                        AudioError::DmaUnsynced => 2u8,
+                    };
+
+                    let count = ERROR_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                    LAST_ERROR.store(error_type, Ordering::Relaxed);
+
+                    // Log every 50 errors (roughly once per second at 50fps)
+                    if count % 50 == 0 {
+                        let mut buf = [0u8; 32];
+                        let msg: &[u8] = match LAST_ERROR.load(Ordering::Relaxed) {
+                            1 => b"i2s:overrun",
+                            2 => b"i2s:dma_unsynced",
+                            _ => b"i2s:unknown",
+                        };
+                        let msg_len = msg.len();
+                        buf[..msg_len].copy_from_slice(msg);
+                        buf[msg_len] = b':';
+                        // Simple decimal encoding of count
+                        let count_str = count.to_be_bytes();
+                        buf[msg_len + 1..msg_len + 5].copy_from_slice(&count_str);
+                        to_mgmt
+                            .must_write_tlv(UiToMgmt::Log, &buf[..msg_len + 5])
+                            .await;
+                    }
+                }
                 Event::AudioFrame(frame) => 'audio: {
                     let Some(button) = active_button else {
                         break 'audio;
@@ -157,6 +192,8 @@ where
 
                     // Alaw loopback: play directly (no encryption)
                     if mode == LoopbackMode::Alaw {
+                        // XXX(RLB) Not sure why this yield is necessary, but it seems to be.
+                        embassy_futures::yield_now().await;
                         playback_channel.send(frame).await;
                         break 'audio;
                     }
@@ -233,18 +270,10 @@ where
                 continue;
             }
 
-            // Wait for a frame with timeout matching frame duration (20ms)
-            #[cfg(feature = "audio-buffer")]
-            let tx_stereo = {
-                use embassy_time::{with_timeout, Duration};
-                match with_timeout(Duration::from_millis(20), playback_channel.receive()).await {
-                    Ok(frame) => frame.decode_to_stereo(),
-                    Err(_timeout) => StereoFrame::default(),
-                }
-            };
-
-            // Fallback for tests (no embassy-time available)
-            #[cfg(not(feature = "audio-buffer"))]
+            // Get playback frame if available, otherwise use silence.
+            // IMPORTANT: Use non-blocking try_receive() so the I2S read_write
+            // timing controls the loop rate. A blocking receive with timeout
+            // would add delay ON TOP of the I2S cycle, causing RX overruns.
             let tx_stereo = if let Ok(frame) = playback_channel.try_receive() {
                 frame.decode_to_stereo()
             } else {
@@ -254,17 +283,25 @@ where
             let mut rx_stereo = StereoFrame::default();
 
             // Do the I2S read/write cycle
-            if audio_system
-                .read_write(&tx_stereo, &mut rx_stereo)
-                .await
-                .is_ok()
-            {
-                // Encode stereo to A-law mono for transmission
-                let encoded_frame = rx_stereo.encode();
-                // Try to send the recorded frame - drop if channel is full
-                // This prevents blocking the audio task if event handler is slow
-                let _ = channel.try_send(Event::AudioFrame(encoded_frame));
+            match audio_system.read_write(&tx_stereo, &mut rx_stereo).await {
+                Ok(_) => {
+                    // Encode stereo to A-law mono for transmission
+                    let encoded_frame = rx_stereo.encode();
+                    // Try to send the recorded frame - drop if channel is full
+                    // This prevents blocking the audio task if event handler is slow
+                    let _ = channel.try_send(Event::AudioFrame(encoded_frame));
+                }
+                Err(e) => {
+                    // Report I2S error for diagnostics
+                    let _ = channel.try_send(Event::AudioError(e));
+                }
             }
+
+            // Yield to let handle_task process events and populate playback_channel
+            // before the next iteration's try_receive()
+            // XXX(RLB) This seems necessary, but a bit awkward.  Might only be necessary in
+            // loopback mode, so we should re-test once we're more in a PTT frame.
+            embassy_futures::yield_now().await;
         }
     };
 
