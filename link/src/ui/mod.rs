@@ -43,7 +43,6 @@ enum Event {
     ButtonDown(Button),
     ButtonUp(Button),
     AudioFrame(heapless::Vec<u8, AUDIO_BUF_SIZE>),
-    AudioError(AudioError),
 }
 
 #[allow(unreachable_code)]
@@ -170,40 +169,6 @@ where
                         active_button = None;
                     }
                 }
-                Event::AudioError(e) => {
-                    // Count errors but only log periodically to avoid feedback loop
-                    static ERROR_COUNT: portable_atomic::AtomicU32 =
-                        portable_atomic::AtomicU32::new(0);
-                    static LAST_ERROR: portable_atomic::AtomicU8 =
-                        portable_atomic::AtomicU8::new(0);
-
-                    let error_type = match e {
-                        AudioError::Overrun => 1u8,
-                        AudioError::DmaUnsynced => 2u8,
-                    };
-
-                    let count = ERROR_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                    LAST_ERROR.store(error_type, Ordering::Relaxed);
-
-                    // Log every 50 errors (roughly once per second at 50fps)
-                    if count % 50 == 0 {
-                        let mut buf = [0u8; 32];
-                        let msg: &[u8] = match LAST_ERROR.load(Ordering::Relaxed) {
-                            1 => b"i2s:overrun",
-                            2 => b"i2s:dma_unsynced",
-                            _ => b"i2s:unknown",
-                        };
-                        let msg_len = msg.len();
-                        buf[..msg_len].copy_from_slice(msg);
-                        buf[msg_len] = b':';
-                        // Simple decimal encoding of count
-                        let count_str = count.to_be_bytes();
-                        buf[msg_len + 1..msg_len + 5].copy_from_slice(&count_str);
-                        to_mgmt
-                            .must_write_tlv(UiToMgmt::Log, &buf[..msg_len + 5])
-                            .await;
-                    }
-                }
                 Event::AudioFrame(mut buf) => 'audio: {
                     // buf contains 160 bytes of A-law encoded audio from audio_task
                     let Some(button) = active_button else {
@@ -220,16 +185,30 @@ where
 
                     // Alaw loopback: play directly (no encryption)
                     if mode == LoopbackMode::Alaw {
-                        to_mgmt.must_write_tlv(UiToMgmt::Log, b"wtf").await;
                         if let Some(frame) = Frame::from_bytes(&buf) {
-                            // XXX(RLB) Not sure why this yield is necessary, but it seems to be.
-                            embassy_futures::yield_now().await;
+                            // XXX(RLB) See below comments about timing.
+                            to_mgmt.must_write_tlv(UiToMgmt::Log, b"x").await;
                             playback_channel.send(frame).await;
+                        } else {
+                            // XXX(RLB) See below comments about timing.  Both lines are
+                            // empirically necessary.
+                            to_mgmt.must_write_tlv(UiToMgmt::Log, b"x").await;
+                            embassy_futures::yield_now().await;
                         }
                         break 'audio;
                     }
 
-                    /*
+                    // XXX(RLB) Apparently this is necessary for alaw and sframe loopback to work.
+                    // The following do not work:
+                    //
+                    // * A delay
+                    // * A yield
+                    // * An empty log TLV
+                    //
+                    // We need to come back to this and figure out what about these interacting
+                    // event loops is causing this weird behavior.
+                    to_mgmt.must_write_tlv(UiToMgmt::Log, b"x").await;
+
                     // Determine channel based on button
                     let channel_id = match button {
                         Button::A => ChannelId::Ptt,
@@ -258,10 +237,10 @@ where
                     if mode == LoopbackMode::Sframe {
                         if sframe_state.unprotect(&[], &mut buf).is_ok() {
                             if let Some(parsed) = chunk::parse_chunk(&buf) {
-                                let audio_data =
-                                    &buf[parsed.audio_offset..parsed.audio_offset + parsed.audio_length];
+                                let audio_data = &buf[parsed.audio_offset
+                                    ..parsed.audio_offset + parsed.audio_length];
                                 if let Some(frame) = Frame::from_bytes(audio_data) {
-                                    // XXX(RLB) Same yield needed as Alaw loopback
+                                    // XXX(RLB) Same timing comments as above.
                                     embassy_futures::yield_now().await;
                                     playback_channel.send(frame).await;
                                 }
@@ -275,7 +254,6 @@ where
                     to_net
                         .must_write_tlv_parts(UiToNet::AudioFrame, &[&channel_id_byte, &buf])
                         .await;
-                    */
                 }
             }
 
@@ -348,9 +326,8 @@ where
                     // This prevents blocking the audio task if event handler is slow
                     let _ = channel.try_send(Event::AudioFrame(buf));
                 }
-                Err(e) => {
-                    // Report I2S error for diagnostics
-                    let _ = channel.try_send(Event::AudioError(e));
+                Err(_) => {
+                    // I2S error - frame dropped
                 }
             }
 
