@@ -52,7 +52,9 @@ enum MoqCommand {
     StopMode,
     /// Run MoQ loopback mode - publish audio to MoQ and subscribe to same track.
     RunMoqLoopback,
-    /// Audio frame to publish (only used in MoQ loopback mode).
+    /// Run MoQ publish mode - publish audio to MoQ without subscribing.
+    RunPublish,
+    /// Audio frame to publish (used in MoQ loopback and publish modes).
     AudioFrame { data: Vec<u8> },
 }
 
@@ -117,6 +119,8 @@ enum MoqMode {
     },
     /// MoQ loopback - publish audio to MoQ and subscribe to same track.
     MoqLoopback,
+    /// MoQ publish - publish audio to MoQ without subscribing.
+    Publish,
 }
 
 /// Spawn the MoQ task in a separate thread.
@@ -151,6 +155,9 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
             let mut loopback_pub_track: Option<std::sync::Arc<quicr::PublishTrack>> = None;
             let mut loopback_subscription: Option<Subscription> = None;
             let mut loopback_group_id: u64 = 0;
+            let mut loopback_object_id: u64 = 0;
+            let mut loopback_recv_count: u64 = 0;
+            let mut last_loopback_stats = Instant::now();
 
             loop {
                 // Check for commands (non-blocking)
@@ -294,6 +301,7 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                     Ok(track) => {
                                         loopback_pub_track = Some(track);
                                         loopback_group_id = 0;
+                                        loopback_object_id = 0;
                                         info!("MoQ loopback: publish track created");
 
                                         // Create subscribe track to same namespace/track
@@ -334,13 +342,50 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                             });
                         }
                     }
+                    Ok(MoqCommand::RunPublish) => {
+                        if let Some(ref c) = client {
+                            if mode == MoqMode::Idle {
+                                info!("MoQ: starting publish mode");
+                                let namespace =
+                                    TrackNamespace::from_strings(&["hactar", "loopback"]);
+                                c.publish_namespace(&namespace);
+
+                                // Create publish track (same as loopback, but no subscription)
+                                let pub_track_name =
+                                    FullTrackName::from_strings(&["hactar", "loopback"], "audio");
+                                match block_on(c.publish(pub_track_name)) {
+                                    Ok(track) => {
+                                        loopback_pub_track = Some(track);
+                                        loopback_group_id = 0;
+                                        loopback_object_id = 0;
+                                        mode = MoqMode::Publish;
+                                        let _ = event_tx.send(MoqEvent::ModeStarted);
+                                        info!("MoQ publish: track created");
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ: failed to create publish track: {:?}", e);
+                                        let _ = event_tx.send(MoqEvent::Error {
+                                            message: format!("{:?}", e),
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("MoQ: cannot start publish mode - not connected");
+                            let _ = event_tx.send(MoqEvent::Error {
+                                message: "not connected".to_string(),
+                            });
+                        }
+                    }
                     Ok(MoqCommand::AudioFrame { data }) => {
-                        // Only publish if in MoQ loopback mode
-                        if mode == MoqMode::MoqLoopback {
+                        // Publish if in MoQ loopback or publish mode
+                        if mode == MoqMode::MoqLoopback || mode == MoqMode::Publish {
                             if let Some(ref track) = loopback_pub_track {
-                                let headers = ObjectHeaders::new(loopback_group_id, 0);
-                                let _ = track.publish(&headers, &data);
-                                loopback_group_id += 1;
+                                let headers = ObjectHeaders::new(loopback_group_id, loopback_object_id);
+                                if let Err(e) = track.publish(&headers, &data) {
+                                    warn!("MoQ loopback: publish failed at object {}: {:?}", loopback_object_id, e);
+                                }
+                                loopback_object_id += 1;
                             }
                         }
                     }
@@ -440,33 +485,42 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                         }
                     }
                     MoqMode::MoqLoopback => {
-                        // Poll subscription for received objects
+                        // Drain all ready objects from subscription
                         if let Some(ref mut subscription) = loopback_subscription {
-                            // Try to receive with a short timeout to avoid blocking
-                            use std::future::Future;
-                            use std::pin::Pin;
-                            use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
-                            // Create a simple waker that does nothing (for polling)
-                            static VTABLE: RawWakerVTable = RawWakerVTable::new(
-                                |_| RawWaker::new(std::ptr::null(), &VTABLE),
-                                |_| {},
-                                |_| {},
-                                |_| {},
-                            );
-                            let waker =
-                                unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
-                            let mut cx = Context::from_waker(&waker);
-
-                            // Poll the recv future once (non-blocking check)
-                            let mut recv_future = subscription.recv();
-                            let pinned = unsafe { Pin::new_unchecked(&mut recv_future) };
-                            if let Poll::Ready(object) = pinned.poll(&mut cx) {
-                                // Forward audio data to main loop
+                            while let Ok(object) = subscription.try_recv() {
+                                loopback_recv_count += 1;
                                 let _ = event_tx.send(MoqEvent::AudioReceived {
                                     data: object.payload().to_vec(),
                                 });
                             }
+                        }
+
+                        // Log stats every 2 seconds
+                        if last_loopback_stats.elapsed() >= Duration::from_secs(2) {
+                            let sub_status = loopback_subscription
+                                .as_ref()
+                                .map(|s| format!("{:?}", s.status()));
+                            let pub_status = loopback_pub_track
+                                .as_ref()
+                                .map(|t| format!("{:?}", t.status()));
+                            info!(
+                                "MoQ loopback: pub={} ({:?}), recv={} ({:?})",
+                                loopback_object_id, pub_status, loopback_recv_count, sub_status
+                            );
+                            last_loopback_stats = Instant::now();
+                        }
+                    }
+                    MoqMode::Publish => {
+                        // Log stats every 2 seconds
+                        if last_loopback_stats.elapsed() >= Duration::from_secs(2) {
+                            let pub_status = loopback_pub_track
+                                .as_ref()
+                                .map(|t| format!("{:?}", t.status()));
+                            info!(
+                                "MoQ publish: pub={} ({:?})",
+                                loopback_object_id, pub_status
+                            );
+                            last_loopback_stats = Instant::now();
                         }
                     }
                 }
@@ -1200,6 +1254,9 @@ fn main() {
             }
             Ok(MoqEvent::ModeStarted) => {
                 info!("net-idf: MoQ mode started");
+                // Reset jitter buffers to clear any initial backlog
+                ptt_buffer.reset();
+                ptt_ai_buffer.reset();
             }
             Ok(MoqEvent::ModeStopped) => {
                 info!("net-idf: MoQ mode stopped");
@@ -1555,6 +1612,10 @@ fn handle_mgmt_message(
         }
         MgmtToNet::RunMoqLoopback => {
             let _ = moq_cmd_tx.send(MoqCommand::RunMoqLoopback);
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
+        MgmtToNet::RunPublish => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunPublish);
             write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
         }
         // Channel configuration commands

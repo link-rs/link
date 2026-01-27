@@ -265,6 +265,10 @@ enum NetAction {
     #[command(name = "run-loopback")]
     RunMoqLoopback,
 
+    /// Run MoQ publish mode - publish audio to MoQ without subscribing
+    #[command(name = "run-publish")]
+    RunPublish,
+
     #[command(name = "chat")]
     Chat {
         /// Chat message to send

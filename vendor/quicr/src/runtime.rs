@@ -51,6 +51,9 @@ pub type DynSender<'a, T> = embassy_sync::channel::DynamicSender<'a, T>;
 /// Dynamic receiver (for storing in structs without const generic)
 pub type DynReceiver<'a, T> = embassy_sync::channel::DynamicReceiver<'a, T>;
 
+/// Error returned by try_receive when channel is empty
+pub use embassy_sync::channel::TryReceiveError;
+
 /// One-shot signal for notifications
 pub type Signal<T> = embassy_sync::signal::Signal<CriticalSectionRawMutex, T>;
 

@@ -3,7 +3,7 @@
 use crate::error::{Error, Result};
 use crate::ffi;
 use crate::object::{FilterType, GroupOrder, ObjectHeaders, ReceivedObject};
-use crate::runtime::{DynReceiver, DynSender, Signal};
+use crate::runtime::{DynReceiver, DynSender, Signal, TryReceiveError};
 use crate::track::FullTrackName;
 use bytes::Bytes;
 use core::ptr::NonNull;
@@ -291,6 +291,13 @@ impl SubscribeTrack {
     /// Receive the next object
     pub async fn recv(&mut self) -> ReceivedObject {
         self.object_receiver.receive().await
+    }
+
+    /// Try to receive the next object without blocking
+    ///
+    /// Returns `Ok(object)` if an object is available, or `Err(TryReceiveError::Empty)` if not.
+    pub fn try_recv(&mut self) -> core::result::Result<ReceivedObject, TryReceiveError> {
+        self.object_receiver.try_receive()
     }
 
     /// Wait for status change
@@ -606,6 +613,11 @@ impl Subscription {
     /// Receive the next object
     pub async fn recv(&mut self) -> ReceivedObject {
         self.track.recv().await
+    }
+
+    /// Try to receive the next object without blocking
+    pub fn try_recv(&mut self) -> core::result::Result<ReceivedObject, TryReceiveError> {
+        self.track.try_recv()
     }
 
     /// Pause the subscription

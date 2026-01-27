@@ -332,6 +332,13 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             }
             Err(e) => Err(format!("Failed to run MoQ loopback: {}", e).into()),
         },
+        NetAction::RunPublish => match app.run_publish() {
+            Ok(()) => {
+                println!("Started MoQ publish mode (publish only, no subscribe)");
+                Ok(())
+            }
+            Err(e) => Err(format!("Failed to run MoQ publish: {}", e).into()),
+        },
         NetAction::Chat { message } => match app.send_chat_message(&message) {
             Ok(()) => {
                 println!("Chat message sent");

@@ -2312,6 +2312,24 @@ where
         }
     }
 
+    /// Run MoQ publish mode on NET chip - publish audio to MoQ without subscribing.
+    pub fn run_publish(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::RunPublish, &[])?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        match tlv.tlv_type {
+            NetToMgmt::Ack | NetToMgmt::ModeStarted => Ok(()),
+            NetToMgmt::Error => {
+                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+                Err(CtlError::DeviceError(err.to_string()))
+            }
+            other => Err(CtlError::UnexpectedResponse {
+                expected: "Ack or ModeStarted",
+                actual: format!("{:?}", other),
+            }),
+        }
+    }
+
     /// Send a chat message via MoQ.
     pub fn send_chat_message(&mut self, message: &str) -> Result<(), CtlError> {
         write_tlv(

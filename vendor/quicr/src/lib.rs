@@ -109,7 +109,7 @@ pub use subscribe::{
 pub use track::{FullTrackName, TrackNamespace};
 
 // Re-export runtime types needed for callback data
-pub use runtime::{Channel, DynReceiver, DynSender, Signal};
+pub use runtime::{Channel, DynReceiver, DynSender, Signal, TryReceiveError};
 
 // Re-export bytes crate for convenience
 pub use bytes::Bytes;

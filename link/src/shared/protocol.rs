@@ -168,6 +168,8 @@ pub enum MgmtToNet {
     SendChatMessage,
     /// Run MoQ loopback mode - publish audio to MoQ and subscribe to same track
     RunMoqLoopback,
+    /// Run MoQ publish mode - publish audio to MoQ without subscribing
+    RunPublish,
     // Channel configuration commands
     /// Get channel configuration (value: channel_id u8)
     GetChannelConfig,
