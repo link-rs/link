@@ -2,12 +2,13 @@
 
 mod storage;
 
-// Re-export jitter buffer from shared for backwards compatibility (only with audio-buffer)
-#[cfg(feature = "audio-buffer")]
+// Re-export jitter buffer from shared (audio-buffer or esp-idf)
+#[cfg(any(feature = "audio-buffer", feature = "esp-idf"))]
 pub use crate::shared::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
 pub use storage::{
-    MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, MoqError,
-    MoqExampleType, NetStorage, WifiSsid,
+    ChannelConfig, MAX_CHANNELS, MAX_CHANNEL_URL_LEN, MAX_MOQ_NAMESPACE_LEN,
+    MAX_MOQ_TRACK_NAME_LEN, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, MoqError, MoqExampleType,
+    NetStorage, WifiSsid,
 };
 
 use crate::info;
@@ -15,6 +16,8 @@ use crate::shared::{
     Channel, Color, CriticalSectionRawMutex, Led, MgmtToNet, NetToMgmt, NetToUi, RawMutex,
     Receiver, Sender, Tlv, UiToNet, WriteTlv, read_tlv_loop,
 };
+#[cfg(feature = "audio-buffer")]
+use crate::shared::ChannelId;
 #[cfg(feature = "audio-buffer")]
 use embassy_futures::select::{Either, select};
 #[cfg(feature = "audio-buffer")]
@@ -178,23 +181,48 @@ where
         let mut loopback = false;
         let mut wifi_connected = false;
         let mut ws_connected = false;
-        let mut audio_buffer: JitterBuffer = JitterBuffer::new();
+        // Per-channel jitter buffers
+        let mut ptt_buffer: JitterBuffer = JitterBuffer::new();
+        let mut ptt_ai_buffer: JitterBuffer = JitterBuffer::new();
         let mut ticker = Ticker::every(Duration::from_millis(20));
         info!("net: ready to handle events (audio buffering enabled)");
         loop {
             match select(channel.receive(), ticker.next()).await {
                 Either::First(event) => match event {
                     Event::Mgmt(tlv) => {
-                        handle_mgmt(
-                            tlv,
-                            &mut to_mgmt,
-                            &mut to_ui,
-                            &mut storage,
-                            &ws_cmd_tx,
-                            &mut ws_mode,
-                            &mut loopback,
-                        )
-                        .await
+                        // Handle GetJitterStats specially since it needs buffer access
+                        if tlv.tlv_type == MgmtToNet::GetJitterStats {
+                            let channel_id = tlv.value.first().copied().unwrap_or(0);
+                            let stats = match ChannelId::try_from(channel_id) {
+                                Ok(ChannelId::Ptt) => Some(ptt_buffer.stats()),
+                                Ok(ChannelId::PttAi) => Some(ptt_ai_buffer.stats()),
+                                _ => None,
+                            };
+                            if let Some(s) = stats {
+                                // Serialize: received(4) + output(4) + underruns(4) + overruns(4) + level(2) + state(1) = 19 bytes
+                                let mut buf = [0u8; 19];
+                                buf[0..4].copy_from_slice(&s.received.to_le_bytes());
+                                buf[4..8].copy_from_slice(&s.output.to_le_bytes());
+                                buf[8..12].copy_from_slice(&s.underruns.to_le_bytes());
+                                buf[12..16].copy_from_slice(&s.overruns.to_le_bytes());
+                                buf[16..18].copy_from_slice(&(s.level as u16).to_le_bytes());
+                                buf[18] = s.state as u8;
+                                to_mgmt.must_write_tlv(NetToMgmt::JitterStats, &buf).await;
+                            } else {
+                                to_mgmt.must_write_tlv(NetToMgmt::Error, b"invalid channel").await;
+                            }
+                        } else {
+                            handle_mgmt(
+                                tlv,
+                                &mut to_mgmt,
+                                &mut to_ui,
+                                &mut storage,
+                                &ws_cmd_tx,
+                                &mut ws_mode,
+                                &mut loopback,
+                            )
+                            .await
+                        }
                     }
                     Event::Ui(tlv) => {
                         if let Some(audio) =
@@ -210,7 +238,8 @@ where
                             &mut to_mgmt,
                             &mut led,
                             &mut ws_mode,
-                            &mut audio_buffer,
+                            &mut ptt_buffer,
+                            &mut ptt_ai_buffer,
                             &mut wifi_connected,
                             &mut ws_connected,
                         )
@@ -218,10 +247,19 @@ where
                     }
                 },
                 Either::Second(_) => {
-                    // Timer tick - pop from buffer if playing
-                    if audio_buffer.state() == JitterState::Playing || audio_buffer.level() >= 5 {
-                        if let Some(frame) = audio_buffer.pop() {
-                            to_ui.must_write_tlv(NetToUi::AudioFrame, &frame).await;
+                    // Timer tick - pop from each channel buffer and send to UI
+                    for (buffer, channel_id) in [
+                        (&mut ptt_buffer, ChannelId::Ptt),
+                        (&mut ptt_ai_buffer, ChannelId::PttAi),
+                    ] {
+                        if buffer.state() == JitterState::Playing || buffer.level() >= 5 {
+                            if let Some(frame) = buffer.pop() {
+                                // Prepend channel_id to the frame
+                                let mut out: heapless::Vec<u8, 256> = heapless::Vec::new();
+                                let _ = out.push(channel_id as u8);
+                                let _ = out.extend_from_slice(&frame);
+                                to_ui.must_write_tlv(NetToUi::AudioFrame, &out).await;
+                            }
                         }
                     }
                 }
@@ -404,6 +442,93 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             info!("net: get loopback = {}", *loopback);
             to_mgmt
                 .must_write_tlv(NetToMgmt::Loopback, &[*loopback as u8])
+                .await;
+        }
+        // Channel configuration commands
+        MgmtToNet::GetChannelConfig => {
+            info!("net: get channel config");
+            let channel_id = tlv.value.first().copied().unwrap_or(0);
+            if let Some(config) = storage.get_channel_config(channel_id) {
+                let mut buf = [0u8; 256];
+                if let Ok(serialized) = postcard::to_slice(config, &mut buf) {
+                    to_mgmt
+                        .must_write_tlv(NetToMgmt::ChannelConfig, serialized)
+                        .await;
+                } else {
+                    to_mgmt
+                        .must_write_tlv(NetToMgmt::Error, b"serialize")
+                        .await;
+                }
+            } else {
+                // Return default config for unconfigured channel
+                let default_config = ChannelConfig {
+                    channel_id,
+                    enabled: false,
+                    relay_url: heapless::String::new(),
+                };
+                let mut buf = [0u8; 256];
+                if let Ok(serialized) = postcard::to_slice(&default_config, &mut buf) {
+                    to_mgmt
+                        .must_write_tlv(NetToMgmt::ChannelConfig, serialized)
+                        .await;
+                } else {
+                    to_mgmt
+                        .must_write_tlv(NetToMgmt::Error, b"serialize")
+                        .await;
+                }
+            }
+        }
+        MgmtToNet::SetChannelConfig => {
+            info!("net: set channel config");
+            let Ok(config): Result<ChannelConfig, _> = postcard::from_bytes(&tlv.value) else {
+                info!("net: failed to deserialize channel config");
+                to_mgmt
+                    .must_write_tlv(NetToMgmt::Error, b"deserialize")
+                    .await;
+                return;
+            };
+            if storage.set_channel_config(config).is_err() {
+                info!("net: failed to set channel config");
+                to_mgmt.must_write_tlv(NetToMgmt::Error, b"set").await;
+                return;
+            }
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToMgmt::Error, b"save").await;
+                return;
+            }
+            to_mgmt.must_write_tlv(NetToMgmt::Ack, &[]).await;
+        }
+        MgmtToNet::GetAllChannelConfigs => {
+            info!("net: get all channel configs");
+            let configs = storage.get_all_channel_configs();
+            let mut buf = [0u8; 512];
+            if let Ok(serialized) = postcard::to_slice(configs, &mut buf) {
+                to_mgmt
+                    .must_write_tlv(NetToMgmt::AllChannelConfigs, serialized)
+                    .await;
+            } else {
+                to_mgmt
+                    .must_write_tlv(NetToMgmt::Error, b"serialize")
+                    .await;
+            }
+        }
+        MgmtToNet::ClearChannelConfigs => {
+            info!("net: clear channel configs");
+            storage.clear_channel_configs();
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToMgmt::Error, b"save").await;
+                return;
+            }
+            to_mgmt.must_write_tlv(NetToMgmt::Ack, &[]).await;
+        }
+        MgmtToNet::GetJitterStats => {
+            // This is handled in the event loop for audio-buffer mode
+            // In non-audio-buffer mode, return error
+            info!("net: jitter stats not available (audio-buffer disabled)");
+            to_mgmt
+                .must_write_tlv(NetToMgmt::Error, b"no audio-buffer")
                 .await;
         }
         // MoQ commands - not supported in bare-metal firmware (uses WebSocket, not MoQ)
@@ -619,14 +744,15 @@ async fn handle_ws<M, U, LR, LG, LB>(
 }
 
 /// Handle WebSocket events with audio buffering.
-/// Audio frames are pushed to the jitter buffer instead of being sent directly to UI.
+/// Audio frames are pushed to per-channel jitter buffers instead of being sent directly to UI.
 #[cfg(feature = "audio-buffer")]
 async fn handle_ws_buffered<M, LR, LG, LB>(
     event: WsEvent,
     to_mgmt: &mut M,
     led: &mut Led<LR, LG, LB>,
     ws_mode: &mut WsMode,
-    audio_buffer: &mut JitterBuffer,
+    ptt_buffer: &mut JitterBuffer,
+    ptt_ai_buffer: &mut JitterBuffer,
     wifi_connected: &mut bool,
     ws_connected: &mut bool,
 ) where
@@ -645,32 +771,54 @@ async fn handle_ws_buffered<M, LR, LG, LB>(
             info!("net: wifi disconnected");
             *wifi_connected = false;
             *ws_connected = false; // WS can't be connected without WiFi
-            audio_buffer.reset();
+            ptt_buffer.reset();
+            ptt_ai_buffer.reset();
             update_led(led, *wifi_connected, *ws_connected);
         }
         WsEvent::Connected => {
             info!("net: ws connected");
             *ws_connected = true;
             update_led(led, *wifi_connected, *ws_connected);
-            // Reset audio buffer on new connection
-            audio_buffer.reset();
+            // Reset audio buffers on new connection
+            ptt_buffer.reset();
+            ptt_ai_buffer.reset();
             to_mgmt.must_write_tlv(NetToMgmt::WsConnected, &[]).await;
         }
         WsEvent::Disconnected => {
             info!("net: ws disconnected");
             *ws_connected = false;
             update_led(led, *wifi_connected, *ws_connected);
-            // Reset to Normal mode and clear buffer on disconnect
+            // Reset to Normal mode and clear buffers on disconnect
             *ws_mode = WsMode::Normal;
-            audio_buffer.reset();
+            ptt_buffer.reset();
+            ptt_ai_buffer.reset();
             to_mgmt.must_write_tlv(NetToMgmt::WsDisconnected, &[]).await;
         }
         WsEvent::Received(data) => {
             match *ws_mode {
                 WsMode::Normal => {
-                    // Push audio to jitter buffer instead of sending directly
-                    if !audio_buffer.push(&data) {
-                        info!("net: audio buffer overrun");
+                    // Extract channel_id from first byte and route to appropriate buffer
+                    if data.len() < 2 {
+                        info!("net: received data too short");
+                        return;
+                    }
+                    let channel_id = data[0];
+                    let payload = &data[1..];
+
+                    match ChannelId::try_from(channel_id) {
+                        Ok(ChannelId::Ptt) => {
+                            if !ptt_buffer.push(payload) {
+                                info!("net: ptt buffer overrun");
+                            }
+                        }
+                        Ok(ChannelId::PttAi) => {
+                            if !ptt_ai_buffer.push(payload) {
+                                info!("net: ptt_ai buffer overrun");
+                            }
+                        }
+                        _ => {
+                            info!("net: unknown channel_id {}", channel_id);
+                        }
                     }
                 }
                 WsMode::Ping => {

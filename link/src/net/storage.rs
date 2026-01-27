@@ -12,12 +12,17 @@ pub use crate::shared::moq::{
     MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampleType,
 };
 
+// Re-export channel configuration types from shared
+pub use crate::shared::channel::{ChannelConfig, MAX_CHANNELS, MAX_CHANNEL_URL_LEN};
+
 /// Persistent storage data for the NET chip.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NetStorageData {
     pub wifi_ssids: Vec<WifiSsid, MAX_WIFI_SSIDS>,
     pub relay_url: String<MAX_RELAY_URL_LEN>,
+    /// Channel-specific configurations (added in V2).
+    pub channels: Vec<ChannelConfig, MAX_CHANNELS>,
 }
 
 /// Flash storage interface for the NET chip.
@@ -31,7 +36,8 @@ pub struct NetStorage<F> {
 const MAGIC: [u8; 4] = *b"LNKS";
 
 /// Storage format version.
-const VERSION: u8 = 1;
+/// V2 adds channel configurations.
+const VERSION: u8 = 2;
 
 /// Header size: 4 bytes magic + 1 byte version + 2 bytes length.
 const HEADER_SIZE: usize = 7;
@@ -145,6 +151,41 @@ where
     pub fn set_relay_url(&mut self, url: &str) -> Result<(), ()> {
         self.data.relay_url = String::try_from(url).map_err(|_| ())?;
         Ok(())
+    }
+
+    /// Get configuration for a specific channel.
+    pub fn get_channel_config(&self, channel_id: u8) -> Option<&ChannelConfig> {
+        self.data
+            .channels
+            .iter()
+            .find(|c| c.channel_id == channel_id)
+    }
+
+    /// Set configuration for a channel.
+    /// Replaces existing config for that channel_id or adds new one.
+    pub fn set_channel_config(&mut self, config: ChannelConfig) -> Result<(), ()> {
+        // Find and replace existing, or add new
+        if let Some(existing) = self
+            .data
+            .channels
+            .iter_mut()
+            .find(|c| c.channel_id == config.channel_id)
+        {
+            *existing = config;
+        } else {
+            self.data.channels.push(config).map_err(|_| ())?;
+        }
+        Ok(())
+    }
+
+    /// Get all channel configurations.
+    pub fn get_all_channel_configs(&self) -> &Vec<ChannelConfig, MAX_CHANNELS> {
+        &self.data.channels
+    }
+
+    /// Clear all channel configurations.
+    pub fn clear_channel_configs(&mut self) {
+        self.data.channels.clear();
     }
 }
 
@@ -279,5 +320,87 @@ mod tests {
 
         // Should fail when full
         assert!(storage.add_wifi_ssid("Overflow", "Pass").is_err());
+    }
+
+    #[test]
+    fn set_and_get_channel_config() {
+        let flash = MockFlash::new();
+        let mut storage = NetStorage::new(flash, 0);
+
+        let config = ChannelConfig {
+            channel_id: 0,
+            enabled: true,
+            relay_url: heapless::String::try_from("wss://ptt.relay.com").unwrap(),
+        };
+
+        storage.set_channel_config(config.clone()).unwrap();
+
+        let retrieved = storage.get_channel_config(0).unwrap();
+        assert_eq!(retrieved.channel_id, 0);
+        assert!(retrieved.enabled);
+        assert_eq!(retrieved.relay_url.as_str(), "wss://ptt.relay.com");
+    }
+
+    #[test]
+    fn update_channel_config() {
+        let flash = MockFlash::new();
+        let mut storage = NetStorage::new(flash, 0);
+
+        // Add initial config
+        let config1 = ChannelConfig {
+            channel_id: 1,
+            enabled: true,
+            relay_url: heapless::String::try_from("wss://first.relay").unwrap(),
+        };
+        storage.set_channel_config(config1).unwrap();
+
+        // Update same channel
+        let config2 = ChannelConfig {
+            channel_id: 1,
+            enabled: false,
+            relay_url: heapless::String::try_from("wss://second.relay").unwrap(),
+        };
+        storage.set_channel_config(config2).unwrap();
+
+        // Should only have one entry
+        assert_eq!(storage.get_all_channel_configs().len(), 1);
+
+        let retrieved = storage.get_channel_config(1).unwrap();
+        assert!(!retrieved.enabled);
+        assert_eq!(retrieved.relay_url.as_str(), "wss://second.relay");
+    }
+
+    #[test]
+    fn clear_channel_configs() {
+        let flash = MockFlash::new();
+        let mut storage = NetStorage::new(flash, 0);
+
+        storage
+            .set_channel_config(ChannelConfig {
+                channel_id: 0,
+                enabled: true,
+                relay_url: heapless::String::new(),
+            })
+            .unwrap();
+        storage
+            .set_channel_config(ChannelConfig {
+                channel_id: 1,
+                enabled: true,
+                relay_url: heapless::String::new(),
+            })
+            .unwrap();
+
+        assert_eq!(storage.get_all_channel_configs().len(), 2);
+
+        storage.clear_channel_configs();
+        assert!(storage.get_all_channel_configs().is_empty());
+    }
+
+    #[test]
+    fn channel_config_not_found() {
+        let flash = MockFlash::new();
+        let storage = NetStorage::new(flash, 0);
+
+        assert!(storage.get_channel_config(99).is_none());
     }
 }

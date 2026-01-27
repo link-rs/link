@@ -168,6 +168,17 @@ pub enum MgmtToNet {
     SendChatMessage,
     /// Run MoQ loopback mode - publish audio to MoQ and subscribe to same track
     RunMoqLoopback,
+    // Channel configuration commands
+    /// Get channel configuration (value: channel_id u8)
+    GetChannelConfig,
+    /// Set channel configuration (value: postcard-serialized ChannelConfig)
+    SetChannelConfig,
+    /// Get all channel configurations (no payload)
+    GetAllChannelConfigs,
+    /// Clear all channel configurations (no payload)
+    ClearChannelConfigs,
+    /// Get jitter buffer stats for a channel (value: channel_id u8)
+    GetJitterStats,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -205,6 +216,13 @@ pub enum NetToMgmt {
     ChatMessageSent,
     /// Chat message received (value: UTF-8 message)
     ChatMessageReceived,
+    // Channel configuration responses
+    /// Channel configuration (value: postcard-serialized ChannelConfig)
+    ChannelConfig,
+    /// All channel configurations (value: postcard-serialized Vec<ChannelConfig>)
+    AllChannelConfigs,
+    /// Jitter buffer statistics (19 bytes: received u32, output u32, underruns u32, overruns u32, level u16, state u8)
+    JitterStats,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

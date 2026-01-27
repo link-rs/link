@@ -13,7 +13,6 @@
 
 use audio_codec_algorithms::{decode_alaw, encode_alaw};
 use embedded_hal::i2c::I2c;
-use heapless::Vec;
 
 /// Size of an encoded audio frame in bytes (A-law mono samples).
 /// This is the transmitted frame size over the network.

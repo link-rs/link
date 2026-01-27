@@ -200,6 +200,7 @@ mod async_tlv {
         ///
         /// Default implementation concatenates parts into a temporary buffer.
         /// Implementations for actual writers should override to write parts directly.
+        #[allow(dead_code)]
         async fn write_tlv_parts(
             &mut self,
             tlv_type: T,
@@ -217,6 +218,7 @@ mod async_tlv {
             self.write_tlv(tlv_type, value).await.unwrap()
         }
 
+        #[allow(dead_code)]
         async fn must_write_tlv_parts(&mut self, tlv_type: T, parts: &[&[u8]]) {
             self.write_tlv_parts(tlv_type, parts).await.unwrap()
         }

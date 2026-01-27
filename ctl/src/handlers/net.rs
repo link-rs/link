@@ -1,6 +1,7 @@
 //! NET chip command handlers.
 
-use crate::{App, GetSetBool, GetSetString, GetSetU32, NetAction, WifiAction};
+use crate::{App, ChannelAction, GetSetBool, GetSetString, GetSetU32, NetAction, WifiAction};
+use link::ctl::ChannelConfig;
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::{ProgressCallbacks, SetTimeout};
 
@@ -424,6 +425,98 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             println!("\nMonitor stopped.");
 
             result
+        }
+        NetAction::Channel { action } => match action {
+            None => {
+                // List all channel configs
+                let configs = app.get_all_channel_configs()?;
+                if configs.is_empty() {
+                    println!("No channel configurations");
+                } else {
+                    println!("Channel configurations:");
+                    for config in configs.iter() {
+                        let channel_name = match config.channel_id {
+                            0 => "Ptt",
+                            1 => "PttAi",
+                            3 => "ChatAi",
+                            id => &format!("Unknown({})", id),
+                        };
+                        println!(
+                            "  {} ({}): enabled={}, relay_url={}",
+                            config.channel_id,
+                            channel_name,
+                            config.enabled,
+                            if config.relay_url.is_empty() {
+                                "(global)"
+                            } else {
+                                config.relay_url.as_str()
+                            }
+                        );
+                    }
+                }
+                Ok(())
+            }
+            Some(ChannelAction::Get { channel_id }) => {
+                let config = app.get_channel_config(channel_id)?;
+                let channel_name = match config.channel_id {
+                    0 => "Ptt",
+                    1 => "PttAi",
+                    3 => "ChatAi",
+                    _ => "Unknown",
+                };
+                println!("Channel {} ({}):", config.channel_id, channel_name);
+                println!("  enabled: {}", config.enabled);
+                println!(
+                    "  relay_url: {}",
+                    if config.relay_url.is_empty() {
+                        "(global)"
+                    } else {
+                        config.relay_url.as_str()
+                    }
+                );
+                Ok(())
+            }
+            Some(ChannelAction::Set {
+                channel_id,
+                enabled,
+                relay_url,
+            }) => {
+                let config = ChannelConfig {
+                    channel_id,
+                    enabled,
+                    relay_url: relay_url.as_str().try_into().map_err(|_| "relay_url too long")?,
+                };
+                app.set_channel_config(&config)?;
+                println!("Channel {} configuration updated", channel_id);
+                Ok(())
+            }
+            Some(ChannelAction::Clear) => {
+                app.clear_channel_configs()?;
+                println!("All channel configurations cleared");
+                Ok(())
+            }
+        },
+        NetAction::JitterStats { channel_id } => {
+            let stats = app.get_jitter_stats(channel_id)?;
+            let channel_name = match channel_id {
+                0 => "Ptt",
+                1 => "PttAi",
+                3 => "ChatAi",
+                _ => "Unknown",
+            };
+            let state_name = match stats.state {
+                0 => "Buffering",
+                1 => "Playing",
+                _ => "Unknown",
+            };
+            println!("Jitter buffer stats for channel {} ({}):", channel_id, channel_name);
+            println!("  received:  {}", stats.received);
+            println!("  output:    {}", stats.output);
+            println!("  underruns: {}", stats.underruns);
+            println!("  overruns:  {}", stats.overruns);
+            println!("  level:     {}", stats.level);
+            println!("  state:     {} ({})", stats.state, state_name);
+            Ok(())
         }
     }
 }

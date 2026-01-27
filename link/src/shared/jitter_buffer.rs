@@ -10,7 +10,8 @@ use alloc::vec::Vec;
 pub const BUFFER_FRAMES: usize = 32; // 640ms at 20ms/frame
 
 /// Target buffer level before starting playback.
-pub const MIN_START_LEVEL: usize = 10; // 200ms
+/// 5 frames = 100ms at 20ms/frame (matches HACTAR jitter buffer).
+pub const MIN_START_LEVEL: usize = 5;
 
 /// Jitter buffer state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

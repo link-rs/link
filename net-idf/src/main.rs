@@ -19,15 +19,18 @@ use esp_idf_svc::{
     nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
 };
 use link::{
-    net::{WifiSsid, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS},
-    uart_config, Color, MgmtToNet, NetToMgmt, NetToUi, UiToNet, HEADER_SIZE, MAX_VALUE_SIZE,
-    SYNC_WORD,
+    net::{
+        ChannelConfig, JitterBuffer, JitterState, WifiSsid, MAX_CHANNELS, MAX_RELAY_URL_LEN,
+        MAX_WIFI_SSIDS,
+    },
+    uart_config, ChannelId, Color, MgmtToNet, NetToMgmt, NetToUi, UiToNet, HEADER_SIZE,
+    MAX_VALUE_SIZE, SYNC_WORD,
 };
 use log::{info, warn};
 use quicr::{ClientBuilder, FullTrackName, ObjectHeaders, Subscription, TrackNamespace};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ============================================================================
 // MoQ Command/Event Types
@@ -843,11 +846,13 @@ struct NvsStorage {
     nvs: Option<EspNvs<NvsDefault>>,
     wifi_ssids: heapless::Vec<WifiSsid, MAX_WIFI_SSIDS>,
     relay_url: String,
+    channels: heapless::Vec<ChannelConfig, MAX_CHANNELS>,
 }
 
 // NVS key names (max 15 chars)
 const NVS_KEY_WIFI_SSIDS: &str = "wifi_ssids";
 const NVS_KEY_RELAY_URL: &str = "relay_url";
+const NVS_KEY_CHANNELS: &str = "channels";
 
 impl NvsStorage {
     /// Load storage from NVS
@@ -856,6 +861,7 @@ impl NvsStorage {
             nvs,
             wifi_ssids: heapless::Vec::new(),
             relay_url: String::new(),
+            channels: heapless::Vec::new(),
         };
 
         // Load WiFi SSIDs
@@ -897,6 +903,28 @@ impl NvsStorage {
                     warn!("net-idf: failed to read relay URL from NVS: {:?}", e);
                 }
             }
+
+            // Load channel configurations
+            let mut channel_buf = [0u8; 512];
+            match nvs.get_blob(NVS_KEY_CHANNELS, &mut channel_buf) {
+                Ok(Some(data)) => {
+                    if let Ok(channels) =
+                        postcard::from_bytes::<heapless::Vec<ChannelConfig, MAX_CHANNELS>>(data)
+                    {
+                        storage.channels = channels;
+                        info!(
+                            "net-idf: loaded {} channel configs from NVS",
+                            storage.channels.len()
+                        );
+                    }
+                }
+                Ok(None) => {
+                    info!("net-idf: no channel configs in NVS");
+                }
+                Err(e) => {
+                    warn!("net-idf: failed to read channel configs from NVS: {:?}", e);
+                }
+            }
         }
 
         storage
@@ -924,6 +952,16 @@ impl NvsStorage {
             let _ = nvs.remove(NVS_KEY_RELAY_URL);
         }
 
+        // Save channel configurations
+        if !self.channels.is_empty() {
+            if let Ok(serialized) = postcard::to_allocvec(&self.channels) {
+                nvs.set_blob(NVS_KEY_CHANNELS, &serialized)?;
+                info!("net-idf: saved {} channel configs to NVS", self.channels.len());
+            }
+        } else {
+            let _ = nvs.remove(NVS_KEY_CHANNELS);
+        }
+
         Ok(())
     }
 
@@ -939,6 +977,28 @@ impl NvsStorage {
 
         self.wifi_ssids.push(wifi).map_err(|_| ())?;
         Ok(())
+    }
+
+    /// Get configuration for a specific channel.
+    fn get_channel_config(&self, channel_id: u8) -> Option<&ChannelConfig> {
+        self.channels.iter().find(|c| c.channel_id == channel_id)
+    }
+
+    /// Set configuration for a channel.
+    /// Replaces existing config for that channel_id or adds new one.
+    fn set_channel_config(&mut self, config: ChannelConfig) -> Result<(), ()> {
+        if let Some(existing) = self.channels.iter_mut().find(|c| c.channel_id == config.channel_id)
+        {
+            *existing = config;
+        } else {
+            self.channels.push(config).map_err(|_| ())?;
+        }
+        Ok(())
+    }
+
+    /// Clear all channel configurations.
+    fn clear_channel_configs(&mut self) {
+        self.channels.clear();
     }
 }
 
@@ -1059,6 +1119,12 @@ fn main() {
     // MoQ configuration
     let mut moq_config = MoqConfig::default();
 
+    // Per-channel jitter buffers
+    let mut ptt_buffer = JitterBuffer::new();
+    let mut ptt_ai_buffer = JitterBuffer::new();
+    let mut last_buffer_tick = Instant::now();
+    const BUFFER_TICK_INTERVAL: Duration = Duration::from_millis(20);
+
     // Try to connect to WiFi if we have credentials
     if !storage.wifi_ssids.is_empty() {
         let wifi_ssid = &storage.wifi_ssids[0];
@@ -1101,6 +1167,8 @@ fn main() {
                     &mut loopback,
                     &mut moq_config,
                     &moq_cmd_tx,
+                    &ptt_buffer,
+                    &ptt_ai_buffer,
                 );
             }
         }
@@ -1146,12 +1214,51 @@ fn main() {
                 info!("net-idf: chat received: {}", message);
             }
             Ok(MoqEvent::AudioReceived { data }) => {
-                // Forward received audio to UI chip
-                write_tlv(&ui_uart, NetToUi::AudioFrame, &data);
+                // Route received audio to appropriate jitter buffer based on channel_id
+                if data.len() >= 2 {
+                    let channel_id = data[0];
+                    let payload = &data[1..];
+                    match ChannelId::try_from(channel_id) {
+                        Ok(ChannelId::Ptt) => {
+                            if !ptt_buffer.push(payload) {
+                                warn!("net-idf: ptt buffer overrun");
+                            }
+                        }
+                        Ok(ChannelId::PttAi) => {
+                            if !ptt_ai_buffer.push(payload) {
+                                warn!("net-idf: ptt_ai buffer overrun");
+                            }
+                        }
+                        _ => {
+                            warn!("net-idf: unknown channel_id {}", channel_id);
+                        }
+                    }
+                }
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
                 warn!("net-idf: MoQ event channel closed");
+            }
+        }
+
+        // Timer tick - pop from jitter buffers every 20ms
+        if last_buffer_tick.elapsed() >= BUFFER_TICK_INTERVAL {
+            last_buffer_tick = Instant::now();
+
+            // Pop from each channel buffer and send to UI
+            for (buffer, channel_id) in [
+                (&mut ptt_buffer, ChannelId::Ptt),
+                (&mut ptt_ai_buffer, ChannelId::PttAi),
+            ] {
+                if buffer.state() == JitterState::Playing || buffer.level() >= 5 {
+                    if let Some(frame) = buffer.pop() {
+                        // Prepend channel_id to the frame
+                        let mut out = Vec::with_capacity(1 + frame.len());
+                        out.push(channel_id as u8);
+                        out.extend_from_slice(&frame);
+                        write_tlv(&ui_uart, NetToUi::AudioFrame, &out);
+                    }
+                }
             }
         }
 
@@ -1323,6 +1430,8 @@ fn handle_mgmt_message(
     loopback: &mut bool,
     moq: &mut MoqConfig,
     moq_cmd_tx: &Sender<MoqCommand>,
+    ptt_buffer: &JitterBuffer,
+    ptt_ai_buffer: &JitterBuffer,
 ) {
     match msg_type {
         MgmtToNet::Ping => {
@@ -1442,6 +1551,80 @@ fn handle_mgmt_message(
         MgmtToNet::RunMoqLoopback => {
             let _ = moq_cmd_tx.send(MoqCommand::RunMoqLoopback);
             write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
+        // Channel configuration commands
+        MgmtToNet::GetChannelConfig => {
+            let channel_id = value.first().copied().unwrap_or(0);
+            if let Some(config) = storage.get_channel_config(channel_id) {
+                if let Ok(serialized) = postcard::to_allocvec(config) {
+                    write_tlv(mgmt_uart, NetToMgmt::ChannelConfig, &serialized);
+                } else {
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"serialize");
+                }
+            } else {
+                // Return default config for unconfigured channel
+                let default_config = ChannelConfig {
+                    channel_id,
+                    enabled: false,
+                    relay_url: heapless::String::new(),
+                };
+                if let Ok(serialized) = postcard::to_allocvec(&default_config) {
+                    write_tlv(mgmt_uart, NetToMgmt::ChannelConfig, &serialized);
+                } else {
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"serialize");
+                }
+            }
+        }
+        MgmtToNet::SetChannelConfig => {
+            if let Ok(config) = postcard::from_bytes::<ChannelConfig>(value) {
+                if storage.set_channel_config(config).is_ok() {
+                    if storage.save().is_ok() {
+                        write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                    } else {
+                        write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+                    }
+                } else {
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"set");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"deserialize");
+            }
+        }
+        MgmtToNet::GetAllChannelConfigs => {
+            if let Ok(serialized) = postcard::to_allocvec(&storage.channels) {
+                write_tlv(mgmt_uart, NetToMgmt::AllChannelConfigs, &serialized);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"serialize");
+            }
+        }
+        MgmtToNet::ClearChannelConfigs => {
+            storage.clear_channel_configs();
+            if storage.save().is_ok() {
+                write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+            }
+        }
+        MgmtToNet::GetJitterStats => {
+            let channel_id = value.first().copied().unwrap_or(0);
+            let stats = match ChannelId::try_from(channel_id) {
+                Ok(ChannelId::Ptt) => Some(ptt_buffer.stats()),
+                Ok(ChannelId::PttAi) => Some(ptt_ai_buffer.stats()),
+                _ => None,
+            };
+            if let Some(s) = stats {
+                // Serialize: received(4) + output(4) + underruns(4) + overruns(4) + level(2) + state(1) = 19 bytes
+                let mut buf = [0u8; 19];
+                buf[0..4].copy_from_slice(&s.received.to_le_bytes());
+                buf[4..8].copy_from_slice(&s.output.to_le_bytes());
+                buf[8..12].copy_from_slice(&s.underruns.to_le_bytes());
+                buf[12..16].copy_from_slice(&s.overruns.to_le_bytes());
+                buf[16..18].copy_from_slice(&(s.level as u16).to_le_bytes());
+                buf[18] = s.state as u8;
+                write_tlv(mgmt_uart, NetToMgmt::JitterStats, &buf);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"invalid channel");
+            }
         }
     }
 }

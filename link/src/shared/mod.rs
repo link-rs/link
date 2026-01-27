@@ -2,8 +2,8 @@
 
 pub mod chunk;
 
-// Jitter buffer - only for net firmware with audio-buffer or tests
-#[cfg(any(all(feature = "net", feature = "audio-buffer"), test))]
+// Jitter buffer - for net firmware with audio-buffer, esp-idf, or tests
+#[cfg(any(all(feature = "net", feature = "audio-buffer"), feature = "esp-idf", test))]
 pub mod jitter_buffer;
 
 pub mod led;
@@ -27,12 +27,16 @@ pub mod moq;
 #[cfg(any(feature = "ctl", feature = "net"))]
 pub mod wifi;
 
+// Channel configuration types - used by ctl and net
+#[cfg(any(feature = "ctl", feature = "net"))]
+pub mod channel;
+
 // Re-export the info macro (no-op when defmt is disabled)
 #[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 pub(crate) use logging::info;
 
-// Jitter buffer types - only for net firmware with audio-buffer or tests
-#[cfg(any(all(feature = "net", feature = "audio-buffer"), test))]
+// Jitter buffer types - for net firmware with audio-buffer, esp-idf, or tests
+#[cfg(any(all(feature = "net", feature = "audio-buffer"), feature = "esp-idf", test))]
 #[allow(unused_imports)] // Re-exported for public API
 pub use jitter_buffer::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
 
@@ -61,6 +65,11 @@ pub use moq::{MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampl
 #[cfg(any(feature = "ctl", feature = "net"))]
 #[allow(unused_imports)] // Re-exported for public API
 pub use wifi::WifiSsid;
+
+// Channel configuration types - used by ctl and net
+#[cfg(any(feature = "ctl", feature = "net"))]
+#[allow(unused_imports)] // Re-exported for public API
+pub use channel::{ChannelConfig, MAX_CHANNELS, MAX_CHANNEL_URL_LEN};
 
 // Re-export embassy_sync types for use by firmware chip modules that need them
 #[cfg(any(feature = "net", feature = "ui"))]

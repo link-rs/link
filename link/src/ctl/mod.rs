@@ -7,9 +7,10 @@ extern crate alloc;
 pub mod stm;
 
 use crate::shared::{
-    CtlToMgmt, HEADER_SIZE, LoopbackMode, MAX_VALUE_SIZE, MgmtToCtl, MgmtToNet, MgmtToUi,
-    NetToMgmt, SYNC_WORD, Tlv, UiToMgmt, WifiSsid,
+    CtlToMgmt, HEADER_SIZE, LoopbackMode, MAX_CHANNELS, MAX_VALUE_SIZE, MgmtToCtl, MgmtToNet,
+    MgmtToUi, NetToMgmt, SYNC_WORD, Tlv, UiToMgmt, WifiSsid,
 };
+pub use crate::shared::ChannelConfig;
 use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
 use espflash::flasher::{FlashData, FlashSettings, Flasher};
 use espflash::image_format::idf::IdfBootloaderFormat;
@@ -93,6 +94,23 @@ pub struct SpeedTestResults {
     pub send_time_ms: u32,
     /// Time to receive all responses in milliseconds.
     pub recv_time_ms: u32,
+}
+
+/// Jitter buffer statistics from the NET chip.
+#[derive(Debug, Clone, Default)]
+pub struct JitterStatsResult {
+    /// Total frames received.
+    pub received: u32,
+    /// Total frames output.
+    pub output: u32,
+    /// Number of underruns (had to output silence).
+    pub underruns: u32,
+    /// Number of overruns (had to drop frames).
+    pub overruns: u32,
+    /// Current buffer level.
+    pub level: u16,
+    /// Current state (0=Buffering, 1=Playing).
+    pub state: u8,
 }
 
 /// Information retrieved from the MGMT chip when it's in bootloader mode.
@@ -223,6 +241,10 @@ pub enum CtlError {
     /// Invalid UTF-8 in response.
     #[error("invalid UTF-8 in response")]
     InvalidUtf8,
+
+    /// Invalid data format (deserialization failed).
+    #[error("invalid data format")]
+    InvalidData,
 
     /// Timeout waiting for response.
     #[error("timeout")]
@@ -965,6 +987,132 @@ where
             });
         }
         Ok(())
+    }
+
+    /// Get configuration for a specific channel.
+    ///
+    /// Returns the channel configuration, or a default (disabled) config
+    /// if the channel hasn't been configured.
+    pub fn get_channel_config(&mut self, channel_id: u8) -> Result<ChannelConfig, CtlError> {
+        write_tlv(
+            &mut self.writer.net(),
+            MgmtToNet::GetChannelConfig,
+            &[channel_id],
+        )?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::ChannelConfig {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "ChannelConfig",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        postcard::from_bytes(&tlv.value).map_err(|_| CtlError::InvalidData)
+    }
+
+    /// Set configuration for a channel.
+    ///
+    /// Replaces existing config for that channel_id or adds new one.
+    pub fn set_channel_config(&mut self, config: &ChannelConfig) -> Result<(), CtlError> {
+        let mut buf = [0u8; 256];
+        let serialized = postcard::to_slice(config, &mut buf).map_err(|_| CtlError::TooLong)?;
+        write_tlv(&mut self.writer.net(), MgmtToNet::SetChannelConfig, serialized)?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get all channel configurations.
+    pub fn get_all_channel_configs(
+        &mut self,
+    ) -> Result<heapless::Vec<ChannelConfig, MAX_CHANNELS>, CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::GetAllChannelConfigs, &[])?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::AllChannelConfigs {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "AllChannelConfigs",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        postcard::from_bytes(&tlv.value).map_err(|_| CtlError::InvalidData)
+    }
+
+    /// Clear all channel configurations.
+    pub fn clear_channel_configs(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.net(), MgmtToNet::ClearChannelConfigs, &[])?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get jitter buffer statistics for a channel.
+    ///
+    /// Only available when the NET chip is built with the `audio-buffer` feature.
+    pub fn get_jitter_stats(&mut self, channel_id: u8) -> Result<JitterStatsResult, CtlError> {
+        write_tlv(
+            &mut self.writer.net(),
+            MgmtToNet::GetJitterStats,
+            &[channel_id],
+        )?;
+        let tlv: Tlv<NetToMgmt> =
+            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != NetToMgmt::JitterStats {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "JitterStats",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        // Parse: received(4) + output(4) + underruns(4) + overruns(4) + level(2) + state(1) = 19 bytes
+        if tlv.value.len() < 19 {
+            return Err(CtlError::InvalidData);
+        }
+        let received = u32::from_le_bytes([
+            tlv.value[0],
+            tlv.value[1],
+            tlv.value[2],
+            tlv.value[3],
+        ]);
+        let output = u32::from_le_bytes([
+            tlv.value[4],
+            tlv.value[5],
+            tlv.value[6],
+            tlv.value[7],
+        ]);
+        let underruns = u32::from_le_bytes([
+            tlv.value[8],
+            tlv.value[9],
+            tlv.value[10],
+            tlv.value[11],
+        ]);
+        let overruns = u32::from_le_bytes([
+            tlv.value[12],
+            tlv.value[13],
+            tlv.value[14],
+            tlv.value[15],
+        ]);
+        let level = u16::from_le_bytes([tlv.value[16], tlv.value[17]]);
+        let state = tlv.value[18];
+        Ok(JitterStatsResult {
+            received,
+            output,
+            underruns,
+            overruns,
+            level,
+            state,
+        })
     }
 
     /// Send data over WebSocket and verify echo response.
