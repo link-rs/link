@@ -1410,14 +1410,19 @@ fn try_read_tlv(
 /// Write a TLV message to UART
 fn write_tlv<T: Into<u16>>(uart: &UartDriver, msg_type: T, value: &[u8]) {
     let msg_type: u16 = msg_type.into();
-    uart.write(&SYNC_WORD).ok();
-    let mut header = [0u8; HEADER_SIZE];
-    header[0..2].copy_from_slice(&msg_type.to_be_bytes());
-    header[2..6].copy_from_slice(&(value.len() as u32).to_be_bytes());
-    uart.write(&header).ok();
+
+    // Buffer entire TLV to write atomically (prevents log interleaving)
+    let total_len = SYNC_WORD.len() + HEADER_SIZE + value.len();
+    let mut buf = vec![0u8; total_len];
+
+    buf[0..4].copy_from_slice(&SYNC_WORD);
+    buf[4..6].copy_from_slice(&msg_type.to_be_bytes());
+    buf[6..10].copy_from_slice(&(value.len() as u32).to_be_bytes());
     if !value.is_empty() {
-        uart.write(value).ok();
+        buf[10..].copy_from_slice(value);
     }
+
+    uart.write(&buf).ok();
 }
 
 /// Handle message from MGMT chip

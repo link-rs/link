@@ -263,8 +263,18 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
                 }
             })();
 
-            // Always restore terminal mode
+            // Always restore terminal mode and timeout
             terminal::disable_raw_mode()?;
+
+            // Restore timeout to normal (3 seconds)
+            if let Err(e) = app
+                .reader_mut()
+                .inner_mut()
+                .set_timeout(Duration::from_secs(3))
+            {
+                eprintln!("Warning: couldn't restore timeout: {}", e);
+            }
+
             println!("\nMonitor stopped.");
 
             result

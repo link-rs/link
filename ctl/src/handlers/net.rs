@@ -420,8 +420,18 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 }
             })();
 
-            // Always restore terminal mode
+            // Always restore terminal mode and timeout
             terminal::disable_raw_mode()?;
+
+            // Restore timeout to normal (3 seconds)
+            if let Err(e) = app
+                .reader_mut()
+                .inner_mut()
+                .set_timeout(std::time::Duration::from_secs(3))
+            {
+                eprintln!("Warning: couldn't restore timeout: {}", e);
+            }
+
             println!("\nMonitor stopped.");
 
             result
