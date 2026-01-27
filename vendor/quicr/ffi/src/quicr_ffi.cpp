@@ -6,10 +6,12 @@
 #include <quicr/client.h>
 #include <quicr/publish_track_handler.h>
 #include <quicr/subscribe_track_handler.h>
+#include <quicr/subscribe_namespace_handler.h>
 
 #include <spdlog/spdlog.h>
 
 #include <atomic>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -302,6 +304,7 @@ private:
 struct QuicrClient {
     std::shared_ptr<FfiClient> client;
     std::mutex mutex;
+    std::map<quicr::TrackNamespace, std::shared_ptr<quicr::SubscribeNamespaceHandler>> namespace_handlers;
 };
 
 struct QuicrPublishTrackHandler {
@@ -1018,8 +1021,10 @@ extern "C" void quicr_client_subscribe_namespace(
 
     try {
         auto ns = convert_track_namespace(track_namespace);
+        auto handler = quicr::SubscribeNamespaceHandler::Create(ns);
         std::lock_guard<std::mutex> lock(client->mutex);
-        client->client->SubscribeNamespace(ns);
+        client->namespace_handlers[ns] = handler;
+        client->client->SubscribeNamespace(handler);
     } catch (const std::exception& e) {
         set_error(e.what());
     } catch (...) {
@@ -1038,7 +1043,11 @@ extern "C" void quicr_client_unsubscribe_namespace(
     try {
         auto ns = convert_track_namespace(track_namespace);
         std::lock_guard<std::mutex> lock(client->mutex);
-        client->client->UnsubscribeNamespace(ns);
+        auto it = client->namespace_handlers.find(ns);
+        if (it != client->namespace_handlers.end()) {
+            client->client->UnsubscribeNamespace(it->second);
+            client->namespace_handlers.erase(it);
+        }
     } catch (const std::exception& e) {
         set_error(e.what());
     } catch (...) {
