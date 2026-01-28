@@ -4,18 +4,18 @@ This document describes the changes needed to make the link firmware implement t
 
 ## Current State Analysis
 
-### What net-idf Already Has
+### What net Already Has
 
 | Feature | Location | Status |
 |---------|----------|--------|
-| MoQ transport via quicr | `net-idf/src/main.rs:27` | Working |
+| MoQ transport via quicr | `net/src/main.rs:27` | Working |
 | ClientBuilder, FullTrackName, Subscription | quicr crate | Working |
-| WiFi connectivity with NVS storage | `net-idf/src/main.rs:834-943` | Working |
-| TLV inter-chip protocol | `net-idf/src/main.rs:1243-1314` | Working |
-| MoQ loopback mode (publish + subscribe) | `net-idf/src/main.rs:279-342` | Working |
-| Audio frame forwarding to MoQ | `net-idf/src/main.rs:334-343` | Working |
-| Audio reception from MoQ | `net-idf/src/main.rs:439-467` | Working |
-| Relay URL storage/connection | `net-idf/src/main.rs:155-198` | Working |
+| WiFi connectivity with NVS storage | `net/src/main.rs:834-943` | Working |
+| TLV inter-chip protocol | `net/src/main.rs:1243-1314` | Working |
+| MoQ loopback mode (publish + subscribe) | `net/src/main.rs:279-342` | Working |
+| Audio frame forwarding to MoQ | `net/src/main.rs:334-343` | Working |
+| Audio reception from MoQ | `net/src/main.rs:439-467` | Working |
+| Relay URL storage/connection | `net/src/main.rs:155-198` | Working |
 
 ### What link Shared Library Has
 
@@ -274,7 +274,7 @@ where
 }
 ```
 
-### Phase 3: NET Chip Changes (net-idf/src/main.rs)
+### Phase 3: NET Chip Changes (net/src/main.rs)
 
 #### 3.1 Add Channel-Based Track Management
 
@@ -429,7 +429,7 @@ Ok(MoqCommand::AudioFrame { channel_id, data }) => {
 
 #### 3.5 Update UI Message Handler
 
-**File:** `net-idf/src/main.rs`, `handle_ui_message` function:
+**File:** `net/src/main.rs`, `handle_ui_message` function:
 
 ```rust
 fn handle_ui_message(
@@ -547,7 +547,7 @@ Ok(MoqEvent::AudioReceived { channel_id, data }) => {
 
 #### 4.1 Add Channel Configuration to NVS
 
-**File:** `net-idf/src/main.rs`
+**File:** `net/src/main.rs`
 
 ```rust
 const NVS_KEY_CHANNEL_NAME: &str = "channel_name";
@@ -597,7 +597,7 @@ pub enum MgmtToNet {
    - Update outbound audio to use chunk format
    - Update inbound parsing for chunk format
 
-3. **Phase 3**: NET chip (net-idf) updates
+3. **Phase 3**: NET chip (net) updates
    - Add channel state management
    - Update `MoqCommand`/`MoqEvent` for channels
    - Update UI message handling for channel routing
@@ -653,7 +653,7 @@ AIRequest chunk (ChannelId::PttAi):
 | `link/src/shared/chunk.rs` | Create | Chunk serialization/deserialization |
 | `link/src/shared/mod.rs` | Modify | Export chunk module |
 | `link/src/ui/mod.rs` | Modify | Update audio frame handling for chunks |
-| `net-idf/src/main.rs` | Modify | Add channel routing, update MoQ commands/events |
+| `net/src/main.rs` | Modify | Add channel routing, update MoQ commands/events |
 
 ## Open Questions
 

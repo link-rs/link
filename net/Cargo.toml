@@ -1,65 +1,42 @@
 [package]
-edition = "2021"
 name = "net"
-rust-version = "1.88"
 version = "0.1.0"
+authors = ["Richard Barnes <rlb@ipv.sx>"]
+edition = "2021"
+resolver = "2"
+rust-version = "1.77"
 
-[dependencies]
-defmt = "1"
-esp-bootloader-esp-idf = { version = "0.2", features = ["esp32s3", "defmt"] }
-esp-hal = { version = "1.0", features = ["defmt", "esp32s3", "unstable"] }
-esp-rtos = { version = "0.2", features = ["defmt", "esp32s3", "embassy", "esp-alloc", "esp-radio"] }
-esp-alloc = { version = "0.9", features = ["defmt"] }
-
-# WiFi support
-esp-radio = { version = "0.17", features = ["defmt", "esp32s3", "wifi"] }
-
-# Embassy async runtime and networking
-embassy-executor = { version = "0.9", features = ["defmt"] }
-embassy-time = { version = "0.5", features = ["defmt"] }
-embassy-sync = { version = "0.7", features = ["defmt"] }
-embassy-net = { version = "0.7", features = ["defmt", "dhcpv4", "tcp", "dns"] }
-embassy-futures = "0.1"
-
-# WebSocket support
-edge-ws = { version = "0.5", default-features = false, features = ["io", "defmt"] }
-edge-http = { version = "0.6", default-features = false, features = ["defmt"] }
-
-# TLS support for WSS
-embedded-tls = { version = "0.17", default-features = false, features = ["defmt"] }
-
-# Static cell for static lifetime requirements
-static_cell = "2.1"
-
-embedded-hal = "1.0"
-embedded-io = { version = "0.6", features = ["defmt-03"] }
-embedded-io-async = { version = "0.6", features = ["defmt-03"] }
-embedded-storage = "0.3"
-
-esp-storage = { version = "0.4", features = ["esp32s3"] }
-
-rtt-target = { version = "0.6", features = ["defmt"] }
-critical-section = "1.2"
-
-# Random number generation for WebSocket masking
-rand_core = "0.6"
-
-# Heapless collections for no_std
-heapless = { version = "0.9", features = ["defmt"] }
-
-# URL parsing for no_std
-url-lite = "0.1"
-
-link = { path = "../link", default-features = false, features = ["net", "defmt", "trace-tlv", "audio-buffer"] }
-
-[profile.dev]
-opt-level = "s"
+[[bin]]
+name = "net"
+harness = false # do not use the built-in cargo test harness -> resolve rust-analyzer errors
 
 [profile.release]
-codegen-units = 1
-debug = 2
-debug-assertions = false
-incremental = false
-lto = 'fat'
-opt-level = 's'
-overflow-checks = false
+opt-level = "s"
+
+[profile.dev]
+debug = true    # Symbols are nice, and they don't increase the size on Flash
+opt-level = "z"
+
+[features]
+default = []
+
+experimental = ["esp-idf-svc/experimental"]
+
+[dependencies]
+log = "0.4"
+esp-idf-svc = { version = "0.51" }
+embassy-time = { version = "0.5", features = ["generic-queue-8"] }
+quicr = { version = "0.1.0", path = "../vendor/quicr", features = ["esp-idf"] }
+link = { path = "../link", default-features = false, features = ["net", "esp-idf"] }
+heapless = { version = "0.9", features = ["serde"] }
+postcard = { version = "1", features = ["alloc"] }
+embedded-io = "0.6"
+embedded-svc = { version = "0.28.1", default-features = false }
+
+[build-dependencies]
+embuild = "0.33"
+
+[package.metadata.esp-idf-sys]
+extra_components = [
+    { component_dirs = "../vendor/quicr/esp-component" }
+]

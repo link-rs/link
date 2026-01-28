@@ -1,1202 +1,1406 @@
-#![no_std]
-#![no_main]
+//! NET chip firmware using ESP-IDF.
+//!
+//! This firmware provides:
+//! - WiFi connectivity with stored credentials
+//! - UART communication with MGMT and UI chips
+//! - LED status indication
+//! - NVS storage for WiFi credentials and relay URL
+//! - Audio loopback mode
+//! - MoQ (Media over QUIC) transport via quicr
 
-extern crate alloc;
-
-use defmt::{info, warn};
-use edge_http::ws as http_ws;
-use edge_ws::{FrameHeader, FrameType};
-use embassy_executor::Spawner;
-use embassy_futures::select::{select, Either};
-use embassy_net::{tcp::TcpSocket, Runner, StackResources};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embassy_time::{Duration, Timer};
-use embedded_io_async::Write as AsyncWrite;
-use embedded_tls::{Aes128GcmSha256, NoVerify, TlsConfig, TlsConnection, TlsContext};
-use esp_bootloader_esp_idf::partitions;
-use esp_hal::{
-    clock::CpuClock,
-    gpio::{Level, Output, OutputConfig},
-    rng::Rng,
-    timer::timg::TimerGroup,
-    uart::{
-        Config, CtsConfig, HwFlowControl, Parity, RtsConfig, RxConfig, StopBits, SwFlowControl,
-        Uart,
+use esp_idf_svc::{
+    eventloop::EspSystemEventLoop,
+    hal::{
+        gpio::{OutputPin, PinDriver},
+        prelude::Peripherals,
+        task::block_on,
+        uart::{self, UartDriver},
     },
+    nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
 };
-use esp_radio::wifi::{
-    ClientConfig, Config as WifiConfig, ModeConfig, ScanConfig, WifiController, WifiDevice,
-    WifiEvent, WifiStaState,
+use link::{
+    net::{
+        ChannelConfig, JitterBuffer, JitterState, WifiSsid, MAX_CHANNELS, MAX_RELAY_URL_LEN,
+        MAX_WIFI_SSIDS,
+    },
+    uart_config, ChannelId, Color, MgmtToNet, NetToMgmt, NetToUi, UiToNet, HEADER_SIZE,
+    MAX_VALUE_SIZE, SYNC_WORD,
 };
-use esp_storage::FlashStorage;
-use heapless::Vec;
-use link::net::{
-    EchoTestResult, NetStorage, SpeedTestResult, WsCommand, WsEvent, ECHO_TEST_PACKET_COUNT,
-    MAX_RELAY_URL_LEN,
-};
-use rand_core::{CryptoRng, RngCore};
-use static_cell::StaticCell;
+use log::{info, warn};
+use quicr::{ClientBuilder, FullTrackName, ObjectHeaders, Subscription, TrackNamespace};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
+use std::time::{Duration, Instant};
 
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    defmt::error!("panic: {:?}", info);
-    loop {}
+// ============================================================================
+// MoQ Command/Event Types
+// ============================================================================
+
+/// Commands sent to the MoQ task.
+#[derive(Clone)]
+#[allow(dead_code)]
+enum MoqCommand {
+    /// Set the relay URL (triggers reconnect if changed).
+    SetRelayUrl(String),
+    /// Run clock mode - publish timestamps every second.
+    RunClock,
+    /// Run benchmark mode - publish at target FPS.
+    RunBenchmark { fps: u32, payload_size: u32 },
+    /// Send a chat message.
+    SendChat { message: String },
+    /// Stop the current mode.
+    StopMode,
+    /// Run MoQ loopback mode - publish audio to MoQ and subscribe to same track.
+    RunMoqLoopback,
+    /// Run MoQ publish mode - publish audio to MoQ without subscribing.
+    RunPublish,
+    /// Audio frame to publish (used in MoQ loopback and publish modes).
+    AudioFrame { data: Vec<u8> },
 }
 
-esp_bootloader_esp_idf::esp_app_desc!();
+/// Events sent from the MoQ task back to the main loop.
+#[allow(dead_code)]
+enum MoqEvent {
+    /// Connected to relay.
+    Connected,
+    /// Disconnected from relay.
+    Disconnected,
+    /// Mode started.
+    ModeStarted,
+    /// Mode stopped.
+    ModeStopped,
+    /// Error occurred.
+    Error { message: String },
+    /// Chat message sent successfully.
+    ChatSent,
+    /// Chat message received.
+    ChatReceived { message: String },
+    /// Audio frame received from MoQ subscription (for loopback mode).
+    AudioReceived { data: Vec<u8> },
+}
 
-/// Convert centralized UART config to ESP32 HAL config.
-fn uart_config_to_esp32(cfg: link::uart_config::Config, flow_ctl: &HwFlowControl) -> Config {
-    use link::uart_config::{Parity as P, StopBits as S};
-    Config::default()
-        .with_baudrate(cfg.baudrate)
-        .with_parity(match cfg.parity {
-            P::None => Parity::None,
-            P::Even => Parity::Even,
+// ============================================================================
+// MoQ Configuration (stored in main loop)
+// ============================================================================
+
+/// Runtime MoQ configuration.
+struct MoqConfig {
+    /// Target FPS for benchmark mode (0 = burst mode).
+    benchmark_fps: u32,
+    /// Payload size for benchmark mode.
+    benchmark_payload_size: u32,
+}
+
+impl Default for MoqConfig {
+    fn default() -> Self {
+        Self {
+            benchmark_fps: 50,
+            benchmark_payload_size: 640,
+        }
+    }
+}
+
+// ============================================================================
+// MoQ Task
+// ============================================================================
+
+/// Device endpoint ID for MoQ connections.
+const MOQ_ENDPOINT_ID: &str = "hactar-link-net";
+
+/// Current mode the MoQ task is running.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum MoqMode {
+    #[default]
+    Idle,
+    Clock,
+    Benchmark {
+        fps: u32,
+        payload_size: u32,
+    },
+    /// MoQ loopback - publish audio to MoQ and subscribe to same track.
+    MoqLoopback,
+    /// MoQ publish - publish audio to MoQ without subscribing.
+    Publish,
+}
+
+/// Spawn the MoQ task in a separate thread.
+fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
+    use std::sync::mpsc::TryRecvError;
+    use std::time::Instant;
+
+    thread::Builder::new()
+        .name("moq".to_string())
+        .stack_size(16384)
+        .spawn(move || {
+            info!("MoQ task started");
+
+            let mut client: Option<quicr::Client> = None;
+            let mut relay_url: Option<String> = None;
+            let mut last_reconnect_attempt: Option<Instant> = None;
+            let mut mode = MoqMode::Idle;
+
+            // Clock mode state
+            let mut clock_track: Option<std::sync::Arc<quicr::PublishTrack>> = None;
+            let mut clock_group_id: u64 = 0;
+            let mut last_clock_publish: Option<Instant> = None;
+
+            // Benchmark mode state
+            let mut benchmark_track: Option<std::sync::Arc<quicr::PublishTrack>> = None;
+            let mut benchmark_group_id: u64 = 0;
+            let mut last_benchmark_publish: Option<Instant> = None;
+            let mut last_benchmark_report: Option<Instant> = None;
+            let mut benchmark_packets_sent: u64 = 0;
+
+            // MoQ loopback mode state
+            let mut loopback_pub_track: Option<std::sync::Arc<quicr::PublishTrack>> = None;
+            let mut loopback_subscription: Option<Subscription> = None;
+            let mut loopback_group_id: u64 = 0;
+            let mut loopback_object_id: u64 = 0;
+            let mut loopback_recv_count: u64 = 0;
+            let mut last_loopback_stats = Instant::now();
+
+            loop {
+                // Check for commands (non-blocking)
+                match cmd_rx.try_recv() {
+                    Ok(MoqCommand::SetRelayUrl(url)) => {
+                        info!("MoQ: setting relay URL to {}", url);
+                        // Stop any running mode and disconnect existing client
+                        mode = MoqMode::Idle;
+                        clock_track = None;
+                        benchmark_track = None;
+                        loopback_pub_track = None;
+                        loopback_subscription = None;
+                        if client.is_some() {
+                            client = None;
+                            let _ = event_tx.send(MoqEvent::Disconnected);
+                        }
+
+                        // Store URL for reconnection
+                        relay_url = Some(url.clone());
+                        last_reconnect_attempt = None;
+
+                        match ClientBuilder::new()
+                            .endpoint_id(MOQ_ENDPOINT_ID)
+                            .connect_uri(&url)
+                            .time_queue_max_duration(5000)
+                            .tick_service_sleep_delay_us(30000)
+                            .build()
+                        {
+                            Ok(c) => {
+                                match block_on(c.connect()) {
+                                    Ok(()) => {
+                                        info!("MoQ: connected to {}", url);
+                                        client = Some(c);
+                                        let _ = event_tx.send(MoqEvent::Connected);
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ: failed to connect: {:?}", e);
+                                        let _ = event_tx.send(MoqEvent::Error {
+                                            message: format!("{:?}", e),
+                                        });
+                                        last_reconnect_attempt = Some(Instant::now());
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("MoQ: failed to create client: {:?}", e);
+                                last_reconnect_attempt = Some(Instant::now());
+                            }
+                        }
+                    }
+                    Ok(MoqCommand::RunClock) => {
+                        if let Some(ref c) = client {
+                            if mode == MoqMode::Idle {
+                                info!("MoQ: starting clock mode");
+                                let namespace = TrackNamespace::from_strings(&["hactar", "clock"]);
+                                c.publish_namespace(&namespace);
+                                let track_name =
+                                    FullTrackName::from_strings(&["hactar", "clock"], "time");
+                                match block_on(c.publish(track_name)) {
+                                    Ok(track) => {
+                                        clock_track = Some(track);
+                                        clock_group_id = 0;
+                                        last_clock_publish = None;
+                                        mode = MoqMode::Clock;
+                                        let _ = event_tx.send(MoqEvent::ModeStarted);
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ: failed to create clock track: {:?}", e);
+                                        let _ = event_tx.send(MoqEvent::Error {
+                                            message: format!("{:?}", e),
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("MoQ: cannot start clock mode - not connected");
+                            let _ = event_tx.send(MoqEvent::Error {
+                                message: "not connected".to_string(),
+                            });
+                        }
+                    }
+                    Ok(MoqCommand::RunBenchmark { fps, payload_size }) => {
+                        if let Some(ref c) = client {
+                            if mode == MoqMode::Idle {
+                                info!(
+                                    "MoQ: starting benchmark mode (fps={}, size={})",
+                                    fps, payload_size
+                                );
+                                let namespace =
+                                    TrackNamespace::from_strings(&["hactar", "benchmark"]);
+                                c.publish_namespace(&namespace);
+                                let track_name =
+                                    FullTrackName::from_strings(&["hactar", "benchmark"], "data");
+                                match block_on(c.publish(track_name)) {
+                                    Ok(track) => {
+                                        benchmark_track = Some(track);
+                                        benchmark_group_id = 0;
+                                        last_benchmark_publish = None;
+                                        last_benchmark_report = Some(Instant::now());
+                                        benchmark_packets_sent = 0;
+                                        mode = MoqMode::Benchmark { fps, payload_size };
+                                        let _ = event_tx.send(MoqEvent::ModeStarted);
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ: failed to create benchmark track: {:?}", e);
+                                        let _ = event_tx.send(MoqEvent::Error {
+                                            message: format!("{:?}", e),
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("MoQ: cannot start benchmark mode - not connected");
+                            let _ = event_tx.send(MoqEvent::Error {
+                                message: "not connected".to_string(),
+                            });
+                        }
+                    }
+                    Ok(MoqCommand::StopMode) => {
+                        if mode != MoqMode::Idle {
+                            info!("MoQ: stopping mode");
+                            mode = MoqMode::Idle;
+                            clock_track = None;
+                            benchmark_track = None;
+                            loopback_pub_track = None;
+                            loopback_subscription = None;
+                            let _ = event_tx.send(MoqEvent::ModeStopped);
+                        }
+                    }
+                    Ok(MoqCommand::RunMoqLoopback) => {
+                        if let Some(ref c) = client {
+                            if mode == MoqMode::Idle {
+                                info!("MoQ: starting MoQ loopback mode");
+                                let namespace =
+                                    TrackNamespace::from_strings(&["hactar", "loopback"]);
+                                c.publish_namespace(&namespace);
+
+                                // Create publish track
+                                let pub_track_name =
+                                    FullTrackName::from_strings(&["hactar", "loopback"], "audio");
+                                match block_on(c.publish(pub_track_name.clone())) {
+                                    Ok(track) => {
+                                        loopback_pub_track = Some(track);
+                                        loopback_group_id = 0;
+                                        loopback_object_id = 0;
+
+                                        // Create subscribe track to same namespace/track
+                                        match block_on(c.subscribe(pub_track_name)) {
+                                            Ok(sub_track) => {
+                                                loopback_subscription = Some(sub_track);
+                                                mode = MoqMode::MoqLoopback;
+                                                let _ = event_tx.send(MoqEvent::ModeStarted);
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    "MoQ: failed to create loopback subscribe track: {:?}",
+                                                    e
+                                                );
+                                                loopback_pub_track = None;
+                                                let _ = event_tx.send(MoqEvent::Error {
+                                                    message: format!("{:?}", e),
+                                                });
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "MoQ: failed to create loopback publish track: {:?}",
+                                            e
+                                        );
+                                        let _ = event_tx.send(MoqEvent::Error {
+                                            message: format!("{:?}", e),
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("MoQ: cannot start MoQ loopback mode - not connected");
+                            let _ = event_tx.send(MoqEvent::Error {
+                                message: "not connected".to_string(),
+                            });
+                        }
+                    }
+                    Ok(MoqCommand::RunPublish) => {
+                        if let Some(ref c) = client {
+                            if mode == MoqMode::Idle {
+                                info!("MoQ: starting publish mode");
+                                let namespace =
+                                    TrackNamespace::from_strings(&["hactar", "loopback"]);
+                                c.publish_namespace(&namespace);
+
+                                // Create publish track (same as loopback, but no subscription)
+                                let pub_track_name =
+                                    FullTrackName::from_strings(&["hactar", "loopback"], "audio");
+                                match block_on(c.publish(pub_track_name)) {
+                                    Ok(track) => {
+                                        loopback_pub_track = Some(track);
+                                        loopback_group_id = 0;
+                                        loopback_object_id = 0;
+                                        mode = MoqMode::Publish;
+                                        let _ = event_tx.send(MoqEvent::ModeStarted);
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ: failed to create publish track: {:?}", e);
+                                        let _ = event_tx.send(MoqEvent::Error {
+                                            message: format!("{:?}", e),
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("MoQ: cannot start publish mode - not connected");
+                            let _ = event_tx.send(MoqEvent::Error {
+                                message: "not connected".to_string(),
+                            });
+                        }
+                    }
+                    Ok(MoqCommand::AudioFrame { data }) => {
+                        // Publish if in MoQ loopback or publish mode
+                        if mode == MoqMode::MoqLoopback || mode == MoqMode::Publish {
+                            if let Some(ref track) = loopback_pub_track {
+                                let headers = ObjectHeaders::new(loopback_group_id, loopback_object_id);
+                                if let Err(e) = track.publish(&headers, &data) {
+                                    warn!("MoQ loopback: publish failed at object {}: {:?}", loopback_object_id, e);
+                                }
+                                loopback_object_id += 1;
+                            }
+                        }
+                    }
+                    Ok(MoqCommand::SendChat { .. }) => {
+                        // Chat not implemented
+                    }
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => {
+                        info!("MoQ: command channel closed, exiting");
+                        break;
+                    }
+                }
+
+                // Run mode-specific logic
+                match mode {
+                    MoqMode::Idle => {}
+                    MoqMode::Clock => {
+                        if let Some(ref track) = clock_track {
+                            let now = Instant::now();
+                            let should_publish = last_clock_publish
+                                .map(|last| now.duration_since(last) >= Duration::from_secs(1))
+                                .unwrap_or(true);
+
+                            if should_publish {
+                                let timestamp = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default();
+                                let payload = format!(
+                                    "{}.{:03}",
+                                    timestamp.as_secs(),
+                                    timestamp.subsec_millis()
+                                );
+
+                                let headers = ObjectHeaders::new(clock_group_id, 0);
+                                let _ = track.publish(&headers, payload.as_bytes());
+                                clock_group_id += 1;
+                                last_clock_publish = Some(now);
+                            }
+                        }
+                    }
+                    MoqMode::Benchmark { fps, payload_size } => {
+                        if let Some(ref track) = benchmark_track {
+                            let now = Instant::now();
+
+                            // Determine if we should publish based on FPS
+                            let interval_us = if fps == 0 { 0 } else { 1_000_000 / fps as u64 };
+                            let should_publish = if fps == 0 {
+                                true // Burst mode
+                            } else {
+                                last_benchmark_publish
+                                    .map(|last| {
+                                        now.duration_since(last).as_micros() as u64 >= interval_us
+                                    })
+                                    .unwrap_or(true)
+                            };
+
+                            if should_publish {
+                                // Create payload (heap allocated)
+                                let payload: Vec<u8> = (0..payload_size as usize)
+                                    .map(|i| (i & 0xFF) as u8)
+                                    .collect();
+
+                                let headers = ObjectHeaders::new(benchmark_group_id, 0);
+                                let _ = track.publish(&headers, &payload);
+
+                                benchmark_group_id += 1;
+                                benchmark_packets_sent += 1;
+                                last_benchmark_publish = Some(now);
+                            }
+
+                            // Report stats every second
+                            if let Some(last_report) = last_benchmark_report {
+                                if now.duration_since(last_report) >= Duration::from_secs(1) {
+                                    let elapsed = now.duration_since(last_report).as_secs_f64();
+                                    let actual_fps = benchmark_packets_sent as f64 / elapsed;
+                                    let throughput_kbps =
+                                        (benchmark_packets_sent as f64 * payload_size as f64 * 8.0)
+                                            / elapsed
+                                            / 1000.0;
+                                    info!(
+                                        "MoQ benchmark: {:.1} fps, {:.1} kbps",
+                                        actual_fps, throughput_kbps
+                                    );
+                                    last_benchmark_report = Some(now);
+                                    benchmark_packets_sent = 0;
+                                }
+                            }
+                        }
+                    }
+                    MoqMode::MoqLoopback => {
+                        // Drain all ready objects from subscription
+                        if let Some(ref mut subscription) = loopback_subscription {
+                            while let Ok(object) = subscription.try_recv() {
+                                loopback_recv_count += 1;
+                                let _ = event_tx.send(MoqEvent::AudioReceived {
+                                    data: object.payload().to_vec(),
+                                });
+                            }
+                        }
+
+                        // Log stats every 2 seconds
+                        if last_loopback_stats.elapsed() >= Duration::from_secs(2) {
+                            let sub_status = loopback_subscription
+                                .as_ref()
+                                .map(|s| format!("{:?}", s.status()));
+                            let pub_status = loopback_pub_track
+                                .as_ref()
+                                .map(|t| format!("{:?}", t.status()));
+                            info!(
+                                "MoQ loopback: pub={} ({:?}), recv={} ({:?})",
+                                loopback_object_id, pub_status, loopback_recv_count, sub_status
+                            );
+                            last_loopback_stats = Instant::now();
+                        }
+                    }
+                    MoqMode::Publish => {
+                        // Log stats every 2 seconds
+                        if last_loopback_stats.elapsed() >= Duration::from_secs(2) {
+                            let pub_status = loopback_pub_track
+                                .as_ref()
+                                .map(|t| format!("{:?}", t.status()));
+                            info!(
+                                "MoQ publish: pub={} ({:?})",
+                                loopback_object_id, pub_status
+                            );
+                            last_loopback_stats = Instant::now();
+                        }
+                    }
+                }
+
+                // Reconnection logic: if we have a URL but no client, try to reconnect
+                if client.is_none() {
+                    if let Some(ref url) = relay_url {
+                        let now = Instant::now();
+                        let should_reconnect = last_reconnect_attempt
+                            .map(|last| now.duration_since(last) >= Duration::from_secs(5))
+                            .unwrap_or(true);
+
+                        if should_reconnect {
+                            info!("MoQ: attempting reconnection to {}", url);
+                            last_reconnect_attempt = Some(now);
+
+                            match ClientBuilder::new()
+                                .endpoint_id(MOQ_ENDPOINT_ID)
+                                .connect_uri(url)
+                                .time_queue_max_duration(5000)
+                                .tick_service_sleep_delay_us(30000)
+                                .build()
+                            {
+                                Ok(c) => match block_on(c.connect()) {
+                                    Ok(()) => {
+                                        info!("MoQ: reconnected to {}", url);
+                                        client = Some(c);
+                                        let _ = event_tx.send(MoqEvent::Connected);
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ: reconnect failed: {:?}", e);
+                                    }
+                                },
+                                Err(e) => {
+                                    warn!("MoQ: failed to create client for reconnect: {:?}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                thread::sleep(Duration::from_millis(1));
+            }
         })
-        .with_stop_bits(match cfg.stop_bits {
-            S::One => StopBits::_1,
-            S::Two => StopBits::_2,
-        })
-        .with_rx(RxConfig::default().with_fifo_full_threshold(1))
-        .with_sw_flow_ctrl(SwFlowControl::Disabled)
-        .with_hw_flow_ctrl(flow_ctl.clone())
+        .expect("failed to spawn MoQ thread");
 }
 
-macro_rules! singleton {
-    ($t:ty, $val:expr) => {{
-        static STATIC_CELL: StaticCell<$t> = StaticCell::new();
-        STATIC_CELL.uninit().write($val)
-    }};
+// ============================================================================
+// NVS Storage
+// ============================================================================
+
+/// NVS namespace for NET storage.
+const NVS_NAMESPACE: &str = "net";
+
+/// NVS-backed storage implementation
+struct NvsStorage {
+    nvs: Option<EspNvs<NvsDefault>>,
+    wifi_ssids: heapless::Vec<WifiSsid, MAX_WIFI_SSIDS>,
+    relay_url: String,
+    channels: heapless::Vec<ChannelConfig, MAX_CHANNELS>,
 }
 
-/// Channel for sending commands to the WebSocket task.
-/// Sized for ~320ms of audio at 50fps (16 frames)
-static WS_CMD_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, WsCommand, 16>> =
-    StaticCell::new();
+// NVS key names (max 15 chars)
+const NVS_KEY_WIFI_SSIDS: &str = "wifi_ssids";
+const NVS_KEY_RELAY_URL: &str = "relay_url";
+const NVS_KEY_CHANNELS: &str = "channels";
 
-/// Channel for receiving events from the WebSocket task.
-/// Sized for ~320ms of audio at 50fps (16 frames)
-static WS_EVENT_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, WsEvent, 16>> =
-    StaticCell::new();
+impl NvsStorage {
+    /// Load storage from NVS
+    fn load(nvs: Option<EspNvs<NvsDefault>>) -> Self {
+        let mut storage = Self {
+            nvs,
+            wifi_ssids: heapless::Vec::new(),
+            relay_url: String::new(),
+            channels: heapless::Vec::new(),
+        };
 
-#[esp_rtos::main]
-async fn main(spawner: Spawner) {
-    rtt_target::rtt_init_defmt!();
+        // Load WiFi SSIDs
+        if let Some(ref nvs) = storage.nvs {
+            let mut buf = [0u8; 512];
+            match nvs.get_blob(NVS_KEY_WIFI_SSIDS, &mut buf) {
+                Ok(Some(data)) => {
+                    if let Ok(ssids) =
+                        postcard::from_bytes::<heapless::Vec<WifiSsid, MAX_WIFI_SSIDS>>(data)
+                    {
+                        storage.wifi_ssids = ssids;
+                        info!(
+                            "net: loaded {} WiFi SSIDs from NVS",
+                            storage.wifi_ssids.len()
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("net: failed to read WiFi SSIDs from NVS: {:?}", e);
+                }
+            }
+
+            // Load relay URL
+            let mut url_buf = [0u8; MAX_RELAY_URL_LEN];
+            match nvs.get_blob(NVS_KEY_RELAY_URL, &mut url_buf) {
+                Ok(Some(data)) => {
+                    if let Ok(url) = core::str::from_utf8(data) {
+                        storage.relay_url = url.to_string();
+                        info!("net: loaded relay URL from NVS: {}", storage.relay_url);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("net: failed to read relay URL from NVS: {:?}", e);
+                }
+            }
+
+            // Load channel configurations
+            let mut channel_buf = [0u8; 512];
+            match nvs.get_blob(NVS_KEY_CHANNELS, &mut channel_buf) {
+                Ok(Some(data)) => {
+                    if let Ok(channels) =
+                        postcard::from_bytes::<heapless::Vec<ChannelConfig, MAX_CHANNELS>>(data)
+                    {
+                        storage.channels = channels;
+                        info!(
+                            "net: loaded {} channel configs from NVS",
+                            storage.channels.len()
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("net: failed to read channel configs from NVS: {:?}", e);
+                }
+            }
+        }
+
+        storage
+    }
+
+    /// Save storage to NVS
+    fn save(&mut self) -> Result<(), esp_idf_svc::sys::EspError> {
+        let Some(ref mut nvs) = self.nvs else {
+            warn!("net: NVS not available, cannot save");
+            return Ok(());
+        };
+
+        // Save WiFi SSIDs
+        if let Ok(serialized) = postcard::to_allocvec(&self.wifi_ssids) {
+            nvs.set_blob(NVS_KEY_WIFI_SSIDS, &serialized)?;
+            info!("net: saved {} WiFi SSIDs to NVS", self.wifi_ssids.len());
+        }
+
+        // Save relay URL
+        if !self.relay_url.is_empty() {
+            nvs.set_blob(NVS_KEY_RELAY_URL, self.relay_url.as_bytes())?;
+            info!("net: saved relay URL to NVS");
+        } else {
+            // Remove the key if URL is empty
+            let _ = nvs.remove(NVS_KEY_RELAY_URL);
+        }
+
+        // Save channel configurations
+        if !self.channels.is_empty() {
+            if let Ok(serialized) = postcard::to_allocvec(&self.channels) {
+                nvs.set_blob(NVS_KEY_CHANNELS, &serialized)?;
+                info!("net: saved {} channel configs to NVS", self.channels.len());
+            }
+        } else {
+            let _ = nvs.remove(NVS_KEY_CHANNELS);
+        }
+
+        Ok(())
+    }
+
+    fn add_wifi_ssid(&mut self, ssid: &str, password: &str) -> Result<(), ()> {
+        if self.wifi_ssids.len() >= MAX_WIFI_SSIDS {
+            return Err(());
+        }
+
+        let wifi = WifiSsid {
+            ssid: ssid.to_string(),
+            password: password.to_string(),
+        };
+
+        self.wifi_ssids.push(wifi).map_err(|_| ())?;
+        Ok(())
+    }
+
+    /// Get configuration for a specific channel.
+    fn get_channel_config(&self, channel_id: u8) -> Option<&ChannelConfig> {
+        self.channels.iter().find(|c| c.channel_id == channel_id)
+    }
+
+    /// Set configuration for a channel.
+    /// Replaces existing config for that channel_id or adds new one.
+    fn set_channel_config(&mut self, config: ChannelConfig) -> Result<(), ()> {
+        if let Some(existing) = self.channels.iter_mut().find(|c| c.channel_id == config.channel_id)
+        {
+            *existing = config;
+        } else {
+            self.channels.push(config).map_err(|_| ())?;
+        }
+        Ok(())
+    }
+
+    /// Clear all channel configurations.
+    fn clear_channel_configs(&mut self) {
+        self.channels.clear();
+    }
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() {
+    esp_idf_svc::sys::link_patches();
+    esp_idf_svc::log::EspLogger::initialize_default();
+
+    // Configure pthread to use PSRAM for thread stacks (like hactar firmware)
+    // This must be done before spawning any threads
+    unsafe {
+        use esp_idf_svc::sys::{
+            esp_pthread_cfg_t, esp_pthread_get_default_config, esp_pthread_set_cfg,
+            MALLOC_CAP_8BIT, MALLOC_CAP_SPIRAM,
+        };
+        let mut cfg: esp_pthread_cfg_t = esp_pthread_get_default_config();
+        cfg.stack_size = 32000; // 32KB stacks like hactar
+        cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+        esp_pthread_set_cfg(&cfg);
+    }
 
     info!("net: initializing");
 
-    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-    let peripherals = esp_hal::init(config);
+    let peripherals = Peripherals::take().unwrap();
+    let sys_loop = EspSystemEventLoop::take().unwrap();
+    let nvs_partition = EspDefaultNvsPartition::take().unwrap();
 
-    esp_alloc::heap_allocator!(size: 72 * 1024);
+    // Initialize LED - RGB on GPIO 38, 37, 36 (active low)
+    let mut led_r = PinDriver::output(peripherals.pins.gpio38).unwrap();
+    let mut led_g = PinDriver::output(peripherals.pins.gpio37).unwrap();
+    let mut led_b = PinDriver::output(peripherals.pins.gpio36).unwrap();
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0);
+    // LED colors: Red=default/no WiFi, Green=WiFi connected, Blue=MoQ connected
+    set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Red);
 
-    let flow_ctl_disabled = HwFlowControl {
-        cts: CtsConfig::Disabled,
-        rts: RtsConfig::Disabled,
+    // Initialize UARTs
+    let mgmt_uart_config = {
+        let mut config = uart::config::Config::new()
+            .baudrate(uart_config::MGMT_NET.baudrate.into())
+            .data_bits(uart::config::DataBits::DataBits8);
+
+        config = match uart_config::MGMT_NET.parity {
+            uart_config::Parity::None => config.parity_none(),
+            uart_config::Parity::Even => config.parity_even(),
+        };
+
+        config = match uart_config::MGMT_NET.stop_bits {
+            uart_config::StopBits::One => config.stop_bits(uart::config::StopBits::STOP1),
+            uart_config::StopBits::Two => config.stop_bits(uart::config::StopBits::STOP2),
+        };
+
+        config
     };
 
-    // UART configs from centralized definitions
-    let mgmt_config = uart_config_to_esp32(link::uart_config::MGMT_NET, &flow_ctl_disabled);
-    let mgmt_uart = Uart::new(peripherals.UART0, mgmt_config)
-        .unwrap()
-        .with_tx(peripherals.GPIO43)
-        .with_rx(peripherals.GPIO44)
-        .into_async();
-    let (from_mgmt, to_mgmt) = mgmt_uart.split();
+    let mgmt_uart = UartDriver::new(
+        peripherals.uart0,
+        peripherals.pins.gpio43,
+        peripherals.pins.gpio44,
+        Option::<GpioStub>::None,
+        Option::<GpioStub>::None,
+        &mgmt_uart_config,
+    )
+    .unwrap();
 
-    let ui_config = uart_config_to_esp32(link::uart_config::UI_NET, &flow_ctl_disabled);
-    let ui_uart = Uart::new(peripherals.UART1, ui_config)
-        .unwrap()
-        .with_tx(peripherals.GPIO17)
-        .with_rx(peripherals.GPIO18)
-        .into_async();
-    let (from_ui, to_ui) = ui_uart.split();
+    let ui_uart_config = {
+        let mut config = uart::config::Config::new()
+            .baudrate(uart_config::UI_NET.baudrate.into())
+            .data_bits(uart::config::DataBits::DataBits8);
 
-    // RGB LED
-    let led = (
-        Output::new(peripherals.GPIO38, Level::High, OutputConfig::default()),
-        Output::new(peripherals.GPIO37, Level::High, OutputConfig::default()),
-        Output::new(peripherals.GPIO36, Level::High, OutputConfig::default()),
-    );
+        config = match uart_config::UI_NET.parity {
+            uart_config::Parity::None => config.parity_none(),
+            uart_config::Parity::Even => config.parity_even(),
+        };
 
-    // Flash storage for NET settings
-    let mut flash = FlashStorage::new();
-    let mut pt_buf = [0u8; partitions::PARTITION_TABLE_MAX_LEN];
-    let pt = partitions::read_partition_table(&mut flash, &mut pt_buf)
-        .expect("Failed to read partition table");
-    let nvs = pt
-        .find_partition(partitions::PartitionType::Data(
-            partitions::DataPartitionSubType::Nvs,
-        ))
-        .expect("Failed to find NVS partition")
-        .expect("NVS partition not found");
-    let flash_offset = nvs.offset();
-    info!("net: NVS partition at offset {:#x}", flash_offset);
+        config = match uart_config::UI_NET.stop_bits {
+            uart_config::StopBits::One => config.stop_bits(uart::config::StopBits::STOP1),
+            uart_config::StopBits::Two => config.stop_bits(uart::config::StopBits::STOP2),
+        };
+
+        config
+    };
+
+    let ui_uart = UartDriver::new(
+        peripherals.uart1,
+        peripherals.pins.gpio17,
+        peripherals.pins.gpio18,
+        Option::<GpioStub>::None,
+        Option::<GpioStub>::None,
+        &ui_uart_config,
+    )
+    .unwrap();
+
+    info!("net: UARTs initialized");
 
     // Initialize WiFi
-    let radio = esp_radio::init().expect("radio init");
-    let radio = singleton!(esp_radio::Controller<'static>, radio);
-    let (controller, interfaces) =
-        esp_radio::wifi::new(radio, peripherals.WIFI, WifiConfig::default()).expect("wifi init");
+    let wifi = esp_idf_svc::wifi::EspWifi::new(
+        peripherals.modem,
+        sys_loop.clone(),
+        Some(nvs_partition.clone()),
+    )
+    .unwrap();
+    let mut wifi = esp_idf_svc::wifi::BlockingWifi::wrap(wifi, sys_loop).unwrap();
 
-    // Initialize network stack
-    let mut rng = EspRng(Rng::new());
-    let seed = rng.next_u64();
-    let (stack, runner) = embassy_net::new(
-        interfaces.sta,
-        embassy_net::Config::dhcpv4(Default::default()),
-        singleton!(StackResources<3>, StackResources::<3>::new()),
-        seed,
+    // Open NVS for storage
+    let nvs = match EspNvs::new(nvs_partition.clone(), NVS_NAMESPACE, true) {
+        Ok(nvs) => Some(nvs),
+        Err(e) => {
+            warn!("net: failed to open NVS: {:?}", e);
+            None
+        }
+    };
+
+    // Load storage from NVS
+    let mut storage = NvsStorage::load(nvs);
+    info!(
+        "net: loaded {} WiFi SSIDs from NVS",
+        storage.wifi_ssids.len()
     );
 
-    // Initialize channels
-    let ws_cmd_channel = WS_CMD_CHANNEL.init(Channel::new());
-    let ws_event_channel = WS_EVENT_CHANNEL.init(Channel::new());
+    // MoQ channels and task
+    let (moq_cmd_tx, moq_cmd_rx) = mpsc::channel::<MoqCommand>();
+    let (moq_event_tx, moq_event_rx) = mpsc::channel::<MoqEvent>();
+    spawn_moq_task(moq_cmd_rx, moq_event_tx);
 
-    // Spawn WiFi and network tasks
-    // wifi_task reads SSIDs from storage on each reconnect attempt
-    spawner.spawn(wifi_task(controller, flash_offset)).ok();
-    spawner.spawn(net_task(runner)).ok();
-    spawner
-        .spawn(ws_task(
-            stack,
-            ws_cmd_channel.receiver(),
-            ws_event_channel.sender(),
-            rng,
-        ))
-        .ok();
+    // Loopback mode state
+    let mut loopback = false;
 
-    // Run the main event loop
-    link::net::run(
-        to_mgmt,
-        from_mgmt,
-        to_ui,
-        from_ui,
-        led,
-        flash,
-        flash_offset,
-        ws_cmd_channel.sender(),
-        ws_event_channel.receiver(),
-    )
-    .await;
-}
+    // MoQ configuration
+    let mut moq_config = MoqConfig::default();
 
-/// ESP32 hardware RNG wrapper
-struct EspRng(Rng);
+    // Per-channel jitter buffers
+    let mut ptt_buffer = JitterBuffer::new();
+    let mut ptt_ai_buffer = JitterBuffer::new();
+    let mut last_buffer_tick = Instant::now();
+    const BUFFER_TICK_INTERVAL: Duration = Duration::from_millis(20);
 
-impl RngCore for EspRng {
-    fn next_u32(&mut self) -> u32 {
-        self.0.random()
-    }
-    fn next_u64(&mut self) -> u64 {
-        (self.0.random() as u64) << 32 | self.0.random() as u64
-    }
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        for chunk in dest.chunks_mut(4) {
-            let rand = self.0.random().to_le_bytes();
-            chunk.copy_from_slice(&rand[..chunk.len()]);
+    // Try to connect to WiFi if we have credentials
+    if !storage.wifi_ssids.is_empty() {
+        let wifi_ssid = &storage.wifi_ssids[0];
+        info!("net: connecting to WiFi '{}'", wifi_ssid.ssid);
+
+        if let Err(e) = connect_wifi(&mut wifi, &wifi_ssid.ssid, &wifi_ssid.password) {
+            warn!("net: WiFi connect failed: {:?}", e);
+        } else {
+            info!("net: WiFi connected");
+            set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
+
+            // Connect to MoQ relay if URL is stored
+            if !storage.relay_url.is_empty() {
+                info!("net: connecting to MoQ relay: {}", storage.relay_url);
+                let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(storage.relay_url.clone()));
+            }
         }
     }
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        self.fill_bytes(dest);
-        Ok(())
-    }
-}
 
-impl CryptoRng for EspRng {}
+    info!("net: starting main loop");
 
-#[embassy_executor::task]
-async fn wifi_task(mut controller: WifiController<'static>, flash_offset: u32) {
-    info!("wifi: task started");
-
-    // Start controller in client mode (needed for scanning)
-    if !matches!(controller.is_started(), Ok(true)) {
-        let config = ModeConfig::Client(ClientConfig::default());
-        controller.set_config(&config).unwrap();
-        controller.start_async().await.unwrap();
-    }
+    // TLV buffers
+    let mut mgmt_rx_buf = [0u8; SYNC_WORD.len() + HEADER_SIZE + MAX_VALUE_SIZE];
+    let mut ui_rx_buf = [0u8; SYNC_WORD.len() + HEADER_SIZE + MAX_VALUE_SIZE];
+    let mut mgmt_rx_pos = 0usize;
+    let mut ui_rx_pos = 0usize;
 
     loop {
-        // If connected, wait for disconnection
-        if esp_radio::wifi::sta_state() == WifiStaState::Connected {
-            controller.wait_for_event(WifiEvent::StaDisconnected).await;
-            warn!("wifi: disconnected");
-            Timer::after(Duration::from_secs(5)).await;
-        }
-
-        // Read WiFi credentials from storage on each reconnect attempt
-        let storage = NetStorage::new(FlashStorage::new(), flash_offset);
-        let wifi_ssids = storage.get_wifi_ssids().clone();
-        drop(storage);
-
-        if wifi_ssids.is_empty() {
-            info!("wifi: no SSIDs configured, waiting...");
-            Timer::after(Duration::from_secs(10)).await;
-            continue;
-        }
-
-        // Scan for available networks
-        info!("wifi: scanning...");
-        let scan_result = controller
-            .scan_with_config_async(ScanConfig::default())
-            .await;
-
-        let networks = match scan_result {
-            Ok(networks) => networks,
-            Err(e) => {
-                warn!("wifi: scan failed: {:?}", e);
-                Timer::after(Duration::from_secs(5)).await;
-                continue;
+        // Check MGMT UART for incoming data
+        if let Some((msg_type, value)) =
+            try_read_tlv(&mgmt_uart, &mut mgmt_rx_buf, &mut mgmt_rx_pos)
+        {
+            if let Ok(tlv_type) = MgmtToNet::try_from(msg_type) {
+                handle_mgmt_message(
+                    tlv_type,
+                    &value,
+                    &mgmt_uart,
+                    &ui_uart,
+                    &mut storage,
+                    &mut loopback,
+                    &mut moq_config,
+                    &moq_cmd_tx,
+                    &ptt_buffer,
+                    &ptt_ai_buffer,
+                );
             }
-        };
+        }
 
-        info!("wifi: found {} networks", networks.len());
+        // Check UI UART for incoming data
+        if let Some((msg_type, value)) = try_read_tlv(&ui_uart, &mut ui_rx_buf, &mut ui_rx_pos) {
+            if let Ok(tlv_type) = UiToNet::try_from(msg_type) {
+                handle_ui_message(
+                    tlv_type,
+                    &value,
+                    &mgmt_uart,
+                    &ui_uart,
+                    loopback,
+                    &moq_cmd_tx,
+                );
+            }
+        }
 
-        // Find matching SSIDs from our stored list, sorted by signal strength
-        let mut best_match: Option<(&str, &str, i8)> = None; // (ssid, password, rssi)
-        for network in &networks {
-            for wifi in wifi_ssids.iter() {
-                if network.ssid.as_str() == wifi.ssid.as_str() {
-                    let dominated = best_match
-                        .map(|(_, _, rssi)| network.signal_strength <= rssi)
-                        .unwrap_or(false);
-                    if !dominated {
-                        best_match = Some((
-                            wifi.ssid.as_str(),
-                            wifi.password.as_str(),
-                            network.signal_strength,
-                        ));
+        // MoQ event handling
+        use std::sync::mpsc::TryRecvError;
+        match moq_event_rx.try_recv() {
+            Ok(MoqEvent::Connected) => {
+                info!("net: MoQ connected");
+                set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Blue);
+            }
+            Ok(MoqEvent::Disconnected) => {
+                info!("net: MoQ disconnected");
+                set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
+            }
+            Ok(MoqEvent::ModeStarted) => {
+                info!("net: MoQ mode started");
+                // Reset jitter buffers to clear any initial backlog
+                ptt_buffer.reset();
+                ptt_ai_buffer.reset();
+            }
+            Ok(MoqEvent::ModeStopped) => {
+                info!("net: MoQ mode stopped");
+            }
+            Ok(MoqEvent::Error { message }) => {
+                warn!("net: MoQ error: {}", message);
+            }
+            Ok(MoqEvent::ChatSent) => {}
+            Ok(MoqEvent::ChatReceived { .. }) => {}
+            Ok(MoqEvent::AudioReceived { data }) => {
+                // Route received audio to appropriate jitter buffer based on channel_id
+                if data.len() >= 2 {
+                    let channel_id = data[0];
+                    let payload = &data[1..];
+                    match ChannelId::try_from(channel_id) {
+                        Ok(ChannelId::Ptt) => {
+                            if !ptt_buffer.push(payload) {
+                                warn!("net: ptt buffer overrun");
+                            }
+                        }
+                        Ok(ChannelId::PttAi) => {
+                            if !ptt_ai_buffer.push(payload) {
+                                warn!("net: ptt_ai buffer overrun");
+                            }
+                        }
+                        _ => {
+                            warn!("net: unknown channel_id {}", channel_id);
+                        }
+                    }
+                }
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                warn!("net: MoQ event channel closed");
+            }
+        }
+
+        // Timer tick - pop from jitter buffers every 20ms
+        if last_buffer_tick.elapsed() >= BUFFER_TICK_INTERVAL {
+            last_buffer_tick = Instant::now();
+
+            // Pop from each channel buffer and send to UI
+            for (buffer, channel_id) in [
+                (&mut ptt_buffer, ChannelId::Ptt),
+                (&mut ptt_ai_buffer, ChannelId::PttAi),
+            ] {
+                if buffer.state() == JitterState::Playing || buffer.level() >= 5 {
+                    if let Some(frame) = buffer.pop() {
+                        // Prepend channel_id to the frame
+                        let mut out = Vec::with_capacity(1 + frame.len());
+                        out.push(channel_id as u8);
+                        out.extend_from_slice(&frame);
+                        write_tlv(&ui_uart, NetToUi::AudioFrame, &out);
                     }
                 }
             }
         }
 
-        let Some((ssid, password, rssi)) = best_match else {
-            info!("wifi: no matching networks found, rescanning in 10s");
-            Timer::after(Duration::from_secs(10)).await;
-            continue;
-        };
-
-        info!("wifi: connecting to '{}' (rssi: {})", ssid, rssi);
-
-        // Configure and connect
-        let config = ModeConfig::Client(
-            ClientConfig::default()
-                .with_ssid(ssid.try_into().unwrap())
-                .with_password(password.try_into().unwrap()),
-        );
-        controller.set_config(&config).unwrap();
-
-        match controller.connect_async().await {
-            Ok(_) => {
-                info!("wifi: connected to '{}'", ssid);
-            }
-            Err(e) => {
-                warn!("wifi: connect failed: {:?}", e);
-                Timer::after(Duration::from_secs(5)).await;
-            }
-        }
+        // Small delay to prevent busy-waiting
+        thread::sleep(Duration::from_millis(1));
     }
 }
 
-#[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
-    runner.run().await
-}
+// GPIO stub type for UART driver (no CTS/RTS)
+type GpioStub = esp_idf_svc::hal::gpio::Gpio0;
 
-#[embassy_executor::task]
-async fn ws_task(
-    stack: embassy_net::Stack<'static>,
-    cmd_rx: embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, WsCommand, 16>,
-    event_tx: embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, WsEvent, 16>,
-    mut rng: EspRng,
+/// Set LED color (active low RGB LED)
+fn set_led_color<R: OutputPin, G: OutputPin, B: OutputPin>(
+    led_r: &mut PinDriver<'_, R, esp_idf_svc::hal::gpio::Output>,
+    led_g: &mut PinDriver<'_, G, esp_idf_svc::hal::gpio::Output>,
+    led_b: &mut PinDriver<'_, B, esp_idf_svc::hal::gpio::Output>,
+    color: Color,
 ) {
-    info!("ws: task started, waiting for URL");
-
-    // Current relay URL (empty until we receive a Connect command)
-    let mut current_url: heapless::String<MAX_RELAY_URL_LEN> = heapless::String::new();
-    let mut wifi_was_connected = false;
-
-    loop {
-        // Wait for WiFi to be ready
-        while !stack.is_link_up() {
-            // Send WiFi disconnected event if we were previously connected
-            if wifi_was_connected {
-                wifi_was_connected = false;
-                event_tx.send(WsEvent::WifiDisconnected).await;
-            }
-            // Check for commands while waiting
-            if let Ok(cmd) = cmd_rx.try_receive() {
-                match cmd {
-                    WsCommand::Connect(url) => {
-                        info!("ws: received URL while waiting for WiFi");
-                        current_url = url;
-                    }
-                    WsCommand::Send(_) => {} // Drop audio before connected
-                    WsCommand::EchoTest => {
-                        info!("ws: ignoring echo test while disconnected");
-                        event_tx.send(WsEvent::EchoTestResult(None)).await;
-                    }
-                    WsCommand::SpeedTest => {
-                        info!("ws: ignoring speed test while disconnected");
-                        event_tx.send(WsEvent::SpeedTestResult(None)).await;
-                    }
-                }
-            }
-            Timer::after(Duration::from_millis(100)).await;
+    // Active low: set_low() turns LED on, set_high() turns LED off
+    match color {
+        Color::Black => {
+            led_r.set_high().ok();
+            led_g.set_high().ok();
+            led_b.set_high().ok();
         }
-
-        // Wait for DHCP
-        while stack.config_v4().is_none() {
-            Timer::after(Duration::from_millis(100)).await;
+        Color::Red => {
+            led_r.set_low().ok();
+            led_g.set_high().ok();
+            led_b.set_high().ok();
         }
-
-        // Send WiFi connected event
-        if !wifi_was_connected {
-            wifi_was_connected = true;
-            event_tx.send(WsEvent::WifiConnected).await;
+        Color::Green => {
+            led_r.set_high().ok();
+            led_g.set_low().ok();
+            led_b.set_high().ok();
         }
-
-        // If no URL configured, wait for one
-        if current_url.is_empty() {
-            info!("ws: waiting for relay URL");
-            loop {
-                match cmd_rx.receive().await {
-                    WsCommand::Connect(url) => {
-                        current_url = url;
-                        break;
-                    }
-                    WsCommand::Send(_) => {} // Drop audio before connected
-                    WsCommand::EchoTest => {
-                        info!("ws: ignoring echo test without URL");
-                        event_tx.send(WsEvent::EchoTestResult(None)).await;
-                    }
-                    WsCommand::SpeedTest => {
-                        info!("ws: ignoring speed test without URL");
-                        event_tx.send(WsEvent::SpeedTestResult(None)).await;
-                    }
-                }
-            }
+        Color::Blue => {
+            led_r.set_high().ok();
+            led_g.set_high().ok();
+            led_b.set_low().ok();
         }
-
-        // Parse URL to extract host and path (as owned values to avoid borrow issues)
-        let (host, port, path): (heapless::String<64>, u16, heapless::String<64>) =
-            match parse_wss_url(&current_url) {
-                Some((h, p, pa)) => {
-                    let Ok(host) = heapless::String::try_from(h) else {
-                        warn!("ws: host too long");
-                        current_url.clear();
-                        continue;
-                    };
-                    let Ok(path) = heapless::String::try_from(pa) else {
-                        warn!("ws: path too long");
-                        current_url.clear();
-                        continue;
-                    };
-                    (host, p, path)
-                }
-                None => {
-                    warn!("ws: invalid URL: {}", current_url.as_str());
-                    current_url.clear();
-                    continue;
-                }
-            };
-
-        info!(
-            "ws: connecting to {}:{}{}",
-            host.as_str(),
-            port,
-            path.as_str()
-        );
-
-        // DNS lookup
-        let addr = match stack
-            .dns_query(host.as_str(), embassy_net::dns::DnsQueryType::A)
-            .await
-        {
-            Ok(addrs) if !addrs.is_empty() => addrs[0],
-            _ => {
-                warn!("ws: DNS failed for {}", host.as_str());
-                event_tx.send(WsEvent::Disconnected).await;
-                Timer::after(Duration::from_secs(5)).await;
-                continue;
-            }
-        };
-
-        // TCP connect
-        let mut rx_buf = [0u8; 4096];
-        let mut tx_buf = [0u8; 4096];
-        let mut socket = TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
-        socket.set_timeout(Some(Duration::from_secs(30)));
-
-        if socket.connect((addr, port)).await.is_err() {
-            warn!("ws: TCP connect failed");
-            event_tx.send(WsEvent::Disconnected).await;
-            Timer::after(Duration::from_secs(5)).await;
-            continue;
+        Color::Yellow => {
+            led_r.set_low().ok();
+            led_g.set_low().ok();
+            led_b.set_high().ok();
         }
-        info!("ws: TCP connected");
-
-        // TLS handshake
-        let mut tls_read = [0u8; 16640];
-        let mut tls_write = [0u8; 16640];
-        let tls_config = TlsConfig::new().with_server_name(host.as_str());
-        let mut tls: TlsConnection<_, Aes128GcmSha256> =
-            TlsConnection::new(socket, &mut tls_read, &mut tls_write);
-
-        if tls
-            .open::<_, NoVerify>(TlsContext::new(&tls_config, &mut rng))
-            .await
-            .is_err()
-        {
-            warn!("ws: TLS handshake failed");
-            event_tx.send(WsEvent::Disconnected).await;
-            Timer::after(Duration::from_secs(5)).await;
-            continue;
+        Color::Cyan => {
+            led_r.set_high().ok();
+            led_g.set_low().ok();
+            led_b.set_low().ok();
         }
-        info!("ws: TLS connected");
-
-        // WebSocket handshake over TLS
-        // Note: edge_http::io::client::Connection requires TcpConnect and manages its own
-        // TCP connection. Since we already have a TLS stream, we use the lower-level
-        // http_ws helpers (upgrade_request_headers, is_upgrade_accepted) and format the
-        // HTTP request ourselves.
-        let mut ws_read_buf = [0u8; 2048];
-
-        // Generate nonce and build upgrade request
-        let mut nonce = [0u8; http_ws::NONCE_LEN];
-        rng.fill_bytes(&mut nonce);
-
-        let mut request_buf = [0u8; 512];
-        let request_len =
-            build_ws_upgrade_request(path.as_str(), host.as_str(), &nonce, &mut request_buf);
-
-        if tls.write_all(&request_buf[..request_len]).await.is_err() {
-            warn!("ws: failed to send upgrade request");
-            event_tx.send(WsEvent::Disconnected).await;
-            Timer::after(Duration::from_secs(5)).await;
-            continue;
+        Color::Magenta => {
+            led_r.set_low().ok();
+            led_g.set_high().ok();
+            led_b.set_low().ok();
         }
-        if tls.flush().await.is_err() {
-            warn!("ws: failed to flush upgrade request");
-            event_tx.send(WsEvent::Disconnected).await;
-            Timer::after(Duration::from_secs(5)).await;
-            continue;
-        }
-        info!("ws: sent upgrade request ({} bytes)", request_len);
-
-        // Read HTTP response
-        let mut response_buf = [0u8; 1024];
-        let mut response_len = 0;
-        loop {
-            if response_len >= response_buf.len() {
-                warn!("ws: response too large");
-                event_tx.send(WsEvent::Disconnected).await;
-                Timer::after(Duration::from_secs(5)).await;
-                break;
-            }
-            match tls
-                .read(&mut response_buf[response_len..response_len + 1])
-                .await
-            {
-                Ok(0) => {
-                    warn!("ws: connection closed during handshake");
-                    event_tx.send(WsEvent::Disconnected).await;
-                    Timer::after(Duration::from_secs(5)).await;
-                    break;
-                }
-                Ok(_) => {
-                    response_len += 1;
-                    // Check for end of headers (CRLFCRLF)
-                    if response_len >= 4
-                        && &response_buf[response_len - 4..response_len] == b"\r\n\r\n"
-                    {
-                        break;
-                    }
-                }
-                Err(_) => {
-                    warn!("ws: failed to read response");
-                    event_tx.send(WsEvent::Disconnected).await;
-                    Timer::after(Duration::from_secs(5)).await;
-                    break;
-                }
-            }
-        }
-        // Check if we broke out due to error
-        if response_len < 4 || &response_buf[response_len - 4..response_len] != b"\r\n\r\n" {
-            continue;
-        }
-        info!("ws: received response ({} bytes)", response_len);
-
-        // Parse HTTP response - extract status code and headers
-        let response_str = match core::str::from_utf8(&response_buf[..response_len]) {
-            Ok(s) => s,
-            Err(_) => {
-                warn!("ws: invalid UTF-8 in response");
-                event_tx.send(WsEvent::Disconnected).await;
-                Timer::after(Duration::from_secs(5)).await;
-                continue;
-            }
-        };
-        info!("ws: response: {}", response_str);
-
-        // Parse status line: "HTTP/1.1 101 Switching Protocols\r\n"
-        let mut lines = response_str.lines();
-        let status_line = match lines.next() {
-            Some(line) => line,
-            None => {
-                warn!("ws: empty response");
-                event_tx.send(WsEvent::Disconnected).await;
-                Timer::after(Duration::from_secs(5)).await;
-                continue;
-            }
-        };
-        let status_code: u16 = {
-            let parts: heapless::Vec<&str, 3> = status_line.splitn(3, ' ').collect();
-            if parts.len() < 2 {
-                warn!("ws: invalid status line");
-                event_tx.send(WsEvent::Disconnected).await;
-                Timer::after(Duration::from_secs(5)).await;
-                continue;
-            }
-            match parts[1].parse() {
-                Ok(code) => code,
-                Err(_) => {
-                    warn!("ws: invalid status code");
-                    event_tx.send(WsEvent::Disconnected).await;
-                    Timer::after(Duration::from_secs(5)).await;
-                    continue;
-                }
-            }
-        };
-
-        // Parse headers into a vec of (name, value) tuples
-        let mut response_headers: heapless::Vec<(&str, &str), 16> = heapless::Vec::new();
-        for line in lines {
-            if line.is_empty() {
-                break;
-            }
-            if let Some(colon_idx) = line.find(':') {
-                let name = line[..colon_idx].trim();
-                let value = line[colon_idx + 1..].trim();
-                let _ = response_headers.push((name, value));
-            }
-        }
-
-        // Validate WebSocket upgrade
-        let mut accept_buf = [0u8; http_ws::MAX_BASE64_KEY_RESPONSE_LEN];
-        if !http_ws::is_upgrade_accepted(
-            status_code,
-            response_headers.iter().copied(),
-            &nonce,
-            &mut accept_buf,
-        ) {
-            warn!(
-                "ws: WebSocket upgrade not accepted (status={})",
-                status_code
-            );
-            event_tx.send(WsEvent::Disconnected).await;
-            Timer::after(Duration::from_secs(5)).await;
-            continue;
-        }
-
-        info!("ws: connected");
-        event_tx.send(WsEvent::Connected).await;
-
-        // Main WebSocket loop using select for concurrent read/write
-        let mut should_reconnect = false;
-        let mut connection_broken = false;
-
-        // CANCELLATION SAFETY: We use FrameHeader::recv() in the select instead of
-        // edge_ws::io::recv(). This is important because io::recv() has two await points
-        // (header then payload), and if cancelled between them, the stream corrupts.
-        // By reading only the header (2-14 bytes) in the select, and reading the payload
-        // afterward, we minimize the cancellation window to just the small header read.
-
-        loop {
-            match select(FrameHeader::recv(&mut tls), cmd_rx.receive()).await {
-                Either::First(header_result) => {
-                    // Header received - now read payload outside of select (cannot be cancelled)
-                    let header = match header_result {
-                        Ok(h) => h,
-                        Err(e) => {
-                            warn!("ws: header read error: {:?}", e);
-                            connection_broken = true;
-                            break;
-                        }
-                    };
-
-                    // Read payload - this is outside the select, so it cannot be cancelled
-                    let payload = match header.recv_payload(&mut tls, &mut ws_read_buf).await {
-                        Ok(p) => p,
-                        Err(e) => {
-                            warn!("ws: payload read error: {:?}", e);
-                            connection_broken = true;
-                            break;
-                        }
-                    };
-                    let len = payload.len();
-
-                    // Handle frame based on type
-                    match header.frame_type {
-                        FrameType::Binary(_fragmented) => {
-                            info!("ws: received {} bytes", len);
-                            if let Ok(data) = Vec::try_from(&ws_read_buf[..len]) {
-                                event_tx.send(WsEvent::Received(data)).await;
-                            }
-                        }
-                        FrameType::Text(_fragmented) => {
-                            if let Ok(text) = core::str::from_utf8(&ws_read_buf[..len]) {
-                                info!("ws: received text: {}", text);
-                            }
-                            if let Ok(data) = Vec::try_from(&ws_read_buf[..len]) {
-                                event_tx.send(WsEvent::Received(data)).await;
-                            }
-                        }
-                        FrameType::Close => {
-                            // Parse close code if present
-                            let code = if len >= 2 {
-                                u16::from_be_bytes([ws_read_buf[0], ws_read_buf[1]])
-                            } else {
-                                1000
-                            };
-                            if len > 2 {
-                                if let Ok(reason) = core::str::from_utf8(&ws_read_buf[2..len]) {
-                                    warn!(
-                                        "ws: received close frame: code={}, reason={}",
-                                        code, reason
-                                    );
-                                } else {
-                                    warn!("ws: received close frame: code={}", code);
-                                }
-                            } else {
-                                warn!("ws: received close frame: code={}", code);
-                            }
-                            // Send close frame back
-                            let _ = edge_ws::io::send(
-                                &mut tls,
-                                FrameType::Close,
-                                Some(rng.next_u32()),
-                                &ws_read_buf[..len],
-                            )
-                            .await;
-                            let _ = tls.flush().await;
-                            break;
-                        }
-                        FrameType::Ping => {
-                            // Respond with Pong containing the same payload
-                            if edge_ws::io::send(
-                                &mut tls,
-                                FrameType::Pong,
-                                Some(rng.next_u32()),
-                                &ws_read_buf[..len],
-                            )
-                            .await
-                            .is_err()
-                            {
-                                warn!("ws: failed to send pong");
-                                connection_broken = true;
-                                break;
-                            }
-                            let _ = tls.flush().await;
-                        }
-                        FrameType::Pong => {
-                            // Ignore pong frames
-                        }
-                        FrameType::Continue(_) => {
-                            // Continuation frames - we don't handle fragmentation currently
-                        }
-                    }
-                }
-                Either::Second(cmd) => {
-                    // Command received from application
-                    match cmd {
-                        WsCommand::Connect(url) => {
-                            info!("ws: received new URL, reconnecting");
-                            current_url = url;
-                            should_reconnect = true;
-                            break;
-                        }
-                        WsCommand::Send(data) => {
-                            info!("ws: sending {} bytes", data.len());
-                            match edge_ws::io::send(
-                                &mut tls,
-                                FrameType::Binary(false),
-                                Some(rng.next_u32()),
-                                &data,
-                            )
-                            .await
-                            {
-                                Ok(_) => {
-                                    if tls.flush().await.is_err() {
-                                        warn!("ws: flush failed");
-                                        connection_broken = true;
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("ws: write failed: {:?}", e);
-                                    connection_broken = true;
-                                    break;
-                                }
-                            }
-                        }
-                        WsCommand::EchoTest => {
-                            info!("ws: starting echo test");
-                            let (result, connection_ok) =
-                                run_echo_test(&mut tls, &mut ws_read_buf, &mut rng).await;
-                            info!(
-                                "ws: echo test complete: sent={}, received={}",
-                                result.sent, result.received
-                            );
-                            event_tx.send(WsEvent::EchoTestResult(Some(result))).await;
-                            if !connection_ok {
-                                warn!("ws: connection failed during echo test, reconnecting");
-                                connection_broken = true;
-                                break;
-                            }
-                        }
-                        WsCommand::SpeedTest => {
-                            info!("ws: starting speed test");
-                            let (result, connection_ok) =
-                                run_speed_test(&mut tls, &mut ws_read_buf, &mut rng).await;
-                            info!(
-                                "ws: speed test complete: sent={}, received={}, send_time={}ms, recv_time={}ms",
-                                result.sent, result.received, result.send_time_ms, result.recv_time_ms
-                            );
-                            event_tx.send(WsEvent::SpeedTestResult(Some(result))).await;
-                            if !connection_ok {
-                                warn!("ws: connection failed during speed test, reconnecting");
-                                connection_broken = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Clean up - only try to close if connection is still healthy
-        if !connection_broken {
-            // Send close frame with normal closure code (1000)
-            let close_payload = 1000u16.to_be_bytes();
-            let _ = edge_ws::io::send(
-                &mut tls,
-                FrameType::Close,
-                Some(rng.next_u32()),
-                &close_payload,
-            )
-            .await;
-        }
-
-        if !should_reconnect {
-            event_tx.send(WsEvent::Disconnected).await;
-            Timer::after(Duration::from_secs(5)).await;
+        Color::White => {
+            led_r.set_low().ok();
+            led_g.set_low().ok();
+            led_b.set_low().ok();
         }
     }
 }
 
-// NOTE: Both echo test and speed test serve different purposes:
-// - Echo test: Sends at 20ms intervals (like audio), measures jitter through jitter buffer
-// - Speed test: Sends as fast as possible, measures raw throughput
-// Both are useful for diagnosing different types of network issues.
+/// Connect to WiFi network
+fn connect_wifi(
+    wifi: &mut esp_idf_svc::wifi::BlockingWifi<esp_idf_svc::wifi::EspWifi<'static>>,
+    ssid: &str,
+    password: &str,
+) -> Result<(), esp_idf_svc::sys::EspError> {
+    use embedded_svc::wifi::{AuthMethod, ClientConfiguration, Configuration};
 
-/// Run the WebSocket echo test with jitter buffer analysis.
-///
-/// Sends ECHO_TEST_PACKET_COUNT packets (640 bytes each) at 20ms intervals (50 fps),
-/// receives echoed packets through a jitter buffer, and records:
-/// - Raw jitter: inter-arrival times before the buffer
-/// - Buffered jitter: inter-departure times after the buffer
-///
-/// Returns (result, connection_ok). If connection_ok is false, the caller
-/// should break out of the main loop to trigger reconnection.
-async fn run_echo_test<S>(
-    tls: &mut TlsConnection<'_, S, Aes128GcmSha256>,
-    ws_read_buf: &mut [u8],
-    rng: &mut EspRng,
-) -> (EchoTestResult, bool)
-where
-    S: embedded_io_async::Read + embedded_io_async::Write + Unpin,
-{
-    use embassy_time::Instant;
-    use link::net::JitterBuffer;
+    let config = Configuration::Client(ClientConfiguration {
+        ssid: ssid.try_into().unwrap(),
+        bssid: None,
+        auth_method: AuthMethod::WPA2Personal,
+        password: password.try_into().unwrap(),
+        channel: None,
+        ..Default::default()
+    });
 
-    // Packet payload: 640 bytes (FRAME_SIZE equivalent)
-    const PACKET_SIZE: usize = 640;
-    let packet = [0xAAu8; PACKET_SIZE];
+    wifi.set_configuration(&config)?;
+    wifi.start()?;
+    wifi.connect()?;
+    wifi.wait_netif_up()?;
 
-    let mut sent: u8 = 0;
-    let mut received: u8 = 0;
-    let mut raw_jitter_us: Vec<u32, ECHO_TEST_PACKET_COUNT> = Vec::new();
-    let mut last_recv_time: Option<Instant> = None;
-    let mut connection_ok = true;
-
-    // Jitter buffer for smoothing output
-    let mut jitter_buffer: JitterBuffer = JitterBuffer::new();
-
-    // Phase 1: Send packets at 20ms intervals (50 fps) while also receiving
-    let mut next_send_time = Instant::now();
-    let send_interval = Duration::from_millis(20);
-
-    info!(
-        "ws: echo test phase 1 - sending {} packets",
-        ECHO_TEST_PACKET_COUNT
-    );
-
-    while (sent as usize) < ECHO_TEST_PACKET_COUNT {
-        // Time to send next packet?
-        if Instant::now() >= next_send_time {
-            match edge_ws::io::send(
-                &mut *tls,
-                FrameType::Binary(false),
-                Some(rng.next_u32()),
-                &packet,
-            )
-            .await
-            {
-                Ok(_) => {
-                    if tls.flush().await.is_err() {
-                        warn!("ws: echo test flush failed at packet {}", sent);
-                        connection_ok = false;
-                        break;
-                    }
-                    sent += 1;
-                    if sent == 1 || sent % 10 == 0 {
-                        info!("ws: echo test sent {} packets", sent);
-                    }
-                    next_send_time = Instant::now() + send_interval;
-                }
-                Err(_) => {
-                    warn!("ws: echo test send failed at packet {}", sent);
-                    connection_ok = false;
-                    break;
-                }
-            }
-        }
-
-        // Drain all available packets until next send time
-        loop {
-            let now = Instant::now();
-            if now >= next_send_time {
-                break; // Time to send again
-            }
-            let timeout = next_send_time.saturating_duration_since(now);
-            match embassy_time::with_timeout(timeout, edge_ws::io::recv(&mut *tls, ws_read_buf))
-                .await
-            {
-                Ok(Ok((FrameType::Binary(_), len))) => {
-                    let recv_time = Instant::now();
-                    // Record raw jitter (before buffer)
-                    if let Some(last) = last_recv_time {
-                        let delta_us = recv_time.duration_since(last).as_micros() as u32;
-                        let _ = raw_jitter_us.push(delta_us);
-                    }
-                    last_recv_time = Some(recv_time);
-                    received += 1;
-                    // Push into jitter buffer
-                    jitter_buffer.push(&ws_read_buf[..len]);
-                }
-                Ok(Ok(_)) => {
-                    // Other frame types, ignore but keep draining
-                }
-                Ok(Err(_)) => {
-                    warn!("ws: echo test receive error");
-                    connection_ok = false;
-                    break;
-                }
-                Err(_) => {
-                    // Timeout - time to send next packet
-                    break;
-                }
-            }
-        }
-        if !connection_ok {
-            break;
-        }
-    }
-
-    // Phase 2: Wait for remaining responses (up to 2 seconds) - only if connection still ok
-    if connection_ok {
-        info!("ws: echo test phase 2 - waiting for remaining packets");
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while (received as usize) < (sent as usize) && Instant::now() < deadline {
-            let timeout = deadline.saturating_duration_since(Instant::now());
-            match embassy_time::with_timeout(timeout, edge_ws::io::recv(&mut *tls, ws_read_buf))
-                .await
-            {
-                Ok(Ok((FrameType::Binary(_), len))) => {
-                    let recv_time = Instant::now();
-                    // Record raw jitter (before buffer)
-                    if let Some(last) = last_recv_time {
-                        let delta_us = recv_time.duration_since(last).as_micros() as u32;
-                        let _ = raw_jitter_us.push(delta_us);
-                    }
-                    last_recv_time = Some(recv_time);
-                    received += 1;
-                    // Push into jitter buffer
-                    jitter_buffer.push(&ws_read_buf[..len]);
-                }
-                Ok(Ok(_)) => {
-                    // Other frame types, ignore but keep waiting
-                }
-                Ok(Err(_)) => {
-                    warn!("ws: echo test phase 2 receive error");
-                    connection_ok = false;
-                    break;
-                }
-                Err(_) => {
-                    // Timeout expired
-                    info!(
-                        "ws: echo test phase 2 timeout, received {}/{}",
-                        received, sent
-                    );
-                    break;
-                }
-            }
-        }
-    }
-
-    // Phase 3: Simulate playback - pop from buffer at 20ms intervals and measure jitter
-    info!("ws: echo test phase 3 - measuring buffered jitter");
-    let mut buffered_jitter_us: Vec<u32, ECHO_TEST_PACKET_COUNT> = Vec::new();
-    let mut buffered_output: u8 = 0;
-    let mut last_pop_time: Option<Instant> = None;
-    let mut next_pop_time = Instant::now();
-    let pop_interval = Duration::from_millis(20);
-
-    // Pop all frames from buffer at steady 20ms rate
-    loop {
-        // Wait until next pop time
-        let now = Instant::now();
-        if now < next_pop_time {
-            Timer::after(next_pop_time - now).await;
-        }
-
-        match jitter_buffer.pop() {
-            Some(_frame) => {
-                let pop_time = Instant::now();
-                if let Some(last) = last_pop_time {
-                    let delta_us = pop_time.duration_since(last).as_micros() as u32;
-                    let _ = buffered_jitter_us.push(delta_us);
-                }
-                last_pop_time = Some(pop_time);
-                buffered_output += 1;
-                next_pop_time = Instant::now() + pop_interval;
-            }
-            None => {
-                // Buffer empty or still buffering
-                if jitter_buffer.level() == 0 && buffered_output > 0 {
-                    // Buffer drained, we're done
-                    break;
-                }
-                // Still buffering or underrun, wait a bit and retry
-                Timer::after(Duration::from_millis(5)).await;
-                // Safety: don't wait forever if nothing received
-                if buffered_output == 0 && received == 0 {
-                    break;
-                }
-            }
-        }
-    }
-
-    let stats = jitter_buffer.stats();
-    info!(
-        "ws: echo test complete - raw received: {}, buffered output: {}, underruns: {}",
-        received, buffered_output, stats.underruns
-    );
-
-    (
-        EchoTestResult {
-            sent,
-            received,
-            buffered_output,
-            raw_jitter_us,
-            buffered_jitter_us,
-            underruns: stats.underruns as u8,
-        },
-        connection_ok,
-    )
+    Ok(())
 }
 
-/// Run the WebSocket speed test.
-///
-/// Sends 50 packets as fast as possible (no delays), then waits up to 2 seconds
-/// to receive responses. Returns timing information.
-async fn run_speed_test<S>(
-    tls: &mut TlsConnection<'_, S, Aes128GcmSha256>,
-    ws_read_buf: &mut [u8],
-    rng: &mut EspRng,
-) -> (SpeedTestResult, bool)
-where
-    S: embedded_io_async::Read + embedded_io_async::Write + Unpin,
-{
-    use embassy_time::Instant;
+/// Total frame size: sync (4) + header (6) + value
+const FRAME_HEADER_SIZE: usize = SYNC_WORD.len() + HEADER_SIZE;
 
-    const PACKET_COUNT: usize = 50;
-    const PACKET_SIZE: usize = 640;
-    let packet = [0xBBu8; PACKET_SIZE];
-
-    let mut sent: u8 = 0;
-    let mut received: u8 = 0;
-    let mut connection_ok = true;
-
-    // Phase 1: Send all packets as fast as possible
-    info!("ws: speed test - sending {} packets", PACKET_COUNT);
-    let send_start = Instant::now();
-
-    for i in 0..PACKET_COUNT {
-        match edge_ws::io::send(
-            &mut *tls,
-            FrameType::Binary(false),
-            Some(rng.next_u32()),
-            &packet,
-        )
-        .await
-        {
-            Ok(_) => {
-                if tls.flush().await.is_err() {
-                    warn!("ws: speed test flush failed at packet {}", i);
-                    connection_ok = false;
-                    break;
-                }
-                sent += 1;
-                if (i + 1) % 10 == 0 {
-                    info!("ws: speed test sent {} packets", i + 1);
-                }
-            }
-            Err(_) => {
-                warn!("ws: speed test send failed at packet {}", i);
-                connection_ok = false;
-                break;
-            }
-        }
-    }
-
-    let send_time = Instant::now().duration_since(send_start);
-    let send_time_ms = send_time.as_millis() as u32;
-    info!("ws: speed test sent {} packets in {}ms", sent, send_time_ms);
-
-    // Phase 2: Receive responses (up to 2 seconds or all packets received)
-    let recv_start = Instant::now();
-    let deadline = recv_start + Duration::from_secs(2);
-
-    if connection_ok {
-        info!("ws: speed test - waiting for responses");
-        while (received as usize) < (sent as usize) && Instant::now() < deadline {
-            let timeout = deadline.saturating_duration_since(Instant::now());
-            match embassy_time::with_timeout(timeout, edge_ws::io::recv(&mut *tls, ws_read_buf))
-                .await
-            {
-                Ok(Ok((FrameType::Binary(_), _len))) => {
-                    received += 1;
-                    if received % 10 == 0 {
-                        info!("ws: speed test received {} packets", received);
-                    }
-                }
-                Ok(Ok(_)) => {
-                    // Other frame types, ignore
-                }
-                Ok(Err(_)) => {
-                    warn!("ws: speed test receive error");
-                    connection_ok = false;
-                    break;
-                }
-                Err(_) => {
-                    // Timeout expired
-                    info!("ws: speed test timeout, received {}/{}", received, sent);
-                    break;
-                }
-            }
-        }
-    }
-
-    let recv_time = Instant::now().duration_since(recv_start);
-    let recv_time_ms = recv_time.as_millis() as u32;
-    info!(
-        "ws: speed test received {} packets in {}ms",
-        received, recv_time_ms
-    );
-
-    (
-        SpeedTestResult {
-            sent,
-            received,
-            send_time_ms,
-            recv_time_ms,
-        },
-        connection_ok,
-    )
-}
-
-/// Parse a wss:// or ws:// URL into (host, port, path)
-fn parse_wss_url(url: &str) -> Option<(&str, u16, &str)> {
-    let parsed = url_lite::Url::parse(url).ok()?;
-
-    // Verify scheme is ws or wss
-    let schema = parsed.schema?;
-    if schema != "wss" && schema != "ws" {
-        return None;
-    }
-
-    let host = parsed.host?;
-    let port = parsed
-        .port
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(if schema == "wss" { 443 } else { 80 });
-    let path = parsed.path.unwrap_or("/");
-
-    Some((host, port, path))
-}
-
-/// Build a WebSocket upgrade HTTP request.
-///
-/// Formats the HTTP/1.1 upgrade request with headers from edge_http::ws.
-/// Returns the number of bytes written to the buffer.
-fn build_ws_upgrade_request(
-    path: &str,
-    host: &str,
-    nonce: &[u8; http_ws::NONCE_LEN],
+/// Try to read a TLV message from UART (non-blocking)
+fn try_read_tlv(
+    uart: &UartDriver,
     buf: &mut [u8],
-) -> usize {
-    let mut key_buf = [0u8; http_ws::MAX_BASE64_KEY_LEN];
-    let headers = http_ws::upgrade_request_headers(
-        Some(host),
-        Some(host),
-        None, // Use default WebSocket version "13"
-        nonce,
-        &mut key_buf,
-    );
-
-    let mut len = 0;
-
-    // Request line: "GET {path} HTTP/1.1\r\n"
-    let parts: &[&[u8]] = &[b"GET ", path.as_bytes(), b" HTTP/1.1\r\n"];
-    for part in parts {
-        buf[len..len + part.len()].copy_from_slice(part);
-        len += part.len();
+    pos: &mut usize,
+) -> Option<(u16, heapless::Vec<u8, MAX_VALUE_SIZE>)> {
+    // Try to read available bytes
+    let mut read_buf = [0u8; 512];
+    let len = uart.read(&mut read_buf, 0).unwrap_or(0);
+    if len > 0 {
+        let space = buf.len() - *pos;
+        let copy_len = len.min(space);
+        buf[*pos..*pos + copy_len].copy_from_slice(&read_buf[..copy_len]);
+        *pos += copy_len;
     }
 
-    // Headers: "{name}: {value}\r\n"
-    for (name, value) in &headers {
-        if !name.is_empty() {
-            buf[len..len + name.len()].copy_from_slice(name.as_bytes());
-            len += name.len();
-            buf[len..len + 2].copy_from_slice(b": ");
-            len += 2;
-            buf[len..len + value.len()].copy_from_slice(value.as_bytes());
-            len += value.len();
-            buf[len..len + 2].copy_from_slice(b"\r\n");
-            len += 2;
+    // Try to parse TLV
+    if *pos >= FRAME_HEADER_SIZE {
+        if buf[0..4] != SYNC_WORD {
+            // Sync error - try to find sync word
+            if let Some(idx) = buf[1..*pos].windows(4).position(|w| w == SYNC_WORD) {
+                let new_start = idx + 1;
+                buf.copy_within(new_start..*pos, 0);
+                *pos -= new_start;
+            } else {
+                if *pos > 3 {
+                    buf.copy_within(*pos - 3..*pos, 0);
+                    *pos = 3;
+                }
+            }
+            return None;
+        }
+
+        let msg_type = u16::from_be_bytes([buf[4], buf[5]]);
+        let length = u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]) as usize;
+
+        if length > MAX_VALUE_SIZE {
+            buf.copy_within(4..*pos, 0);
+            *pos -= 4;
+            return None;
+        }
+
+        let total_len = FRAME_HEADER_SIZE + length;
+        if *pos >= total_len {
+            let mut value = heapless::Vec::new();
+            value
+                .extend_from_slice(&buf[FRAME_HEADER_SIZE..total_len])
+                .ok();
+            buf.copy_within(total_len..*pos, 0);
+            *pos -= total_len;
+            return Some((msg_type, value));
         }
     }
 
-    // Final CRLF
-    buf[len..len + 2].copy_from_slice(b"\r\n");
-    len += 2;
+    None
+}
 
-    len
+/// Write a TLV message to UART
+fn write_tlv<T: Into<u16>>(uart: &UartDriver, msg_type: T, value: &[u8]) {
+    let msg_type: u16 = msg_type.into();
+
+    // Buffer entire TLV to write atomically (prevents log interleaving)
+    let total_len = SYNC_WORD.len() + HEADER_SIZE + value.len();
+    let mut buf = vec![0u8; total_len];
+
+    buf[0..4].copy_from_slice(&SYNC_WORD);
+    buf[4..6].copy_from_slice(&msg_type.to_be_bytes());
+    buf[6..10].copy_from_slice(&(value.len() as u32).to_be_bytes());
+    if !value.is_empty() {
+        buf[10..].copy_from_slice(value);
+    }
+
+    uart.write(&buf).ok();
+}
+
+/// Handle message from MGMT chip
+fn handle_mgmt_message(
+    msg_type: MgmtToNet,
+    value: &[u8],
+    mgmt_uart: &UartDriver,
+    ui_uart: &UartDriver,
+    storage: &mut NvsStorage,
+    loopback: &mut bool,
+    moq: &mut MoqConfig,
+    moq_cmd_tx: &Sender<MoqCommand>,
+    ptt_buffer: &JitterBuffer,
+    ptt_ai_buffer: &JitterBuffer,
+) {
+    match msg_type {
+        MgmtToNet::Ping => {
+            write_tlv(mgmt_uart, NetToMgmt::Pong, value);
+        }
+        MgmtToNet::CircularPing => {
+            write_tlv(ui_uart, NetToUi::CircularPing, value);
+        }
+        MgmtToNet::AddWifiSsid => {
+            if let Ok(wifi) = postcard::from_bytes::<WifiSsid>(value) {
+                if storage.add_wifi_ssid(&wifi.ssid, &wifi.password).is_ok() {
+                    if storage.save().is_ok() {
+                        write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                    } else {
+                        write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+                    }
+                } else {
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"add");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"deserialize");
+            }
+        }
+        MgmtToNet::GetWifiSsids => {
+            if let Ok(serialized) = postcard::to_allocvec(&storage.wifi_ssids) {
+                write_tlv(mgmt_uart, NetToMgmt::WifiSsids, &serialized);
+            }
+        }
+        MgmtToNet::ClearWifiSsids => {
+            storage.wifi_ssids.clear();
+            if storage.save().is_ok() {
+                write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+            }
+        }
+        MgmtToNet::GetRelayUrl => {
+            write_tlv(mgmt_uart, NetToMgmt::RelayUrl, storage.relay_url.as_bytes());
+        }
+        MgmtToNet::SetRelayUrl => {
+            if let Ok(url) = core::str::from_utf8(value) {
+                storage.relay_url = url.to_string();
+                if storage.save().is_ok() {
+                    // Also trigger MoQ connection to new relay
+                    let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(url.to_string()));
+                    write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                } else {
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
+            }
+        }
+        MgmtToNet::WsSend | MgmtToNet::WsEchoTest | MgmtToNet::WsSpeedTest => {
+            // WebSocket not implemented in ESP-IDF version
+            write_tlv(mgmt_uart, NetToMgmt::Error, b"not implemented");
+        }
+        MgmtToNet::SetLoopback => {
+            let enabled = value.first().copied().unwrap_or(0) != 0;
+            *loopback = enabled;
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
+        MgmtToNet::GetLoopback => {
+            write_tlv(mgmt_uart, NetToMgmt::Loopback, &[*loopback as u8]);
+        }
+        // MoQ commands
+        MgmtToNet::GetBenchmarkFps => {
+            write_tlv(
+                mgmt_uart,
+                NetToMgmt::BenchmarkFps,
+                &moq.benchmark_fps.to_le_bytes(),
+            );
+        }
+        MgmtToNet::SetBenchmarkFps => {
+            if value.len() >= 4 {
+                moq.benchmark_fps = u32::from_le_bytes([value[0], value[1], value[2], value[3]]);
+                write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"invalid fps");
+            }
+        }
+        MgmtToNet::GetBenchmarkPayloadSize => {
+            write_tlv(
+                mgmt_uart,
+                NetToMgmt::BenchmarkPayloadSize,
+                &moq.benchmark_payload_size.to_le_bytes(),
+            );
+        }
+        MgmtToNet::SetBenchmarkPayloadSize => {
+            if value.len() >= 4 {
+                moq.benchmark_payload_size =
+                    u32::from_le_bytes([value[0], value[1], value[2], value[3]]);
+                write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"invalid size");
+            }
+        }
+        MgmtToNet::RunClock => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunClock);
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
+        MgmtToNet::RunBenchmark => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunBenchmark {
+                fps: moq.benchmark_fps,
+                payload_size: moq.benchmark_payload_size,
+            });
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
+        MgmtToNet::StopMode => {
+            let _ = moq_cmd_tx.send(MoqCommand::StopMode);
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
+        MgmtToNet::SendChatMessage => {
+            // Chat not implemented yet
+            write_tlv(mgmt_uart, NetToMgmt::Error, b"not implemented");
+        }
+        MgmtToNet::RunMoqLoopback => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunMoqLoopback);
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
+        MgmtToNet::RunPublish => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunPublish);
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
+        // Channel configuration commands
+        MgmtToNet::GetChannelConfig => {
+            let channel_id = value.first().copied().unwrap_or(0);
+            if let Some(config) = storage.get_channel_config(channel_id) {
+                if let Ok(serialized) = postcard::to_allocvec(config) {
+                    write_tlv(mgmt_uart, NetToMgmt::ChannelConfig, &serialized);
+                } else {
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"serialize");
+                }
+            } else {
+                // Return default config for unconfigured channel
+                let default_config = ChannelConfig {
+                    channel_id,
+                    enabled: false,
+                    relay_url: heapless::String::new(),
+                };
+                if let Ok(serialized) = postcard::to_allocvec(&default_config) {
+                    write_tlv(mgmt_uart, NetToMgmt::ChannelConfig, &serialized);
+                } else {
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"serialize");
+                }
+            }
+        }
+        MgmtToNet::SetChannelConfig => {
+            if let Ok(config) = postcard::from_bytes::<ChannelConfig>(value) {
+                if storage.set_channel_config(config).is_ok() {
+                    if storage.save().is_ok() {
+                        write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                    } else {
+                        write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+                    }
+                } else {
+                    write_tlv(mgmt_uart, NetToMgmt::Error, b"set");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"deserialize");
+            }
+        }
+        MgmtToNet::GetAllChannelConfigs => {
+            if let Ok(serialized) = postcard::to_allocvec(&storage.channels) {
+                write_tlv(mgmt_uart, NetToMgmt::AllChannelConfigs, &serialized);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"serialize");
+            }
+        }
+        MgmtToNet::ClearChannelConfigs => {
+            storage.clear_channel_configs();
+            if storage.save().is_ok() {
+                write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+            }
+        }
+        MgmtToNet::GetJitterStats => {
+            let channel_id = value.first().copied().unwrap_or(0);
+            let stats = match ChannelId::try_from(channel_id) {
+                Ok(ChannelId::Ptt) => Some(ptt_buffer.stats()),
+                Ok(ChannelId::PttAi) => Some(ptt_ai_buffer.stats()),
+                _ => None,
+            };
+            if let Some(s) = stats {
+                // Serialize: received(4) + output(4) + underruns(4) + overruns(4) + level(2) + state(1) = 19 bytes
+                let mut buf = [0u8; 19];
+                buf[0..4].copy_from_slice(&s.received.to_le_bytes());
+                buf[4..8].copy_from_slice(&s.output.to_le_bytes());
+                buf[8..12].copy_from_slice(&s.underruns.to_le_bytes());
+                buf[12..16].copy_from_slice(&s.overruns.to_le_bytes());
+                buf[16..18].copy_from_slice(&(s.level as u16).to_le_bytes());
+                buf[18] = s.state as u8;
+                write_tlv(mgmt_uart, NetToMgmt::JitterStats, &buf);
+            } else {
+                write_tlv(mgmt_uart, NetToMgmt::Error, b"invalid channel");
+            }
+        }
+    }
+}
+
+/// Handle message from UI chip
+fn handle_ui_message(
+    msg_type: UiToNet,
+    value: &[u8],
+    mgmt_uart: &UartDriver,
+    ui_uart: &UartDriver,
+    loopback: bool,
+    moq_cmd_tx: &Sender<MoqCommand>,
+) {
+    match msg_type {
+        UiToNet::CircularPing => {
+            write_tlv(mgmt_uart, NetToMgmt::CircularPing, value);
+        }
+        UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
+            if loopback {
+                // Local loopback - forward directly to UI
+                write_tlv(ui_uart, NetToUi::AudioFrame, value);
+            } else {
+                // Only send to MoQ task when not in local loopback mode
+                let _ = moq_cmd_tx.send(MoqCommand::AudioFrame {
+                    data: value.to_vec(),
+                });
+            }
+        }
+        UiToNet::AudioFrame => {
+            // New hactar format: channel_id (1 byte) + encrypted payload
+            // Handle same as legacy for now
+            if loopback {
+                write_tlv(ui_uart, NetToUi::AudioFrame, value);
+            } else {
+                let _ = moq_cmd_tx.send(MoqCommand::AudioFrame {
+                    data: value.to_vec(),
+                });
+            }
+        }
+    }
 }

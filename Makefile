@@ -1,16 +1,15 @@
-.PHONY: all preflight format flash-ui flash-mgmt flash-net flash-net-idf flash-all clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl
+.PHONY: all preflight format flash-ui flash-mgmt flash-net flash-all clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl
 
-CRATES = ui mgmt net net-idf ctl link web-ctl web-link echo-server
+CRATES = ui mgmt net ctl link web-ctl web-link echo-server
 
 # Output paths (targets configured in each crate's .cargo/config.toml)
 UI_BIN = ui/target/thumbv7em-none-eabihf/debug/ui.bin
 MGMT_BIN = mgmt/target/thumbv6m-none-eabi/debug/mgmt.bin
-NET_BIN = net/target/xtensa-esp32s3-none-elf/debug/net
-NET_IDF_BIN = net-idf/target/xtensa-esp32s3-espidf/debug/net-idf
-NET_IDF_PARTITIONS = net-idf/partitions.csv
+NET_BIN = net/target/xtensa-esp32s3-espidf/debug/net
+NET_PARTITIONS = net/partitions.csv
 
 # Build all firmwares and control program
-all: $(UI_BIN) $(MGMT_BIN) $(NET_BIN) $(NET_IDF_BIN) ctl
+all: $(UI_BIN) $(MGMT_BIN) $(NET_BIN) ctl
 	@echo "Build complete."
 
 # Preflight checks: build everything, run tests, check formatting
@@ -51,26 +50,19 @@ flash-ui: $(UI_BIN)
 flash-mgmt: $(MGMT_BIN)
 	cd ctl && cargo run -- mgmt flash ../$(MGMT_BIN)
 
-# Flash NET chip (ESP32-S3) - uses net/ crate (bare-metal)
-flash-net: $(NET_BIN)
-	cd ctl && cargo run -- net flash $(abspath $(NET_BIN))
-
-# Flash NET-IDF chip (ESP32-S3) - uses net-idf/ crate (ESP-IDF based)
+# Flash NET chip (ESP32-S3) - uses ESP-IDF based firmware
 # Uses partition table for proper 8MB flash layout with 4MB app partition
-$(NET_IDF_BIN): FORCE
-	cd net-idf && cargo build
+flash-net: $(NET_BIN)
+	cd ctl && cargo run -- net flash $(abspath $(NET_BIN)) --partition-table $(abspath $(NET_PARTITIONS))
 
-flash-net-idf: $(NET_IDF_BIN)
-	cd ctl && cargo run -- net flash $(abspath $(NET_IDF_BIN)) --partition-table $(abspath $(NET_IDF_PARTITIONS))
-
-# Flash all chips in sequence: MGMT, UI, NET-IDF
-flash-all: $(MGMT_BIN) $(UI_BIN) $(NET_IDF_BIN)
+# Flash all chips in sequence: MGMT, UI, NET
+flash-all: $(MGMT_BIN) $(UI_BIN) $(NET_BIN)
 	@echo "Flashing MGMT..."
 	cd ctl && cargo run -- mgmt flash ../$(MGMT_BIN)
 	@echo "Flashing UI..."
 	cd ctl && cargo run -- ui flash ../$(UI_BIN)
-	@echo "Flashing NET-IDF..."
-	cd ctl && cargo run -- net flash $(abspath $(NET_IDF_BIN)) --partition-table $(abspath $(NET_IDF_PARTITIONS))
+	@echo "Flashing NET..."
+	cd ctl && cargo run -- net flash $(abspath $(NET_BIN)) --partition-table $(abspath $(NET_PARTITIONS))
 	@echo "All chips flashed."
 
 # Web CTL (WASM)
@@ -101,7 +93,6 @@ clean:
 	cd ui && cargo clean
 	cd mgmt && cargo clean
 	cd net && cargo clean
-	cd net-idf && cargo clean
 	cd ctl && cargo clean
 	cd web-ctl && cargo clean
 	-cd web-link && cargo clean
