@@ -182,6 +182,8 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                         match ClientBuilder::new()
                             .endpoint_id(MOQ_ENDPOINT_ID)
                             .connect_uri(&url)
+                            .time_queue_max_duration(5000)
+                            .tick_service_sleep_delay_us(30000)
                             .build()
                         {
                             Ok(c) => {
@@ -540,6 +542,8 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                             match ClientBuilder::new()
                                 .endpoint_id(MOQ_ENDPOINT_ID)
                                 .connect_uri(url)
+                                .time_queue_max_duration(5000)
+                                .tick_service_sleep_delay_us(30000)
                                 .build()
                             {
                                 Ok(c) => match block_on(c.connect()) {
@@ -720,6 +724,8 @@ async fn create_and_connect_client(relay_url: &str) -> Result<quicr::Client, qui
     let client = ClientBuilder::new()
         .endpoint_id(MOQ_ENDPOINT_ID)
         .connect_uri(relay_url)
+        .time_queue_max_duration(5000)
+        .tick_service_sleep_delay_us(30000)
         .build()?;
 
     client.connect().await?;
@@ -1063,6 +1069,19 @@ impl NvsStorage {
 fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+
+    // Configure pthread to use PSRAM for thread stacks (like hactar firmware)
+    // This must be done before spawning any threads
+    unsafe {
+        use esp_idf_svc::sys::{
+            esp_pthread_cfg_t, esp_pthread_get_default_config, esp_pthread_set_cfg,
+            MALLOC_CAP_8BIT, MALLOC_CAP_SPIRAM,
+        };
+        let mut cfg: esp_pthread_cfg_t = esp_pthread_get_default_config();
+        cfg.stack_size = 32000; // 32KB stacks like hactar
+        cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+        esp_pthread_set_cfg(&cfg);
+    }
 
     info!("net-idf: initializing");
 

@@ -6,7 +6,6 @@
 #include <quicr/client.h>
 #include <quicr/publish_track_handler.h>
 #include <quicr/subscribe_track_handler.h>
-#include <quicr/subscribe_namespace_handler.h>
 
 #include <spdlog/spdlog.h>
 
@@ -171,15 +170,6 @@ public:
                     case Status::kNewGroupRequested:
                         ffi_status = QUICR_SUBSCRIBE_STATUS_NEW_GROUP_REQUESTED;
                         break;
-                    case Status::kCancelled:
-                        ffi_status = QUICR_SUBSCRIBE_STATUS_CANCELLED;
-                        break;
-                    case Status::kDoneByFin:
-                        ffi_status = QUICR_SUBSCRIBE_STATUS_DONE_BY_FIN;
-                        break;
-                    case Status::kDoneByReset:
-                        ffi_status = QUICR_SUBSCRIBE_STATUS_DONE_BY_RESET;
-                        break;
                     default:
                         ffi_status = QUICR_SUBSCRIBE_STATUS_OK;
                 }
@@ -304,7 +294,6 @@ private:
 struct QuicrClient {
     std::shared_ptr<FfiClient> client;
     std::mutex mutex;
-    std::map<quicr::TrackNamespace, std::shared_ptr<quicr::SubscribeNamespaceHandler>> namespace_handlers;
 };
 
 struct QuicrPublishTrackHandler {
@@ -367,8 +356,6 @@ static QuicrPublishObjectStatus convert_publish_object_status(
             return QUICR_PUBLISH_OBJECT_STATUS_MUST_START_NEW_TRACK;
         case quicr::PublishTrackHandler::PublishObjectStatus::kPaused:
             return QUICR_PUBLISH_OBJECT_STATUS_PAUSED;
-        case quicr::PublishTrackHandler::PublishObjectStatus::kPendingPublishOk:
-            return QUICR_PUBLISH_OBJECT_STATUS_PENDING_PUBLISH_OK;
         default:
             return QUICR_PUBLISH_OBJECT_STATUS_INTERNAL_ERROR;
     }
@@ -401,6 +388,7 @@ extern "C" void quicr_client_config_default(QuicrClientConfig* config) {
     quicr_transport_config_default(&config->transport_config);
     config->metrics_sample_ms = 5000;
     config->connect_uri = nullptr;
+    config->tick_service_sleep_delay_us = 333; // Match libquicr default
 }
 
 // =============================================================================
@@ -430,6 +418,7 @@ extern "C" QuicrClient* quicr_client_create(
         }
 
         cfg.metrics_sample_ms = config->metrics_sample_ms;
+        cfg.tick_service_sleep_delay_us = config->tick_service_sleep_delay_us;
 
         // Transport config
         if (config->transport_config.tls_cert_filename) {
@@ -927,12 +916,6 @@ extern "C" QuicrSubscribeStatus quicr_subscribe_track_get_status(const QuicrSubs
                 return QUICR_SUBSCRIBE_STATUS_PAUSED;
             case quicr::SubscribeTrackHandler::Status::kNewGroupRequested:
                 return QUICR_SUBSCRIBE_STATUS_NEW_GROUP_REQUESTED;
-            case quicr::SubscribeTrackHandler::Status::kCancelled:
-                return QUICR_SUBSCRIBE_STATUS_CANCELLED;
-            case quicr::SubscribeTrackHandler::Status::kDoneByFin:
-                return QUICR_SUBSCRIBE_STATUS_DONE_BY_FIN;
-            case quicr::SubscribeTrackHandler::Status::kDoneByReset:
-                return QUICR_SUBSCRIBE_STATUS_DONE_BY_RESET;
             default:
                 return QUICR_SUBSCRIBE_STATUS_NOT_SUBSCRIBED;
         }
@@ -1021,10 +1004,8 @@ extern "C" void quicr_client_subscribe_namespace(
 
     try {
         auto ns = convert_track_namespace(track_namespace);
-        auto handler = quicr::SubscribeNamespaceHandler::Create(ns);
         std::lock_guard<std::mutex> lock(client->mutex);
-        client->namespace_handlers[ns] = handler;
-        client->client->SubscribeNamespace(handler);
+        client->client->SubscribeNamespace(ns);
     } catch (const std::exception& e) {
         set_error(e.what());
     } catch (...) {
@@ -1043,11 +1024,7 @@ extern "C" void quicr_client_unsubscribe_namespace(
     try {
         auto ns = convert_track_namespace(track_namespace);
         std::lock_guard<std::mutex> lock(client->mutex);
-        auto it = client->namespace_handlers.find(ns);
-        if (it != client->namespace_handlers.end()) {
-            client->client->UnsubscribeNamespace(it->second);
-            client->namespace_handlers.erase(it);
-        }
+        client->client->UnsubscribeNamespace(ns);
     } catch (const std::exception& e) {
         set_error(e.what());
     } catch (...) {

@@ -143,6 +143,7 @@ typedef struct {
     QuicrTransportConfig transport_config;
     uint64_t metrics_sample_ms;
     const char* connect_uri;
+    uint64_t tick_service_sleep_delay_us;
 } QuicrClientConfig;
 
 // =============================================================================

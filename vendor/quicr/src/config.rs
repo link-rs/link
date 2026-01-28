@@ -197,6 +197,8 @@ pub struct ClientConfig {
     pub transport: TransportConfig,
     /// Metrics sampling interval
     pub metrics_sample_interval: Duration,
+    /// Tick service sleep delay in microseconds
+    pub tick_service_sleep_delay_us: u64,
 }
 
 impl ClientConfig {
@@ -207,6 +209,7 @@ impl ClientConfig {
             connect_uri: connect_uri.into(),
             transport: TransportConfig::default(),
             metrics_sample_interval: Duration::from_secs(5),
+            tick_service_sleep_delay_us: 333, // libquicr default
         }
     }
 
@@ -255,6 +258,7 @@ impl ClientConfig {
             qlog_path,
             transport: &self.transport,
             metrics_sample_ms: self.metrics_sample_interval.as_millis() as u64,
+            tick_service_sleep_delay_us: self.tick_service_sleep_delay_us,
         })
     }
 }
@@ -268,6 +272,7 @@ pub(crate) struct FfiClientConfig<'a> {
     pub qlog_path: Option<CString>,
     pub transport: &'a TransportConfig,
     pub metrics_sample_ms: u64,
+    pub tick_service_sleep_delay_us: u64,
 }
 
 impl<'a> FfiClientConfig<'a> {
@@ -276,6 +281,7 @@ impl<'a> FfiClientConfig<'a> {
             endpoint_id: self.endpoint_id.as_ptr(),
             connect_uri: self.connect_uri.as_ptr(),
             metrics_sample_ms: self.metrics_sample_ms,
+            tick_service_sleep_delay_us: self.tick_service_sleep_delay_us,
             transport_config: crate::ffi::QuicrTransportConfig {
                 tls_cert_filename: self
                     .tls_cert
@@ -308,12 +314,25 @@ impl<'a> FfiClientConfig<'a> {
 }
 
 /// Builder for ClientConfig
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ClientConfigBuilder {
     endpoint_id: Option<String>,
     connect_uri: Option<String>,
     transport: TransportConfig,
     metrics_sample_interval: Duration,
+    tick_service_sleep_delay_us: u64,
+}
+
+impl Default for ClientConfigBuilder {
+    fn default() -> Self {
+        Self {
+            endpoint_id: None,
+            connect_uri: None,
+            transport: TransportConfig::default(),
+            metrics_sample_interval: Duration::default(),
+            tick_service_sleep_delay_us: 333, // libquicr default
+        }
+    }
 }
 
 impl ClientConfigBuilder {
@@ -354,6 +373,18 @@ impl ClientConfigBuilder {
         self
     }
 
+    /// Set the tick service sleep delay in microseconds
+    pub fn tick_service_sleep_delay_us(mut self, us: u64) -> Self {
+        self.tick_service_sleep_delay_us = us;
+        self
+    }
+
+    /// Set the time queue max duration in milliseconds
+    pub fn time_queue_max_duration(mut self, ms: u32) -> Self {
+        self.transport.time_queue_max_duration = ms;
+        self
+    }
+
     /// Build the client configuration
     pub fn build(self) -> Result<ClientConfig> {
         debug!("Building client configuration");
@@ -381,6 +412,7 @@ impl ClientConfigBuilder {
                     self.metrics_sample_interval
                 }
             },
+            tick_service_sleep_delay_us: self.tick_service_sleep_delay_us,
         };
 
         trace!(

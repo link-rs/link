@@ -621,6 +621,18 @@ impl ClientBuilder {
         self
     }
 
+    /// Set the time queue max duration in milliseconds
+    pub fn time_queue_max_duration(mut self, ms: u32) -> Self {
+        self.config_builder = self.config_builder.time_queue_max_duration(ms);
+        self
+    }
+
+    /// Set the tick service sleep delay in microseconds
+    pub fn tick_service_sleep_delay_us(mut self, us: u64) -> Self {
+        self.config_builder = self.config_builder.tick_service_sleep_delay_us(us);
+        self
+    }
+
     /// Build the client configuration
     ///
     /// Use `Client::new()` with the returned config and your static signals
