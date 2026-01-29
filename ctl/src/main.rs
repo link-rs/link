@@ -115,6 +115,9 @@ enum UiAction {
 
     Flash {
         file: std::path::PathBuf,
+        /// Skip verification after flashing
+        #[arg(long)]
+        no_verify: bool,
     },
 
     Version {

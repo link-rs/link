@@ -1642,6 +1642,7 @@ where
         &mut self,
         firmware: &[u8],
         delay_ms: D,
+        verify: bool,
         mut progress: F,
     ) -> Result<(), FlashError<std::io::Error>>
     where
@@ -1655,7 +1656,7 @@ where
         delay_ms(100);
 
         // Flash the firmware
-        let result = self.do_flash_ui(firmware, &mut progress);
+        let result = self.do_flash_ui(firmware, verify, &mut progress);
 
         // Always reset UI chip back to user mode
         let _ = self.reset_ui_to_user();
@@ -1667,6 +1668,7 @@ where
     fn do_flash_ui<F>(
         &mut self,
         firmware: &[u8],
+        verify: bool,
         progress: &mut F,
     ) -> Result<(), FlashError<std::io::Error>>
     where
@@ -1701,22 +1703,24 @@ where
             progress(FlashPhase::Writing, written, total);
         }
 
-        // Verify by reading back
-        let mut verified = 0;
-        let mut read_buf = [0u8; 256];
+        // Verify by reading back (optional)
+        if verify {
+            let mut verified = 0;
+            let mut read_buf = [0u8; 256];
 
-        for chunk in firmware.chunks(256) {
-            let address = base_address + verified as u32;
-            let len = bl.read_memory(address, &mut read_buf[..chunk.len()])?;
-            if &read_buf[..len] != chunk {
-                return Err(FlashError::VerifyFailed {
-                    address,
-                    expected: heapless::Vec::from_slice(chunk).unwrap(),
-                    actual: heapless::Vec::from_slice(&read_buf[..len]).unwrap(),
-                });
+            for chunk in firmware.chunks(256) {
+                let address = base_address + verified as u32;
+                let len = bl.read_memory(address, &mut read_buf[..chunk.len()])?;
+                if &read_buf[..len] != chunk {
+                    return Err(FlashError::VerifyFailed {
+                        address,
+                        expected: heapless::Vec::from_slice(chunk).unwrap(),
+                        actual: heapless::Vec::from_slice(&read_buf[..len]).unwrap(),
+                    });
+                }
+                verified += len;
+                progress(FlashPhase::Verifying, verified, total);
             }
-            verified += len;
-            progress(FlashPhase::Verifying, verified, total);
         }
 
         Ok(())

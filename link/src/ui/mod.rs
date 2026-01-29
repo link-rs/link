@@ -42,7 +42,7 @@ enum Event {
     Net(Tlv<NetToUi>),
     ButtonDown(Button),
     ButtonUp(Button),
-    AudioFrame(heapless::Vec<u8, AUDIO_BUF_SIZE>),
+    AudioFrame(StereoFrame),
 }
 
 #[allow(unreachable_code)]
@@ -175,8 +175,8 @@ where
                         button_active.store(false, Ordering::Relaxed);
                     }
                 }
-                Event::AudioFrame(mut buf) => 'audio: {
-                    // buf contains 160 bytes of A-law encoded audio from audio_task
+                Event::AudioFrame(rx_stereo) => 'audio: {
+                    // rx_stereo contains raw stereo samples from audio_task
                     let Some(button) = active_button else {
                         break 'audio;
                     };
@@ -188,6 +188,10 @@ where
                     if mode == LoopbackMode::Raw {
                         break 'audio;
                     }
+
+                    // Encode stereo to A-law mono (inlined from encode_into)
+                    let mut buf: heapless::Vec<u8, AUDIO_BUF_SIZE> = heapless::Vec::new();
+                    rx_stereo.encode_into(&mut buf);
 
                     // Alaw loopback: play directly (no encryption)
                     if mode == LoopbackMode::Alaw {
@@ -296,10 +300,8 @@ where
             // timing controls the loop rate. A blocking receive with timeout
             // would add delay ON TOP of the I2S cycle, causing RX overruns.
             let tx_stereo = if let Ok(frame) = playback_channel.try_receive() {
-                tlv_log!(log_sender, "tx + {}", frame.energy());
                 frame.decode_to_stereo()
             } else {
-                tlv_log!(log_sender, "tx - 0");
                 StereoFrame::default()
             };
 
@@ -310,31 +312,7 @@ where
                 Ok(_) => {
                     // Only send audio frames when a button is pressed
                     if button_active.load(Ordering::Relaxed) {
-                        // Encode stereo to A-law mono into a buffer that can be extended
-                        // in handle_task with chunk headers and encryption
-                        let mut buf: heapless::Vec<u8, AUDIO_BUF_SIZE> = heapless::Vec::new();
-                        rx_stereo.encode_into(&mut buf);
-
-                        let energy0: u32 = rx_stereo
-                            .0
-                            .iter()
-                            .map(|&x| (x as i16).unsigned_abs() as u32)
-                            .sum();
-                        let rx_frame = Frame::from_bytes(&buf).unwrap();
-                        let rx_decode = rx_frame.decode_to_stereo();
-                        let decode_eq = rx_decode == rx_stereo;
-                        let energy = Frame::from_bytes(&buf).unwrap().energy();
-                        tlv_log!(
-                            log_sender,
-                            "rx e0={} e={} eq={}",
-                            energy0,
-                            energy,
-                            decode_eq
-                        );
-
-                        // Try to send the recorded frame - drop if channel is full
-                        // This prevents blocking the audio task if event handler is slow
-                        let _ = channel.try_send(Event::AudioFrame(buf));
+                        let _ = channel.try_send(Event::AudioFrame(rx_stereo.clone()));
                     }
                 }
                 Err(_) => {
@@ -346,7 +324,7 @@ where
             // before the next iteration's try_receive()
             // XXX(RLB) This seems necessary, but a bit awkward.  Might only be necessary in
             // loopback mode, so we should re-test once we're more in a PTT frame.
-            embassy_futures::yield_now().await;
+            // embassy_futures::yield_now().await;
         }
     };
 

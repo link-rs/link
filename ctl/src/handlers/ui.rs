@@ -76,12 +76,15 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
             println!("Done!");
             Ok(())
         }
-        UiAction::Flash { file } => {
+        UiAction::Flash { file, no_verify } => {
             println!("UI Flash");
             println!("========\n");
 
             let firmware = std::fs::read(&file)?;
             println!("Firmware: {} ({} bytes)", file.display(), firmware.len());
+            if no_verify {
+                println!("Verification: skipped");
+            }
 
             // Hold NET chip in reset during UI flashing to avoid interference
             println!("Holding NET chip in reset...");
@@ -104,7 +107,8 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
 
             let mut current_phase = None;
             let delay = |ms| thread::sleep(Duration::from_millis(ms));
-            let result = app.flash_ui(&firmware, delay, |phase, progress, total| {
+            let verify = !no_verify;
+            let result = app.flash_ui(&firmware, delay, verify, |phase, progress, total| {
                 if current_phase != Some(phase) {
                     current_phase = Some(phase);
                     match phase {

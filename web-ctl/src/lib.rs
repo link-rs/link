@@ -320,7 +320,7 @@ impl LinkController {
             }
         };
 
-        app.flash_ui(&firmware, delay_ms, progress)
+        app.flash_ui(&firmware, delay_ms, true, progress)
             .await
             .map_err(|e| JsValue::from_str(&format!("Flash failed: {:?}", e)))?;
 

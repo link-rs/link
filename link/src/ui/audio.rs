@@ -57,7 +57,10 @@ impl StereoFrame {
         buf.clear();
         for i in 0..ENCODED_FRAME_SIZE {
             // Left channel (even indices) contains the microphone input
-            let sample = self.0[i * 2] as i16;
+            // XXX(RLB) Empirically not.  It appears that sometimes low-level timing stuff will
+            // cause this to shift.  If Alaw loopback suddenly goes silent, consider whether
+            // this needs to be changed back.
+            let sample = self.0[i * 2 + 1] as i16;
             let _ = buf.push(encode_alaw(sample));
         }
     }
