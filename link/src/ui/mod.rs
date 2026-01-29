@@ -24,7 +24,7 @@ use embedded_hal::digital::StatefulOutputPin;
 use embedded_hal::i2c::I2c;
 use embedded_hal_async::digital::Wait;
 use embedded_io_async::{Read, Write};
-use portable_atomic::{AtomicU8, Ordering};
+use portable_atomic::{AtomicBool, AtomicU8, Ordering};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -100,6 +100,10 @@ where
     // Shared loopback mode (atomic for cross-task access)
     let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
 
+    // Shared button state - true when any button is pressed
+    // This allows audio_task to skip sending frames when no button is held
+    let button_active = AtomicBool::new(false);
+
     let handle_task = async {
         info!("ui: ready to handle events");
 
@@ -160,6 +164,7 @@ where
                     tlv_log!(log_sender, "button {:?} down", button);
                     if active_button.is_none() {
                         active_button = Some(button);
+                        button_active.store(true, Ordering::Relaxed);
                     }
                 }
                 Event::ButtonUp(button) => {
@@ -167,6 +172,7 @@ where
                     tlv_log!(log_sender, "button {:?} up", button);
                     if active_button == Some(button) {
                         active_button = None;
+                        button_active.store(false, Ordering::Relaxed);
                     }
                 }
                 Event::AudioFrame(mut buf) => 'audio: {
@@ -186,29 +192,10 @@ where
                     // Alaw loopback: play directly (no encryption)
                     if mode == LoopbackMode::Alaw {
                         if let Some(frame) = Frame::from_bytes(&buf) {
-                            // XXX(RLB) See below comments about timing.
-                            tlv_log!(log_sender, "AudioFrame e={:?}", frame.energy());
-                            to_mgmt.must_write_tlv(UiToMgmt::Log, b"a").await;
                             playback_channel.send(frame).await;
-                        } else {
-                            // XXX(RLB) See below comments about timing.  Both lines are
-                            // empirically necessary, even if they never execute.
-                            to_mgmt.must_write_tlv(UiToMgmt::Log, b"b").await;
-                            embassy_futures::yield_now().await;
                         }
                         break 'audio;
                     }
-
-                    // XXX(RLB) Apparently this is necessary for alaw and sframe loopback to work.
-                    // The following do not work:
-                    //
-                    // * A delay
-                    // * A yield
-                    // * An empty log TLV
-                    //
-                    // We need to come back to this and figure out what about these interacting
-                    // event loops is causing this weird behavior.
-                    to_mgmt.must_write_tlv(UiToMgmt::Log, b"c").await;
 
                     // Determine channel based on button
                     let channel_id = match button {
@@ -321,16 +308,34 @@ where
             // Do the I2S read/write cycle
             match audio_system.read_write(&tx_stereo, &mut rx_stereo).await {
                 Ok(_) => {
-                    let energy: u32 = rx_stereo.0.iter().map(|&s| s as u32).sum();
-                    tlv_log!(log_sender, "rx e={}", energy);
+                    // Only send audio frames when a button is pressed
+                    if button_active.load(Ordering::Relaxed) {
+                        // Encode stereo to A-law mono into a buffer that can be extended
+                        // in handle_task with chunk headers and encryption
+                        let mut buf: heapless::Vec<u8, AUDIO_BUF_SIZE> = heapless::Vec::new();
+                        rx_stereo.encode_into(&mut buf);
 
-                    // Encode stereo to A-law mono into a buffer that can be extended
-                    // in handle_task with chunk headers and encryption
-                    let mut buf: heapless::Vec<u8, AUDIO_BUF_SIZE> = heapless::Vec::new();
-                    rx_stereo.encode_into(&mut buf);
-                    // Try to send the recorded frame - drop if channel is full
-                    // This prevents blocking the audio task if event handler is slow
-                    let _ = channel.try_send(Event::AudioFrame(buf));
+                        let energy0: u32 = rx_stereo
+                            .0
+                            .iter()
+                            .map(|&x| (x as i16).unsigned_abs() as u32)
+                            .sum();
+                        let rx_frame = Frame::from_bytes(&buf).unwrap();
+                        let rx_decode = rx_frame.decode_to_stereo();
+                        let decode_eq = rx_decode == rx_stereo;
+                        let energy = Frame::from_bytes(&buf).unwrap().energy();
+                        tlv_log!(
+                            log_sender,
+                            "rx e0={} e={} eq={}",
+                            energy0,
+                            energy,
+                            decode_eq
+                        );
+
+                        // Try to send the recorded frame - drop if channel is full
+                        // This prevents blocking the audio task if event handler is slow
+                        let _ = channel.try_send(Event::AudioFrame(buf));
+                    }
                 }
                 Err(_) => {
                     // I2S error - frame dropped
