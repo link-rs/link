@@ -122,6 +122,22 @@ impl Default for MoqConfig {
 /// Device endpoint ID for MoQ connections.
 const MOQ_ENDPOINT_ID: &str = "hactar-link-net";
 
+/// Get device ID from MAC address (matches hactar's approach).
+/// Returns a u64 derived from the ESP32's MAC address.
+fn get_device_id_from_mac() -> u64 {
+    let mut mac = [0u8; 6];
+    unsafe {
+        esp_idf_svc::sys::esp_efuse_mac_get_default(mac.as_mut_ptr());
+    }
+    // Convert 6-byte MAC to u64, then clear top 2 bits like hactar does
+    let mut device_id: u64 = 0;
+    for (i, &byte) in mac.iter().enumerate() {
+        device_id |= (byte as u64) << (i * 8);
+    }
+    // Clear top 2 bits: (mac << 2) >> 2
+    (device_id << 2) >> 2
+}
+
 /// Current mode the MoQ task is running.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum MoqMode {
@@ -464,12 +480,15 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
 
                                 // Create AI audio publish track
                                 let ai_pub_track_name = FullTrackName::new(ai_ns.clone(), track_name.as_bytes());
+                                // Get device ID from MAC for AI group_id (janet uses this to route responses)
+                                let device_id = get_device_id_from_mac();
+
                                 match block_on(c.publish(ai_pub_track_name)) {
                                     Ok(track) => {
                                         ai_pub_track = Some(track);
-                                        ai_group_id = 0;
+                                        ai_group_id = device_id;
                                         ai_object_id = 0;
-                                        info!("MoQ PTT: created AI audio publish track");
+                                        info!("MoQ PTT: created AI audio publish track (group_id={})", device_id);
                                     }
                                     Err(e) => {
                                         warn!("MoQ PTT: failed to create AI audio publish track: {:?}", e);
@@ -490,9 +509,11 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                 }
 
                                 // Subscribe to AI audio responses (using device ID as track name)
-                                // For now use a fixed ID; TODO: get from MAC address
-                                let device_id = "12345678";
-                                let ai_sub_track_name = FullTrackName::new(ai_ns, device_id.as_bytes());
+                                // Device ID is derived from MAC address to match hactar/janet
+                                // (already computed above for ai_group_id)
+                                let device_id_str = format!("{}", device_id);
+                                info!("MoQ PTT: subscribing to AI responses on track {}", device_id_str);
+                                let ai_sub_track_name = FullTrackName::new(ai_ns, device_id_str.into_bytes());
                                 match block_on(c.subscribe(ai_sub_track_name)) {
                                     Ok(sub) => {
                                         ai_subscription = Some(sub);
