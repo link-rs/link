@@ -135,6 +135,11 @@ where
             let _ = self.rst.set_low();
         }
     }
+
+    /// Hold NET chip in reset (RST low).
+    pub fn hold_reset(&mut self) {
+        let _ = self.rst.set_low();
+    }
 }
 
 /// Type alias for backwards compatibility.
@@ -442,6 +447,12 @@ where
         CtlToMgmt::HoldUiReset => {
             info!("mgmt: holding UI in reset");
             ui_reset_pins.hold_reset();
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
+            BaudRateChange::None
+        }
+        CtlToMgmt::HoldNetReset => {
+            info!("mgmt: holding NET in reset");
+            net_reset_pins.hold_reset();
             to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
             BaudRateChange::None
         }

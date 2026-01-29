@@ -463,15 +463,18 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                 ]);
                                 c.publish_namespace(&ai_ns);
 
+                                // Get device ID from MAC for group_id (janet uses this to route AI responses)
+                                let device_id = get_device_id_from_mac();
+
                                 // Create PTT publish track
                                 let ptt_track_name = FullTrackName::new(ptt_ns.clone(), track_name.as_bytes());
-                                info!("MoQ PTT: publish namespace={}, track={}", ptt_ns, track_name);
+                                info!("MoQ PTT: publish namespace={}, track={} (device_id={})", ptt_ns, track_name, device_id);
                                 match block_on(c.publish(ptt_track_name)) {
                                     Ok(track) => {
                                         ptt_pub_track = Some(track);
-                                        ptt_group_id = 0;
+                                        ptt_group_id = device_id;
                                         ptt_object_id = 0;
-                                        info!("MoQ PTT: created PTT publish track");
+                                        info!("MoQ PTT: created PTT publish track (group_id={})", device_id);
                                     }
                                     Err(e) => {
                                         warn!("MoQ PTT: failed to create PTT publish track: {:?}", e);
@@ -480,8 +483,6 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
 
                                 // Create AI audio publish track
                                 let ai_pub_track_name = FullTrackName::new(ai_ns.clone(), track_name.as_bytes());
-                                // Get device ID from MAC for AI group_id (janet uses this to route responses)
-                                let device_id = get_device_id_from_mac();
 
                                 match block_on(c.publish(ai_pub_track_name)) {
                                     Ok(track) => {
@@ -574,6 +575,9 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                     Ok(ChannelId::PttAi) => {
                                         if let Some(ref track) = ai_pub_track {
                                             let headers = ObjectHeaders::new(ai_group_id, ai_object_id);
+                                            if ai_object_id == 0 {
+                                                info!("MoQ PTT: first AI publish with group_id={}", ai_group_id);
+                                            }
                                             let _ = track.publish(&headers, payload);
                                             ai_object_id += 1;
                                         } else {
@@ -745,6 +749,10 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                         if let Some(ref mut subscription) = ai_subscription {
                             while let Ok(object) = subscription.try_recv() {
                                 ai_recv_count += 1;
+                                if ai_recv_count <= 5 || ai_recv_count % 100 == 0 {
+                                    info!("MoQ PTT: recv AI audio, group={} obj={} len={}",
+                                        object.headers.group_id, object.headers.object_id, object.payload().len());
+                                }
                                 // Forward AI audio to UI with channel_id prefix
                                 let mut data = Vec::with_capacity(1 + object.payload().len());
                                 data.push(ChannelId::PttAi as u8);

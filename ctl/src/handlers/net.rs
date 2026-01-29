@@ -165,12 +165,25 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             } else {
                 println!("Partition table: default (single app at 0x10000)");
             }
+
+            // Hold UI chip in reset during NET flashing to avoid interference
+            println!("Holding UI chip in reset...");
+            if let Err(e) = app.hold_ui_reset() {
+                eprintln!("Warning: failed to hold UI in reset: {}", e);
+            }
+
             println!("Resetting NET chip to bootloader mode...\n");
 
             let mut progress = FlashProgress::new();
             let result = app.flash_net(&firmware, partition_table.as_deref(), &mut progress);
 
             progress.finish();
+
+            // Release UI chip from reset
+            println!("Releasing UI chip from reset...");
+            if let Err(e) = app.reset_ui_to_user() {
+                eprintln!("Warning: failed to release UI from reset: {}", e);
+            }
 
             match result {
                 Ok(()) => {

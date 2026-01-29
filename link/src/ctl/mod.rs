@@ -1432,6 +1432,22 @@ where
         Ok(())
     }
 
+    /// Hold the NET chip in reset.
+    ///
+    /// Sends a command to MGMT to assert the RST pin low, keeping the
+    /// NET chip in reset until released.
+    pub fn hold_net_reset(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer, CtlToMgmt::HoldNetReset, &[])?;
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Reset the NET chip into bootloader mode.
     ///
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins

@@ -82,6 +82,13 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
 
             let firmware = std::fs::read(&file)?;
             println!("Firmware: {} ({} bytes)", file.display(), firmware.len());
+
+            // Hold NET chip in reset during UI flashing to avoid interference
+            println!("Holding NET chip in reset...");
+            if let Err(e) = app.hold_net_reset() {
+                eprintln!("Warning: failed to hold NET in reset: {}", e);
+            }
+
             println!("Resetting UI chip to bootloader mode...\n");
 
             let pb = ProgressBar::new(firmware.len() as u64);
@@ -122,6 +129,12 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
             });
 
             pb.finish_and_clear();
+
+            // Release NET chip from reset
+            println!("Releasing NET chip from reset...");
+            if let Err(e) = app.reset_net_to_user() {
+                eprintln!("Warning: failed to release NET from reset: {}", e);
+            }
 
             match result {
                 Ok(()) => {

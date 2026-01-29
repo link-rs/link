@@ -65,6 +65,8 @@ pub enum CtlToMgmt {
     WsEchoTest,
     /// Hold UI chip in reset
     HoldUiReset,
+    /// Hold NET chip in reset
+    HoldNetReset,
     /// Start WebSocket speed test: blast frames as fast as possible
     WsSpeedTest,
     /// Set NET chip GPIO0/BOOT pin directly (1 byte: 0=low, 1=high)
