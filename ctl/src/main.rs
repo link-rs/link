@@ -269,6 +269,10 @@ enum NetAction {
     #[command(name = "run-publish")]
     RunPublish,
 
+    /// Run PTT mode - interoperable with hactar devices
+    #[command(name = "run-ptt")]
+    RunPtt,
+
     #[command(name = "chat")]
     Chat {
         /// Chat message to send

@@ -339,6 +339,15 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             }
             Err(e) => Err(format!("Failed to run MoQ publish: {}", e).into()),
         },
+        NetAction::RunPtt => match app.run_ptt() {
+            Ok(()) => {
+                println!("Started PTT mode (hactar-compatible)");
+                println!("  Button A -> PTT channel (gardening)");
+                println!("  Button B -> AI channel");
+                Ok(())
+            }
+            Err(e) => Err(format!("Failed to run PTT mode: {}", e).into()),
+        },
         NetAction::Chat { message } => match app.send_chat_message(&message) {
             Ok(()) => {
                 println!("Chat message sent");

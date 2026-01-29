@@ -170,6 +170,9 @@ pub enum MgmtToNet {
     RunMoqLoopback,
     /// Run MoQ publish mode - publish audio to MoQ without subscribing
     RunPublish,
+    /// Run PTT mode - interoperable with hactar devices
+    /// Subscribes and publishes on hactar-compatible tracks
+    RunPtt,
     // Channel configuration commands
     /// Get channel configuration (value: channel_id u8)
     GetChannelConfig,

@@ -36,6 +36,16 @@ use std::time::{Duration, Instant};
 // MoQ Command/Event Types
 // ============================================================================
 
+/// Which PTT channel is currently active for publishing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum PttChannel {
+    #[default]
+    /// PTT channel (button A) - group voice chat
+    Ptt,
+    /// AI channel (button B) - AI assistant
+    Ai,
+}
+
 /// Commands sent to the MoQ task.
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -54,8 +64,13 @@ enum MoqCommand {
     RunMoqLoopback,
     /// Run MoQ publish mode - publish audio to MoQ without subscribing.
     RunPublish,
-    /// Audio frame to publish (used in MoQ loopback and publish modes).
+    /// Run PTT mode - interoperable with hactar devices.
+    RunPtt,
+    /// Audio frame to publish (used in MoQ loopback, publish, and PTT modes).
+    /// For PTT mode: channel_id byte determines which track to publish on.
     AudioFrame { data: Vec<u8> },
+    /// Set active PTT channel for publishing.
+    SetPttChannel(PttChannel),
 }
 
 /// Events sent from the MoQ task back to the main loop.
@@ -121,6 +136,8 @@ enum MoqMode {
     MoqLoopback,
     /// MoQ publish - publish audio to MoQ without subscribing.
     Publish,
+    /// PTT mode - interoperable with hactar devices.
+    Ptt,
 }
 
 /// Spawn the MoQ task in a separate thread.
@@ -159,6 +176,19 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
             let mut loopback_recv_count: u64 = 0;
             let mut last_loopback_stats = Instant::now();
 
+            // PTT mode state (hactar-compatible)
+            let mut ptt_pub_track: Option<std::sync::Arc<quicr::PublishTrack>> = None;
+            let mut ai_pub_track: Option<std::sync::Arc<quicr::PublishTrack>> = None;
+            let mut ptt_subscription: Option<Subscription> = None;
+            let mut ai_subscription: Option<Subscription> = None;
+            let mut ptt_group_id: u64 = 0;
+            let mut ptt_object_id: u64 = 0;
+            let mut ai_group_id: u64 = 0;
+            let mut ai_object_id: u64 = 0;
+            let mut active_ptt_channel = PttChannel::Ptt;
+            let mut ptt_recv_count: u64 = 0;
+            let mut ai_recv_count: u64 = 0;
+
             loop {
                 // Check for commands (non-blocking)
                 match cmd_rx.try_recv() {
@@ -170,6 +200,10 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                         benchmark_track = None;
                         loopback_pub_track = None;
                         loopback_subscription = None;
+                        ptt_pub_track = None;
+                        ai_pub_track = None;
+                        ptt_subscription = None;
+                        ai_subscription = None;
                         if client.is_some() {
                             client = None;
                             let _ = event_tx.send(MoqEvent::Disconnected);
@@ -284,6 +318,10 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                             benchmark_track = None;
                             loopback_pub_track = None;
                             loopback_subscription = None;
+                            ptt_pub_track = None;
+                            ai_pub_track = None;
+                            ptt_subscription = None;
+                            ai_subscription = None;
                             let _ = event_tx.send(MoqEvent::ModeStopped);
                         }
                     }
@@ -375,16 +413,158 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                             });
                         }
                     }
-                    Ok(MoqCommand::AudioFrame { data }) => {
-                        // Publish if in MoQ loopback or publish mode
-                        if mode == MoqMode::MoqLoopback || mode == MoqMode::Publish {
-                            if let Some(ref track) = loopback_pub_track {
-                                let headers = ObjectHeaders::new(loopback_group_id, loopback_object_id);
-                                if let Err(e) = track.publish(&headers, &data) {
-                                    warn!("MoQ loopback: publish failed at object {}: {:?}", loopback_object_id, e);
+                    Ok(MoqCommand::RunPtt) => {
+                        if let Some(ref c) = client {
+                            if mode == MoqMode::Idle {
+                                info!("MoQ: starting PTT mode (hactar-compatible)");
+
+                                // Hactar track naming:
+                                // Namespace prefix: moq://moq.ptt.arpa/v1/org/acme/store/1234
+                                // PTT channel: .../channel/<name>/ptt + track pcm_en_8khz_mono_i16
+                                // AI audio pub: .../ai/audio + track pcm_en_8khz_mono_i16
+                                // AI audio sub: .../ai/audio + track <device_id>
+
+                                let ns_prefix = &[
+                                    "moq://moq.ptt.arpa/v1",
+                                    "org/acme",
+                                    "store/1234",
+                                ];
+                                let channel_name = "gardening"; // TODO: make configurable
+                                let track_name = "pcm_en_8khz_mono_i16";
+
+                                // Register PTT namespace for publishing
+                                let ptt_ns = TrackNamespace::from_strings(&[
+                                    ns_prefix[0], ns_prefix[1], ns_prefix[2],
+                                    &format!("channel/{}", channel_name),
+                                    "ptt",
+                                ]);
+                                c.publish_namespace(&ptt_ns);
+
+                                // Register AI audio namespace for publishing
+                                let ai_ns = TrackNamespace::from_strings(&[
+                                    ns_prefix[0], ns_prefix[1], ns_prefix[2],
+                                    "ai/audio",
+                                ]);
+                                c.publish_namespace(&ai_ns);
+
+                                // Create PTT publish track
+                                let ptt_track_name = FullTrackName::new(ptt_ns.clone(), track_name.as_bytes());
+                                info!("MoQ PTT: publish namespace={}, track={}", ptt_ns, track_name);
+                                match block_on(c.publish(ptt_track_name)) {
+                                    Ok(track) => {
+                                        ptt_pub_track = Some(track);
+                                        ptt_group_id = 0;
+                                        ptt_object_id = 0;
+                                        info!("MoQ PTT: created PTT publish track");
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ PTT: failed to create PTT publish track: {:?}", e);
+                                    }
                                 }
-                                loopback_object_id += 1;
+
+                                // Create AI audio publish track
+                                let ai_pub_track_name = FullTrackName::new(ai_ns.clone(), track_name.as_bytes());
+                                match block_on(c.publish(ai_pub_track_name)) {
+                                    Ok(track) => {
+                                        ai_pub_track = Some(track);
+                                        ai_group_id = 0;
+                                        ai_object_id = 0;
+                                        info!("MoQ PTT: created AI audio publish track");
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ PTT: failed to create AI audio publish track: {:?}", e);
+                                    }
+                                }
+
+                                // Subscribe to PTT channel (receive from others)
+                                let ptt_sub_track_name = FullTrackName::new(ptt_ns.clone(), track_name.as_bytes());
+                                info!("MoQ PTT: subscribe namespace={}, track={}", ptt_ns, track_name);
+                                match block_on(c.subscribe(ptt_sub_track_name)) {
+                                    Ok(sub) => {
+                                        ptt_subscription = Some(sub);
+                                        info!("MoQ PTT: subscribed to PTT channel");
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ PTT: failed to subscribe to PTT channel: {:?}", e);
+                                    }
+                                }
+
+                                // Subscribe to AI audio responses (using device ID as track name)
+                                // For now use a fixed ID; TODO: get from MAC address
+                                let device_id = "12345678";
+                                let ai_sub_track_name = FullTrackName::new(ai_ns, device_id.as_bytes());
+                                match block_on(c.subscribe(ai_sub_track_name)) {
+                                    Ok(sub) => {
+                                        ai_subscription = Some(sub);
+                                        info!("MoQ PTT: subscribed to AI audio responses");
+                                    }
+                                    Err(e) => {
+                                        warn!("MoQ PTT: failed to subscribe to AI audio: {:?}", e);
+                                    }
+                                }
+
+                                mode = MoqMode::Ptt;
+                                active_ptt_channel = PttChannel::Ptt;
+                                let _ = event_tx.send(MoqEvent::ModeStarted);
                             }
+                        } else {
+                            warn!("MoQ: cannot start PTT mode - not connected");
+                            let _ = event_tx.send(MoqEvent::Error {
+                                message: "not connected".to_string(),
+                            });
+                        }
+                    }
+                    Ok(MoqCommand::SetPttChannel(channel)) => {
+                        active_ptt_channel = channel;
+                        info!("MoQ PTT: active channel set to {:?}", channel);
+                    }
+                    Ok(MoqCommand::AudioFrame { data }) => {
+                        // Publish based on current mode
+                        match mode {
+                            MoqMode::MoqLoopback | MoqMode::Publish => {
+                                if let Some(ref track) = loopback_pub_track {
+                                    let headers = ObjectHeaders::new(loopback_group_id, loopback_object_id);
+                                    if let Err(e) = track.publish(&headers, &data) {
+                                        warn!("MoQ loopback: publish failed at object {}: {:?}", loopback_object_id, e);
+                                    }
+                                    loopback_object_id += 1;
+                                }
+                            }
+                            MoqMode::Ptt => {
+                                // In PTT mode, route based on channel_id byte in data
+                                // Data format: [channel_id][payload...]
+                                // channel_id 0 = PTT, 1 = AI
+                                if data.is_empty() {
+                                    warn!("MoQ PTT: received empty audio frame");
+                                    continue;
+                                }
+                                let channel_id = data[0];
+                                let payload = &data[1..];
+                                match ChannelId::try_from(channel_id) {
+                                    Ok(ChannelId::Ptt) => {
+                                        if let Some(ref track) = ptt_pub_track {
+                                            let headers = ObjectHeaders::new(ptt_group_id, ptt_object_id);
+                                            let _ = track.publish(&headers, payload);
+                                            ptt_object_id += 1;
+                                        } else {
+                                            warn!("MoQ PTT: ptt_pub_track is None");
+                                        }
+                                    }
+                                    Ok(ChannelId::PttAi) => {
+                                        if let Some(ref track) = ai_pub_track {
+                                            let headers = ObjectHeaders::new(ai_group_id, ai_object_id);
+                                            let _ = track.publish(&headers, payload);
+                                            ai_object_id += 1;
+                                        } else {
+                                            warn!("MoQ PTT: ai_pub_track is None");
+                                        }
+                                    }
+                                    _ => {
+                                        warn!("MoQ PTT: unknown channel_id {}", channel_id);
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     Ok(MoqCommand::SendChat { .. }) => {
@@ -508,6 +688,55 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                             info!(
                                 "MoQ publish: pub={} ({:?})",
                                 loopback_object_id, pub_status
+                            );
+                            last_loopback_stats = Instant::now();
+                        }
+                    }
+                    MoqMode::Ptt => {
+                        // Drain PTT subscription (receive from other users)
+                        // Note: We filter out objects we published ourselves by checking
+                        // if the object_id matches what we recently published
+                        if let Some(ref mut subscription) = ptt_subscription {
+                            while let Ok(object) = subscription.try_recv() {
+                                // Skip objects that appear to be our own (same group, object < our counter)
+                                // This is a heuristic - proper fix would be tracking publisher ID
+                                let dominated_by_self = object.headers.group_id == ptt_group_id
+                                    && object.headers.object_id < ptt_object_id;
+                                if dominated_by_self {
+                                    // Likely our own echo, skip it
+                                    continue;
+                                }
+
+                                ptt_recv_count += 1;
+                                if ptt_recv_count <= 5 || ptt_recv_count % 100 == 0 {
+                                    info!("MoQ PTT: recv ptt audio, group={} obj={} len={}",
+                                        object.headers.group_id, object.headers.object_id, object.payload().len());
+                                }
+                                // Forward PTT audio to UI with channel_id prefix
+                                let mut data = Vec::with_capacity(1 + object.payload().len());
+                                data.push(ChannelId::Ptt as u8);
+                                data.extend_from_slice(object.payload());
+                                let _ = event_tx.send(MoqEvent::AudioReceived { data });
+                            }
+                        }
+
+                        // Drain AI subscription (receive AI responses)
+                        if let Some(ref mut subscription) = ai_subscription {
+                            while let Ok(object) = subscription.try_recv() {
+                                ai_recv_count += 1;
+                                // Forward AI audio to UI with channel_id prefix
+                                let mut data = Vec::with_capacity(1 + object.payload().len());
+                                data.push(ChannelId::PttAi as u8);
+                                data.extend_from_slice(object.payload());
+                                let _ = event_tx.send(MoqEvent::AudioReceived { data });
+                            }
+                        }
+
+                        // Log stats every 2 seconds
+                        if last_loopback_stats.elapsed() >= Duration::from_secs(2) {
+                            info!(
+                                "MoQ PTT: ptt_pub={} ptt_recv={} ai_pub={} ai_recv={} active={:?}",
+                                ptt_object_id, ptt_recv_count, ai_object_id, ai_recv_count, active_ptt_channel
                             );
                             last_loopback_stats = Instant::now();
                         }
@@ -1290,6 +1519,10 @@ fn handle_mgmt_message(
             let _ = moq_cmd_tx.send(MoqCommand::RunPublish);
             write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
         }
+        MgmtToNet::RunPtt => {
+            let _ = moq_cmd_tx.send(MoqCommand::RunPtt);
+            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+        }
         // Channel configuration commands
         MgmtToNet::GetChannelConfig => {
             let channel_id = value.first().copied().unwrap_or(0);
@@ -1380,15 +1613,32 @@ fn handle_ui_message(
         UiToNet::CircularPing => {
             write_tlv(mgmt_uart, NetToMgmt::CircularPing, value);
         }
-        UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
+        UiToNet::AudioFrameA => {
+            // Button A = PTT channel
+            let _ = moq_cmd_tx.send(MoqCommand::SetPttChannel(PttChannel::Ptt));
             if loopback {
                 // Local loopback - forward directly to UI
                 write_tlv(ui_uart, NetToUi::AudioFrame, value);
             } else {
-                // Only send to MoQ task when not in local loopback mode
-                let _ = moq_cmd_tx.send(MoqCommand::AudioFrame {
-                    data: value.to_vec(),
-                });
+                // Send to MoQ task with channel_id prefix
+                let mut data = Vec::with_capacity(1 + value.len());
+                data.push(ChannelId::Ptt as u8);
+                data.extend_from_slice(value);
+                let _ = moq_cmd_tx.send(MoqCommand::AudioFrame { data });
+            }
+        }
+        UiToNet::AudioFrameB => {
+            // Button B = AI channel
+            let _ = moq_cmd_tx.send(MoqCommand::SetPttChannel(PttChannel::Ai));
+            if loopback {
+                // Local loopback - forward directly to UI
+                write_tlv(ui_uart, NetToUi::AudioFrame, value);
+            } else {
+                // Send to MoQ task with channel_id prefix
+                let mut data = Vec::with_capacity(1 + value.len());
+                data.push(ChannelId::PttAi as u8);
+                data.extend_from_slice(value);
+                let _ = moq_cmd_tx.send(MoqCommand::AudioFrame { data });
             }
         }
         UiToNet::AudioFrame => {

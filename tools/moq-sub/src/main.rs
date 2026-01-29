@@ -5,7 +5,17 @@
 //! # Usage
 //!
 //! ```bash
+//! # Simple namespace (splits by /)
 //! moq-sub --relay moqt://localhost:4433 --namespace hactar/loopback --track audio
+//!
+//! # Tuple namespace (multiple --ns arguments)
+//! moq-sub --relay moqt://localhost:4433 \
+//!     --ns "moq://moq.ptt.arpa/v1" \
+//!     --ns "org/acme" \
+//!     --ns "store/1234" \
+//!     --ns "channel/gardening" \
+//!     --ns "ptt" \
+//!     --track pcm_en_8khz_mono_i16
 //! ```
 
 use clap::Parser;
@@ -23,11 +33,18 @@ struct Args {
     #[arg(short, long)]
     relay: String,
 
-    /// Track namespace (e.g., "hactar/loopback")
-    #[arg(short, long)]
-    namespace: String,
+    /// Track namespace as slash-separated string (e.g., "hactar/loopback")
+    /// Use this OR --ns, not both.
+    #[arg(long)]
+    namespace: Option<String>,
 
-    /// Track name (e.g., "audio")
+    /// Namespace tuple segments. Can be specified multiple times.
+    /// Each --ns adds one element to the namespace tuple.
+    /// Example: --ns "moq://moq.ptt.arpa/v1" --ns "org/acme" --ns "store/1234"
+    #[arg(long = "ns", num_args = 1)]
+    ns_segments: Vec<String>,
+
+    /// Track name (e.g., "audio" or "pcm_en_8khz_mono_i16")
     #[arg(short, long)]
     track: String,
 
@@ -42,6 +59,14 @@ struct Args {
     /// libquicr log level (trace, debug, info, warn, error, off)
     #[arg(short, long, default_value = "warn")]
     log_level: String,
+
+    /// Print received payload as hex (first N bytes, 0 to disable)
+    #[arg(long, default_value_t = 0)]
+    hex: usize,
+
+    /// Print received payload as UTF-8 text
+    #[arg(long, default_value_t = false)]
+    text: bool,
 }
 
 fn parse_log_level(s: &str) -> LogLevel {
@@ -119,12 +144,22 @@ impl Stats {
     }
 }
 
-async fn run_subscriber(client: &Client, args: &Args, stop: Arc<AtomicBool>) -> Result<()> {
-    // Parse namespace into segments
-    let ns_parts: Vec<&str> = args.namespace.split('/').collect();
-    let track_name = FullTrackName::from_strings(&ns_parts, &args.track);
+async fn run_subscriber(client: &Client, args: &Args, ns_display: &str, stop: Arc<AtomicBool>) -> Result<()> {
+    // Build namespace from either --namespace or --ns segments
+    let track_name = if !args.ns_segments.is_empty() {
+        // Use tuple segments
+        let ns_refs: Vec<&str> = args.ns_segments.iter().map(|s| s.as_str()).collect();
+        FullTrackName::from_strings(&ns_refs, &args.track)
+    } else if let Some(ref namespace) = args.namespace {
+        // Use slash-separated namespace (legacy behavior)
+        let ns_parts: Vec<&str> = namespace.split('/').collect();
+        FullTrackName::from_strings(&ns_parts, &args.track)
+    } else {
+        eprintln!("Error: must specify either --namespace or --ns");
+        return Err(Error::config("missing namespace"));
+    };
 
-    println!("Subscribing to: {}/{}", args.namespace, args.track);
+    println!("Subscribing to: {}/{}", ns_display, args.track);
 
     // Subscribe to the track
     let mut subscription = client.subscribe(track_name).await?;
@@ -146,6 +181,24 @@ async fn run_subscriber(client: &Client, args: &Args, stop: Arc<AtomicBool>) -> 
         // Try to receive or check stop
         match select(subscription.recv(), stop_check).await {
             Either::First(obj) => {
+                // Print payload if requested
+                if args.hex > 0 {
+                    let payload = obj.payload();
+                    let len = payload.len().min(args.hex);
+                    let hex: String = payload[..len].iter().map(|b| format!("{:02x}", b)).collect();
+                    println!("  [g={} o={}] {} bytes: {}{}",
+                        obj.headers.group_id, obj.headers.object_id,
+                        payload.len(), hex,
+                        if payload.len() > args.hex { "..." } else { "" }
+                    );
+                }
+                if args.text {
+                    if let Some(text) = obj.payload_str() {
+                        println!("  [g={} o={}] \"{}\"",
+                            obj.headers.group_id, obj.headers.object_id, text);
+                    }
+                }
+
                 stats.record(&obj);
             }
             Either::Second(should_stop) => {
@@ -212,6 +265,26 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
     let args = Args::parse();
 
+    // Validate args
+    if args.namespace.is_some() && !args.ns_segments.is_empty() {
+        eprintln!("Error: cannot use both --namespace and --ns");
+        return;
+    }
+    if args.namespace.is_none() && args.ns_segments.is_empty() {
+        eprintln!("Error: must specify either --namespace or --ns");
+        return;
+    }
+
+    // Build display string for namespace
+    let ns_display = if !args.ns_segments.is_empty() {
+        format!("[{}]", args.ns_segments.iter()
+            .map(|s| format!("\"{}\"", s))
+            .collect::<Vec<_>>()
+            .join(", "))
+    } else {
+        args.namespace.clone().unwrap_or_default()
+    };
+
     // Set up Ctrl+C handler
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = Arc::clone(&stop);
@@ -225,7 +298,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     println!("moq-sub - MoQ Track Subscriber");
     println!("==============================\n");
     println!("Relay:     {}", args.relay);
-    println!("Namespace: {}", args.namespace);
+    println!("Namespace: {}", ns_display);
     println!("Track:     {}", args.track);
     println!("Endpoint:  {}", args.endpoint_id);
     println!();
@@ -253,7 +326,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     println!("Connected!\n");
 
     // Run subscriber
-    let result = run_subscriber(&client, &args, stop).await;
+    let result = run_subscriber(&client, &args, &ns_display, stop).await;
 
     // Disconnect
     if let Err(e) = client.disconnect().await {

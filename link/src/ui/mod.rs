@@ -187,12 +187,13 @@ where
                     if mode == LoopbackMode::Alaw {
                         if let Some(frame) = Frame::from_bytes(&buf) {
                             // XXX(RLB) See below comments about timing.
-                            to_mgmt.must_write_tlv(UiToMgmt::Log, b"x").await;
+                            tlv_log!(log_sender, "AudioFrame e={:?}", frame.energy());
+                            to_mgmt.must_write_tlv(UiToMgmt::Log, b"a").await;
                             playback_channel.send(frame).await;
                         } else {
                             // XXX(RLB) See below comments about timing.  Both lines are
-                            // empirically necessary.
-                            to_mgmt.must_write_tlv(UiToMgmt::Log, b"x").await;
+                            // empirically necessary, even if they never execute.
+                            to_mgmt.must_write_tlv(UiToMgmt::Log, b"b").await;
                             embassy_futures::yield_now().await;
                         }
                         break 'audio;
@@ -207,7 +208,7 @@ where
                     //
                     // We need to come back to this and figure out what about these interacting
                     // event loops is causing this weird behavior.
-                    to_mgmt.must_write_tlv(UiToMgmt::Log, b"x").await;
+                    to_mgmt.must_write_tlv(UiToMgmt::Log, b"c").await;
 
                     // Determine channel based on button
                     let channel_id = match button {
@@ -308,8 +309,10 @@ where
             // timing controls the loop rate. A blocking receive with timeout
             // would add delay ON TOP of the I2S cycle, causing RX overruns.
             let tx_stereo = if let Ok(frame) = playback_channel.try_receive() {
+                tlv_log!(log_sender, "tx + {}", frame.energy());
                 frame.decode_to_stereo()
             } else {
+                tlv_log!(log_sender, "tx - 0");
                 StereoFrame::default()
             };
 
@@ -318,6 +321,9 @@ where
             // Do the I2S read/write cycle
             match audio_system.read_write(&tx_stereo, &mut rx_stereo).await {
                 Ok(_) => {
+                    let energy: u32 = rx_stereo.0.iter().map(|&s| s as u32).sum();
+                    tlv_log!(log_sender, "rx e={}", energy);
+
                     // Encode stereo to A-law mono into a buffer that can be extended
                     // in handle_task with chunk headers and encryption
                     let mut buf: heapless::Vec<u8, AUDIO_BUF_SIZE> = heapless::Vec::new();

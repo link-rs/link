@@ -9,8 +9,10 @@ use aes_gcm::{
     aead::{AeadInPlace, Buffer, KeyInit},
 };
 use heapless::Vec;
-use hkdf::Hkdf;
+use hkdf::{Hkdf, hmac::{Hmac, Mac}};
 use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Buffer wrapper for heapless::Vec to implement aead::Buffer trait
 struct HeaplessBuffer<'a, const N: usize>(&'a mut Vec<u8, N>);
@@ -86,17 +88,22 @@ pub struct SFrameState {
 }
 
 impl SFrameState {
-    /// Create a new SFrameState by deriving key material from a base key.
-    pub fn new(base_key: &[u8; KEY_SIZE], kid: u64) -> Self {
+    /// Create a new SFrameState by deriving key material using MLS-style derivation.
+    ///
+    /// This matches hactar's MLSContext with epoch_id=0, sender_id=0.
+    /// The key_id is formed as: (context_id << (epoch_bits + sender_bits)) | (sender_id << epoch_bits) | epoch_id
+    /// With epoch_bits=1, sender_id=0, epoch_id=0, context_id=0: key_id = 0
+    pub fn new(epoch_secret: &[u8; KEY_SIZE], kid: u64) -> Self {
         Self {
-            key_material: KeyMaterial::derive(base_key, kid),
+            // Use sender_id=0 to match hactar's MLSContext.protect(epoch=0, sender=0, ...)
+            key_material: KeyMaterial::derive_mls(epoch_secret, kid, 0),
             counter: 0,
         }
     }
 
-    /// Reset the state with a new base key, resetting the counter to 0.
-    pub fn reset(&mut self, base_key: &[u8; KEY_SIZE], kid: u64) {
-        self.key_material = KeyMaterial::derive(base_key, kid);
+    /// Reset the state with a new epoch secret, resetting the counter to 0.
+    pub fn reset(&mut self, epoch_secret: &[u8; KEY_SIZE], kid: u64) {
+        self.key_material = KeyMaterial::derive_mls(epoch_secret, kid, 0);
         self.counter = 0;
     }
 
@@ -123,16 +130,65 @@ impl SFrameState {
     }
 }
 
+/// HKDF-Expand without PRK length validation.
+///
+/// This matches hactar's hkdf_expand which accepts any PRK size.
+/// Standard HKDF-Expand requires PRK to be at least the hash output size,
+/// but hactar doesn't enforce this.
+fn hkdf_expand_no_validation(prk: &[u8], info: &[u8], output_len: usize) -> [u8; 32] {
+    const HASH_SIZE: usize = 32; // SHA256 output size
+
+    let n = (output_len + HASH_SIZE - 1) / HASH_SIZE;
+    let mut output = [0u8; 32];
+    let mut offset = 0;
+
+    for i in 1..=n {
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(prk).expect("HMAC accepts any key size");
+        mac.update(info);
+        mac.update(&[i as u8]);
+        let result = mac.finalize().into_bytes();
+
+        let to_copy = core::cmp::min(HASH_SIZE, output_len - offset);
+        output[offset..offset + to_copy].copy_from_slice(&result[..to_copy]);
+        offset += to_copy;
+    }
+
+    output
+}
+
 impl KeyMaterial {
-    /// Derive SFrame key material from a base key.
+    /// Derive SFrame key material from a base key using MLS-style derivation.
+    ///
+    /// This matches hactar's MLSContext which does:
+    /// 1. intermediate = HKDF-Expand(epoch_secret, sender_id, 32)
+    /// 2. Standard SFrame derivation from intermediate
+    ///
+    /// # Arguments
+    /// * `epoch_secret` - The 16-byte epoch secret (e.g., "sixteen byte key")
+    /// * `kid` - The key identifier (formed from epoch_id, sender_id, context_id)
+    /// * `sender_id` - The sender ID for MLS-style derivation
+    pub fn derive_mls(epoch_secret: &[u8; KEY_SIZE], kid: u64, sender_id: u64) -> Self {
+        // MLS-style: first derive intermediate base_key from epoch_secret + sender_id
+        // This matches hactar's MLSContext::EpochKeys::base_key()
+        //
+        // Note: hactar's hkdf_expand accepts any PRK size without validation,
+        // so we use a manual HKDF-Expand implementation here.
+        let sender_id_bytes = sender_id.to_be_bytes();
+        let intermediate = hkdf_expand_no_validation(epoch_secret, &sender_id_bytes, 32);
+
+        // Now do standard SFrame derivation from intermediate
+        Self::derive_from_base(&intermediate, kid)
+    }
+
+    /// Derive SFrame key material from a base key (standard RFC 9605).
     ///
     /// Uses HKDF-SHA256 to derive the encryption key and salt as specified
     /// in RFC 9605 Section 4.3.1.
     ///
     /// # Arguments
-    /// * `base_key` - The 16-byte base key
+    /// * `base_key` - The base key (up to 32 bytes)
     /// * `kid` - The key identifier
-    pub fn derive(base_key: &[u8; KEY_SIZE], kid: u64) -> Self {
+    fn derive_from_base(base_key: &[u8], kid: u64) -> Self {
         // sframe_secret = HKDF-Extract("", base_key)
         let hk = Hkdf::<Sha256>::new(None, base_key);
 
@@ -160,6 +216,14 @@ impl KeyMaterial {
         hk.expand(&salt_info, &mut salt).expect("valid salt length");
 
         Self { kid, key, salt }
+    }
+
+    /// Derive SFrame key material from a base key (standard RFC 9605).
+    ///
+    /// This is the non-MLS version for direct key derivation.
+    /// For hactar compatibility, use `derive_mls` instead.
+    pub fn derive(base_key: &[u8; KEY_SIZE], kid: u64) -> Self {
+        Self::derive_from_base(base_key, kid)
     }
 
     /// Protect a plaintext in place using SFrame.
