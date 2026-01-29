@@ -463,7 +463,7 @@ impl Client {
     /// Create and register a publish track with default settings
     pub async fn publish(&self, track_name: FullTrackName) -> Result<Arc<PublishTrack>> {
         let track = PublishTrackBuilder::new(track_name)
-            .track_mode(TrackMode::Stream)
+            .track_mode(TrackMode::Datagram)
             .default_priority(0)
             .default_ttl(1000)
             .build()?;

@@ -541,7 +541,7 @@ impl PublishTrackBuilder {
     pub fn new(track_name: FullTrackName) -> Self {
         Self {
             track_name,
-            track_mode: TrackMode::Stream,
+            track_mode: TrackMode::Datagram,
             default_priority: 128,
             default_ttl: 1000,
         }

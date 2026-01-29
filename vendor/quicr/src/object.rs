@@ -47,10 +47,10 @@ impl From<ObjectStatus> for crate::ffi::QuicrObjectStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
 pub enum TrackMode {
-    /// Send objects as datagrams (unreliable)
-    Datagram = 0,
-    /// Send objects over streams (reliable)
+    /// Send objects as datagrams (unreliable, lower latency)
     #[default]
+    Datagram = 0,
+    /// Send objects over streams (reliable, higher latency)
     Stream = 1,
 }
 
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_track_mode_default() {
-        assert_eq!(TrackMode::default(), TrackMode::Stream);
+        assert_eq!(TrackMode::default(), TrackMode::Datagram);
     }
 
     #[test]
