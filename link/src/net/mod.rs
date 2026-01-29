@@ -532,17 +532,7 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
                 .await;
         }
         // MoQ commands - not supported in bare-metal firmware (uses WebSocket, not MoQ)
-        MgmtToNet::GetBenchmarkFps
-        | MgmtToNet::SetBenchmarkFps
-        | MgmtToNet::GetBenchmarkPayloadSize
-        | MgmtToNet::SetBenchmarkPayloadSize
-        | MgmtToNet::RunClock
-        | MgmtToNet::RunBenchmark
-        | MgmtToNet::StopMode
-        | MgmtToNet::SendChatMessage
-        | MgmtToNet::RunMoqLoopback
-        | MgmtToNet::RunPublish
-        | MgmtToNet::RunPtt => {
+        MgmtToNet::SendChatMessage => {
             info!("net: moq command not supported in bare-metal firmware");
             to_mgmt
                 .must_write_tlv(NetToMgmt::Error, b"moq not supported")

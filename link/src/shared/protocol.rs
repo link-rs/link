@@ -45,6 +45,20 @@ pub enum LoopbackMode {
     Sframe = 3,
 }
 
+/// Loopback mode for the NET chip.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum NetLoopback {
+    /// Normal operation - audio to MoQ, filter self-echo
+    #[default]
+    Off = 0,
+    /// Local bypass - audio directly back to UI (no MoQ)
+    Raw = 1,
+    /// MoQ loopback - audio to MoQ, DON'T filter self-echo (hear own audio via relay)
+    Moq = 2,
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum CtlToMgmt {
@@ -145,36 +159,14 @@ pub enum MgmtToNet {
     WsSend,
     /// Start WebSocket echo test
     WsEchoTest,
-    /// Set loopback mode (1 byte: 0=off, 1=on)
+    /// Set loopback mode (1 byte: NetLoopback - 0=Off, 1=Raw, 2=Moq)
     SetLoopback,
     /// Get loopback mode
     GetLoopback,
     /// Start WebSocket speed test
     WsSpeedTest,
-    // MoQ commands (client auto-connects to relay)
-    /// Get benchmark target FPS (4 bytes LE)
-    GetBenchmarkFps,
-    /// Set benchmark target FPS (4 bytes LE, 0=burst mode)
-    SetBenchmarkFps,
-    /// Get benchmark payload size (4 bytes LE)
-    GetBenchmarkPayloadSize,
-    /// Set benchmark payload size (4 bytes LE)
-    SetBenchmarkPayloadSize,
-    /// Run clock mode - subscribe to clock track and log received times
-    RunClock,
-    /// Run benchmark mode - publish frames at configured FPS and size
-    RunBenchmark,
-    /// Stop current running mode
-    StopMode,
     /// Send chat message (value: UTF-8 message)
     SendChatMessage,
-    /// Run MoQ loopback mode - publish audio to MoQ and subscribe to same track
-    RunMoqLoopback,
-    /// Run MoQ publish mode - publish audio to MoQ without subscribing
-    RunPublish,
-    /// Run PTT mode - interoperable with hactar devices
-    /// Subscribes and publishes on hactar-compatible tracks
-    RunPtt,
     // Channel configuration commands
     /// Get channel configuration (value: channel_id u8)
     GetChannelConfig,
@@ -204,21 +196,12 @@ pub enum NetToMgmt {
     WsEchoTestResult,
     /// WebSocket speed test results
     WsSpeedTestResult,
-    /// Loopback mode status (1 byte: 0=off, 1=on)
+    /// Loopback mode status (1 byte: NetLoopback - 0=Off, 1=Raw, 2=Moq)
     Loopback,
-    // MoQ responses
-    /// Benchmark target FPS (4 bytes LE)
-    BenchmarkFps,
-    /// Benchmark payload size (4 bytes LE)
-    BenchmarkPayloadSize,
     /// MoQ connected to relay
     MoqConnected,
     /// MoQ disconnected from relay
     MoqDisconnected,
-    /// Mode started (1 byte: 0=Clock, 1=Benchmark)
-    ModeStarted,
-    /// Mode stopped
-    ModeStopped,
     /// Chat message sent confirmation
     ChatMessageSent,
     /// Chat message received (value: UTF-8 message)

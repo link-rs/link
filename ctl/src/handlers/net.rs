@@ -1,9 +1,9 @@
 //! NET chip command handlers.
 
-use crate::{App, ChannelAction, GetSetBool, GetSetString, GetSetU32, NetAction, WifiAction};
-use link::ctl::ChannelConfig;
+use crate::{App, ChannelAction, GetSetString, NetAction, NetLoopbackMode, WifiAction};
 use indicatif::{ProgressBar, ProgressStyle};
-use link::ctl::{ProgressCallbacks, SetTimeout};
+use link::ctl::{ChannelConfig, ProgressCallbacks, SetTimeout};
+use link::NetLoopback;
 
 /// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
 struct FlashProgress {
@@ -267,99 +267,31 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
 
             Ok(())
         }
-        NetAction::Loopback { action } => match action.unwrap_or_default() {
-            GetSetBool::Get => {
-                let enabled = app.net_get_loopback()?;
-                println!("{}", enabled);
-                Ok(())
-            }
-            GetSetBool::Set => {
-                app.net_set_loopback(true)?;
-                println!("NET loopback enabled");
-                Ok(())
-            }
-            GetSetBool::Unset => {
-                app.net_set_loopback(false)?;
-                println!("NET loopback disabled");
-                Ok(())
-            }
-        },
-        // MoQ commands
-        NetAction::BenchmarkFps { action } => match action.unwrap_or_default() {
-            GetSetU32::Get => {
-                let fps = app.get_benchmark_fps()?;
-                if fps == 0 {
-                    println!("0 (burst mode)");
-                } else {
-                    println!("{}", fps);
+        NetAction::Loopback { mode } => match mode.unwrap_or_default() {
+            NetLoopbackMode::Get => {
+                let loopback = app.net_get_loopback()?;
+                match loopback {
+                    NetLoopback::Off => println!("off"),
+                    NetLoopback::Raw => println!("raw"),
+                    NetLoopback::Moq => println!("moq"),
                 }
                 Ok(())
             }
-            GetSetU32::Set { value } => {
-                app.set_benchmark_fps(value)?;
-                if value == 0 {
-                    println!("Benchmark FPS set to burst mode");
-                } else {
-                    println!("Benchmark FPS set to {}", value);
-                }
+            NetLoopbackMode::Off => {
+                app.net_set_loopback(NetLoopback::Off)?;
+                println!("NET loopback: off (normal PTT)");
                 Ok(())
             }
-        },
-        NetAction::BenchmarkPayloadSize { action } => match action.unwrap_or_default() {
-            GetSetU32::Get => {
-                let size = app.get_benchmark_payload_size()?;
-                println!("{}", size);
+            NetLoopbackMode::Raw => {
+                app.net_set_loopback(NetLoopback::Raw)?;
+                println!("NET loopback: raw (local bypass)");
                 Ok(())
             }
-            GetSetU32::Set { value } => {
-                app.set_benchmark_payload_size(value)?;
-                println!("Benchmark payload size set to {}", value);
+            NetLoopbackMode::Moq => {
+                app.net_set_loopback(NetLoopback::Moq)?;
+                println!("NET loopback: moq (hear own audio via relay)");
                 Ok(())
             }
-        },
-        NetAction::RunClock => match app.run_clock() {
-            Ok(()) => {
-                println!("Started clock mode (subscribing to clock track)");
-                Ok(())
-            }
-            Err(e) => Err(format!("Failed to run clock: {}", e).into()),
-        },
-        NetAction::RunBenchmark => match app.run_benchmark() {
-            Ok(()) => {
-                println!("Started benchmark mode (publishing frames)");
-                Ok(())
-            }
-            Err(e) => Err(format!("Failed to run benchmark: {}", e).into()),
-        },
-        NetAction::StopMode => match app.stop_mode() {
-            Ok(()) => {
-                println!("Stopped current mode");
-                Ok(())
-            }
-            Err(e) => Err(format!("Failed to stop mode: {}", e).into()),
-        },
-        NetAction::RunMoqLoopback => match app.run_moq_loopback() {
-            Ok(()) => {
-                println!("Started MoQ loopback mode (publish and subscribe to same track)");
-                Ok(())
-            }
-            Err(e) => Err(format!("Failed to run MoQ loopback: {}", e).into()),
-        },
-        NetAction::RunPublish => match app.run_publish() {
-            Ok(()) => {
-                println!("Started MoQ publish mode (publish only, no subscribe)");
-                Ok(())
-            }
-            Err(e) => Err(format!("Failed to run MoQ publish: {}", e).into()),
-        },
-        NetAction::RunPtt => match app.run_ptt() {
-            Ok(()) => {
-                println!("Started PTT mode (hactar-compatible)");
-                println!("  Button A -> PTT channel (gardening)");
-                println!("  Button B -> AI channel");
-                Ok(())
-            }
-            Err(e) => Err(format!("Failed to run PTT mode: {}", e).into()),
         },
         NetAction::Chat { message } => match app.send_chat_message(&message) {
             Ok(()) => {

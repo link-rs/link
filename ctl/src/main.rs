@@ -164,11 +164,15 @@ enum GetSetHex {
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
-enum GetSetBool {
+enum NetLoopbackMode {
     #[default]
     Get,
-    Set,
-    Unset,
+    /// Normal PTT operation - audio to MoQ, filter self-echo
+    Off,
+    /// Local bypass - audio directly back to UI (no MoQ)
+    Raw,
+    /// MoQ loopback - audio to MoQ, hear own audio via relay
+    Moq,
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
@@ -231,47 +235,11 @@ enum NetAction {
     #[command(name = "ws-speed-test")]
     WsSpeedTest,
 
+    /// Set loopback mode: off (normal PTT), raw (local bypass), moq (hear own audio via relay)
     Loopback {
         #[command(subcommand)]
-        action: Option<GetSetBool>,
+        mode: Option<NetLoopbackMode>,
     },
-
-    // MoQ commands (client auto-connects to relay)
-    #[command(name = "benchmark-fps")]
-    BenchmarkFps {
-        #[command(subcommand)]
-        action: Option<GetSetU32>,
-    },
-
-    #[command(name = "benchmark-payload-size")]
-    BenchmarkPayloadSize {
-        #[command(subcommand)]
-        action: Option<GetSetU32>,
-    },
-
-    /// Run clock mode - subscribe to clock track and log received times
-    #[command(name = "run-clock")]
-    RunClock,
-
-    /// Run benchmark mode - publish frames at configured FPS and size
-    #[command(name = "run-benchmark")]
-    RunBenchmark,
-
-    /// Stop current running mode
-    #[command(name = "stop-mode")]
-    StopMode,
-
-    /// Run MoQ loopback mode - publish audio to MoQ and subscribe to same track
-    #[command(name = "run-loopback")]
-    RunMoqLoopback,
-
-    /// Run MoQ publish mode - publish audio to MoQ without subscribing
-    #[command(name = "run-publish")]
-    RunPublish,
-
-    /// Run PTT mode - interoperable with hactar devices
-    #[command(name = "run-ptt")]
-    RunPtt,
 
     #[command(name = "chat")]
     Chat {

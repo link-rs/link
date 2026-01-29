@@ -8,7 +8,7 @@ pub mod stm;
 
 use crate::shared::{
     CtlToMgmt, HEADER_SIZE, LoopbackMode, MAX_CHANNELS, MAX_VALUE_SIZE, MgmtToCtl, MgmtToNet,
-    MgmtToUi, NetToMgmt, SYNC_WORD, Tlv, UiToMgmt, WifiSsid,
+    MgmtToUi, NetLoopback, NetToMgmt, SYNC_WORD, Tlv, UiToMgmt, WifiSsid,
 };
 pub use crate::shared::ChannelConfig;
 use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
@@ -876,12 +876,14 @@ where
     }
 
     /// Set NET chip loopback mode.
-    /// When enabled, audio from UI goes back to UI through jitter buffer instead of to WebSocket.
-    pub fn net_set_loopback(&mut self, enabled: bool) -> Result<(), CtlError> {
+    /// - Off: Normal PTT operation, filter self-echo
+    /// - Raw: Local bypass, audio directly back to UI (no MoQ)
+    /// - Moq: MoQ loopback, hear own audio via relay
+    pub fn net_set_loopback(&mut self, mode: NetLoopback) -> Result<(), CtlError> {
         write_tlv(
             &mut self.writer.net(),
             MgmtToNet::SetLoopback,
-            &[enabled as u8],
+            &[mode as u8],
         )?;
         let tlv: Tlv<NetToMgmt> =
             read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
@@ -895,7 +897,7 @@ where
     }
 
     /// Get NET chip loopback mode.
-    pub fn net_get_loopback(&mut self) -> Result<bool, CtlError> {
+    pub fn net_get_loopback(&mut self) -> Result<NetLoopback, CtlError> {
         write_tlv(&mut self.writer.net(), MgmtToNet::GetLoopback, &[])?;
         let tlv: Tlv<NetToMgmt> =
             read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
@@ -905,7 +907,8 @@ where
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        Ok(tlv.value.first().copied().unwrap_or(0) != 0)
+        let mode_byte = tlv.value.first().copied().unwrap_or(0);
+        Ok(NetLoopback::try_from(mode_byte).unwrap_or(NetLoopback::Off))
     }
 
     /// Add a WiFi SSID and password pair to NET chip storage.
@@ -2177,194 +2180,6 @@ where
     }
 
     // =========================================================================
-    // MoQ commands
-    // =========================================================================
-
-    /// Get benchmark FPS from NET chip.
-    pub fn get_benchmark_fps(&mut self) -> Result<u32, CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetBenchmarkFps, &[])?;
-        let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
-        if tlv.tlv_type != NetToMgmt::BenchmarkFps {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "BenchmarkFps",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        Ok(if tlv.value.len() >= 4 {
-            u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]])
-        } else {
-            0
-        })
-    }
-
-    /// Set benchmark FPS on NET chip.
-    pub fn set_benchmark_fps(&mut self, fps: u32) -> Result<(), CtlError> {
-        write_tlv(
-            &mut self.writer.net(),
-            MgmtToNet::SetBenchmarkFps,
-            &fps.to_le_bytes(),
-        )?;
-        let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
-        if tlv.tlv_type != NetToMgmt::Ack {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "Ack",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        Ok(())
-    }
-
-    /// Get benchmark payload size from NET chip.
-    pub fn get_benchmark_payload_size(&mut self) -> Result<u32, CtlError> {
-        write_tlv(
-            &mut self.writer.net(),
-            MgmtToNet::GetBenchmarkPayloadSize,
-            &[],
-        )?;
-        let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
-        if tlv.tlv_type != NetToMgmt::BenchmarkPayloadSize {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "BenchmarkPayloadSize",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        Ok(if tlv.value.len() >= 4 {
-            u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]])
-        } else {
-            0
-        })
-    }
-
-    /// Set benchmark payload size on NET chip.
-    pub fn set_benchmark_payload_size(&mut self, size: u32) -> Result<(), CtlError> {
-        write_tlv(
-            &mut self.writer.net(),
-            MgmtToNet::SetBenchmarkPayloadSize,
-            &size.to_le_bytes(),
-        )?;
-        let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
-        if tlv.tlv_type != NetToMgmt::Ack {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "Ack",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        Ok(())
-    }
-
-    /// Run clock mode on NET chip - subscribe to clock track and log times.
-    pub fn run_clock(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::RunClock, &[])?;
-        let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
-        match tlv.tlv_type {
-            NetToMgmt::Ack | NetToMgmt::ModeStarted => Ok(()),
-            NetToMgmt::Error => {
-                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
-                Err(CtlError::DeviceError(err.to_string()))
-            }
-            other => Err(CtlError::UnexpectedResponse {
-                expected: "Ack or ModeStarted",
-                actual: format!("{:?}", other),
-            }),
-        }
-    }
-
-    /// Run benchmark mode on NET chip - publish frames at configured FPS.
-    pub fn run_benchmark(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::RunBenchmark, &[])?;
-        let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
-        match tlv.tlv_type {
-            NetToMgmt::Ack | NetToMgmt::ModeStarted => Ok(()),
-            NetToMgmt::Error => {
-                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
-                Err(CtlError::DeviceError(err.to_string()))
-            }
-            other => Err(CtlError::UnexpectedResponse {
-                expected: "Ack or ModeStarted",
-                actual: format!("{:?}", other),
-            }),
-        }
-    }
-
-    /// Stop current running mode on NET chip.
-    pub fn stop_mode(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::StopMode, &[])?;
-        let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
-        match tlv.tlv_type {
-            NetToMgmt::Ack | NetToMgmt::ModeStopped => Ok(()),
-            NetToMgmt::Error => {
-                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
-                Err(CtlError::DeviceError(err.to_string()))
-            }
-            other => Err(CtlError::UnexpectedResponse {
-                expected: "Ack or ModeStopped",
-                actual: format!("{:?}", other),
-            }),
-        }
-    }
-
-    /// Run MoQ loopback mode on NET chip - publish audio to MoQ and subscribe to same track.
-    pub fn run_moq_loopback(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::RunMoqLoopback, &[])?;
-        let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
-        match tlv.tlv_type {
-            NetToMgmt::Ack | NetToMgmt::ModeStarted => Ok(()),
-            NetToMgmt::Error => {
-                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
-                Err(CtlError::DeviceError(err.to_string()))
-            }
-            other => Err(CtlError::UnexpectedResponse {
-                expected: "Ack or ModeStarted",
-                actual: format!("{:?}", other),
-            }),
-        }
-    }
-
-    /// Run MoQ publish mode on NET chip - publish audio to MoQ without subscribing.
-    pub fn run_publish(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::RunPublish, &[])?;
-        let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
-        match tlv.tlv_type {
-            NetToMgmt::Ack | NetToMgmt::ModeStarted => Ok(()),
-            NetToMgmt::Error => {
-                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
-                Err(CtlError::DeviceError(err.to_string()))
-            }
-            other => Err(CtlError::UnexpectedResponse {
-                expected: "Ack or ModeStarted",
-                actual: format!("{:?}", other),
-            }),
-        }
-    }
-
-    /// Run PTT mode on NET chip - interoperable with hactar devices.
-    /// Subscribes and publishes on hactar-compatible tracks.
-    pub fn run_ptt(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::RunPtt, &[])?;
-        let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
-        match tlv.tlv_type {
-            NetToMgmt::Ack | NetToMgmt::ModeStarted => Ok(()),
-            NetToMgmt::Error => {
-                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
-                Err(CtlError::DeviceError(err.to_string()))
-            }
-            other => Err(CtlError::UnexpectedResponse {
-                expected: "Ack or ModeStarted",
-                actual: format!("{:?}", other),
-            }),
-        }
-    }
-
     /// Send a chat message via MoQ.
     pub fn send_chat_message(&mut self, message: &str) -> Result<(), CtlError> {
         write_tlv(
