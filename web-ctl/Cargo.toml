@@ -7,7 +7,7 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-link = { path = "../link", default-features = false, features = ["ctl"] }
+link = { path = "../link", default-features = false, features = ["async-ctl", "alloc"] }
 
 # WASM bindings
 wasm-bindgen = "0.2"
@@ -39,6 +39,10 @@ futures = "0.3"
 
 # Embedded IO traits
 embedded-io-async = "0.6"
+
+# Shared types
+heapless = { version = "0.9", features = ["serde"] }
+postcard = "1"
 
 # Logging
 console_error_panic_hook = "0.1"

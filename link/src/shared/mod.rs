@@ -23,8 +23,8 @@ pub mod uart_config;
 #[cfg(feature = "net")]
 pub mod moq;
 
-// WiFi types - only used by ctl and net
-#[cfg(any(feature = "ctl", feature = "net"))]
+// WiFi types - only used by ctl, net, and async-ctl
+#[cfg(any(feature = "ctl", feature = "net", feature = "async-ctl"))]
 pub mod wifi;
 
 // Channel configuration types - used by ctl and net
@@ -61,8 +61,8 @@ pub use tlv::{ReadTlv, Value, WriteTlv};
 #[allow(unused_imports)] // Re-exported for public API
 pub use moq::{MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampleType};
 
-// WiFi types - WifiSsid used by ctl and net
-#[cfg(any(feature = "ctl", feature = "net"))]
+// WiFi types - WifiSsid used by ctl, net, and async-ctl
+#[cfg(any(feature = "ctl", feature = "net", feature = "async-ctl"))]
 #[allow(unused_imports)] // Re-exported for public API
 pub use wifi::WifiSsid;
 

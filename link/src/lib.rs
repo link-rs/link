@@ -27,6 +27,12 @@ pub use shared::{HEADER_SIZE, SYNC_WORD};
 // Re-export uart_config module for chip firmware
 pub use shared::uart_config;
 
+// Re-export async TLV traits and types for web-ctl
+#[cfg(feature = "async-ctl")]
+pub use shared::tlv::{ReadTlv, WriteTlv, Tlv, HEADER_SIZE, SYNC_WORD};
+#[cfg(feature = "async-ctl")]
+pub use shared::wifi::WifiSsid;
+
 // Re-export protocol types
 pub use shared::protocol::{
     ChannelId, CtlToMgmt, LoopbackMode, MgmtToCtl, MgmtToNet, MgmtToUi, NetLoopback, NetToMgmt,

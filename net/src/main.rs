@@ -143,6 +143,7 @@ fn setup_ptt_tracks(
 
     // Get device ID from MAC for group_id (janet uses this to route AI responses)
     let device_id = get_device_id_from_mac();
+    info!("device id: {}", device_id);
 
     // Create PTT publish track
     let ptt_track_name_full = FullTrackName::new(ptt_ns.clone(), track_name.as_bytes());
@@ -646,7 +647,10 @@ impl NvsStorage {
     /// Set configuration for a channel.
     /// Replaces existing config for that channel_id or adds new one.
     fn set_channel_config(&mut self, config: ChannelConfig) -> Result<(), ()> {
-        if let Some(existing) = self.channels.iter_mut().find(|c| c.channel_id == config.channel_id)
+        if let Some(existing) = self
+            .channels
+            .iter_mut()
+            .find(|c| c.channel_id == config.channel_id)
         {
             *existing = config;
         } else {

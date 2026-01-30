@@ -1,9 +1,9 @@
 //! TLV (Type-Length-Value) encoding and decoding.
 
-// Async TLV imports - for firmware modules
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+// Async TLV imports - for firmware modules and async-ctl
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
 use embedded_io_async::{Read, ReadExactError, Write};
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
 use heapless::Vec;
 
 // Verbose TLV tracing - enable with `trace-tlv` feature, easy to disable
@@ -14,7 +14,7 @@ macro_rules! trace {
 
 #[cfg(all(
     not(feature = "trace-tlv"),
-    any(feature = "mgmt", feature = "net", feature = "ui")
+    any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl")
 ))]
 macro_rules! trace {
     ($($arg:tt)*) => {};
@@ -24,11 +24,11 @@ type Type = u16;
 type Length = u32;
 
 /// Value buffer for TLV messages.
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
 pub type Value = Vec<u8, MAX_VALUE_SIZE>;
 
 pub const HEADER_SIZE: usize = core::mem::size_of::<Type>() + core::mem::size_of::<Length>();
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
 type Header = [u8; HEADER_SIZE];
 
 pub const MAX_VALUE_SIZE: usize = 640;
@@ -38,7 +38,7 @@ pub const MAX_VALUE_SIZE: usize = 640;
 /// Spells "LINK" in ASCII.
 pub const SYNC_WORD: [u8; 4] = [0x4C, 0x49, 0x4E, 0x4B];
 
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
 fn decode_header<T: TryFrom<u16>>(header: &Header) -> Result<(T, usize), T::Error> {
     let raw_type = Type::from_be_bytes([header[0], header[1]]);
     let tlv_type = T::try_from(raw_type)?;
@@ -46,7 +46,7 @@ fn decode_header<T: TryFrom<u16>>(header: &Header) -> Result<(T, usize), T::Erro
     Ok((tlv_type, length as usize))
 }
 
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
 fn encode_header(tlv_type: impl Into<u16>, length: usize) -> Header {
     let mut header = Header::default();
     let type_val: Type = tlv_type.into();
@@ -61,15 +61,15 @@ fn encode_header(tlv_type: impl Into<u16>, length: usize) -> Header {
 pub struct Tlv<T> {
     pub tlv_type: T,
     // Use async Value type when any firmware feature is enabled
-    #[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+    #[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
     pub value: Value,
     // Use heapless::Vec directly when only ctl feature (no firmware features)
-    #[cfg(not(any(feature = "mgmt", feature = "net", feature = "ui")))]
+    #[cfg(not(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl")))]
     pub value: heapless::Vec<u8, MAX_VALUE_SIZE>,
 }
 
 // Async TLV types and traits - for firmware modules
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
 mod async_tlv {
     use super::*;
 
@@ -273,7 +273,7 @@ mod async_tlv {
     }
 }
 
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
 #[allow(unused_imports)] // Re-exported for public API, may not be used internally
 pub use async_tlv::{ReadTlv, WriteTlv};
 

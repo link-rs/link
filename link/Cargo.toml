@@ -17,6 +17,7 @@ net = []
 ui = []
 cortex-m-stack = ["dep:cortex-m-stack"]  # Stack usage measurement (UI chip)
 ctl = ["std", "dep:espflash", "dep:serialport", "dep:log", "dep:thiserror"]  # ctl requires std and espflash for NET flashing
+async-ctl = []  # Async CTL support (for WASM) - enables async TLV traits without full firmware features
 
 # All modules enabled - for development and testing
 all = ["mgmt", "net", "ui", "ctl"]
