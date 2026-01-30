@@ -96,6 +96,19 @@ pub struct SpeedTestResults {
     pub recv_time_ms: u32,
 }
 
+/// Stack usage information from the UI chip.
+#[derive(Debug, Clone, Default)]
+pub struct StackInfoResult {
+    /// Stack base address (highest address, start of stack memory).
+    pub stack_base: u32,
+    /// Stack top address (lowest address, end of stack memory).
+    pub stack_top: u32,
+    /// Total stack size in bytes.
+    pub stack_size: u32,
+    /// Stack usage (bytes from top to high-water mark).
+    pub stack_used: u32,
+}
+
 /// Jitter buffer statistics from the NET chip.
 #[derive(Debug, Clone, Default)]
 pub struct JitterStatsResult {
@@ -666,6 +679,55 @@ where
         }
     }
 
+    /// Get MGMT chip stack usage information.
+    pub fn mgmt_get_stack_info(&mut self) -> Result<StackInfoResult, CtlError> {
+        write_tlv(&mut self.writer, CtlToMgmt::GetStackInfo, &[])?;
+        loop {
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+            match tlv.tlv_type {
+                MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue, // Skip tunneled messages
+                MgmtToCtl::StackInfo => {
+                    if tlv.value.len() != 16 {
+                        return Err(CtlError::InvalidLength {
+                            expected: 16,
+                            actual: tlv.value.len(),
+                        });
+                    }
+                    return Ok(StackInfoResult {
+                        stack_base: u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]),
+                        stack_top: u32::from_le_bytes([tlv.value[4], tlv.value[5], tlv.value[6], tlv.value[7]]),
+                        stack_size: u32::from_le_bytes([tlv.value[8], tlv.value[9], tlv.value[10], tlv.value[11]]),
+                        stack_used: u32::from_le_bytes([tlv.value[12], tlv.value[13], tlv.value[14], tlv.value[15]]),
+                    });
+                }
+                other => {
+                    return Err(CtlError::UnexpectedResponse {
+                        expected: "StackInfo",
+                        actual: format!("{:?}", other),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Repaint the MGMT chip stack for future measurement.
+    pub fn mgmt_repaint_stack(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer, CtlToMgmt::RepaintStack, &[])?;
+        loop {
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+            match tlv.tlv_type {
+                MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue, // Skip tunneled messages
+                MgmtToCtl::Ack => return Ok(()),
+                other => {
+                    return Err(CtlError::UnexpectedResponse {
+                        expected: "Ack",
+                        actual: format!("{:?}", other),
+                    });
+                }
+            }
+        }
+    }
+
     /// Send a Hello handshake to detect if a valid device is connected.
     ///
     /// Sends a 4-byte challenge value and verifies the response is the challenge
@@ -873,6 +935,53 @@ where
         }
         let mode_byte = tlv.value.first().copied().unwrap_or(0);
         Ok(LoopbackMode::try_from(mode_byte).unwrap_or(LoopbackMode::Off))
+    }
+
+    /// Get UI chip stack usage information.
+    pub fn ui_get_stack_info(&mut self) -> Result<StackInfoResult, CtlError> {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::GetStackInfo, &[])?;
+        let tlv: Tlv<UiToMgmt> =
+            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type == UiToMgmt::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.to_string()));
+        }
+        if tlv.tlv_type != UiToMgmt::StackInfo {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "StackInfo",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 16 {
+            return Err(CtlError::InvalidLength {
+                expected: 16,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(StackInfoResult {
+            stack_base: u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]),
+            stack_top: u32::from_le_bytes([tlv.value[4], tlv.value[5], tlv.value[6], tlv.value[7]]),
+            stack_size: u32::from_le_bytes([tlv.value[8], tlv.value[9], tlv.value[10], tlv.value[11]]),
+            stack_used: u32::from_le_bytes([tlv.value[12], tlv.value[13], tlv.value[14], tlv.value[15]]),
+        })
+    }
+
+    /// Repaint the UI chip stack for future measurement.
+    pub fn ui_repaint_stack(&mut self) -> Result<(), CtlError> {
+        write_tlv(&mut self.writer.ui(), MgmtToUi::RepaintStack, &[])?;
+        let tlv: Tlv<UiToMgmt> =
+            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+        if tlv.tlv_type == UiToMgmt::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.to_string()));
+        }
+        if tlv.tlv_type != UiToMgmt::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Set NET chip loopback mode.

@@ -455,6 +455,40 @@ async fn handle_mgmt<M, N, I, D>(
             info!("ui: get loopback = {}", mode);
             to_mgmt.must_write_tlv(UiToMgmt::Loopback, &[mode]).await;
         }
+        MgmtToUi::GetStackInfo => {
+            info!("ui: get stack info");
+            #[cfg(feature = "cortex-m-stack")]
+            {
+                use cortex_m_stack::{stack, stack_size, stack_painted};
+                let range = stack();
+                let base = range.end as u32;  // Stack grows down, so end is higher address (base)
+                let top = range.start as u32; // Start is lower address (top/limit)
+                let size = stack_size() as u32;
+                let used = size.saturating_sub(stack_painted() as u32);
+                let mut value = [0u8; 16];
+                value[0..4].copy_from_slice(&base.to_le_bytes());
+                value[4..8].copy_from_slice(&top.to_le_bytes());
+                value[8..12].copy_from_slice(&size.to_le_bytes());
+                value[12..16].copy_from_slice(&used.to_le_bytes());
+                to_mgmt.must_write_tlv(UiToMgmt::StackInfo, &value).await;
+            }
+            #[cfg(not(feature = "cortex-m-stack"))]
+            {
+                to_mgmt.must_write_tlv(UiToMgmt::Error, b"stack measurement not available").await;
+            }
+        }
+        MgmtToUi::RepaintStack => {
+            info!("ui: repaint stack");
+            #[cfg(feature = "cortex-m-stack")]
+            {
+                cortex_m_stack::repaint_stack();
+                to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
+            }
+            #[cfg(not(feature = "cortex-m-stack"))]
+            {
+                to_mgmt.must_write_tlv(UiToMgmt::Error, b"stack measurement not available").await;
+            }
+        }
     }
 }
 

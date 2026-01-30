@@ -102,6 +102,12 @@ enum MgmtAction {
         #[arg(short, long, default_value = "64")]
         size: usize,
     },
+
+    /// Stack usage measurement
+    Stack {
+        #[command(subcommand)]
+        action: Option<StackAction>,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -146,6 +152,21 @@ enum UiAction {
         #[arg(long)]
         reset: bool,
     },
+
+    /// Stack usage measurement
+    Stack {
+        #[command(subcommand)]
+        action: Option<StackAction>,
+    },
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+enum StackAction {
+    /// Get stack usage information
+    #[default]
+    Info,
+    /// Repaint the stack with the known pattern
+    Repaint,
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]

@@ -97,6 +97,10 @@ pub enum CtlToMgmt {
     SpeedTestData,
     /// Speed test done signal (no payload)
     SpeedTestDone,
+    /// Get MGMT chip stack usage information
+    GetStackInfo,
+    /// Repaint the MGMT chip stack with the paint pattern
+    RepaintStack,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -114,6 +118,8 @@ pub enum MgmtToCtl {
     WsSpeedTestResult,
     /// CTL-MGMT speed test results (8 bytes: packet_count u32 LE, total_bytes u32 LE)
     SpeedTestResult,
+    /// Stack usage information (16 bytes: stack_base u32 LE, stack_top u32 LE, stack_size u32 LE, stack_used u32 LE)
+    StackInfo,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -129,6 +135,10 @@ pub enum MgmtToUi {
     SetLoopback,
     /// Get loopback mode
     GetLoopback,
+    /// Get stack usage information
+    GetStackInfo,
+    /// Repaint the stack with the paint pattern
+    RepaintStack,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -144,6 +154,8 @@ pub enum UiToMgmt {
     Loopback,
     /// Debug log message (UTF-8 string)
     Log,
+    /// Stack usage information (16 bytes: stack_base u32 LE, stack_top u32 LE, stack_size u32 LE, stack_used u32 LE)
+    StackInfo,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

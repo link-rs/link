@@ -512,5 +512,27 @@ where
         CtlToMgmt::SpeedTestData | CtlToMgmt::SpeedTestDone => {
             unreachable!("speed test messages handled in ctl_task")
         }
+        CtlToMgmt::GetStackInfo => {
+            info!("mgmt: get stack info");
+            use cortex_m_stack::{stack, stack_size, stack_painted};
+            let range = stack();
+            let base = range.end as u32;  // Stack grows down, so end is higher address (base)
+            let top = range.start as u32; // Start is lower address (top/limit)
+            let size = stack_size() as u32;
+            let used = size.saturating_sub(stack_painted() as u32);
+            let mut value = [0u8; 16];
+            value[0..4].copy_from_slice(&base.to_le_bytes());
+            value[4..8].copy_from_slice(&top.to_le_bytes());
+            value[8..12].copy_from_slice(&size.to_le_bytes());
+            value[12..16].copy_from_slice(&used.to_le_bytes());
+            to_ctl.must_write_tlv(MgmtToCtl::StackInfo, &value).await;
+            BaudRateChange::None
+        }
+        CtlToMgmt::RepaintStack => {
+            info!("mgmt: repaint stack");
+            cortex_m_stack::repaint_stack();
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
+            BaudRateChange::None
+        }
     }
 }

@@ -12,9 +12,10 @@ tokio = { version = "1.48.0", features = ["full"] }
 
 [features]
 # Chip module features - each instantiation crate enables only what it needs
-mgmt = []
+mgmt = ["dep:cortex-m-stack"]  # MGMT has stack measurement
 net = []
 ui = []
+cortex-m-stack = ["dep:cortex-m-stack"]  # Stack usage measurement (UI chip)
 ctl = ["std", "dep:espflash", "dep:serialport", "dep:log", "dep:thiserror"]  # ctl requires std and espflash for NET flashing
 
 # All modules enabled - for development and testing
@@ -57,3 +58,4 @@ espflash = { path = "../vendor/espflash/espflash", optional = true, default-feat
 serialport = { version = "4.8.1", optional = true }
 log = { version = "0.4", optional = true }
 thiserror = { version = "2", optional = true }
+cortex-m-stack = { version = "0.1", optional = true }

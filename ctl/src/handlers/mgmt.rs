@@ -1,6 +1,6 @@
 //! MGMT chip command handlers.
 
-use crate::{App, GetSetU32, MgmtAction};
+use crate::{App, GetSetU32, MgmtAction, StackAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::FlashPhase;
 use link::{CtlToMgmt, HEADER_SIZE, MgmtToCtl, SYNC_WORD};
@@ -381,5 +381,21 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
 
             Ok(())
         }
+        MgmtAction::Stack { action } => match action.unwrap_or_default() {
+            StackAction::Info => {
+                let info = app.mgmt_get_stack_info()?;
+                println!("Stack Base:  0x{:08X}", info.stack_base);
+                println!("Stack Top:   0x{:08X}", info.stack_top);
+                println!("Stack Size:  {} bytes ({:.1} KB)", info.stack_size, info.stack_size as f64 / 1024.0);
+                println!("Stack Used:  {} bytes ({:.1}%)", info.stack_used, info.stack_used as f64 / info.stack_size as f64 * 100.0);
+                println!("Stack Free:  {} bytes", info.stack_size.saturating_sub(info.stack_used));
+                Ok(())
+            }
+            StackAction::Repaint => {
+                app.mgmt_repaint_stack()?;
+                println!("Stack repainted");
+                Ok(())
+            }
+        },
     }
 }

@@ -6,7 +6,8 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
-cortex-m-rt = "0.7"
+cortex-m-rt = { version = "0.7", features = ["paint-stack"] }
+cortex-m-stack = "0.1"
 
 defmt = "1"
 defmt-rtt = "1"
@@ -19,7 +20,7 @@ panic-probe = { version = "1", features = ["print-defmt"] }
 
 embedded-io-async = "0.6"
 embedded-hal = "1"
-link = { path = "../link", default-features = false, features = ["ui", "defmt", "audio-buffer"] }
+link = { path = "../link", default-features = false, features = ["ui", "defmt", "audio-buffer", "cortex-m-stack"] }
 
 [profile.dev]
 opt-level = "s"
