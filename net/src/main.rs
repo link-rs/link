@@ -200,11 +200,14 @@ fn setup_ptt_tracks(
         }
     }
 
+    // Subscribe to AI audio namespace first (to receive announcements for dynamic tracks)
+    client.subscribe_namespace(&ai_ns);
+
     // Subscribe to AI audio responses (using device ID as track name)
     let device_id_str = format!("{}", device_id);
     info!(
-        "MoQ PTT: subscribing to AI responses on track {}",
-        device_id_str
+        "MoQ PTT: subscribing to AI responses on ns={} track=\"{}\" track_bytes={:?} (device_id=0x{:012x})",
+        ai_ns, device_id_str, device_id_str.as_bytes(), device_id
     );
     let ai_sub_track_name = FullTrackName::new(ai_ns, device_id_str.into_bytes());
     match block_on(client.subscribe(ai_sub_track_name)) {
@@ -351,8 +354,8 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                                         let headers = ObjectHeaders::new(ai_group_id, ai_object_id);
                                         if ai_object_id == 0 {
                                             info!(
-                                                "MoQ PTT: first AI publish with group_id={}",
-                                                ai_group_id
+                                                "MoQ PTT: first AI publish with group_id={} (0x{:012x})",
+                                                ai_group_id, ai_group_id
                                             );
                                         }
                                         let _ = track.publish(&headers, payload);
@@ -431,9 +434,10 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
 
                     // Log stats every 2 seconds
                     if last_stats.elapsed() >= Duration::from_secs(2) {
+                        let ai_sub_status = ai_subscription.as_ref().map(|s| s.status());
                         info!(
-                            "MoQ PTT: ptt_pub={} ptt_recv={} ai_pub={} ai_recv={} active={:?} loopback={:?}",
-                            ptt_object_id, ptt_recv_count, ai_object_id, ai_recv_count, active_ptt_channel, loopback
+                            "MoQ PTT: ptt_pub={} ptt_recv={} ai_pub={} ai_recv={} ai_sub={:?} active={:?} loopback={:?}",
+                            ptt_object_id, ptt_recv_count, ai_object_id, ai_recv_count, ai_sub_status, active_ptt_channel, loopback
                         );
                         last_stats = Instant::now();
                     }
