@@ -3,27 +3,9 @@
 use crate::{App, GetSetU32, MgmtAction, StackAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::FlashPhase;
-use link::{CtlToMgmt, HEADER_SIZE, MgmtToCtl, SYNC_WORD};
-use serialport::SerialPort;
+use link::{CtlToMgmt, MgmtToCtl};
 use std::io::Write;
 use std::time::{Duration, Instant};
-
-/// Synchronous TLV write function (adapted from link::ctl).
-fn write_tlv<T, W>(writer: &mut W, tlv_type: T, value: &[u8]) -> std::io::Result<()>
-where
-    T: Into<u16>,
-    W: Write,
-{
-    let type_val: u16 = tlv_type.into();
-    writer.write_all(&SYNC_WORD)?;
-    let mut header = [0u8; HEADER_SIZE];
-    header[0..2].copy_from_slice(&type_val.to_be_bytes());
-    header[2..6].copy_from_slice(&(value.len() as u32).to_be_bytes());
-    writer.write_all(&header)?;
-    writer.write_all(value)?;
-    writer.flush()?;
-    Ok(())
-}
 
 pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     match action {
@@ -216,13 +198,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
                     app.set_ctl_baud_rate(value)?;
 
                     // Now change local serial port baud rate to match
-                    let reader_port: &mut Box<dyn SerialPort> =
-                        app.reader_mut().inner_mut().get_mut();
-                    reader_port.set_baud_rate(value)?;
-
-                    let writer_port: &mut Box<dyn SerialPort> =
-                        app.writer_mut().inner_mut().get_mut();
-                    writer_port.set_baud_rate(value)?;
+                    app.port_mut().get_mut().set_baud_rate(value)?;
 
                     println!("CTL baud rate set to {} (both MGMT and local)", value);
                     Ok(())
@@ -245,8 +221,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
             }
 
             // Get current baud rate for reporting
-            let reader_port: &Box<dyn SerialPort> = app.reader_mut().inner_mut().get_ref();
-            let initial_baud = reader_port.baud_rate().unwrap_or(115200);
+            let initial_baud = app.port_mut().get_ref().baud_rate().unwrap_or(115200);
 
             // If a baud rate was specified, change to it first
             let test_baud = if let Some(new_baud) = baud {
@@ -259,11 +234,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
                 app.set_ctl_baud_rate(new_baud)?;
 
                 // Now change local serial port baud rate to match
-                let reader_port: &mut Box<dyn SerialPort> = app.reader_mut().inner_mut().get_mut();
-                reader_port.set_baud_rate(new_baud)?;
-
-                let writer_port: &mut Box<dyn SerialPort> = app.writer_mut().inner_mut().get_mut();
-                writer_port.set_baud_rate(new_baud)?;
+                app.port_mut().get_mut().set_baud_rate(new_baud)?;
 
                 // Small delay for baud rate to stabilize
                 std::thread::sleep(Duration::from_millis(10));
@@ -288,7 +259,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
 
             // Send packets as fast as possible for the duration
             while start.elapsed() < test_duration {
-                if write_tlv(app.writer_mut(), CtlToMgmt::SpeedTestData, &payload).is_err() {
+                if app.write_tlv(CtlToMgmt::SpeedTestData, &payload).is_err() {
                     send_errors += 1;
                 } else {
                     packets_sent += 1;
@@ -299,14 +270,13 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
 
             // Send done signal
             println!("Sending done signal and waiting for results...");
-            write_tlv(app.writer_mut(), CtlToMgmt::SpeedTestDone, &[])?;
+            app.write_tlv(CtlToMgmt::SpeedTestDone, &[])?;
 
             // Wait for result from MGMT (with timeout)
-            let reader_port: &mut Box<dyn SerialPort> = app.reader_mut().inner_mut().get_mut();
-            reader_port.set_timeout(Duration::from_secs(5))?;
+            app.port_mut().get_mut().set_timeout(Duration::from_secs(5))?;
 
             let (packets_received, bytes_received) = loop {
-                match app.reader_mut().read_tlv() {
+                match app.read_tlv() {
                     Ok(Some(tlv)) => {
                         if tlv.tlv_type == MgmtToCtl::SpeedTestResult && tlv.value.len() >= 8 {
                             let packets = u32::from_le_bytes([
@@ -367,17 +337,11 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
             if baud.is_some() && initial_baud != test_baud {
                 println!("\nRestoring baud rate to {}...", initial_baud);
                 app.set_ctl_baud_rate(initial_baud)?;
-
-                let reader_port: &mut Box<dyn SerialPort> = app.reader_mut().inner_mut().get_mut();
-                reader_port.set_baud_rate(initial_baud)?;
-
-                let writer_port: &mut Box<dyn SerialPort> = app.writer_mut().inner_mut().get_mut();
-                writer_port.set_baud_rate(initial_baud)?;
+                app.port_mut().get_mut().set_baud_rate(initial_baud)?;
             }
 
             // Restore normal timeout
-            let reader_port: &mut Box<dyn SerialPort> = app.reader_mut().inner_mut().get_mut();
-            reader_port.set_timeout(Duration::from_secs(3))?;
+            app.port_mut().get_mut().set_timeout(Duration::from_secs(3))?;
 
             Ok(())
         }

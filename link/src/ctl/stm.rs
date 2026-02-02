@@ -14,6 +14,9 @@ const NACK: u8 = 0x1F;
 /// Initialization byte sent to start communication and trigger auto-baud detection.
 const INIT: u8 = 0x7F;
 
+/// Trait alias for a type that can be used as a serial port with the bootloader.
+pub trait SerialPort: Read + Write {}
+
 /// Bootloader command codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -116,28 +119,29 @@ impl SpecialErase {
     }
 }
 
+/// Blanket implementation for SerialPort trait.
+impl<T: Read + Write> SerialPort for T {}
+
 /// STM32 bootloader client.
 ///
-/// Wraps a serial connection (reader and writer) and provides methods
-/// for interacting with the STM32 bootloader.
-pub struct Bootloader<R, W> {
-    reader: R,
-    writer: W,
+/// Wraps a serial connection and provides methods for interacting with
+/// the STM32 bootloader.
+pub struct Bootloader<P> {
+    port: P,
 }
 
-impl<R, W> Bootloader<R, W>
+impl<P> Bootloader<P>
 where
-    R: Read,
-    W: Write,
+    P: Read + Write,
 {
-    /// Create a new bootloader client from reader and writer halves.
-    pub fn new(reader: R, writer: W) -> Self {
-        Self { reader, writer }
+    /// Create a new bootloader client from a serial port.
+    pub fn new(port: P) -> Self {
+        Self { port }
     }
 
-    /// Consume the bootloader client and return the reader and writer.
-    pub fn into_inner(self) -> (R, W) {
-        (self.reader, self.writer)
+    /// Consume the bootloader client and return the serial port.
+    pub fn into_inner(self) -> P {
+        self.port
     }
 
     /// Initialize communication with the bootloader.
@@ -245,7 +249,7 @@ where
         self.wait_ack()?;
 
         // Read data in bulk
-        self.reader.read_exact(&mut buffer[..len])?;
+        self.port.read_exact(&mut buffer[..len])?;
 
         Ok(len)
     }
@@ -469,22 +473,22 @@ where
 
     fn read_byte(&mut self) -> Result<u8, Error<std::io::Error>> {
         let mut buf = [0u8; 1];
-        self.reader.read_exact(&mut buf)?;
+        self.port.read_exact(&mut buf)?;
         Ok(buf[0])
     }
 
     fn write_byte(&mut self, byte: u8) -> Result<(), Error<std::io::Error>> {
-        self.writer.write_all(&[byte])?;
+        self.port.write_all(&[byte])?;
         Ok(())
     }
 
     fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), Error<std::io::Error>> {
-        self.writer.write_all(bytes)?;
+        self.port.write_all(bytes)?;
         Ok(())
     }
 
     fn flush(&mut self) -> Result<(), Error<std::io::Error>> {
-        self.writer.flush()?;
+        self.port.flush()?;
         Ok(())
     }
 }

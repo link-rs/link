@@ -10,12 +10,10 @@ use rand::Rng;
 use reedline_repl_rs::clap::ArgMatches;
 use reedline_repl_rs::{CallBackMap, Repl};
 use serialport::SerialPortType;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::Write;
 use std::time::Duration;
 
-type AppReader = BufReader<Box<dyn serialport::SerialPort>>;
-type AppWriter = BufWriter<Box<dyn serialport::SerialPort>>;
-type App = link::ctl::App<AppReader, AppWriter>;
+type App = link::ctl::App<link::ctl::BufferedPort<Box<dyn serialport::SerialPort>>>;
 
 #[derive(Parser)]
 #[command(name = "ctl")]
@@ -343,26 +341,18 @@ fn open_serial_port(
 /// Try to connect to a specific port and verify it's a Link device.
 /// Returns the App if successful, None if connection failed or not a Link device.
 fn try_connect(port_name: &str, baud: u32) -> Option<App> {
-    let port = open_serial_port(port_name, baud).ok()?;
+    let mut port = open_serial_port(port_name, baud).ok()?;
 
     // Set short timeout for hello check
-    let port_clone = port.try_clone().ok()?;
+    port.set_timeout(Duration::from_millis(50)).ok()?;
 
-    // Create shorter timeout versions for the hello check
-    let mut port_read = port;
-    let port_write = port_clone;
-    port_read.set_timeout(Duration::from_millis(50)).ok()?;
-
-    let reader = BufReader::new(port_read);
-    let writer = BufWriter::new(port_write);
-
-    let mut app = link::ctl::App::new(reader, writer);
+    let buffered_port = link::ctl::BufferedPort::new(port);
+    let mut app = link::ctl::App::new(buffered_port);
     let challenge: [u8; 4] = rand::rng().random();
 
     if app.hello(&challenge) {
         // Restore normal timeout for subsequent operations
-        app.reader_mut()
-            .inner_mut()
+        app.port_mut()
             .get_mut()
             .set_timeout(Duration::from_secs(3))
             .ok()?;
@@ -441,14 +431,9 @@ fn manually_select_port(baud: u32) -> Result<(App, String), String> {
     let port_name = &all_ports[choice - 1];
     let port =
         open_serial_port(port_name, baud).map_err(|e| format!("Failed to open port: {}", e))?;
-    let port_clone = port
-        .try_clone()
-        .map_err(|e| format!("Failed to clone port: {}", e))?;
 
-    let reader = BufReader::new(port);
-    let writer = BufWriter::new(port_clone);
-
-    Ok((link::ctl::App::new(reader, writer), port_name.clone()))
+    let buffered_port = link::ctl::BufferedPort::new(port);
+    Ok((link::ctl::App::new(buffered_port), port_name.clone()))
 }
 
 /// Open a connection to the device
@@ -456,12 +441,8 @@ fn connect(port: Option<String>, baud: u32) -> Result<(App, String), Box<dyn std
     // If user specified a port, connect directly
     if let Some(port_name) = port {
         let port = open_serial_port(&port_name, baud)?;
-        let port_clone = port.try_clone()?;
-
-        let reader = BufReader::new(port);
-        let writer = BufWriter::new(port_clone);
-
-        return Ok((link::ctl::App::new(reader, writer), port_name));
+        let buffered_port = link::ctl::BufferedPort::new(port);
+        return Ok((link::ctl::App::new(buffered_port), port_name));
     }
 
     // Try to find a Link device automatically

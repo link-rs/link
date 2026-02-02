@@ -3,7 +3,7 @@
 use crate::{App, GetSetHex, GetSetU32, LoopbackAction, StackAction, UiAction};
 use link::LoopbackMode;
 use indicatif::{ProgressBar, ProgressStyle};
-use link::ctl::{FlashPhase, SetTimeout};
+use link::ctl::FlashPhase;
 use std::io::Write;
 use std::thread;
 use std::time::Duration;
@@ -231,11 +231,7 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
             println!("Monitoring UI chip logs (ESC to stop)...\n");
 
             // Set a short timeout for non-blocking reads
-            if let Err(e) = app
-                .reader_mut()
-                .inner_mut()
-                .set_timeout(Duration::from_millis(100))
-            {
+            if let Err(e) = app.port_mut().get_mut().set_timeout(Duration::from_millis(100)) {
                 eprintln!("Warning: couldn't set timeout: {}", e);
             }
 
@@ -258,7 +254,7 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
                     }
 
                     // Check for TLV data from UI
-                    match app.reader_mut().read_ui_log() {
+                    match app.read_ui_log() {
                         Ok(Some(msg)) => {
                             // Use \r\n for raw terminal mode
                             print!("[UI] {}\r\n", msg);
@@ -284,11 +280,7 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
             terminal::disable_raw_mode()?;
 
             // Restore timeout to normal (3 seconds)
-            if let Err(e) = app
-                .reader_mut()
-                .inner_mut()
-                .set_timeout(Duration::from_secs(3))
-            {
+            if let Err(e) = app.port_mut().get_mut().set_timeout(Duration::from_secs(3)) {
                 eprintln!("Warning: couldn't restore timeout: {}", e);
             }
 

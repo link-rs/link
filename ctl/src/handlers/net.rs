@@ -2,7 +2,7 @@
 
 use crate::{App, ChannelAction, GetSetString, NetAction, NetLoopbackMode, WifiAction};
 use indicatif::{ProgressBar, ProgressStyle};
-use link::ctl::{ChannelConfig, ProgressCallbacks, SetTimeout};
+use link::ctl::{ChannelConfig, ProgressCallbacks};
 use link::NetLoopback;
 
 /// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
@@ -330,11 +330,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             println!("Monitoring NET chip (ESC to stop)...\n");
 
             // Set a short timeout for non-blocking reads
-            if let Err(e) = app
-                .reader_mut()
-                .inner_mut()
-                .set_timeout(std::time::Duration::from_millis(100))
-            {
+            if let Err(e) = app.port_mut().get_mut().set_timeout(std::time::Duration::from_millis(100)) {
                 eprintln!("Warning: couldn't set timeout: {}", e);
             }
 
@@ -358,7 +354,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                     }
 
                     // Check for TLV data
-                    match app.reader_mut().read_tlv() {
+                    match app.read_tlv() {
                         Ok(Some(tlv)) => {
                             if tlv.tlv_type == link::MgmtToCtl::FromNet {
                                 std::io::stdout().write_all(&tlv.value).ok();
@@ -385,11 +381,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             terminal::disable_raw_mode()?;
 
             // Restore timeout to normal (3 seconds)
-            if let Err(e) = app
-                .reader_mut()
-                .inner_mut()
-                .set_timeout(std::time::Duration::from_secs(3))
-            {
+            if let Err(e) = app.port_mut().get_mut().set_timeout(std::time::Duration::from_secs(3)) {
                 eprintln!("Warning: couldn't restore timeout: {}", e);
             }
 

@@ -16,10 +16,135 @@ use espflash::flasher::{FlashData, FlashSettings, Flasher};
 use espflash::image_format::idf::IdfBootloaderFormat;
 use espflash::target::Chip;
 use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, StopBits, UsbPortInfo};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
 use std::time::Duration;
 use stm::Bootloader;
+
+// ============================================================================
+// BufferedPort - buffered reading for serial ports
+// ============================================================================
+
+/// A wrapper that provides buffered reading for a serial port.
+///
+/// This struct provides buffered reading while passing writes directly through.
+/// Serial ports already handle write buffering, so we only need read buffering
+/// to allow peeking/parsing without losing data.
+pub struct BufferedPort<P> {
+    port: P,
+    read_buf: Vec<u8>,
+    read_pos: usize,
+    read_cap: usize,
+}
+
+impl<P> BufferedPort<P> {
+    const DEFAULT_BUF_SIZE: usize = 8192;
+
+    /// Create a new BufferedPort wrapping the given serial port.
+    pub fn new(port: P) -> Self {
+        Self::with_capacity(Self::DEFAULT_BUF_SIZE, port)
+    }
+
+    /// Create a new BufferedPort with specified read buffer capacity.
+    pub fn with_capacity(read_capacity: usize, port: P) -> Self {
+        Self {
+            port,
+            read_buf: vec![0; read_capacity],
+            read_pos: 0,
+            read_cap: 0,
+        }
+    }
+
+    /// Get a reference to the underlying port.
+    pub fn get_ref(&self) -> &P {
+        &self.port
+    }
+
+    /// Get a mutable reference to the underlying port.
+    pub fn get_mut(&mut self) -> &mut P {
+        &mut self.port
+    }
+
+    /// Consume the BufferedPort and return the underlying port.
+    pub fn into_inner(self) -> P {
+        self.port
+    }
+}
+
+impl<P: Read> BufferedPort<P> {
+    fn fill_buf_internal(&mut self) -> io::Result<&[u8]> {
+        if self.read_pos >= self.read_cap {
+            self.read_cap = self.port.read(&mut self.read_buf)?;
+            self.read_pos = 0;
+        }
+        Ok(&self.read_buf[self.read_pos..self.read_cap])
+    }
+}
+
+impl<P: Read> Read for BufferedPort<P> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // If buffer is empty, fill it
+        if self.read_pos >= self.read_cap {
+            // For large reads, bypass the buffer
+            if buf.len() >= self.read_buf.len() {
+                return self.port.read(buf);
+            }
+            self.read_cap = self.port.read(&mut self.read_buf)?;
+            self.read_pos = 0;
+        }
+        // Copy from buffer to output
+        let available = self.read_cap - self.read_pos;
+        let to_copy = available.min(buf.len());
+        buf[..to_copy].copy_from_slice(&self.read_buf[self.read_pos..self.read_pos + to_copy]);
+        self.read_pos += to_copy;
+        Ok(to_copy)
+    }
+}
+
+impl<P: Read> BufRead for BufferedPort<P> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        self.fill_buf_internal()
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.read_pos = (self.read_pos + amt).min(self.read_cap);
+    }
+}
+
+impl<P: Write> Write for BufferedPort<P> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // For simplicity, write directly to port (no write buffering needed for serial)
+        // The underlying serial port already handles write buffering
+        self.port.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.port.flush()
+    }
+}
+
+// Forward SerialPort methods when available
+impl<P: SerialPort> BufferedPort<P> {
+    /// Set the timeout for read operations.
+    pub fn set_timeout(&mut self, timeout: Duration) -> serialport::Result<()> {
+        self.port.set_timeout(timeout)
+    }
+
+    /// Get the current timeout.
+    pub fn timeout(&self) -> Duration {
+        self.port.timeout()
+    }
+
+    /// Set the baud rate.
+    pub fn set_baud_rate(&mut self, baud_rate: u32) -> serialport::Result<()> {
+        self.port.set_baud_rate(baud_rate)
+    }
+
+    /// Get the current baud rate.
+    pub fn baud_rate(&self) -> serialport::Result<u32> {
+        self.port.baud_rate()
+    }
+}
 
 // Re-export espflash types
 pub use espflash::flasher::{DeviceInfo, FlashSize, SecurityInfo};
@@ -385,33 +510,39 @@ where
 // Tunnel Reader/Writer
 // ============================================================================
 
+use std::sync::{Arc, Mutex, MutexGuard};
+
+/// A shared reference to a port that can be cloned and is thread-safe.
+/// Used to allow both reader and writer access to the same underlying port.
+pub type SharedPort<P> = Arc<Mutex<P>>;
+
 /// A reader that extracts data from TLV packets received through MGMT.
 ///
 /// Buffers incoming TLV values and exposes them as a continuous byte stream.
-pub struct TunnelReader<'a, R> {
+pub struct TunnelReader<'a, P> {
     tlv_type: MgmtToCtl,
-    reader: &'a mut R,
+    port: &'a SharedPort<P>,
     buffer: &'a mut heapless::Vec<u8, MAX_VALUE_SIZE>,
 }
 
-impl<'a, R> TunnelReader<'a, R> {
+impl<'a, P> TunnelReader<'a, P> {
     fn new(
         tlv_type: MgmtToCtl,
-        reader: &'a mut R,
+        port: &'a SharedPort<P>,
         buffer: &'a mut heapless::Vec<u8, MAX_VALUE_SIZE>,
     ) -> Self {
         Self {
             tlv_type,
-            reader,
+            port,
             buffer,
         }
     }
 }
 
-impl<'a, R: Read> Read for TunnelReader<'a, R> {
+impl<P: Read> Read for TunnelReader<'_, P> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         while self.buffer.is_empty() {
-            let tlv: Tlv<MgmtToCtl> = read_tlv(self.reader)
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())
                 .map_err(|e| match e {
                     TlvReadError::Io(io) => io,
                     TlvReadError::InvalidType => {
@@ -444,50 +575,121 @@ impl<'a, R: Read> Read for TunnelReader<'a, R> {
 }
 
 /// A writer that wraps TLV packets for tunneling through MGMT.
-pub struct TunnelWriter<'a, W> {
+pub struct TunnelWriter<'a, P> {
     tlv_type: CtlToMgmt,
-    writer: &'a mut W,
+    port: &'a SharedPort<P>,
 }
 
-impl<'a, W> TunnelWriter<'a, W> {
-    fn new(tlv_type: CtlToMgmt, writer: &'a mut W) -> Self {
-        Self { tlv_type, writer }
+impl<'a, P> TunnelWriter<'a, P> {
+    fn new(tlv_type: CtlToMgmt, port: &'a SharedPort<P>) -> Self {
+        Self { tlv_type, port }
     }
 }
 
-impl<'a, W: Write> Write for TunnelWriter<'a, W> {
+impl<P: Write> Write for TunnelWriter<'_, P> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let to_write = core::cmp::min(MAX_VALUE_SIZE, buf.len());
-        write_tlv(self.writer, self.tlv_type, &buf[..to_write])?;
+        write_tlv(&mut *self.port.lock().unwrap(), self.tlv_type, &buf[..to_write])?;
         Ok(to_write)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.writer.flush()
+        self.port.lock().unwrap().flush()
+    }
+}
+
+/// A combined reader/writer for tunnel operations.
+///
+/// This is used for bootloader communication through the UI tunnel, where
+/// we need a type that implements both Read and Write.
+pub struct TunnelPort<'a, P> {
+    read_tlv_type: MgmtToCtl,
+    write_tlv_type: CtlToMgmt,
+    port: &'a SharedPort<P>,
+    buffer: heapless::Vec<u8, MAX_VALUE_SIZE>,
+}
+
+impl<'a, P> TunnelPort<'a, P> {
+    /// Create a new TunnelPort for the UI tunnel.
+    pub fn new_ui(port: &'a SharedPort<P>) -> Self {
+        Self {
+            read_tlv_type: MgmtToCtl::FromUi,
+            write_tlv_type: CtlToMgmt::ToUi,
+            port,
+            buffer: heapless::Vec::new(),
+        }
+    }
+}
+
+impl<P: Read> Read for TunnelPort<'_, P> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        while self.buffer.is_empty() {
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())
+                .map_err(|e| match e {
+                    TlvReadError::Io(io) => io,
+                    TlvReadError::InvalidType => {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid TLV type")
+                    }
+                    TlvReadError::TooLong => {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, "TLV too long")
+                    }
+                })?
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "unexpected EOF")
+                })?;
+
+            if tlv.tlv_type != self.read_tlv_type {
+                continue;
+            }
+            self.buffer.extend_from_slice(&tlv.value).unwrap();
+        }
+
+        let to_copy = core::cmp::min(self.buffer.len(), buf.len());
+        buf[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
+        // Drain from front by copying remaining bytes and truncating
+        let remaining = self.buffer.len() - to_copy;
+        for i in 0..remaining {
+            self.buffer[i] = self.buffer[i + to_copy];
+        }
+        self.buffer.truncate(remaining);
+        Ok(to_copy)
+    }
+}
+
+impl<P: Write> Write for TunnelPort<'_, P> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let to_write = core::cmp::min(MAX_VALUE_SIZE, buf.len());
+        write_tlv(&mut *self.port.lock().unwrap(), self.write_tlv_type, &buf[..to_write])?;
+        Ok(to_write)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.port.lock().unwrap().flush()
     }
 }
 
 // ============================================================================
-// MGMT Reader/Writer
+// App
 // ============================================================================
 
-/// Encapsulates the read side of MGMT communication.
-pub struct MgmtReader<R> {
-    from_mgmt: R,
+/// The main application struct for communicating with the MGMT chip.
+///
+/// `App` wraps a serial port and provides methods for communicating with
+/// MGMT, UI, and NET chips via the TLV protocol.
+pub struct App<P> {
+    port: SharedPort<P>,
     ui_buffer: heapless::Vec<u8, MAX_VALUE_SIZE>,
     net_buffer: heapless::Vec<u8, MAX_VALUE_SIZE>,
 }
 
-impl<R: Read> Read for MgmtReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.from_mgmt.read(buf)
-    }
-}
-
-impl<R: Read> MgmtReader<R> {
-    fn new(from_mgmt: R) -> Self {
+impl<P> App<P>
+where
+    P: Read + Write,
+{
+    /// Create a new App wrapping the given serial port.
+    pub fn new(port: P) -> Self {
         Self {
-            from_mgmt,
+            port: Arc::new(Mutex::new(port)),
             ui_buffer: heapless::Vec::new(),
             net_buffer: heapless::Vec::new(),
         }
@@ -496,10 +698,10 @@ impl<R: Read> MgmtReader<R> {
     /// Drain any pending data from the input buffer.
     ///
     /// This clears internal buffers and reads/discards any pending data from the
-    /// underlying reader. Useful before starting a new protocol that expects a
+    /// underlying port. Useful before starting a new protocol that expects a
     /// clean slate (e.g., bootloader communication after reset).
     ///
-    /// Note: This relies on the underlying reader having a reasonable timeout
+    /// Note: This relies on the underlying port having a reasonable timeout
     /// (e.g., 50-100ms) so that reads will return when no data is available.
     pub fn drain(&mut self) {
         // Clear internal TLV buffers
@@ -510,7 +712,7 @@ impl<R: Read> MgmtReader<R> {
         // With a typical 50ms timeout, this will return quickly when empty
         let mut buf = [0u8; 256];
         loop {
-            match self.from_mgmt.read(&mut buf) {
+            match self.port.lock().unwrap().read(&mut buf) {
                 Ok(0) => break,    // EOF or no data
                 Ok(_) => continue, // Discard and keep reading
                 Err(_) => break,   // Timeout or error - buffer is drained
@@ -520,29 +722,48 @@ impl<R: Read> MgmtReader<R> {
 
     /// Read a TLV from the MGMT connection.
     pub fn read_tlv(&mut self) -> Result<Option<Tlv<MgmtToCtl>>, TlvReadError<std::io::Error>> {
-        read_tlv(&mut self.from_mgmt)
+        read_tlv(&mut *self.port.lock().unwrap())
+    }
+
+    /// Write a TLV to the MGMT connection.
+    pub fn write_tlv(&mut self, tlv_type: CtlToMgmt, value: &[u8]) -> std::io::Result<()> {
+        write_tlv(&mut *self.port.lock().unwrap(), tlv_type, value)
     }
 
     /// Get a reader for the UI tunnel.
-    pub fn ui(&mut self) -> TunnelReader<'_, R> {
-        TunnelReader::new(MgmtToCtl::FromUi, &mut self.from_mgmt, &mut self.ui_buffer)
+    pub fn ui_reader(&mut self) -> TunnelReader<'_, P> {
+        TunnelReader::new(MgmtToCtl::FromUi, &self.port, &mut self.ui_buffer)
     }
 
     /// Get a reader for the NET tunnel.
-    pub fn net(&mut self) -> TunnelReader<'_, R> {
-        TunnelReader::new(
-            MgmtToCtl::FromNet,
-            &mut self.from_mgmt,
-            &mut self.net_buffer,
-        )
+    pub fn net_reader(&mut self) -> TunnelReader<'_, P> {
+        TunnelReader::new(MgmtToCtl::FromNet, &self.port, &mut self.net_buffer)
     }
 
-    /// Get a mutable reference to the underlying reader.
+    /// Get a writer for the UI tunnel (TLV protocol).
+    pub fn ui_writer(&self) -> TunnelWriter<'_, P> {
+        TunnelWriter::new(CtlToMgmt::ToUi, &self.port)
+    }
+
+    /// Get a writer for the NET tunnel.
+    pub fn net_writer(&self) -> TunnelWriter<'_, P> {
+        TunnelWriter::new(CtlToMgmt::ToNet, &self.port)
+    }
+
+    /// Get a mutable reference to the underlying port.
     ///
-    /// This is useful for operations that need to modify the underlying reader,
-    /// such as setting the timeout on a serial port.
-    pub fn inner_mut(&mut self) -> &mut R {
-        &mut self.from_mgmt
+    /// This is useful for operations that need to modify the underlying port,
+    /// such as setting the timeout or baud rate on a serial port.
+    ///
+    /// # Panics
+    /// Panics if the port is currently locked elsewhere.
+    pub fn port_mut(&self) -> MutexGuard<'_, P> {
+        self.port.lock().unwrap()
+    }
+
+    /// Get the shared port reference for passing to other APIs.
+    pub fn shared_port(&self) -> SharedPort<P> {
+        self.port.clone()
     }
 
     /// Read a Log message from the UI chip.
@@ -556,7 +777,7 @@ impl<R: Read> MgmtReader<R> {
     /// or an error if reading failed.
     pub fn read_ui_log(&mut self) -> Result<Option<String>, TlvReadError<std::io::Error>> {
         // Use TunnelReader which handles buffering and skips non-FromUi TLVs
-        let tlv: Tlv<UiToMgmt> = match read_tlv(&mut self.ui())? {
+        let tlv: Tlv<UiToMgmt> = match read_tlv(&mut self.ui_reader())? {
             Some(t) => t,
             None => return Ok(None),
         };
@@ -571,96 +792,14 @@ impl<R: Read> MgmtReader<R> {
             Ok(None)
         }
     }
-}
-
-/// Encapsulates the write side of MGMT communication.
-pub struct MgmtWriter<W> {
-    to_mgmt: W,
-}
-
-impl<W: Write> Write for MgmtWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.to_mgmt.write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.to_mgmt.flush()
-    }
-}
-
-impl<W: Write> MgmtWriter<W> {
-    fn new(to_mgmt: W) -> Self {
-        Self { to_mgmt }
-    }
-
-    /// Write a TLV to the MGMT connection.
-    pub fn write_tlv(&mut self, tlv_type: CtlToMgmt, value: &[u8]) -> std::io::Result<()> {
-        write_tlv(&mut self.to_mgmt, tlv_type, value)
-    }
-
-    /// Get a writer for the UI tunnel (TLV protocol).
-    pub fn ui(&mut self) -> TunnelWriter<'_, W> {
-        TunnelWriter::new(CtlToMgmt::ToUi, &mut self.to_mgmt)
-    }
-
-    /// Get a writer for the NET tunnel.
-    pub fn net(&mut self) -> TunnelWriter<'_, W> {
-        TunnelWriter::new(CtlToMgmt::ToNet, &mut self.to_mgmt)
-    }
-
-    /// Get a mutable reference to the underlying writer.
-    ///
-    /// This is useful for operations that need to modify the underlying writer,
-    /// such as setting the baud rate on a serial port.
-    pub fn inner_mut(&mut self) -> &mut W {
-        &mut self.to_mgmt
-    }
-}
-
-// ============================================================================
-// App
-// ============================================================================
-
-pub struct App<R, W> {
-    reader: MgmtReader<R>,
-    writer: MgmtWriter<W>,
-}
-
-impl<R, W> App<R, W>
-where
-    W: Write,
-    R: Read,
-{
-    pub fn new(from_mgmt: R, to_mgmt: W) -> Self {
-        Self {
-            reader: MgmtReader::new(from_mgmt),
-            writer: MgmtWriter::new(to_mgmt),
-        }
-    }
-
-    /// Get a mutable reference to the underlying reader.
-    ///
-    /// This is useful for operations that need to modify the underlying reader,
-    /// such as setting the timeout on a serial port.
-    pub fn reader_mut(&mut self) -> &mut MgmtReader<R> {
-        &mut self.reader
-    }
-
-    /// Get a mutable reference to the underlying writer.
-    ///
-    /// This is useful for operations that need to modify the underlying writer,
-    /// such as setting the baud rate on a serial port.
-    pub fn writer_mut(&mut self) -> &mut MgmtWriter<W> {
-        &mut self.writer
-    }
 
     /// Ping the MGMT chip directly.
     ///
     /// Skips any FromNet/FromUi TLVs that may be pending before the Pong.
     pub fn mgmt_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer, CtlToMgmt::Ping, data)?;
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::Ping, data)?;
         loop {
-            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())?.ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
                 MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue, // Skip tunneled messages
                 MgmtToCtl::Pong => {
@@ -681,9 +820,9 @@ where
 
     /// Get MGMT chip stack usage information.
     pub fn mgmt_get_stack_info(&mut self) -> Result<StackInfoResult, CtlError> {
-        write_tlv(&mut self.writer, CtlToMgmt::GetStackInfo, &[])?;
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::GetStackInfo, &[])?;
         loop {
-            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())?.ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
                 MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue, // Skip tunneled messages
                 MgmtToCtl::StackInfo => {
@@ -712,9 +851,9 @@ where
 
     /// Repaint the MGMT chip stack for future measurement.
     pub fn mgmt_repaint_stack(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer, CtlToMgmt::RepaintStack, &[])?;
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::RepaintStack, &[])?;
         loop {
-            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())?.ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
                 MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue, // Skip tunneled messages
                 MgmtToCtl::Ack => return Ok(()),
@@ -735,11 +874,11 @@ where
     pub fn hello(&mut self, challenge: &[u8; 4]) -> bool {
         const MAGIC: &[u8; 4] = b"LINK";
 
-        if write_tlv(&mut self.writer, CtlToMgmt::Hello, challenge).is_err() {
+        if write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::Hello, challenge).is_err() {
             return false;
         }
 
-        let tlv: Tlv<MgmtToCtl> = match read_tlv(&mut self.reader) {
+        let tlv: Tlv<MgmtToCtl> = match read_tlv(&mut *self.port.lock().unwrap()) {
             Ok(Some(tlv)) => tlv,
             _ => return false,
         };
@@ -759,9 +898,9 @@ where
 
     /// Ping the UI chip through the MGMT tunnel.
     pub fn ui_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::Ping, data)?;
+        write_tlv(&mut self.ui_writer(), MgmtToUi::Ping, data)?;
         let tlv: Tlv<UiToMgmt> =
-            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv_ui(&mut self.ui_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::Pong {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Pong",
@@ -776,9 +915,9 @@ where
 
     /// Ping the NET chip through the MGMT tunnel.
     pub fn net_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::Ping, data)?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::Ping, data)?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::Pong {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Pong",
@@ -793,9 +932,9 @@ where
 
     /// Send a circular ping starting from UI (UI -> NET -> MGMT -> CTL).
     pub fn ui_first_circular_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::CircularPing, data)?;
+        write_tlv(&mut self.ui_writer(), MgmtToUi::CircularPing, data)?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::CircularPing {
             return Err(CtlError::UnexpectedResponse {
                 expected: "CircularPing",
@@ -810,9 +949,9 @@ where
 
     /// Send a circular ping starting from NET (NET -> UI -> MGMT -> CTL).
     pub fn net_first_circular_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::CircularPing, data)?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::CircularPing, data)?;
         let tlv: Tlv<UiToMgmt> =
-            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv_ui(&mut self.ui_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::CircularPing {
             return Err(CtlError::UnexpectedResponse {
                 expected: "CircularPing",
@@ -827,9 +966,9 @@ where
 
     /// Get the version stored in UI chip EEPROM.
     pub fn get_version(&mut self) -> Result<u32, CtlError> {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::GetVersion, &[])?;
+        write_tlv(&mut self.ui_writer(), MgmtToUi::GetVersion, &[])?;
         let tlv: Tlv<UiToMgmt> =
-            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv_ui(&mut self.ui_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::Version {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Version",
@@ -853,12 +992,12 @@ where
     /// Set the version stored in UI chip EEPROM.
     pub fn set_version(&mut self, version: u32) -> Result<(), CtlError> {
         write_tlv(
-            &mut self.writer.ui(),
+            &mut self.ui_writer(),
             MgmtToUi::SetVersion,
             &version.to_be_bytes(),
         )?;
         let tlv: Tlv<UiToMgmt> =
-            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv_ui(&mut self.ui_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -870,9 +1009,9 @@ where
 
     /// Get the SFrame key stored in UI chip EEPROM.
     pub fn get_sframe_key(&mut self) -> Result<[u8; 16], CtlError> {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::GetSFrameKey, &[])?;
+        write_tlv(&mut self.ui_writer(), MgmtToUi::GetSFrameKey, &[])?;
         let tlv: Tlv<UiToMgmt> =
-            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv_ui(&mut self.ui_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::SFrameKey {
             return Err(CtlError::UnexpectedResponse {
                 expected: "SFrameKey",
@@ -892,9 +1031,9 @@ where
 
     /// Set the SFrame key stored in UI chip EEPROM.
     pub fn set_sframe_key(&mut self, key: &[u8; 16]) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::SetSFrameKey, key)?;
+        write_tlv(&mut self.ui_writer(), MgmtToUi::SetSFrameKey, key)?;
         let tlv: Tlv<UiToMgmt> =
-            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv_ui(&mut self.ui_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -907,12 +1046,12 @@ where
     /// Set UI chip loopback mode.
     pub fn ui_set_loopback(&mut self, mode: LoopbackMode) -> Result<(), CtlError> {
         write_tlv(
-            &mut self.writer.ui(),
+            &mut self.ui_writer(),
             MgmtToUi::SetLoopback,
             &[mode as u8],
         )?;
         let tlv: Tlv<UiToMgmt> =
-            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv_ui(&mut self.ui_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -924,9 +1063,9 @@ where
 
     /// Get UI chip loopback mode.
     pub fn ui_get_loopback(&mut self) -> Result<LoopbackMode, CtlError> {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::GetLoopback, &[])?;
+        write_tlv(&mut self.ui_writer(), MgmtToUi::GetLoopback, &[])?;
         let tlv: Tlv<UiToMgmt> =
-            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv_ui(&mut self.ui_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != UiToMgmt::Loopback {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Loopback",
@@ -939,9 +1078,9 @@ where
 
     /// Get UI chip stack usage information.
     pub fn ui_get_stack_info(&mut self) -> Result<StackInfoResult, CtlError> {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::GetStackInfo, &[])?;
+        write_tlv(&mut self.ui_writer(), MgmtToUi::GetStackInfo, &[])?;
         let tlv: Tlv<UiToMgmt> =
-            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv_ui(&mut self.ui_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type == UiToMgmt::Error {
             let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
             return Err(CtlError::DeviceError(msg.to_string()));
@@ -968,9 +1107,9 @@ where
 
     /// Repaint the UI chip stack for future measurement.
     pub fn ui_repaint_stack(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.ui(), MgmtToUi::RepaintStack, &[])?;
+        write_tlv(&mut self.ui_writer(), MgmtToUi::RepaintStack, &[])?;
         let tlv: Tlv<UiToMgmt> =
-            read_tlv_ui(&mut self.reader.ui())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv_ui(&mut self.ui_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type == UiToMgmt::Error {
             let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
             return Err(CtlError::DeviceError(msg.to_string()));
@@ -990,12 +1129,12 @@ where
     /// - Moq: MoQ loopback, hear own audio via relay
     pub fn net_set_loopback(&mut self, mode: NetLoopback) -> Result<(), CtlError> {
         write_tlv(
-            &mut self.writer.net(),
+            &mut self.net_writer(),
             MgmtToNet::SetLoopback,
             &[mode as u8],
         )?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -1007,9 +1146,9 @@ where
 
     /// Get NET chip loopback mode.
     pub fn net_get_loopback(&mut self) -> Result<NetLoopback, CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetLoopback, &[])?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::GetLoopback, &[])?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::Loopback {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Loopback",
@@ -1028,9 +1167,9 @@ where
         };
         let mut buf = [0u8; 128];
         let serialized = postcard::to_slice(&wifi, &mut buf).map_err(|_| CtlError::TooLong)?;
-        write_tlv(&mut self.writer.net(), MgmtToNet::AddWifiSsid, serialized)?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::AddWifiSsid, serialized)?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -1042,9 +1181,9 @@ where
 
     /// Get all WiFi SSIDs from NET chip storage.
     pub fn get_wifi_ssids(&mut self) -> Result<heapless::Vec<WifiSsid, 8>, CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetWifiSsids, &[])?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::GetWifiSsids, &[])?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::WifiSsids {
             return Err(CtlError::UnexpectedResponse {
                 expected: "WifiSsids",
@@ -1056,9 +1195,9 @@ where
 
     /// Clear all WiFi SSIDs from NET chip storage.
     pub fn clear_wifi_ssids(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::ClearWifiSsids, &[])?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::ClearWifiSsids, &[])?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -1070,9 +1209,9 @@ where
 
     /// Get the relay URL from NET chip storage.
     pub fn get_relay_url(&mut self) -> Result<heapless::String<128>, CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetRelayUrl, &[])?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::GetRelayUrl, &[])?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::RelayUrl {
             return Err(CtlError::UnexpectedResponse {
                 expected: "RelayUrl",
@@ -1086,12 +1225,12 @@ where
     /// Set the relay URL in NET chip storage.
     pub fn set_relay_url(&mut self, url: &str) -> Result<(), CtlError> {
         write_tlv(
-            &mut self.writer.net(),
+            &mut self.net_writer(),
             MgmtToNet::SetRelayUrl,
             url.as_bytes(),
         )?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -1107,12 +1246,12 @@ where
     /// if the channel hasn't been configured.
     pub fn get_channel_config(&mut self, channel_id: u8) -> Result<ChannelConfig, CtlError> {
         write_tlv(
-            &mut self.writer.net(),
+            &mut self.net_writer(),
             MgmtToNet::GetChannelConfig,
             &[channel_id],
         )?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::ChannelConfig {
             return Err(CtlError::UnexpectedResponse {
                 expected: "ChannelConfig",
@@ -1128,9 +1267,9 @@ where
     pub fn set_channel_config(&mut self, config: &ChannelConfig) -> Result<(), CtlError> {
         let mut buf = [0u8; 256];
         let serialized = postcard::to_slice(config, &mut buf).map_err(|_| CtlError::TooLong)?;
-        write_tlv(&mut self.writer.net(), MgmtToNet::SetChannelConfig, serialized)?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::SetChannelConfig, serialized)?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -1144,9 +1283,9 @@ where
     pub fn get_all_channel_configs(
         &mut self,
     ) -> Result<heapless::Vec<ChannelConfig, MAX_CHANNELS>, CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::GetAllChannelConfigs, &[])?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::GetAllChannelConfigs, &[])?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::AllChannelConfigs {
             return Err(CtlError::UnexpectedResponse {
                 expected: "AllChannelConfigs",
@@ -1158,9 +1297,9 @@ where
 
     /// Clear all channel configurations.
     pub fn clear_channel_configs(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::ClearChannelConfigs, &[])?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::ClearChannelConfigs, &[])?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -1175,12 +1314,12 @@ where
     /// Only available when the NET chip is built with the `audio-buffer` feature.
     pub fn get_jitter_stats(&mut self, channel_id: u8) -> Result<JitterStatsResult, CtlError> {
         write_tlv(
-            &mut self.writer.net(),
+            &mut self.net_writer(),
             MgmtToNet::GetJitterStats,
             &[channel_id],
         )?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::JitterStats {
             return Err(CtlError::UnexpectedResponse {
                 expected: "JitterStats",
@@ -1232,9 +1371,9 @@ where
     /// This sends data to the relay server via WebSocket and expects the same
     /// data back (assumes an echo server). Useful for testing WS connectivity.
     pub fn ws_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer.net(), MgmtToNet::WsSend, data)?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::WsSend, data)?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::WsReceived {
             return Err(CtlError::UnexpectedResponse {
                 expected: "WsReceived",
@@ -1257,11 +1396,11 @@ where
     /// Returns EchoTestResults with raw and buffered jitter measurements.
     pub fn ws_echo_test(&mut self) -> Result<EchoTestResults, CtlError> {
         // Tunnel through MGMT to NET (like ws_ping does)
-        write_tlv(&mut self.writer.net(), MgmtToNet::WsEchoTest, &[])?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::WsEchoTest, &[])?;
 
         // Wait for result from NET (tunneled through MGMT as FromNet)
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::WsEchoTestResult {
             return Err(CtlError::UnexpectedResponse {
                 expected: "WsEchoTestResult",
@@ -1334,11 +1473,11 @@ where
     /// Returns SpeedTestResults with timing information.
     pub fn ws_speed_test(&mut self) -> Result<SpeedTestResults, CtlError> {
         // Tunnel through MGMT to NET
-        write_tlv(&mut self.writer.net(), MgmtToNet::WsSpeedTest, &[])?;
+        write_tlv(&mut self.net_writer(), MgmtToNet::WsSpeedTest, &[])?;
 
         // Wait for result from NET (tunneled through MGMT as FromNet)
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != NetToMgmt::WsSpeedTestResult {
             return Err(CtlError::UnexpectedResponse {
                 expected: "WsSpeedTestResult",
@@ -1379,9 +1518,10 @@ where
         &mut self,
     ) -> Result<MgmtBootloaderInfo, stm::Error<std::io::Error>> {
         // Drain any stale data from previous communication before starting bootloader protocol
-        self.reader.drain();
+        self.drain();
 
-        let mut bl = Bootloader::new(&mut self.reader, &mut self.writer);
+        let mut port_guard = self.port.lock().unwrap();
+        let mut bl = Bootloader::new(&mut *port_guard);
 
         // Initialize communication (sends 0x7F for auto-baud detection)
         bl.init()?;
@@ -1437,9 +1577,10 @@ where
     {
         // Drain any stale data from previous communication (e.g., hello response)
         // before starting bootloader protocol
-        self.reader.drain();
+        self.drain();
 
-        let mut bl = Bootloader::new(&mut self.reader, &mut self.writer);
+        let mut port_guard = self.port.lock().unwrap();
+        let mut bl = Bootloader::new(&mut *port_guard);
 
         // Initialize communication
         bl.init()?;
@@ -1501,8 +1642,8 @@ where
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins
     /// to put the UI chip into bootloader mode.
     pub fn reset_ui_to_bootloader(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer, CtlToMgmt::ResetUiToBootloader, &[])?;
-        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::ResetUiToBootloader, &[])?;
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -1517,8 +1658,8 @@ where
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins
     /// to put the UI chip back into normal user mode.
     pub fn reset_ui_to_user(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer, CtlToMgmt::ResetUiToUser, &[])?;
-        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::ResetUiToUser, &[])?;
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -1533,8 +1674,8 @@ where
     /// Sends a command to MGMT to assert the RST pin low, keeping the
     /// UI chip in reset until released.
     pub fn hold_ui_reset(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer, CtlToMgmt::HoldUiReset, &[])?;
-        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::HoldUiReset, &[])?;
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -1549,8 +1690,8 @@ where
     /// Sends a command to MGMT to assert the RST pin low, keeping the
     /// NET chip in reset until released.
     pub fn hold_net_reset(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer, CtlToMgmt::HoldNetReset, &[])?;
-        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::HoldNetReset, &[])?;
+        let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
@@ -1566,11 +1707,11 @@ where
     /// to put the NET chip into bootloader mode.
     pub fn reset_net_to_bootloader(&mut self) -> Result<(), CtlError> {
         eprintln!("[debug] Sending ResetNetToBootloader command to MGMT...");
-        write_tlv(&mut self.writer, CtlToMgmt::ResetNetToBootloader, &[])?;
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::ResetNetToBootloader, &[])?;
         // Read TLVs, skipping any FromNet (boot messages from NET chip) until we get the Ack
         for i in 0..100 {
             eprintln!("[trace] Waiting for Ack (attempt {})", i);
-            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())?.ok_or(CtlError::UnexpectedEof)?;
             eprintln!("[trace] Received TLV: {:?}", tlv.tlv_type);
             match tlv.tlv_type {
                 MgmtToCtl::Ack => {
@@ -1597,10 +1738,10 @@ where
     /// Sends a command to MGMT which toggles the BOOT0 and RST pins
     /// to put the NET chip back into normal user mode.
     pub fn reset_net_to_user(&mut self) -> Result<(), CtlError> {
-        write_tlv(&mut self.writer, CtlToMgmt::ResetNetToUser, &[])?;
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::ResetNetToUser, &[])?;
         // Read TLVs, skipping any FromNet (boot messages from NET chip) until we get the Ack
         for _ in 0..100 {
-            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())?.ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
                 MgmtToCtl::Ack => return Ok(()),
                 MgmtToCtl::FromNet => continue,
@@ -1621,12 +1762,12 @@ where
     /// The change takes effect immediately after MGMT processes the command.
     pub fn set_net_baud_rate(&mut self, baud_rate: u32) -> Result<(), CtlError> {
         write_tlv(
-            &mut self.writer,
+            &mut *self.port.lock().unwrap(),
             CtlToMgmt::SetNetBaudRate,
             &baud_rate.to_le_bytes(),
         )?;
         loop {
-            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())?.ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
                 MgmtToCtl::Ack => return Ok(()),
                 MgmtToCtl::FromNet | MgmtToCtl::FromUi => continue,
@@ -1648,13 +1789,13 @@ where
     /// to match before continuing communication.
     pub fn set_ctl_baud_rate(&mut self, baud_rate: u32) -> Result<(), CtlError> {
         write_tlv(
-            &mut self.writer,
+            &mut *self.port.lock().unwrap(),
             CtlToMgmt::SetCtlBaudRate,
             &baud_rate.to_le_bytes(),
         )?;
         // Read ACK at current baud rate (before MGMT switches)
         loop {
-            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut self.reader)?.ok_or(CtlError::UnexpectedEof)?;
+            let tlv: Tlv<MgmtToCtl> = read_tlv(&mut *self.port.lock().unwrap())?.ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
                 MgmtToCtl::Ack => return Ok(()),
                 MgmtToCtl::FromNet | MgmtToCtl::FromUi => continue,
@@ -1705,9 +1846,8 @@ where
     /// Helper to query the UI bootloader. Separated so borrows are released before reset.
     fn query_ui_bootloader(&mut self) -> Result<MgmtBootloaderInfo, stm::Error<std::io::Error>> {
         // Create a bootloader client using the tunneled UI connection
-        let mut ui_reader = self.reader.ui();
-        let mut ui_writer = self.writer.ui();
-        let mut bl = Bootloader::new(&mut ui_reader, &mut ui_writer);
+        let mut ui_tunnel = TunnelPort::new_ui(&self.port);
+        let mut bl = Bootloader::new(&mut ui_tunnel);
 
         // Initialize communication (sends 0x7F for auto-baud detection)
         bl.init()?;
@@ -1783,9 +1923,8 @@ where
     where
         F: FnMut(FlashPhase, usize, usize),
     {
-        let mut ui_reader = self.reader.ui();
-        let mut ui_writer = self.writer.ui();
-        let mut bl = Bootloader::new(&mut ui_reader, &mut ui_writer);
+        let mut ui_tunnel = TunnelPort::new_ui(&self.port);
+        let mut bl = Bootloader::new(&mut ui_tunnel);
 
         // Initialize communication
         bl.init()?;
@@ -1845,38 +1984,44 @@ where
 /// DTR/RTS signals are mapped directly to BOOT/RST pins:
 /// - DTR HIGH → BOOT LOW (bootloader mode), DTR LOW → BOOT HIGH (normal)
 /// - RTS HIGH → RST LOW (chip in reset), RTS LOW → RST HIGH (chip running)
-struct TunnelSerialPort<'a, R, W> {
-    reader: &'a mut MgmtReader<R>,
-    writer: &'a mut MgmtWriter<W>,
+struct TunnelSerialPort<'a, P> {
+    port: &'a SharedPort<P>,
+    net_buffer: &'a mut heapless::Vec<u8, MAX_VALUE_SIZE>,
     read_buffer: Vec<u8>,
     timeout: Duration,
     baud_rate: u32,
 }
 
-impl<'a, R, W> TunnelSerialPort<'a, R, W>
+impl<'a, P> TunnelSerialPort<'a, P>
 where
-    R: Read + Send,
-    W: Write + Send,
+    P: Read + Write + Send,
 {
-    fn new(reader: &'a mut MgmtReader<R>, writer: &'a mut MgmtWriter<W>, baud_rate: u32) -> Self {
+    fn new(port: &'a SharedPort<P>, net_buffer: &'a mut heapless::Vec<u8, MAX_VALUE_SIZE>, baud_rate: u32) -> Self {
         TunnelSerialPort {
-            reader,
-            writer,
+            port,
+            net_buffer,
             read_buffer: Vec::new(),
             timeout: Duration::from_secs(3),
             baud_rate,
         }
     }
+
+    fn net_reader(&mut self) -> TunnelReader<'_, P> {
+        TunnelReader::new(MgmtToCtl::FromNet, self.port, self.net_buffer)
+    }
+
+    fn net_writer(&self) -> TunnelWriter<'_, P> {
+        TunnelWriter::new(CtlToMgmt::ToNet, self.port)
+    }
 }
 
-impl<R, W> TunnelSerialPort<'_, R, W>
+impl<P> TunnelSerialPort<'_, P>
 where
-    R: Read + Send + SetTimeout + SetBaudRate,
-    W: Write + Send + SetBaudRate,
+    P: Read + Write + Send + SetTimeout + SetBaudRate,
 {
     /// Propagate timeout to underlying serial port.
     fn propagate_timeout(&mut self, timeout: Duration) -> std::io::Result<()> {
-        self.reader.inner_mut().set_timeout(timeout)
+        self.port.lock().unwrap().set_timeout(timeout)
     }
 
     /// Change the baud rate on both CTL-MGMT and MGMT-NET links.
@@ -1892,12 +2037,11 @@ where
 
         // 1. Send SetNetBaudRate to change MGMT-NET link
         //    ACK comes back at current CTL-MGMT rate
-        self.writer
-            .write_tlv(CtlToMgmt::SetNetBaudRate, &baud_bytes)?;
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::SetNetBaudRate, &baud_bytes)?;
 
         // Wait for ACK from MGMT
         loop {
-            match read_tlv::<MgmtToCtl, _>(self.reader.inner_mut()) {
+            match read_tlv::<MgmtToCtl, _>(&mut *self.port.lock().unwrap()) {
                 Ok(Some(tlv)) if tlv.tlv_type == MgmtToCtl::Ack => break,
                 Ok(Some(_)) => continue, // Ignore other messages
                 Ok(None) => {
@@ -1917,12 +2061,11 @@ where
 
         // 2. Send SetCtlBaudRate to change CTL-MGMT link
         //    ACK comes back at OLD rate, then MGMT switches
-        self.writer
-            .write_tlv(CtlToMgmt::SetCtlBaudRate, &baud_bytes)?;
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::SetCtlBaudRate, &baud_bytes)?;
 
         // Wait for ACK from MGMT
         loop {
-            match read_tlv::<MgmtToCtl, _>(self.reader.inner_mut()) {
+            match read_tlv::<MgmtToCtl, _>(&mut *self.port.lock().unwrap()) {
                 Ok(Some(tlv)) if tlv.tlv_type == MgmtToCtl::Ack => break,
                 Ok(Some(_)) => continue, // Ignore other messages
                 Ok(None) => {
@@ -1944,8 +2087,7 @@ where
         std::thread::sleep(Duration::from_millis(10));
 
         // 3. Update local serial port baud rate
-        self.reader.inner_mut().set_baud_rate(baud_rate)?;
-        self.writer.inner_mut().set_baud_rate(baud_rate)?;
+        self.port.lock().unwrap().set_baud_rate(baud_rate)?;
 
         self.baud_rate = baud_rate;
         println!("TunnelSerialPort: baud rate changed to {}", baud_rate);
@@ -1953,10 +2095,9 @@ where
     }
 }
 
-impl<R, W> io::Read for TunnelSerialPort<'_, R, W>
+impl<P> io::Read for TunnelSerialPort<'_, P>
 where
-    R: Read + Send,
-    W: Write + Send,
+    P: Read + Write + Send,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if !self.read_buffer.is_empty() {
@@ -1965,31 +2106,29 @@ where
             self.read_buffer.drain(..to_copy);
             return Ok(to_copy);
         }
-        let mut net_reader = self.reader.net();
+        let mut net_reader = self.net_reader();
         net_reader.read(buf)
     }
 }
 
-impl<R, W> io::Write for TunnelSerialPort<'_, R, W>
+impl<P> io::Write for TunnelSerialPort<'_, P>
 where
-    R: Read + Send,
-    W: Write + Send,
+    P: Read + Write + Send,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut net_writer = self.writer.net();
+        let mut net_writer = self.net_writer();
         net_writer.write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let mut net_writer = self.writer.net();
-        net_writer.flush()
+        let net_writer = self.net_writer();
+        net_writer.port.lock().unwrap().flush()
     }
 }
 
-impl<R, W> SerialPort for TunnelSerialPort<'_, R, W>
+impl<P> SerialPort for TunnelSerialPort<'_, P>
 where
-    R: Read + Send + SetTimeout + SetBaudRate,
-    W: Write + Send + SetBaudRate,
+    P: Read + Write + Send + SetTimeout + SetBaudRate,
 {
     fn name(&self) -> Option<String> {
         Some("tunnel".to_string())
@@ -2037,14 +2176,12 @@ where
     }
     fn write_request_to_send(&mut self, level: bool) -> serialport::Result<()> {
         let rst = !level; // RTS HIGH = RST LOW
-        self.writer
-            .write_tlv(CtlToMgmt::SetNetRst, &[rst as u8])
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::SetNetRst, &[rst as u8])
             .map_err(|e| serialport::Error::new(serialport::ErrorKind::Io(e.kind()), e.to_string()))
     }
     fn write_data_terminal_ready(&mut self, level: bool) -> serialport::Result<()> {
         let boot = !level; // DTR HIGH = BOOT LOW
-        self.writer
-            .write_tlv(CtlToMgmt::SetNetBoot, &[boot as u8])
+        write_tlv(&mut *self.port.lock().unwrap(), CtlToMgmt::SetNetBoot, &[boot as u8])
             .map_err(|e| serialport::Error::new(serialport::ErrorKind::Io(e.kind()), e.to_string()))
     }
     fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
@@ -2087,43 +2224,33 @@ pub trait SetTimeout {
     fn set_timeout(&mut self, timeout: Duration) -> std::io::Result<()>;
 }
 
-// Implement for BufReader wrapping SerialPort
-impl SetTimeout for std::io::BufReader<Box<dyn serialport::SerialPort>> {
-    fn set_timeout(&mut self, timeout: Duration) -> std::io::Result<()> {
-        self.get_mut()
-            .set_timeout(timeout)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-    }
-}
-
 /// Trait for types that support setting the baud rate.
 pub trait SetBaudRate {
     fn set_baud_rate(&mut self, baud_rate: u32) -> std::io::Result<()>;
 }
 
-// Implement for BufReader wrapping SerialPort
-impl SetBaudRate for std::io::BufReader<Box<dyn serialport::SerialPort>> {
-    fn set_baud_rate(&mut self, baud_rate: u32) -> std::io::Result<()> {
-        self.get_mut()
-            .set_baud_rate(baud_rate)
+// Implement SetTimeout for BufferedPort wrapping Box<dyn SerialPort>
+impl SetTimeout for BufferedPort<Box<dyn SerialPort>> {
+    fn set_timeout(&mut self, timeout: Duration) -> std::io::Result<()> {
+        self.port
+            .set_timeout(timeout)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
     }
 }
 
-// Implement for BufWriter wrapping SerialPort
-impl SetBaudRate for std::io::BufWriter<Box<dyn serialport::SerialPort>> {
+// Implement SetBaudRate for BufferedPort wrapping Box<dyn SerialPort>
+impl SetBaudRate for BufferedPort<Box<dyn SerialPort>> {
     fn set_baud_rate(&mut self, baud_rate: u32) -> std::io::Result<()> {
-        self.get_mut()
+        self.port
             .set_baud_rate(baud_rate)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
     }
 }
 
 // NET chip operations (ESP32)
-impl<R, W> App<R, W>
+impl<P> App<P>
 where
-    R: Read + Send + SetTimeout + SetBaudRate,
-    W: Write + Send + SetBaudRate,
+    P: Read + Write + Send + SetTimeout + SetBaudRate,
 {
     /// Flash firmware to the NET chip (ESP32).
     ///
@@ -2140,7 +2267,7 @@ where
     ) -> Result<(), EspflashError> {
         const INITIAL_BAUD: u32 = 115_200;
 
-        let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer, INITIAL_BAUD);
+        let port = TunnelSerialPort::new(&self.port, &mut self.net_buffer, INITIAL_BAUD);
         let port_info = UsbPortInfo {
             vid: 0x303A,
             pid: 0x1002,
@@ -2211,8 +2338,7 @@ where
         std::thread::sleep(Duration::from_millis(10));
 
         // Update local serial port baud rate
-        self.reader.inner_mut().set_baud_rate(baud_rate)?;
-        self.writer.inner_mut().set_baud_rate(baud_rate)?;
+        self.port.lock().unwrap().set_baud_rate(baud_rate)?;
 
         println!("Baud rate restored to {}", baud_rate);
         Ok(())
@@ -2223,7 +2349,7 @@ where
     /// Returns detailed device information including chip type, revision,
     /// flash size, features, MAC address, and security info.
     pub fn get_net_bootloader_info(&mut self) -> Result<EspflashDeviceInfo, EspflashError> {
-        let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer, 115_200);
+        let port = TunnelSerialPort::new(&self.port, &mut self.net_buffer, 115_200);
         let port_info = UsbPortInfo {
             vid: 0,
             pid: 0,
@@ -2260,7 +2386,7 @@ where
 
     /// Erase the NET chip's entire flash.
     pub fn erase_net(&mut self) -> Result<(), EspflashError> {
-        let port = TunnelSerialPort::new(&mut self.reader, &mut self.writer, 115_200);
+        let port = TunnelSerialPort::new(&self.port, &mut self.net_buffer, 115_200);
         let port_info = UsbPortInfo {
             vid: 0x303A,
             pid: 0x1002,
@@ -2296,12 +2422,12 @@ where
     /// Send a chat message via MoQ.
     pub fn send_chat_message(&mut self, message: &str) -> Result<(), CtlError> {
         write_tlv(
-            &mut self.writer.net(),
+            &mut self.net_writer(),
             MgmtToNet::SendChatMessage,
             message.as_bytes(),
         )?;
         let tlv: Tlv<NetToMgmt> =
-            read_tlv(&mut self.reader.net())?.ok_or(CtlError::UnexpectedEof)?;
+            read_tlv(&mut self.net_reader())?.ok_or(CtlError::UnexpectedEof)?;
         match tlv.tlv_type {
             NetToMgmt::ChatMessageSent => Ok(()),
             NetToMgmt::Error => {
