@@ -1,6 +1,7 @@
 //! Commands to work with a flasher stub running on a target device
 
-use std::{io::Write, mem::size_of, time::Duration};
+use core::{mem::size_of, time::Duration};
+use std::io::Write;
 
 use bytemuck::{Pod, Zeroable, bytes_of};
 use serde::{Deserialize, Serialize};
@@ -195,7 +196,7 @@ impl CommandType {
     pub fn timeout_for_size(&self, size: u32) -> Duration {
         fn calc_timeout(timeout_per_mb: Duration, size: u32) -> Duration {
             let mb = size as f64 / 1_000_000.0;
-            std::cmp::max(
+            core::cmp::max(
                 FLASH_DEFLATE_END_TIMEOUT,
                 Duration::from_millis((timeout_per_mb.as_millis() as f64 * mb) as u64),
             )

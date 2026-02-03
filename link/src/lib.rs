@@ -14,6 +14,9 @@
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
+#[cfg(feature = "std")]
+extern crate alloc;
+
 // Shared types and utilities (internal module, public items re-exported below)
 pub(crate) mod shared;
 

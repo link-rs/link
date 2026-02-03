@@ -4,13 +4,11 @@
 //! sending/decoding of commands, and provides higher-level operations with the
 //! device.
 
+use alloc::collections::BTreeMap;
+use core::{fmt, iter::zip, time::Duration};
 use std::{
-    collections::HashMap,
-    fmt,
     io::{BufWriter, Write},
-    iter::zip,
     thread::sleep,
-    time::Duration,
 };
 
 use log::{debug, info};
@@ -77,8 +75,8 @@ pub struct SecurityInfo {
 }
 
 impl SecurityInfo {
-    fn security_flag_map() -> HashMap<&'static str, u32> {
-        HashMap::from([
+    fn security_flag_map() -> BTreeMap<&'static str, u32> {
+        BTreeMap::from([
             ("SECURE_BOOT_EN", 1 << 0),
             ("SECURE_BOOT_AGGRESSIVE_REVOKE", 1 << 1),
             ("SECURE_DOWNLOAD_ENABLE", 1 << 2),
@@ -580,7 +578,7 @@ impl<P: SerialInterface> Connection<P> {
                     )),
                     // MD5 is in ASCII
                     44 => CommandResponseValue::ValueU128(u128::from_str_radix(
-                        std::str::from_utf8(&response[8..][..32])?,
+                        core::str::from_utf8(&response[8..][..32])?,
                         16,
                     )?),
                     // MD5 is BE bytes

@@ -5,9 +5,9 @@
 //! read information from the target device.
 
 
-use std::str::FromStr;
-
-use std::{borrow::Cow, thread::sleep, time::Duration};
+use alloc::borrow::Cow;
+use core::{str::FromStr, time::Duration};
+use std::thread::sleep;
 
 
 use log::{debug, info, warn};
@@ -952,7 +952,7 @@ impl<P: SerialInterface> Flasher<P> {
             segment
                 .data
                 .to_mut()
-                .extend(std::iter::repeat_n(0xFF, padded_bytes));
+                .extend(core::iter::repeat_n(0xFF, padded_bytes));
         }
 
         self.write_bins_to_flash(&[segment], progress)?;

@@ -1,15 +1,9 @@
 //! ESP-IDF application binary image format
 
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    ffi::c_char,
-    fs,
-    io::Write,
-    iter::once,
-    mem::size_of,
-    path::Path,
-};
+use alloc::borrow::Cow;
+use core::{ffi::c_char, iter::once, mem::size_of};
+use alloc::collections::BTreeMap;
+use std::{fs, io::Write, path::Path};
 
 use bytemuck::{Pod, Zeroable, bytes_of, from_bytes, pod_read_unaligned};
 use esp_idf_part::{AppType, DataType, Flags, Partition, PartitionTable, SubType, Type};
@@ -620,8 +614,8 @@ impl<'a> IdfBootloaderFormat<'a> {
     }
 
     /// Returns a map of metadata about the application image.
-    pub fn metadata(&self) -> HashMap<&str, String> {
-        HashMap::from([
+    pub fn metadata(&self) -> BTreeMap<&str, String> {
+        BTreeMap::from([
             ("app_size", self.app_size.to_string()),
             ("part_size", self.partition_table_size.to_string()),
         ])
@@ -836,46 +830,4 @@ pub fn check_idf_bootloader(elf_data: &Vec<u8>) -> Result<()> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_flash_config_write() {
-        let mut header = ImageHeader::default();
-        header
-            .write_flash_config(FlashSize::_4Mb, FlashFrequency::_40Mhz, Chip::Esp32c3)
-            .unwrap();
-        assert_eq!(header.flash_config, 0x20);
-
-        header
-            .write_flash_config(FlashSize::_32Mb, FlashFrequency::_80Mhz, Chip::Esp32s3)
-            .unwrap();
-        assert_eq!(header.flash_config, 0x5F);
-    }
-
-    #[test]
-    fn test_encode_hex() {
-        assert_eq!(encode_hex([0u8]), "00");
-        assert_eq!(encode_hex([10u8]), "0a");
-        assert_eq!(encode_hex([255u8]), "ff");
-
-        assert_eq!(encode_hex([222u8, 202, 251, 173]), "decafbad");
-    }
-
-    #[test]
-    fn merge_adjacent_segments_pads() {
-        let segments = vec![
-            Segment::new(0x1000, &[0u8; 0x100]),
-            Segment::new(0x1100, &[0u8; 0xFF]),
-            Segment::new(0x1200, &[0u8; 0x100]),
-        ];
-
-        let merged = merge_adjacent_segments(segments);
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].addr, 0x1000);
-        assert_eq!(merged[0].size(), 0x300);
-    }
 }

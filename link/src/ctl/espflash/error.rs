@@ -1,8 +1,9 @@
 //! Library and application errors
 
 
-use std::fmt::{Display, Formatter};
-use std::{array::TryFromSliceError, io, num::ParseIntError, str::Utf8Error};
+use core::fmt::{Display, Formatter};
+use core::{array::TryFromSliceError, num::ParseIntError, str::Utf8Error};
+use std::io;
 
 use miette::Diagnostic;
 
@@ -552,7 +553,7 @@ pub(crate) struct TimedOutCommand {
 
 
 impl Display for TimedOutCommand {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match &self.command {
             Some(command) => write!(f, "{command} "),
             None => Ok(()),

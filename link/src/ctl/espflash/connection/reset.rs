@@ -5,7 +5,8 @@
 // Most of this module is copied from `esptool.py`:
 // https://github.com/espressif/esptool/blob/a8586d0/esptool/reset.py
 
-use std::{thread::sleep, time::Duration};
+use core::time::Duration;
+use std::thread::sleep;
 
 use log::debug;
 use serde::{Deserialize, Serialize};

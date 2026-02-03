@@ -1,6 +1,7 @@
 //! Image format metadata.
 
-use std::{collections::HashMap, error::Error};
+use core::error::Error;
+use alloc::collections::BTreeMap;
 
 use object::{File, Object, ObjectSection, ObjectSymbol};
 use serde::{Deserialize, Serialize};
@@ -8,14 +9,14 @@ use serde::{Deserialize, Serialize};
 /// Image format metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Metadata {
-    symbols: HashMap<String, Vec<u8>>,
+    symbols: BTreeMap<String, Vec<u8>>,
 }
 
 impl Metadata {
     /// Creates an empty [`Metadata`].
     fn empty() -> Self {
         Self {
-            symbols: HashMap::new(),
+            symbols: BTreeMap::new(),
         }
     }
 
@@ -68,7 +69,7 @@ impl Metadata {
     fn read_string<'f>(&'f self, name: &str) -> Option<&'f str> {
         self.symbols
             .get(name)
-            .and_then(|data| std::str::from_utf8(data).ok())
+            .and_then(|data| core::str::from_utf8(data).ok())
     }
 
     /// Returns the chip name.

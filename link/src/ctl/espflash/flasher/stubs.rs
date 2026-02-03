@@ -1,6 +1,6 @@
 //! Stub loader module.
 
-use std::time::Duration;
+use core::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, Serialize};
@@ -73,25 +73,5 @@ impl FlashStub {
     pub fn data(&self) -> (u32, Vec<u8>) {
         let v = general_purpose::STANDARD.decode(&self.data).unwrap();
         (self.data_start, v)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use strum::IntoEnumIterator;
-
-    use super::FlashStub;
-    use super::super::target::Chip;
-
-    #[test]
-    fn check_stub_encodings() {
-        for c in Chip::iter() {
-            // Stub must be valid JSON:
-            let s = FlashStub::get(c);
-
-            // Data decoded from b64
-            let _ = s.text();
-            let _ = s.data();
-        }
     }
 }

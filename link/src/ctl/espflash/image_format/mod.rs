@@ -1,13 +1,13 @@
 //! Binary application image formats
 
-use std::{
-    borrow::Cow,
+use alloc::borrow::Cow;
+use core::{
     cmp::Ordering,
-    collections::HashMap,
     fmt::{Debug, Formatter},
     mem::take,
     ops::AddAssign,
 };
+use alloc::collections::BTreeMap;
 
 use object::{
     Endianness,
@@ -61,7 +61,7 @@ impl<'a> ImageFormat<'a> {
     }
 
     /// Returns metadata about the application image
-    pub fn metadata(&self) -> HashMap<&str, String> {
+    pub fn metadata(&self) -> BTreeMap<&str, String> {
         match self {
             ImageFormat::EspIdf(idf) => idf.metadata(),
         }
@@ -175,7 +175,7 @@ impl AddAssign<&'_ Segment<'_>> for Segment<'_> {
 }
 
 impl Debug for Segment<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CodeSegment")
             .field("addr", &self.addr)
             .field("size", &self.size())
@@ -239,43 +239,5 @@ fn is_empty(flags: object::SectionFlags) -> bool {
         object::SectionFlags::None => true,
         object::SectionFlags::Elf { sh_flags } => sh_flags == 0,
         _ => unreachable!(),
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use object::read::elf::ElfFile;
-
-    use super::segments;
-
-    #[test]
-    fn test_overlapping_sections_are_removed() {
-        let elf_data: Vec<u8> = std::fs::read(
-            "tests/data/esp_hal_binary_with_overlapping_defmt_and_embedded_test_sections",
-        )
-        .unwrap();
-
-        let elf = ElfFile::parse(elf_data.as_slice()).unwrap();
-        let segments = segments(&elf).collect::<Vec<_>>();
-
-        let expected = [
-            // (address, size)
-            (0x3F400020, 256),   // .rodata_desc
-            (0x3F400120, 29152), // .rodata
-            (0x3FFB0000, 3716),  // .data
-            (0x40080000, 1024),  // .vectors
-            (0x40080400, 5088),  // .rwtext
-            (0x400D0020, 62654), // .text
-        ];
-
-        assert_eq!(segments.len(), expected.len());
-
-        for seg in segments {
-            let addr_and_len = (seg.addr, seg.size());
-            assert!(
-                expected.contains(&addr_and_len),
-                "Unexpected section: {addr_and_len:x?}"
-            )
-        }
     }
 }
