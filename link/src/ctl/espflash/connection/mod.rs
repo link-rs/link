@@ -4,12 +4,12 @@
 //! sending/decoding of commands, and provides higher-level operations with the
 //! device.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use core::{fmt, iter::zip, time::Duration};
-use std::{
-    io::{BufWriter, Write},
-    thread::sleep,
-};
+use std::io::{BufWriter, Write};
+
+use embedded_hal::delay::DelayNs;
 
 use log::{debug, info};
 use regex::Regex;
@@ -58,6 +58,18 @@ pub trait SerialInterface: SerialPort + Send {}
 
 /// Blanket implementation for all types that implement SerialPort + Send.
 impl<T: SerialPort + Send> SerialInterface for T {}
+
+/// A delay implementation using std::thread::sleep.
+///
+/// This is the default delay provider for host-side flashing operations.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StdDelay;
+
+impl DelayNs for StdDelay {
+    fn delay_ns(&mut self, ns: u32) {
+        std::thread::sleep(Duration::from_nanos(ns as u64));
+    }
+}
 
 /// Security Info Response containing chip security information
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -230,7 +242,6 @@ impl fmt::Display for SecurityInfo {
 }
 
 /// An established connection with a target device.
-#[derive(Debug)]
 pub struct Connection<P: SerialInterface> {
     serial: P,
     port_info: UsbPortInfo,
@@ -239,6 +250,20 @@ pub struct Connection<P: SerialInterface> {
     before_operation: ResetBeforeOperation,
     pub(crate) secure_download_mode: bool,
     pub(crate) baud: u32,
+    delay: Box<dyn DelayNs>,
+}
+
+impl<P: SerialInterface + fmt::Debug> fmt::Debug for Connection<P> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Connection")
+            .field("serial", &self.serial)
+            .field("port_info", &self.port_info)
+            .field("after_operation", &self.after_operation)
+            .field("before_operation", &self.before_operation)
+            .field("secure_download_mode", &self.secure_download_mode)
+            .field("baud", &self.baud)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<P: SerialInterface> Connection<P> {
@@ -250,6 +275,18 @@ impl<P: SerialInterface> Connection<P> {
         before_operation: ResetBeforeOperation,
         baud: u32,
     ) -> Self {
+        Self::with_delay(serial, port_info, after_operation, before_operation, baud, Box::new(StdDelay))
+    }
+
+    /// Creates a new connection with a custom delay provider.
+    pub fn with_delay(
+        serial: P,
+        port_info: UsbPortInfo,
+        after_operation: ResetAfterOperation,
+        before_operation: ResetBeforeOperation,
+        baud: u32,
+        delay: Box<dyn DelayNs>,
+    ) -> Self {
         Connection {
             serial,
             port_info,
@@ -258,7 +295,13 @@ impl<P: SerialInterface> Connection<P> {
             before_operation,
             secure_download_mode: false,
             baud,
+            delay,
         }
+    }
+
+    /// Returns a mutable reference to the delay provider.
+    pub fn delay(&mut self) -> &mut dyn DelayNs {
+        &mut *self.delay
     }
 
     /// Initializes a connection with a device.
@@ -299,7 +342,7 @@ impl<P: SerialInterface> Connection<P> {
         let mut buff: Vec<u8>;
         if self.before_operation != ResetBeforeOperation::NoReset {
             // Reset the chip to bootloader (download mode)
-            reset_strategy.reset(&mut self.serial)?;
+            reset_strategy.reset(&mut self.serial, &mut *self.delay)?;
 
             // S2 in USB download mode responds with 0 available bytes here
             let available_bytes = self.serial.bytes_to_read()?;
@@ -370,7 +413,7 @@ impl<P: SerialInterface> Connection<P> {
             connection.command(Command::Sync)?;
             connection.flush()?;
 
-            sleep(Duration::from_millis(10));
+            connection.delay().delay_ms(10);
 
             for _ in 0..MAX_CONNECT_ATTEMPTS {
                 match connection.read_response()? {
@@ -400,8 +443,7 @@ impl<P: SerialInterface> Connection<P> {
 
     /// Resets the device.
     pub fn reset(&mut self) -> Result<(), Error> {
-        reset_after_flash(&mut self.serial, self.port_info.pid)?;
-
+        reset_after_flash(&mut self.serial, self.port_info.pid, &mut *self.delay)?;
         Ok(())
     }
 
@@ -410,7 +452,7 @@ impl<P: SerialInterface> Connection<P> {
         let pid = self.usb_pid();
 
         match self.after_operation {
-            ResetAfterOperation::HardReset => hard_reset(&mut self.serial, pid),
+            ResetAfterOperation::HardReset => hard_reset(&mut self.serial, pid, &mut *self.delay),
             ResetAfterOperation::NoReset => {
                 info!("Staying in bootloader");
                 soft_reset(self, true, is_stub)?;
@@ -471,17 +513,17 @@ impl<P: SerialInterface> Connection<P> {
     /// Resets the device to flash mode.
     pub fn reset_to_flash(&mut self, extra_delay: bool) -> Result<(), Error> {
         if self.is_using_usb_serial_jtag() {
-            UsbJtagSerialReset.reset(&mut self.serial)
+            UsbJtagSerialReset.reset(&mut self.serial, &mut *self.delay)
         } else {
             #[cfg(unix)]
             if UnixTightReset::new(extra_delay)
-                .reset(&mut self.serial)
+                .reset(&mut self.serial, &mut *self.delay)
                 .is_ok()
             {
                 return Ok(());
             }
 
-            ClassicReset::new(extra_delay).reset(&mut self.serial)
+            ClassicReset::new(extra_delay).reset(&mut self.serial, &mut *self.delay)
         }
     }
 
@@ -689,6 +731,7 @@ impl<P: SerialInterface> Connection<P> {
 
     /// Updates a register by applying the new value to the masked out portion
     /// of the old value.
+    #[allow(dead_code)]
     pub(crate) fn update_reg(&mut self, addr: u32, mask: u32, new_value: u32) -> Result<(), Error> {
         let masked_new_value = new_value.checked_shl(mask.trailing_zeros()).unwrap_or(0) & mask;
 

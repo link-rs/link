@@ -5,9 +5,7 @@
 // Most of this module is copied from `esptool.py`:
 // https://github.com/espressif/esptool/blob/a8586d0/esptool/reset.py
 
-use core::time::Duration;
-use std::thread::sleep;
-
+use embedded_hal::delay::DelayNs;
 use log::debug;
 use serde::{Deserialize, Serialize};
 use serialport::SerialPort;
@@ -27,7 +25,7 @@ const EXTRA_RESET_DELAY: u64 = 500; // ms
 
 /// Reset strategies for resetting a target device.
 pub trait ResetStrategy {
-    fn reset(&self, serial_port: &mut dyn SerialPort) -> Result<(), Error>;
+    fn reset(&self, serial_port: &mut dyn SerialPort, delay: &mut dyn DelayNs) -> Result<(), Error>;
 
     fn set_dtr(&self, serial_port: &mut dyn SerialPort, level: bool) -> Result<(), Error> {
         serial_port.write_data_terminal_ready(level)?;
@@ -62,7 +60,7 @@ impl ClassicReset {
 }
 
 impl ResetStrategy for ClassicReset {
-    fn reset(&self, serial_port: &mut dyn SerialPort) -> Result<(), Error> {
+    fn reset(&self, serial_port: &mut dyn SerialPort, delay: &mut dyn DelayNs) -> Result<(), Error> {
         debug!(
             "Using Classic reset strategy with delay of {}ms",
             self.delay
@@ -76,12 +74,12 @@ impl ResetStrategy for ClassicReset {
         self.set_rts(serial_port, true)?; // EN = LOW, chip in reset
         self.set_dtr(serial_port, false)?; // IO0 = HIGH
 
-        sleep(Duration::from_millis(100));
+        delay.delay_ms(100);
 
         self.set_rts(serial_port, false)?; // EN = HIGH, chip out of reset
         self.set_dtr(serial_port, true)?; // IO0 = LOW
 
-        sleep(Duration::from_millis(self.delay));
+        delay.delay_ms(self.delay as u32);
 
         self.set_rts(serial_port, false)?;
         self.set_dtr(serial_port, false)?; // IO0 = HIGH, done
@@ -114,7 +112,7 @@ impl UnixTightReset {
 
 #[cfg(unix)]
 impl ResetStrategy for UnixTightReset {
-    fn reset(&self, serial_port: &mut dyn SerialPort) -> Result<(), Error> {
+    fn reset(&self, serial_port: &mut dyn SerialPort, delay: &mut dyn DelayNs) -> Result<(), Error> {
         debug!(
             "Using UnixTight reset strategy with delay of {}ms",
             self.delay
@@ -127,12 +125,12 @@ impl ResetStrategy for UnixTightReset {
         self.set_dtr(serial_port, false)?; // IO = HIGH
         self.set_rts(serial_port, true)?; // EN = LOW, chip in reset
 
-        sleep(Duration::from_millis(100));
+        delay.delay_ms(100);
 
         self.set_dtr(serial_port, true)?; // IO0 = LOW
         self.set_rts(serial_port, false)?; // EN = HIGH, chip out of reset
 
-        sleep(Duration::from_millis(self.delay));
+        delay.delay_ms(self.delay as u32);
 
         self.set_dtr(serial_port, false)?; // IO0 = HIGH, done
         self.set_rts(serial_port, false)?;
@@ -147,24 +145,24 @@ impl ResetStrategy for UnixTightReset {
 pub struct UsbJtagSerialReset;
 
 impl ResetStrategy for UsbJtagSerialReset {
-    fn reset(&self, serial_port: &mut dyn SerialPort) -> Result<(), Error> {
+    fn reset(&self, serial_port: &mut dyn SerialPort, delay: &mut dyn DelayNs) -> Result<(), Error> {
         debug!("Using UsbJtagSerial reset strategy");
 
         self.set_rts(serial_port, false)?;
         self.set_dtr(serial_port, false)?; // Idle
 
-        sleep(Duration::from_millis(100));
+        delay.delay_ms(100);
 
         self.set_rts(serial_port, false)?;
         self.set_dtr(serial_port, true)?; // Set IO0
 
-        sleep(Duration::from_millis(100));
+        delay.delay_ms(100);
 
         self.set_rts(serial_port, true)?; // Reset. Calls inverted to go through (1,1) instead of (0,0)
         self.set_dtr(serial_port, false)?;
         self.set_rts(serial_port, true)?; // RTS set as Windows only propagates DTR on RTS setting
 
-        sleep(Duration::from_millis(100));
+        delay.delay_ms(100);
 
         self.set_rts(serial_port, false)?;
         self.set_dtr(serial_port, false)?;
@@ -174,25 +172,25 @@ impl ResetStrategy for UsbJtagSerialReset {
 }
 
 /// Resets the target device.
-pub fn reset_after_flash(serial: &mut dyn SerialPort, pid: u16) -> Result<(), serialport::Error> {
-    sleep(Duration::from_millis(100));
+pub fn reset_after_flash(serial: &mut dyn SerialPort, pid: u16, delay: &mut dyn DelayNs) -> Result<(), serialport::Error> {
+    delay.delay_ms(100);
 
     if pid == USB_SERIAL_JTAG_PID {
         serial.write_data_terminal_ready(false)?;
 
-        sleep(Duration::from_millis(100));
+        delay.delay_ms(100);
 
         serial.write_request_to_send(true)?;
         serial.write_data_terminal_ready(false)?;
         serial.write_request_to_send(true)?;
 
-        sleep(Duration::from_millis(100));
+        delay.delay_ms(100);
 
         serial.write_request_to_send(false)?;
     } else {
         serial.write_request_to_send(true)?;
 
-        sleep(Duration::from_millis(100));
+        delay.delay_ms(100);
 
         serial.write_request_to_send(false)?;
     }
@@ -201,13 +199,13 @@ pub fn reset_after_flash(serial: &mut dyn SerialPort, pid: u16) -> Result<(), se
 }
 
 /// Performs a hard reset of the chip.
-pub fn hard_reset(serial_port: &mut dyn SerialPort, pid: u16) -> Result<(), Error> {
+pub fn hard_reset(serial_port: &mut dyn SerialPort, pid: u16, delay: &mut dyn DelayNs) -> Result<(), Error> {
     debug!("Using HardReset reset strategy");
 
     // Using esptool HardReset strategy (https://github.com/espressif/esptool/blob/3301d0ff4638d4db1760a22540dbd9d07c55ec37/esptool/reset.py#L132-L153)
     // leads to https://github.com/esp-rs/espflash/issues/592 in Windows, using `reset_after_flash` instead works fine for all platforms.
     // We had similar issues in the past: https://github.com/esp-rs/espflash/pull/157
-    reset_after_flash(serial_port, pid)?;
+    reset_after_flash(serial_port, pid, delay)?;
 
     Ok(())
 }

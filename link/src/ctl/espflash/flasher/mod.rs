@@ -6,8 +6,7 @@
 
 
 use alloc::borrow::Cow;
-use core::{str::FromStr, time::Duration};
-use std::thread::sleep;
+use core::str::FromStr;
 
 
 use log::{debug, info, warn};
@@ -57,7 +56,7 @@ pub(crate) const FLASH_WRITE_SIZE: usize = 0x400;
 ///
 /// Note that not all frequencies are supported by each target device.
 #[derive(
-    Debug, Default, Clone, Copy, Hash, PartialEq, Eq, Display, VariantNames, Serialize, Deserialize,
+    Debug, Default, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Display, VariantNames, Serialize, Deserialize,
 )]
 #[non_exhaustive]
 #[repr(u8)]
@@ -821,7 +820,7 @@ impl<P: SerialInterface> Flasher<P> {
 
         let mut i = 0;
         loop {
-            sleep(Duration::from_millis(1));
+            self.connection.delay().delay_ms(1);
             if self.connection.read_reg(spi_registers.usr())? & (1 << 18) == 0 {
                 break;
             }
@@ -1038,7 +1037,7 @@ impl<P: SerialInterface> Flasher<P> {
                 })
             })?;
         self.connection.set_baud(baud)?;
-        sleep(Duration::from_secs_f32(0.05));
+        self.connection.delay().delay_ms(50);
         self.connection.flush()?;
 
         Ok(())
@@ -1052,7 +1051,7 @@ impl<P: SerialInterface> Flasher<P> {
             CommandType::EraseRegion.timeout_for_size(size),
             |connection| connection.command(Command::EraseRegion { offset, size }),
         )?;
-        std::thread::sleep(Duration::from_secs_f32(0.05));
+        self.connection.delay().delay_ms(50);
         self.connection.flush()?;
         Ok(())
     }
@@ -1065,7 +1064,7 @@ impl<P: SerialInterface> Flasher<P> {
             .with_timeout(CommandType::EraseFlash.timeout(), |connection| {
                 connection.command(Command::EraseFlash)
             })?;
-        sleep(Duration::from_secs_f32(0.05));
+        self.connection.delay().delay_ms(50);
         self.connection.flush()?;
 
         Ok(())

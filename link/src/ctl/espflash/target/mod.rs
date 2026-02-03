@@ -5,12 +5,10 @@
 //! obviously not required either.
 
 use alloc::collections::BTreeMap;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::Range;
-use core::time::Duration;
-use std::thread::sleep;
 
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator, VariantNames};
@@ -279,7 +277,7 @@ impl Chip {
                 connection.write_reg(wdt_config0, flags, None)?;
                 connection.write_reg(wdt_wprotect, 0, None)?;
 
-                sleep(Duration::from_millis(50));
+                connection.delay().delay_ms(50);
 
                 Ok(())
             }
@@ -424,6 +422,7 @@ impl Chip {
     ///
     /// This returns `Ok(None)` on ESP32 as it has a completely different error
     /// handling scheme.
+    #[allow(dead_code)]
     fn block_errors(self, block: EfuseBlock) -> Result<Option<EfuseBlockErrors>, Error> {
         let block_errors = match self {
             Chip::Esp32 => return Ok(None),
