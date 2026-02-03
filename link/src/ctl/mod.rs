@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+pub mod espflash;
 pub mod stm;
 
 use crate::shared::{
@@ -11,10 +12,10 @@ use crate::shared::{
     MgmtToUi, NetLoopback, NetToMgmt, SYNC_WORD, Tlv, UiToMgmt, WifiSsid,
 };
 pub use crate::shared::ChannelConfig;
-use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
-use espflash::flasher::{FlashData, FlashSettings, Flasher};
-use espflash::image_format::idf::IdfBootloaderFormat;
-use espflash::target::Chip;
+use self::espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
+use self::espflash::flasher::{FlashData, FlashSettings, Flasher};
+use self::espflash::image_format::idf::IdfBootloaderFormat;
+use self::espflash::target::Chip;
 use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, StopBits, UsbPortInfo};
 use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
@@ -147,8 +148,8 @@ impl<P: SerialPort> BufferedPort<P> {
 }
 
 // Re-export espflash types
-pub use espflash::flasher::{DeviceInfo, FlashSize, SecurityInfo};
-pub use espflash::target::{DefaultProgressCallback, ProgressCallbacks, XtalFrequency};
+pub use self::espflash::flasher::{DeviceInfo, FlashSize, SecurityInfo};
+pub use self::espflash::target::{DefaultProgressCallback, ProgressCallbacks, XtalFrequency};
 
 /// Errors from NET chip flashing.
 #[derive(Debug)]
