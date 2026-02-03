@@ -8,7 +8,6 @@
 use alloc::borrow::Cow;
 use core::str::FromStr;
 
-use embedded_hal_async::delay::DelayNs;
 use log::{debug, info, warn};
 
 
@@ -822,7 +821,7 @@ impl<P: SerialInterface> Flasher<P> {
 
         let mut i = 0;
         loop {
-            self.connection.delay().delay_ms(1).await;
+            self.connection.serial.delay_ms(1).await;
             if self.connection.read_reg(spi_registers.usr()).await? & (1 << 18) == 0 {
                 break;
             }
@@ -1044,7 +1043,7 @@ impl<P: SerialInterface> Flasher<P> {
         self.connection.serial.set_timeout(old_timeout)?;
         result?;
         self.connection.set_baud(baud)?;
-        self.connection.delay().delay_ms(50).await;
+        self.connection.serial.delay_ms(50).await;
         self.connection.flush().await?;
 
         Ok(())
@@ -1059,7 +1058,7 @@ impl<P: SerialInterface> Flasher<P> {
         let result = self.connection.command(Command::EraseRegion { offset, size }).await;
         self.connection.serial.set_timeout(old_timeout)?;
         result?;
-        self.connection.delay().delay_ms(50).await;
+        self.connection.serial.delay_ms(50).await;
         self.connection.flush().await?;
         Ok(())
     }
@@ -1073,7 +1072,7 @@ impl<P: SerialInterface> Flasher<P> {
         let result = self.connection.command(Command::EraseFlash).await;
         self.connection.serial.set_timeout(old_timeout)?;
         result?;
-        self.connection.delay().delay_ms(50).await;
+        self.connection.serial.delay_ms(50).await;
         self.connection.flush().await?;
 
         Ok(())

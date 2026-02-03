@@ -159,12 +159,14 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
 
             let firmware = std::fs::read(&file)?;
             println!("Firmware: {} ({} bytes)", file.display(), firmware.len());
-            if let Some(ref pt) = partition_table {
+            let partition_table_data = if let Some(ref pt) = partition_table {
                 println!("Partition table: {}", pt.display());
                 println!("  (app address determined by partition table)");
+                Some(std::fs::read(pt)?)
             } else {
                 println!("Partition table: default (single app at 0x10000)");
-            }
+                None
+            };
 
             // Hold UI chip in reset during NET flashing to avoid interference
             println!("Holding UI chip in reset...");
@@ -175,7 +177,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             println!("Resetting NET chip to bootloader mode...\n");
 
             let mut progress = FlashProgress::new();
-            let result = block_on(app.flash_net(&firmware, partition_table.as_deref(), &mut progress));
+            let result = block_on(app.flash_net(&firmware, partition_table_data.as_deref(), &mut progress));
 
             progress.finish();
 

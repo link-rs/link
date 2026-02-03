@@ -18,7 +18,6 @@ use self::espflash::image_format::idf::IdfBootloaderFormat;
 use self::espflash::target::Chip;
 use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, StopBits, UsbPortInfo};
 use std::io::{self, BufRead, Read, Write};
-use std::path::Path;
 use std::time::Duration;
 use stm::Bootloader;
 
@@ -2258,12 +2257,12 @@ where
     /// The `firmware` parameter should be an ELF file - espflash converts it
     /// to IDF bootloader format. Progress is reported via the `ProgressCallbacks` trait.
     ///
-    /// If `partition_table` is provided, it should be a path to a CSV or binary
-    /// partition table file. Otherwise, the default partition table is used.
+    /// If `partition_table` is provided, it should be the bytes of a CSV or binary
+    /// partition table. Otherwise, the default partition table is used.
     pub async fn flash_net(
         &mut self,
         elf_data: &[u8],
-        partition_table: Option<&Path>,
+        partition_table: Option<&[u8]>,
         progress: &mut dyn ProgressCallbacks,
     ) -> Result<(), EspflashError> {
         const INITIAL_BAUD: u32 = 115_200;

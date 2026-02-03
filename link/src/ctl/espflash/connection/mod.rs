@@ -8,11 +8,12 @@ use alloc::collections::BTreeMap;
 use core::{fmt, iter::zip, time::Duration};
 use embedded_io_async::Write;
 
-use embedded_hal_async::delay::DelayNs;
-
 use log::{debug, info};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "std")]
+use regex::Regex;
+#[cfg(feature = "std")]
 use serialport::{SerialPort, UsbPortInfo, ClearBuffer};
 
 use self::{
@@ -40,15 +41,76 @@ const MAX_CONNECT_ATTEMPTS: usize = 7;
 const MAX_SYNC_ATTEMPTS: usize = 5;
 const USB_SERIAL_JTAG_PID: u16 = 0x1001;
 
-#[cfg(unix)]
+#[cfg(all(feature = "std", unix))]
 /// Alias for the serial TTYPort.
 pub type Port = serialport::TTYPort;
-#[cfg(windows)]
+#[cfg(all(feature = "std", windows))]
 /// Alias for the serial COMPort.
 pub type Port = serialport::COMPort;
 
-/// Serial port error type (re-exported from serialport crate)
+/// Buffer type for clear operations.
+#[cfg(feature = "std")]
+pub type ClearBufferType = ClearBuffer;
+
+/// Buffer type for clear operations (no_std stub).
+#[cfg(not(feature = "std"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearBufferType {
+    /// Clear the input buffer.
+    Input,
+    /// Clear the output buffer.
+    Output,
+    /// Clear both buffers.
+    All,
+}
+
+/// Serial port error type.
+#[cfg(feature = "std")]
 pub type SerialPortError = serialport::Error;
+
+/// Serial port error type (no_std stub).
+#[cfg(not(feature = "std"))]
+#[derive(Debug)]
+pub struct SerialPortError {
+    /// Error kind
+    pub kind: SerialPortErrorKind,
+    /// Error description
+    pub description: &'static str,
+}
+
+#[cfg(not(feature = "std"))]
+#[derive(Debug, Clone, Copy)]
+pub enum SerialPortErrorKind {
+    /// No device found
+    NoDevice,
+    /// Invalid input
+    InvalidInput,
+    /// Unknown error
+    Unknown,
+    /// I/O error
+    Io,
+    /// Timeout
+    Timeout,
+}
+
+#[cfg(not(feature = "std"))]
+impl core::fmt::Display for SerialPortError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}: {}", self.kind, self.description)
+    }
+}
+
+/// USB port information.
+#[cfg(feature = "std")]
+pub type PortInfo = UsbPortInfo;
+
+/// USB port information (no_std stub with just PID).
+#[cfg(not(feature = "std"))]
+#[derive(Debug, Clone, Copy)]
+pub struct PortInfo {
+    /// USB product ID
+    pub pid: u16,
+}
 
 /// Async serial port interface modeled after WebSerial API.
 ///
@@ -96,13 +158,20 @@ pub trait SerialInterface {
     async fn flush(&mut self) -> Result<(), SerialPortError>;
 
     /// Clear the specified buffer(s).
-    async fn clear(&mut self, buffer_to_clear: ClearBuffer) -> Result<(), SerialPortError>;
+    async fn clear(&mut self, buffer_to_clear: ClearBufferType) -> Result<(), SerialPortError>;
 
     /// Set the DTR (Data Terminal Ready) signal (async in WebSerial via setSignals).
     async fn write_data_terminal_ready(&mut self, level: bool) -> Result<(), SerialPortError>;
 
     /// Set the RTS (Request To Send) signal (async in WebSerial via setSignals).
     async fn write_request_to_send(&mut self, level: bool) -> Result<(), SerialPortError>;
+
+    /// Delay for the specified number of milliseconds.
+    ///
+    /// This allows the serial interface implementation to provide an appropriate
+    /// delay mechanism for its environment (e.g., std::thread::sleep for native,
+    /// browser timers for WebSerial).
+    async fn delay_ms(&mut self, ms: u32);
 }
 
 /// Blanket implementation of async SerialInterface for any type that implements SerialPort.
@@ -110,6 +179,7 @@ pub trait SerialInterface {
 /// This provides a trivial pass-through where async methods simply call the
 /// underlying synchronous SerialPort methods. This allows existing serial port
 /// implementations to be used with the async interface.
+#[cfg(feature = "std")]
 impl<T: SerialPort> SerialInterface for T {
     fn name(&self) -> Option<String> {
         SerialPort::name(self)
@@ -151,7 +221,7 @@ impl<T: SerialPort> SerialInterface for T {
         std::io::Write::flush(self).map_err(SerialPortError::from)
     }
 
-    async fn clear(&mut self, buffer_to_clear: ClearBuffer) -> Result<(), SerialPortError> {
+    async fn clear(&mut self, buffer_to_clear: ClearBufferType) -> Result<(), SerialPortError> {
         SerialPort::clear(self, buffer_to_clear)
     }
 
@@ -162,19 +232,12 @@ impl<T: SerialPort> SerialInterface for T {
     async fn write_request_to_send(&mut self, level: bool) -> Result<(), SerialPortError> {
         SerialPort::write_request_to_send(self, level)
     }
-}
 
-/// A delay implementation using std::thread::sleep.
-///
-/// This is the default delay provider for host-side flashing operations.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct StdDelay;
-
-impl DelayNs for StdDelay {
-    async fn delay_ns(&mut self, ns: u32) {
-        std::thread::sleep(Duration::from_nanos(ns as u64));
+    async fn delay_ms(&mut self, ms: u32) {
+        std::thread::sleep(Duration::from_millis(ms as u64));
     }
 }
+
 
 /// Security Info Response containing chip security information
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -349,13 +412,12 @@ impl fmt::Display for SecurityInfo {
 /// An established connection with a target device.
 pub struct Connection<P: SerialInterface> {
     pub serial: P,
-    port_info: UsbPortInfo,
+    port_info: PortInfo,
     decoder: decoder::SlipDecoder,
     after_operation: ResetAfterOperation,
     before_operation: ResetBeforeOperation,
     pub(crate) secure_download_mode: bool,
     pub(crate) baud: u32,
-    delay: StdDelay,
 }
 
 impl<P: SerialInterface + fmt::Debug> fmt::Debug for Connection<P> {
@@ -367,7 +429,6 @@ impl<P: SerialInterface + fmt::Debug> fmt::Debug for Connection<P> {
             .field("before_operation", &self.before_operation)
             .field("secure_download_mode", &self.secure_download_mode)
             .field("baud", &self.baud)
-            .field("delay", &self.delay)
             .finish()
     }
 }
@@ -376,7 +437,7 @@ impl<P: SerialInterface> Connection<P> {
     /// Creates a new connection with a target device.
     pub fn new(
         serial: P,
-        port_info: UsbPortInfo,
+        port_info: PortInfo,
         after_operation: ResetAfterOperation,
         before_operation: ResetBeforeOperation,
         baud: u32,
@@ -389,13 +450,7 @@ impl<P: SerialInterface> Connection<P> {
             before_operation,
             secure_download_mode: false,
             baud,
-            delay: StdDelay,
         }
-    }
-
-    /// Returns a mutable reference to the delay provider.
-    pub fn delay(&mut self) -> &mut StdDelay {
-        &mut self.delay
     }
 
     /// Initializes a connection with a device.
@@ -436,7 +491,7 @@ impl<P: SerialInterface> Connection<P> {
         let mut buff: Vec<u8>;
         if self.before_operation != ResetBeforeOperation::NoReset {
             // Reset the chip to bootloader (download mode)
-            reset_strategy.reset(&mut self.serial, &mut self.delay).await?;
+            reset_strategy.reset(&mut self.serial).await?;
 
             // S2 in USB download mode responds with 0 available bytes here
             let available_bytes = self.serial.bytes_to_read()?;
@@ -510,7 +565,7 @@ impl<P: SerialInterface> Connection<P> {
             self.command(Command::Sync).await?;
             self.flush().await?;
 
-            self.delay.delay_ms(10).await;
+            self.serial.delay_ms(10).await;
 
             for _ in 0..MAX_CONNECT_ATTEMPTS {
                 match self.read_response().await? {
@@ -541,7 +596,7 @@ impl<P: SerialInterface> Connection<P> {
 
     /// Resets the device.
     pub async fn reset(&mut self) -> Result<(), Error> {
-        reset_after_flash(&mut self.serial, self.port_info.pid, &mut self.delay).await?;
+        reset_after_flash(&mut self.serial, self.port_info.pid).await?;
         Ok(())
     }
 
@@ -550,7 +605,7 @@ impl<P: SerialInterface> Connection<P> {
         let pid = self.usb_pid();
 
         match self.after_operation {
-            ResetAfterOperation::HardReset => hard_reset(&mut self.serial, pid, &mut self.delay).await,
+            ResetAfterOperation::HardReset => hard_reset(&mut self.serial, pid).await,
             ResetAfterOperation::NoReset => {
                 info!("Staying in bootloader");
                 soft_reset(self, true, is_stub).await?;
@@ -611,18 +666,18 @@ impl<P: SerialInterface> Connection<P> {
     /// Resets the device to flash mode.
     pub async fn reset_to_flash(&mut self, extra_delay: bool) -> Result<(), Error> {
         if self.is_using_usb_serial_jtag() {
-            ResetStrategy::usb_jtag_serial().reset(&mut self.serial, &mut self.delay).await
+            ResetStrategy::usb_jtag_serial().reset(&mut self.serial).await
         } else {
             #[cfg(unix)]
             if ResetStrategy::unix_tight(extra_delay)
-                .reset(&mut self.serial, &mut self.delay)
+                .reset(&mut self.serial)
                 .await
                 .is_ok()
             {
                 return Ok(());
             }
 
-            ResetStrategy::classic(extra_delay).reset(&mut self.serial, &mut self.delay).await
+            ResetStrategy::classic(extra_delay).reset(&mut self.serial).await
         }
     }
 

@@ -5,12 +5,11 @@
 // Most of this module is copied from `esptool.py`:
 // https://github.com/espressif/esptool/blob/a8586d0/esptool/reset.py
 
-use embedded_hal_async::delay::DelayNs;
 use log::debug;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString, VariantNames};
 
-use super::{Connection, SerialInterface, StdDelay, USB_SERIAL_JTAG_PID};
+use super::{Connection, SerialInterface, USB_SERIAL_JTAG_PID};
 use super::super::{
     Error,
     command::{Command, CommandType},
@@ -72,7 +71,7 @@ impl ResetStrategy {
     }
 
     /// Execute the reset strategy.
-    pub async fn reset<P: SerialInterface>(&self, serial_port: &mut P, delay: &mut StdDelay) -> Result<(), Error> {
+    pub async fn reset<P: SerialInterface>(&self, serial_port: &mut P) -> Result<(), Error> {
         match self {
             ResetStrategy::Classic { delay_ms } => {
                 debug!("Using Classic reset strategy with delay of {}ms", delay_ms);
@@ -85,12 +84,12 @@ impl ResetStrategy {
                 set_rts(serial_port, true).await?; // EN = LOW, chip in reset
                 set_dtr(serial_port, false).await?; // IO0 = HIGH
 
-                delay.delay_ms(100).await;
+                serial_port.delay_ms(100).await;
 
                 set_rts(serial_port, false).await?; // EN = HIGH, chip out of reset
                 set_dtr(serial_port, true).await?; // IO0 = LOW
 
-                delay.delay_ms(*delay_ms as u32).await;
+                serial_port.delay_ms(*delay_ms as u32).await;
 
                 set_rts(serial_port, false).await?;
                 set_dtr(serial_port, false).await?; // IO0 = HIGH, done
@@ -108,12 +107,12 @@ impl ResetStrategy {
                 set_dtr(serial_port, false).await?; // IO = HIGH
                 set_rts(serial_port, true).await?; // EN = LOW, chip in reset
 
-                delay.delay_ms(100).await;
+                serial_port.delay_ms(100).await;
 
                 set_dtr(serial_port, true).await?; // IO0 = LOW
                 set_rts(serial_port, false).await?; // EN = HIGH, chip out of reset
 
-                delay.delay_ms(*delay_ms as u32).await;
+                serial_port.delay_ms(*delay_ms as u32).await;
 
                 set_dtr(serial_port, false).await?; // IO0 = HIGH, done
                 set_rts(serial_port, false).await?;
@@ -126,18 +125,18 @@ impl ResetStrategy {
                 set_rts(serial_port, false).await?;
                 set_dtr(serial_port, false).await?; // Idle
 
-                delay.delay_ms(100).await;
+                serial_port.delay_ms(100).await;
 
                 set_rts(serial_port, false).await?;
                 set_dtr(serial_port, true).await?; // Set IO0
 
-                delay.delay_ms(100).await;
+                serial_port.delay_ms(100).await;
 
                 set_rts(serial_port, true).await?; // Reset. Calls inverted to go through (1,1) instead of (0,0)
                 set_dtr(serial_port, false).await?;
                 set_rts(serial_port, true).await?; // RTS set as Windows only propagates DTR on RTS setting
 
-                delay.delay_ms(100).await;
+                serial_port.delay_ms(100).await;
 
                 set_rts(serial_port, false).await?;
                 set_dtr(serial_port, false).await?;
@@ -149,25 +148,25 @@ impl ResetStrategy {
 }
 
 /// Resets the target device.
-pub async fn reset_after_flash<P: SerialInterface>(serial: &mut P, pid: u16, delay: &mut StdDelay) -> Result<(), Error> {
-    delay.delay_ms(100).await;
+pub async fn reset_after_flash<P: SerialInterface>(serial: &mut P, pid: u16) -> Result<(), Error> {
+    serial.delay_ms(100).await;
 
     if pid == USB_SERIAL_JTAG_PID {
         serial.write_data_terminal_ready(false).await?;
 
-        delay.delay_ms(100).await;
+        serial.delay_ms(100).await;
 
         serial.write_request_to_send(true).await?;
         serial.write_data_terminal_ready(false).await?;
         serial.write_request_to_send(true).await?;
 
-        delay.delay_ms(100).await;
+        serial.delay_ms(100).await;
 
         serial.write_request_to_send(false).await?;
     } else {
         serial.write_request_to_send(true).await?;
 
-        delay.delay_ms(100).await;
+        serial.delay_ms(100).await;
 
         serial.write_request_to_send(false).await?;
     }
@@ -176,13 +175,13 @@ pub async fn reset_after_flash<P: SerialInterface>(serial: &mut P, pid: u16, del
 }
 
 /// Performs a hard reset of the chip.
-pub async fn hard_reset<P: SerialInterface>(serial_port: &mut P, pid: u16, delay: &mut StdDelay) -> Result<(), Error> {
+pub async fn hard_reset<P: SerialInterface>(serial_port: &mut P, pid: u16) -> Result<(), Error> {
     debug!("Using HardReset reset strategy");
 
     // Using esptool HardReset strategy (https://github.com/espressif/esptool/blob/3301d0ff4638d4db1760a22540dbd9d07c55ec37/esptool/reset.py#L132-L153)
     // leads to https://github.com/esp-rs/espflash/issues/592 in Windows, using `reset_after_flash` instead works fine for all platforms.
     // We had similar issues in the past: https://github.com/esp-rs/espflash/pull/157
-    reset_after_flash(serial_port, pid, delay).await?;
+    reset_after_flash(serial_port, pid).await?;
 
     Ok(())
 }

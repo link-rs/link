@@ -10,7 +10,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::Range;
 
-use embedded_hal_async::delay::DelayNs;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator, VariantNames};
 
@@ -278,7 +277,7 @@ impl Chip {
                 connection.write_reg(wdt_config0, flags, None).await?;
                 connection.write_reg(wdt_wprotect, 0, None).await?;
 
-                connection.delay().delay_ms(50).await;
+                connection.serial.delay_ms(50).await;
 
                 Ok(())
             }

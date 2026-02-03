@@ -1,12 +1,14 @@
 //! Library and application errors
 
-
 use core::fmt::{Display, Formatter};
 use core::{array::TryFromSliceError, num::ParseIntError, str::Utf8Error};
+
+#[cfg(feature = "std")]
 use std::io;
 
 use miette::Diagnostic;
 
+#[cfg(feature = "std")]
 use slip_codec::SlipError;
 use strum::VariantNames;
 use thiserror::Error;
@@ -284,6 +286,7 @@ pub enum Error {
     Utf8Error(CoreError),
 
     /// Failed to open file
+    #[cfg(feature = "std")]
     #[error("Failed to open file: {0}")]
     FileOpenError(String, #[source] io::Error),
 
@@ -366,7 +369,7 @@ pub enum Error {
     UnsupportedEfuseCodingScheme(String),
 }
 
-
+#[cfg(feature = "std")]
 impl From<SlipError> for Error {
     fn from(err: SlipError) -> Self {
         let conn_err: ConnectionError = err.into(); // uses first impl
@@ -374,16 +377,14 @@ impl From<SlipError> for Error {
     }
 }
 
-
-
+#[cfg(feature = "std")]
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
         Self::Connection(err.into())
     }
 }
 
-
-#[cfg_attr(docsrs, doc(cfg(feature = "serialport")))]
+#[cfg(feature = "std")]
 impl From<serialport::Error> for Error {
     fn from(err: serialport::Error) -> Self {
         Self::Connection(err.into())
@@ -502,7 +503,7 @@ pub(crate) enum ConnectionError {
     #[diagnostic(code(espflash::timeout))]
     Timeout(TimedOutCommand),
 
-    
+    #[cfg(feature = "std")]
     #[error("IO error while using serial port: {0}")]
     #[diagnostic(code(espflash::serial_error))]
     Serial(#[source] serialport::Error),
@@ -512,15 +513,14 @@ pub(crate) enum ConnectionError {
     WrongBootMode(String),
 }
 
-
+#[cfg(feature = "std")]
 impl From<io::Error> for ConnectionError {
     fn from(err: io::Error) -> Self {
         from_error_kind(err.kind(), err)
     }
 }
 
-
-#[cfg_attr(docsrs, doc(cfg(feature = "serialport")))]
+#[cfg(feature = "std")]
 impl From<serialport::Error> for ConnectionError {
     fn from(err: serialport::Error) -> Self {
         use serialport::ErrorKind;
@@ -533,7 +533,7 @@ impl From<serialport::Error> for ConnectionError {
     }
 }
 
-
+#[cfg(feature = "std")]
 impl From<SlipError> for ConnectionError {
     fn from(err: SlipError) -> Self {
         match err {
@@ -714,8 +714,7 @@ impl<T> ResultExt for Result<T, Error> {
     }
 }
 
-
-#[cfg_attr(docsrs, doc(cfg(feature = "serialport")))]
+#[cfg(feature = "std")]
 fn from_error_kind<E>(kind: io::ErrorKind, err: E) -> ConnectionError
 where
     E: Into<serialport::Error>,

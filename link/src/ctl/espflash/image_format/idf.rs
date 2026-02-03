@@ -1,9 +1,8 @@
 //! ESP-IDF application binary image format
 
 use alloc::borrow::Cow;
-use core::{ffi::c_char, iter::once, mem::size_of};
 use alloc::collections::BTreeMap;
-use std::{fs, io::Write, path::Path};
+use core::{ffi::c_char, iter::once, mem::size_of};
 
 use bytemuck::{Pod, Zeroable, bytes_of, from_bytes, pod_read_unaligned};
 use esp_idf_part::{AppType, DataType, Flags, Partition, PartitionTable, SubType, Type};
@@ -250,20 +249,26 @@ pub struct IdfBootloaderFormat<'a> {
 
 impl<'a> IdfBootloaderFormat<'a> {
     /// Create a new [`IdfBootloaderFormat`].
+    ///
+    /// # Arguments
+    /// * `elf_data` - The ELF binary data
+    /// * `flash_data` - Flash configuration data
+    /// * `partition_table_data` - Optional partition table binary data (uses default if None)
+    /// * `bootloader_data` - Optional bootloader binary data (uses default if None)
+    /// * `partition_table_offset` - Optional partition table offset
+    /// * `target_app_partition` - Optional target app partition name
     pub fn new(
         elf_data: &'a [u8],
         flash_data: &FlashData,
-        partition_table_path: Option<&Path>,
-        bootloader_path: Option<&Path>,
+        partition_table_data: Option<&[u8]>,
+        bootloader_data: Option<&[u8]>,
         partition_table_offset: Option<u32>,
         target_app_partition: Option<&str>,
     ) -> Result<Self, Error> {
         let elf = ElfFile::parse(elf_data)?;
 
-        let partition_table = if let Some(partition_table_path) = partition_table_path {
-            let data = fs::read(partition_table_path)
-                .map_err(|e| Error::FileOpenError(partition_table_path.display().to_string(), e))?;
-            PartitionTable::try_from(data)?
+        let partition_table = if let Some(data) = partition_table_data {
+            PartitionTable::try_from(data.to_vec())?
         } else {
             default_partition_table(
                 flash_data.chip,
@@ -283,9 +288,8 @@ impl<'a> IdfBootloaderFormat<'a> {
             ));
         }
 
-        let mut bootloader = if let Some(bootloader_path) = bootloader_path {
-            let bootloader = fs::read(bootloader_path)?;
-            Cow::Owned(bootloader)
+        let mut bootloader = if let Some(data) = bootloader_data {
+            Cow::Owned(data.to_vec())
         } else {
             let default_bootloader = default_bootloader(flash_data.chip, flash_data.xtal_freq)?;
             Cow::Borrowed(default_bootloader)
@@ -487,10 +491,10 @@ impl<'a> IdfBootloaderFormat<'a> {
                         addr: 0,
                         length: pad_len,
                     };
-                    data.write_all(bytes_of(&pad_header))?;
+                    data.extend_from_slice(bytes_of(&pad_header));
 
                     for _ in 0..pad_len {
-                        data.write_all(&[0])?;
+                        data.extend_from_slice(&[0]);
                     }
 
                     segment_count += 1;
@@ -510,9 +514,9 @@ impl<'a> IdfBootloaderFormat<'a> {
 
         let padding = 15 - (data.len() % 16);
         let padding = &[0u8; 16][0..padding];
-        data.write_all(padding)?;
+        data.extend_from_slice(padding);
 
-        data.write_all(&[checksum])?;
+        data.extend_from_slice(&[checksum]);
 
         // since we added some dummy segments, we need to patch the segment count
         data[1] = segment_count as u8;
@@ -520,7 +524,7 @@ impl<'a> IdfBootloaderFormat<'a> {
         let mut hasher = Sha256::new();
         hasher.update(&data);
         let hash = hasher.finalize();
-        data.write_all(&hash)?;
+        data.extend_from_slice(&hash);
 
         let target_app_partition: Partition =
         // Use the target app partition if provided
@@ -766,11 +770,11 @@ fn save_segment(data: &mut Vec<u8>, segment: &Segment<'_>, checksum: u8) -> Resu
         length: segment.size() + padding,
     };
 
-    data.write_all(bytes_of(&header))?;
-    data.write_all(segment.data())?;
+    data.extend_from_slice(bytes_of(&header));
+    data.extend_from_slice(segment.data());
 
     let padding = &[0u8; 4][0..padding as usize];
-    data.write_all(padding)?;
+    data.extend_from_slice(padding);
 
     Ok(update_checksum(segment.data(), checksum))
 }
