@@ -659,7 +659,7 @@ impl<P: SerialInterface> Flasher<P> {
 
         debug!("Stub written!");
 
-        match self.connection.read(EXPECTED_STUB_HANDSHAKE.len())? {
+        match self.connection.read(EXPECTED_STUB_HANDSHAKE.len()).await? {
             Some(resp) if resp == EXPECTED_STUB_HANDSHAKE.as_bytes() => Ok(()),
             _ => Err(Error::Connection(Box::new(
                 ConnectionError::InvalidStubHandshake,
@@ -1045,7 +1045,7 @@ impl<P: SerialInterface> Flasher<P> {
         result?;
         self.connection.set_baud(baud)?;
         self.connection.delay().delay_ms(50).await;
-        self.connection.flush()?;
+        self.connection.flush().await?;
 
         Ok(())
     }
@@ -1060,7 +1060,7 @@ impl<P: SerialInterface> Flasher<P> {
         self.connection.serial.set_timeout(old_timeout)?;
         result?;
         self.connection.delay().delay_ms(50).await;
-        self.connection.flush()?;
+        self.connection.flush().await?;
         Ok(())
     }
 
@@ -1074,7 +1074,7 @@ impl<P: SerialInterface> Flasher<P> {
         self.connection.serial.set_timeout(old_timeout)?;
         result?;
         self.connection.delay().delay_ms(50).await;
-        self.connection.flush()?;
+        self.connection.flush().await?;
 
         Ok(())
     }
