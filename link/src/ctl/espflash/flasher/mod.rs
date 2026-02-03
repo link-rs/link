@@ -5,15 +5,13 @@
 //! read information from the target device.
 
 
-use std::fs::OpenOptions;
 use std::str::FromStr;
 
-use std::{borrow::Cow, io::Write, path::PathBuf, thread::sleep, time::Duration};
+use std::{borrow::Cow, thread::sleep, time::Duration};
 
 
 use log::{debug, info, warn};
 
-use md5::{Digest, Md5};
 
 use object::{Endianness, read::elf::ElfFile32 as ElfFile};
 use serde::{Deserialize, Serialize};
@@ -1069,143 +1067,6 @@ impl<P: SerialInterface> Flasher<P> {
             })?;
         sleep(Duration::from_secs_f32(0.05));
         self.connection.flush()?;
-
-        Ok(())
-    }
-
-    /// Read the flash ROM and write it to a file.
-    pub fn read_flash_rom(
-        &mut self,
-        offset: u32,
-        size: u32,
-        block_size: u32,
-        max_in_flight: u32,
-        file_path: PathBuf,
-    ) -> Result<(), Error> {
-        // ROM read limit per command
-        const BLOCK_LEN: usize = 64;
-
-        let mut data: Vec<u8> = Vec::new();
-
-        let mut file = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(&file_path)?;
-
-        let mut correct_offset = offset;
-
-        while data.len() < size as usize {
-            let block_len = std::cmp::min(BLOCK_LEN, size as usize - data.len());
-
-            correct_offset += data.len() as u32;
-
-            let response = self.connection.with_timeout(
-                CommandType::ReadFlashSlow.timeout(),
-                |connection| {
-                    connection.command(Command::ReadFlashSlow {
-                        offset: correct_offset,
-                        size: block_len as u32,
-                        block_size,
-                        max_in_flight,
-                    })
-                },
-            )?;
-
-            let payload: Vec<u8> = response.try_into()?;
-
-            assert!(payload.len() >= block_len);
-
-            // command always returns 64 byte buffer,
-            // regardless of how many bytes were actually read from flash
-            data.append(&mut payload[..block_len].to_vec());
-        }
-
-        file.write_all(&data)?;
-
-        info!(
-            "Flash content successfully read and written to '{}'!",
-            file_path.display()
-        );
-
-        Ok(())
-    }
-
-    /// Read the flash and write it to a file.
-    pub fn read_flash(
-        &mut self,
-        offset: u32,
-        size: u32,
-        block_size: u32,
-        max_in_flight: u32,
-        file_path: PathBuf,
-    ) -> Result<(), Error> {
-        debug!("Reading 0x{size:x}B from 0x{offset:08x}");
-
-        let mut data = Vec::new();
-
-        let mut file = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(&file_path)?;
-
-        self.connection
-            .with_timeout(CommandType::ReadFlash.timeout(), |connection| {
-                connection.command(Command::ReadFlash {
-                    offset,
-                    size,
-                    block_size,
-                    max_in_flight,
-                })
-            })?;
-
-        while data.len() < size as usize {
-            let response = self.connection.read_flash_response()?;
-            let chunk: Vec<u8> = if let Some(response) = response {
-                response.value.try_into()?
-            } else {
-                return Err(Error::IncorrectResponse);
-            };
-
-            data.extend_from_slice(&chunk);
-
-            if data.len() < size as usize && chunk.len() < block_size as usize {
-                return Err(Error::CorruptData(block_size as usize, chunk.len()));
-            }
-
-            self.connection.write_raw(data.len() as u32)?;
-        }
-
-        if data.len() > size as usize {
-            return Err(Error::ReadMoreThanExpected);
-        }
-
-        let response = self.connection.read_flash_response()?;
-        let digest: Vec<u8> = if let Some(response) = response {
-            response.value.try_into()?
-        } else {
-            return Err(Error::IncorrectResponse);
-        };
-
-        if digest.len() != 16 {
-            return Err(Error::IncorrectDigestLength(digest.len()));
-        }
-
-        let mut md5_hasher = Md5::new();
-        md5_hasher.update(&data);
-        let checksum_md5 = md5_hasher.finalize();
-
-        if digest != checksum_md5[..] {
-            return Err(Error::DigestMismatch(digest, checksum_md5.to_vec()));
-        }
-
-        file.write_all(&data)?;
-
-        info!(
-            "Flash content successfully read and written to '{}'!",
-            file_path.display()
-        );
 
         Ok(())
     }
