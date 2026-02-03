@@ -176,7 +176,7 @@ impl Chip {
     }
 
     /// Check if RTC WDT reset can be performed
-    pub fn can_rtc_wdt_reset<P: super::connection::SerialInterface>(
+    pub async fn can_rtc_wdt_reset<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<bool, Error> {
@@ -189,8 +189,8 @@ impl Chip {
                 const FORCE_DOWNLOAD_BOOT_MASK: u32 = 0x1;
 
                 Ok(
-                    connection.read_reg(GPIO_STRAP)? & GPIO_STRAP_SPI_BOOT_MASK == 0 // GPIO0 low
-                        && connection.read_reg(OPTION1)? & FORCE_DOWNLOAD_BOOT_MASK == 0,
+                    connection.read_reg(GPIO_STRAP).await? & GPIO_STRAP_SPI_BOOT_MASK == 0 // GPIO0 low
+                        && connection.read_reg(OPTION1).await? & FORCE_DOWNLOAD_BOOT_MASK == 0,
                 )
             }
             Chip::Esp32s3 => {
@@ -200,8 +200,8 @@ impl Chip {
                 const FORCE_DOWNLOAD_BOOT_MASK: u32 = 0x1;
 
                 Ok(
-                    connection.read_reg(GPIO_STRAP)? & GPIO_STRAP_SPI_BOOT_MASK == 0 // GPIO0 low
-                        && connection.read_reg(OPTION1)? & FORCE_DOWNLOAD_BOOT_MASK == 0,
+                    connection.read_reg(GPIO_STRAP).await? & GPIO_STRAP_SPI_BOOT_MASK == 0 // GPIO0 low
+                        && connection.read_reg(OPTION1).await? & FORCE_DOWNLOAD_BOOT_MASK == 0,
                 )
             }
             _ => Err(Error::UnsupportedFeature {
@@ -232,13 +232,13 @@ impl Chip {
     }
 
     /// Check if USB OTG is being used
-    pub fn is_using_usb_otg<P: super::connection::SerialInterface>(
+    pub async fn is_using_usb_otg<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<bool, Error> {
         match (self.uartdev_buf_no(), self.uartdev_buf_no_usb_otg()) {
             (Some(buf_no), Some(usb_otg)) => {
-                let value = connection.read_reg(buf_no)?;
+                let value = connection.read_reg(buf_no).await?;
                 Ok(value == usb_otg)
             }
             _ => Err(Error::UnsupportedFeature {
@@ -273,10 +273,10 @@ impl Chip {
                     .bits();
 
                 log::debug!("Resetting with RTC WDT");
-                connection.write_reg(wdt_wprotect, WDT_WKEY, None)?;
-                connection.write_reg(wdt_config1, 2000, None)?;
-                connection.write_reg(wdt_config0, flags, None)?;
-                connection.write_reg(wdt_wprotect, 0, None)?;
+                connection.write_reg(wdt_wprotect, WDT_WKEY, None).await?;
+                connection.write_reg(wdt_config1, 2000, None).await?;
+                connection.write_reg(wdt_config0, flags, None).await?;
+                connection.write_reg(wdt_wprotect, 0, None).await?;
 
                 connection.delay().delay_ms(50).await;
 
@@ -453,7 +453,7 @@ impl Chip {
 
     /// Given an active connection, read the specified field of the eFuse
     /// in little endian order.
-    pub fn read_efuse_le<T: bytemuck::AnyBitPattern, P: super::connection::SerialInterface>(
+    pub async fn read_efuse_le<T: bytemuck::AnyBitPattern, P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
         field: EfuseField,
@@ -465,13 +465,6 @@ impl Chip {
             bit_count,
             ..
         } = field;
-
-        fn read_raw<P: super::connection::SerialInterface>(
-            connection: &mut Connection<P>,
-            addr: u32,
-        ) -> Result<u32, Error> {
-            connection.read_reg(addr)
-        }
 
         // Represent output value as a bytes slice:
         let mut output = core::mem::MaybeUninit::<T>::uninit();
@@ -486,10 +479,9 @@ impl Chip {
         let bit_end = core::cmp::min(bit_count, (bytes.len() * 8) as u32) + bit_off;
 
         let mut last_word_off = bit_off / 32;
-        let mut last_word = read_raw(
-            connection,
+        let mut last_word = connection.read_reg(
             self.block(block)?.read_address + last_word_off * 4,
-        )?;
+        ).await?;
 
         let word_bit_off = bit_off % 32;
         let word_bit_ext = 32 - word_bit_off;
@@ -500,10 +492,9 @@ impl Chip {
             if word_off != last_word_off {
                 // Read a new word:
                 last_word_off = word_off;
-                last_word = read_raw(
-                    connection,
+                last_word = connection.read_reg(
                     self.block(block)?.read_address + last_word_off * 4,
-                )?;
+                ).await?;
             }
 
             let mut word = last_word >> word_bit_off;
@@ -513,10 +504,9 @@ impl Chip {
             if word_bit_len > word_bit_ext {
                 // Read the next word:
                 last_word_off = word_off;
-                last_word = read_raw(
-                    connection,
+                last_word = connection.read_reg(
                     self.block(block)?.read_address + last_word_off * 4,
-                )?;
+                ).await?;
                 // Append bits from a beginning of the next word:
                 word |= last_word.wrapping_shl(32 - word_bit_off);
             };
@@ -547,7 +537,7 @@ impl Chip {
 
     /// Read the raw word in the specified eFuse block, without performing any
     /// bit-shifting or masking of the read value.
-    pub fn read_efuse_raw<P: super::connection::SerialInterface>(
+    pub async fn read_efuse_raw<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
         block: u32,
@@ -555,7 +545,7 @@ impl Chip {
     ) -> Result<u32, Error> {
         let addr = self.block(block)?.read_address + (word * 0x4);
 
-        connection.read_reg(addr)
+        connection.read_reg(addr).await
     }
 
     /// Returns whether the provided address `addr` in flash.
@@ -602,7 +592,7 @@ impl Chip {
     }
 
     /// Enumerate the chip's features.
-    pub fn chip_features<P: super::connection::SerialInterface>(
+    pub async fn chip_features<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<Vec<&str>, Error> {
@@ -610,13 +600,13 @@ impl Chip {
             Chip::Esp32 => {
                 let mut features = vec!["WiFi"];
 
-                let disable_bt = self.read_efuse_le::<u32, _>(connection, efuse::esp32::DISABLE_BT)?;
+                let disable_bt = self.read_efuse_le::<u32, _>(connection, efuse::esp32::DISABLE_BT).await?;
                 if disable_bt == 0 {
                     features.push("BT");
                 }
 
                 let disable_app_cpu =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::DISABLE_APP_CPU)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::DISABLE_APP_CPU).await?;
                 if disable_app_cpu == 0 {
                     features.push("Dual Core");
                 } else {
@@ -624,10 +614,10 @@ impl Chip {
                 }
 
                 let chip_cpu_freq_rated =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::CHIP_CPU_FREQ_RATED)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::CHIP_CPU_FREQ_RATED).await?;
                 if chip_cpu_freq_rated != 0 {
                     let chip_cpu_freq_low =
-                        self.read_efuse_le::<u32, _>(connection, efuse::esp32::CHIP_CPU_FREQ_LOW)?;
+                        self.read_efuse_le::<u32, _>(connection, efuse::esp32::CHIP_CPU_FREQ_LOW).await?;
                     if chip_cpu_freq_low != 0 {
                         features.push("160MHz");
                     } else {
@@ -636,7 +626,7 @@ impl Chip {
                 }
 
                 // Get package version using helper method
-                let pkg_version = self.esp32_package_version(connection)?;
+                let pkg_version = self.esp32_package_version(connection).await?;
                 if [2, 4, 5, 6].contains(&pkg_version) {
                     features.push("Embedded Flash");
                 }
@@ -644,19 +634,19 @@ impl Chip {
                     features.push("Embedded PSRAM");
                 }
 
-                let adc_vref = self.read_efuse_le::<u32, _>(connection, efuse::esp32::ADC_VREF)?;
+                let adc_vref = self.read_efuse_le::<u32, _>(connection, efuse::esp32::ADC_VREF).await?;
                 if adc_vref != 0 {
                     features.push("VRef calibration in efuse");
                 }
 
                 let blk3_part_reserve =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::BLK3_PART_RESERVE)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::BLK3_PART_RESERVE).await?;
                 if blk3_part_reserve != 0 {
                     features.push("BLK3 partially reserved");
                 }
 
                 let coding_scheme =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::CODING_SCHEME)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::CODING_SCHEME).await?;
                 features.push(match coding_scheme {
                     0 => "Coding Scheme None",
                     1 => "Coding Scheme 3/4",
@@ -675,7 +665,7 @@ impl Chip {
             Chip::Esp32s2 => {
                 let mut features = vec!["WiFi"];
 
-                let flash_version = match self.esp32s2_flash_version(connection)? {
+                let flash_version = match self.esp32s2_flash_version(connection).await? {
                     0 => "No Embedded Flash",
                     1 => "Embedded Flash 2MB",
                     2 => "Embedded Flash 4MB",
@@ -683,7 +673,7 @@ impl Chip {
                 };
                 features.push(flash_version);
 
-                let psram_version = match self.esp32s2_psram_version(connection)? {
+                let psram_version = match self.esp32s2_psram_version(connection).await? {
                     0 => "No Embedded PSRAM",
                     1 => "Embedded PSRAM 2MB",
                     2 => "Embedded PSRAM 4MB",
@@ -691,7 +681,7 @@ impl Chip {
                 };
                 features.push(psram_version);
 
-                let block2_version = match self.esp32s2_block2_version(connection)? {
+                let block2_version = match self.esp32s2_block2_version(connection).await? {
                     0 => "No calibration in BLK2 of efuse",
                     1 => "ADC and temperature sensor calibration in BLK2 of efuse V1",
                     2 => "ADC and temperature sensor calibration in BLK2 of efuse V2",
@@ -705,8 +695,8 @@ impl Chip {
                 let mut features = vec!["WiFi", "BLE"];
 
                 // Special handling for chip revision 0
-                if self.esp32s3_blk_version_major(connection)? == 1
-                    && self.esp32s3_blk_version_minor(connection)? == 1
+                if self.esp32s3_blk_version_major(connection).await? == 1
+                    && self.esp32s3_blk_version_minor(connection).await? == 1
                 {
                     features.push("Embedded PSRAM");
                 } else {
@@ -719,27 +709,27 @@ impl Chip {
     }
 
     /// Determine the chip's revision number
-    pub fn revision<P: super::connection::SerialInterface>(
+    pub async fn revision<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<(u32, u32), Error> {
-        let major = self.major_version(connection)?;
-        let minor = self.minor_version(connection)?;
+        let major = self.major_version(connection).await?;
+        let minor = self.minor_version(connection).await?;
 
         Ok((major, minor))
     }
 
     /// Returns the chip's major version.
-    pub fn major_version<P: super::connection::SerialInterface>(
+    pub async fn major_version<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<u32, Error> {
         match self {
             Chip::Esp32 => {
-                let apb_ctl_date = connection.read_reg(0x3FF6_607C)?;
+                let apb_ctl_date = connection.read_reg(0x3FF6_607C).await?;
 
-                let word3 = self.read_efuse_raw(connection, 0, 3)?;
-                let word5 = self.read_efuse_raw(connection, 0, 5)?;
+                let word3 = self.read_efuse_raw(connection, 0, 3).await?;
+                let word5 = self.read_efuse_raw(connection, 0, 5).await?;
 
                 let rev_bit0 = (word3 >> 15) & 0x1;
                 let rev_bit1 = (word5 >> 20) & 0x1;
@@ -755,88 +745,88 @@ impl Chip {
                 }
             }
             Chip::Esp32c2 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c2::WAFER_VERSION_MAJOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c2::WAFER_VERSION_MAJOR).await
             }
             Chip::Esp32c3 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c3::WAFER_VERSION_MAJOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c3::WAFER_VERSION_MAJOR).await
             }
             Chip::Esp32c5 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c5::WAFER_VERSION_MAJOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c5::WAFER_VERSION_MAJOR).await
             }
             Chip::Esp32c6 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c6::WAFER_VERSION_MAJOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c6::WAFER_VERSION_MAJOR).await
             }
             Chip::Esp32h2 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32h2::WAFER_VERSION_MAJOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32h2::WAFER_VERSION_MAJOR).await
             }
             Chip::Esp32p4 => {
                 let hi =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32p4::WAFER_VERSION_MAJOR_HI)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32p4::WAFER_VERSION_MAJOR_HI).await?;
                 let lo =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32p4::WAFER_VERSION_MAJOR_LO)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32p4::WAFER_VERSION_MAJOR_LO).await?;
 
                 let version = (hi << 2) | lo;
 
                 Ok(version)
             }
             Chip::Esp32s2 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::WAFER_VERSION_MAJOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::WAFER_VERSION_MAJOR).await
             }
             Chip::Esp32s3 => {
-                if self.esp32s3_blk_version_major(connection)? == 1
-                    && self.esp32s3_blk_version_minor(connection)? == 1
+                if self.esp32s3_blk_version_major(connection).await? == 1
+                    && self.esp32s3_blk_version_minor(connection).await? == 1
                 {
                     Ok(0)
                 } else {
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::WAFER_VERSION_MAJOR)
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::WAFER_VERSION_MAJOR).await
                 }
             }
         }
     }
 
     /// Returns the chip's minor version.
-    pub fn minor_version<P: super::connection::SerialInterface>(
+    pub async fn minor_version<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<u32, Error> {
         match self {
-            Chip::Esp32 => self.read_efuse_le::<u32, _>(connection, efuse::esp32::WAFER_VERSION_MINOR),
+            Chip::Esp32 => self.read_efuse_le::<u32, _>(connection, efuse::esp32::WAFER_VERSION_MINOR).await,
             Chip::Esp32c2 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c2::WAFER_VERSION_MINOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c2::WAFER_VERSION_MINOR).await
             }
             Chip::Esp32c3 => {
                 let hi =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32c3::WAFER_VERSION_MINOR_HI)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32c3::WAFER_VERSION_MINOR_HI).await?;
                 let lo =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32c3::WAFER_VERSION_MINOR_LO)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32c3::WAFER_VERSION_MINOR_LO).await?;
 
                 Ok((hi << 3) + lo)
             }
             Chip::Esp32c5 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c5::WAFER_VERSION_MINOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c5::WAFER_VERSION_MINOR).await
             }
             Chip::Esp32c6 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c6::WAFER_VERSION_MINOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c6::WAFER_VERSION_MINOR).await
             }
             Chip::Esp32h2 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32h2::WAFER_VERSION_MINOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32h2::WAFER_VERSION_MINOR).await
             }
             Chip::Esp32p4 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32p4::WAFER_VERSION_MINOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32p4::WAFER_VERSION_MINOR).await
             }
             Chip::Esp32s2 => {
                 let hi =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::WAFER_VERSION_MINOR_HI)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::WAFER_VERSION_MINOR_HI).await?;
                 let lo =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::WAFER_VERSION_MINOR_LO)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::WAFER_VERSION_MINOR_LO).await?;
 
                 Ok((hi << 3) + lo)
             }
             Chip::Esp32s3 => {
                 let hi =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::WAFER_VERSION_MINOR_HI)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::WAFER_VERSION_MINOR_HI).await?;
                 let lo =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::WAFER_VERSION_MINOR_LO)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::WAFER_VERSION_MINOR_LO).await?;
 
                 Ok((hi << 3) + lo)
             }
@@ -844,7 +834,7 @@ impl Chip {
     }
 
     /// retrieve the xtal frequency of the chip.
-    pub fn xtal_frequency<P: super::connection::SerialInterface>(
+    pub async fn xtal_frequency<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<XtalFrequency, Error> {
@@ -854,7 +844,7 @@ impl Chip {
                 const UART_CLKDIV_MASK: u32 = 0xfffff;
                 const XTAL_CLK_DIVIDER: u32 = 1;
 
-                let uart_div = connection.read_reg(UART_CLKDIV_REG)? & UART_CLKDIV_MASK;
+                let uart_div = connection.read_reg(UART_CLKDIV_REG).await? & UART_CLKDIV_MASK;
                 let est_xtal = (connection.baud()? * uart_div) / 1_000_000 / XTAL_CLK_DIVIDER;
                 let norm_xtal = if est_xtal > 33 {
                     XtalFrequency::_40Mhz
@@ -869,7 +859,7 @@ impl Chip {
                 const UART_CLKDIV_MASK: u32 = 0xfffff;
                 const XTAL_CLK_DIVIDER: u32 = 1;
 
-                let uart_div = connection.read_reg(UART_CLKDIV_REG)? & UART_CLKDIV_MASK;
+                let uart_div = connection.read_reg(UART_CLKDIV_REG).await? & UART_CLKDIV_MASK;
                 let est_xtal = (connection.baud()? * uart_div) / 1_000_000 / XTAL_CLK_DIVIDER;
                 let norm_xtal = if est_xtal > 33 {
                     XtalFrequency::_40Mhz
@@ -885,7 +875,7 @@ impl Chip {
                 const UART_CLKDIV_MASK: u32 = 0xfffff;
                 const XTAL_CLK_DIVIDER: u32 = 1;
 
-                let uart_div = connection.read_reg(UART_CLKDIV_REG)? & UART_CLKDIV_MASK;
+                let uart_div = connection.read_reg(UART_CLKDIV_REG).await? & UART_CLKDIV_MASK;
                 let est_xtal = (connection.baud()? * uart_div) / 1_000_000 / XTAL_CLK_DIVIDER;
                 let norm_xtal = if est_xtal > 45 {
                     XtalFrequency::_48Mhz
@@ -919,7 +909,7 @@ impl Chip {
     }
 
     /// What is the MAC address?
-    pub fn mac_address<P: super::connection::SerialInterface>(
+    pub async fn mac_address<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<String, Error> {
@@ -935,8 +925,8 @@ impl Chip {
             Chip::Esp32s3 => (self::efuse::esp32s3::MAC0, self::efuse::esp32s3::MAC1),
         };
 
-        let mac0 = self.read_efuse_le::<u32, _>(connection, mac0_field)?;
-        let mac1 = self.read_efuse_le::<u32, _>(connection, mac1_field)?;
+        let mac0 = self.read_efuse_le::<u32, _>(connection, mac0_field).await?;
+        let mac1 = self.read_efuse_le::<u32, _>(connection, mac1_field).await?;
 
         let bytes = ((mac1 as u64) << 32) | mac0 as u64;
         let bytes = bytes.to_be_bytes();
@@ -1028,11 +1018,11 @@ impl Chip {
     }
 
     /// Returns the package version based on the eFuses for ESP32
-    fn esp32_package_version<P: super::connection::SerialInterface>(
+    async fn esp32_package_version<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<u32, Error> {
-        let word3 = self.read_efuse_raw(connection, 0, 3)?;
+        let word3 = self.read_efuse_raw(connection, 0, 3).await?;
 
         let pkg_version = (word3 >> 9) & 0x7;
         let pkg_version = pkg_version + (((word3 >> 2) & 0x1) << 3);
@@ -1041,43 +1031,43 @@ impl Chip {
     }
 
     /// Returns the block2 version based on eFuses for ESP32-S2
-    fn esp32s2_block2_version<P: super::connection::SerialInterface>(
+    async fn esp32s2_block2_version<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<u32, Error> {
-        self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::BLK_VERSION_MINOR)
+        self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::BLK_VERSION_MINOR).await
     }
 
     /// Returns the flash version based on eFuses for ESP32-S2
-    fn esp32s2_flash_version<P: super::connection::SerialInterface>(
+    async fn esp32s2_flash_version<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<u32, Error> {
-        self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::FLASH_VERSION)
+        self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::FLASH_VERSION).await
     }
 
     /// Returns the PSRAM version based on eFuses for ESP32-S2
-    fn esp32s2_psram_version<P: super::connection::SerialInterface>(
+    async fn esp32s2_psram_version<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<u32, Error> {
-        self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::PSRAM_VERSION)
+        self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::PSRAM_VERSION).await
     }
 
     /// Returns the major BLK version based on eFuses for ESP32-S3
-    fn esp32s3_blk_version_major<P: super::connection::SerialInterface>(
+    async fn esp32s3_blk_version_major<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<u32, Error> {
-        self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::BLK_VERSION_MAJOR)
+        self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::BLK_VERSION_MAJOR).await
     }
 
     /// Returns the minor BLK version based on eFuses for ESP32-S3
-    fn esp32s3_blk_version_minor<P: super::connection::SerialInterface>(
+    async fn esp32s3_blk_version_minor<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<u32, Error> {
-        self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::BLK_VERSION_MINOR)
+        self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::BLK_VERSION_MINOR).await
     }
 }
 

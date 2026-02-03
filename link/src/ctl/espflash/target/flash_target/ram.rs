@@ -32,11 +32,11 @@ impl Default for RamTarget {
 }
 
 impl RamTarget {
-    pub fn begin<P: SerialInterface>(&mut self, _connection: &mut Connection<P>) -> Result<(), Error> {
+    pub async fn begin<P: SerialInterface>(&mut self, _connection: &mut Connection<P>) -> Result<(), Error> {
         Ok(())
     }
 
-    pub fn write_segment<P: SerialInterface>(
+    pub async fn write_segment<P: SerialInterface>(
         &mut self,
         connection: &mut Connection<P>,
         segment: Segment<'_>,
@@ -53,7 +53,7 @@ impl RamTarget {
             block_size: self.block_size as u32,
             offset: addr,
             supports_encryption: false,
-        })?;
+        }).await?;
 
         let chunks = segment.data.chunks(self.block_size);
         let num_chunks = chunks.len();
@@ -66,7 +66,7 @@ impl RamTarget {
                 pad_to: 4,
                 pad_byte: 0,
                 data: block,
-            })?;
+            }).await?;
 
             progress.update(i + 1)
         }
@@ -76,15 +76,17 @@ impl RamTarget {
         Ok(())
     }
 
-    pub fn finish<P: SerialInterface>(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error> {
+    pub async fn finish<P: SerialInterface>(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error> {
         if reboot {
             let entry = self.entry.unwrap_or_default();
-            connection.with_timeout(CommandType::MemEnd.timeout(), |connection| {
-                connection.command(Command::MemEnd {
-                    no_entry: entry == 0,
-                    entry,
-                })
-            })?;
+            let old_timeout = connection.serial.timeout();
+            connection.serial.set_timeout(CommandType::MemEnd.timeout())?;
+            let result = connection.command(Command::MemEnd {
+                no_entry: entry == 0,
+                entry,
+            }).await;
+            connection.serial.set_timeout(old_timeout)?;
+            result?;
         }
 
         Ok(())

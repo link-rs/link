@@ -1,7 +1,7 @@
 //! Commands to work with a flasher stub running on a target device
 
 use core::{mem::size_of, time::Duration};
-use std::io::Write;
+use embedded_io_async::Write;
 
 use bytemuck::{Pod, Zeroable, bytes_of};
 use serde::{Deserialize, Serialize};
@@ -456,9 +456,9 @@ impl Command<'_> {
     }
 
     /// Write a command
-    pub fn write<W: Write>(&self, mut writer: W) -> std::io::Result<()> {
+    pub async fn write<W: Write>(&self, writer: &mut W) -> Result<(), W::Error> {
         // Write the Direction and Command Identifier
-        writer.write_all(&[0, self.command_type() as u8])?;
+        writer.write_all(&[0, self.command_type() as u8]).await?;
         match *self {
             Command::FlashBegin {
                 size,
@@ -474,7 +474,7 @@ impl Command<'_> {
                     block_size,
                     offset,
                     supports_encryption,
-                )?;
+                ).await?;
             }
             Command::FlashData {
                 pad_to,
@@ -482,10 +482,10 @@ impl Command<'_> {
                 data,
                 sequence,
             } => {
-                data_command(writer, data, pad_to, pad_byte, sequence)?;
+                data_command(writer, data, pad_to, pad_byte, sequence).await?;
             }
             Command::FlashEnd { reboot } => {
-                write_basic(writer, &[u8::from(!reboot)], 0)?;
+                write_basic(writer, &[u8::from(!reboot)], 0).await?;
             }
             Command::MemBegin {
                 size,
@@ -501,7 +501,7 @@ impl Command<'_> {
                     block_size,
                     offset,
                     supports_encryption,
-                )?;
+                ).await?;
             }
             Command::MemData {
                 pad_to,
@@ -509,7 +509,7 @@ impl Command<'_> {
                 data,
                 sequence,
             } => {
-                data_command(writer, data, pad_to, pad_byte, sequence)?;
+                data_command(writer, data, pad_to, pad_byte, sequence).await?;
             }
             Command::MemEnd {
                 no_entry: reboot,
@@ -525,10 +525,10 @@ impl Command<'_> {
                     no_entry: u32::from(reboot),
                     entry,
                 };
-                write_basic(writer, bytes_of(&params), 0)?;
+                write_basic(writer, bytes_of(&params), 0).await?;
             }
             Command::Sync => {
-                write_basic(writer, &SYNC_FRAME, 0)?;
+                write_basic(writer, &SYNC_FRAME, 0).await?;
             }
             Command::WriteReg {
                 address,
@@ -549,31 +549,31 @@ impl Command<'_> {
                     mask: mask.unwrap_or(0xFFFFFFFF),
                     delay_us: 0,
                 };
-                write_basic(writer, bytes_of(&params), 0)?;
+                write_basic(writer, bytes_of(&params), 0).await?;
             }
             Command::ReadReg { address } => {
-                write_basic(writer, &address.to_le_bytes(), 0)?;
+                write_basic(writer, &address.to_le_bytes(), 0).await?;
             }
             Command::SpiSetParams { spi_params } => {
-                write_basic(writer, &spi_params.encode(), 0)?;
+                write_basic(writer, &spi_params.encode(), 0).await?;
             }
             Command::SpiAttach { spi_params } => {
-                write_basic(writer, &spi_params.encode(false), 0)?;
+                write_basic(writer, &spi_params.encode(false), 0).await?;
             }
             Command::SpiAttachStub { spi_params } => {
-                write_basic(writer, &spi_params.encode(true), 0)?;
+                write_basic(writer, &spi_params.encode(true), 0).await?;
             }
             Command::ChangeBaudrate {
                 new_baud,
                 prior_baud,
             } => {
                 // length
-                writer.write_all(&(8u16.to_le_bytes()))?;
+                writer.write_all(&(8u16.to_le_bytes())).await?;
                 // checksum
-                writer.write_all(&(0u32.to_le_bytes()))?;
+                writer.write_all(&(0u32.to_le_bytes())).await?;
                 // data
-                writer.write_all(&new_baud.to_le_bytes())?;
-                writer.write_all(&prior_baud.to_le_bytes())?;
+                writer.write_all(&new_baud.to_le_bytes()).await?;
+                writer.write_all(&prior_baud.to_le_bytes()).await?;
             }
             Command::FlashDeflBegin {
                 size,
@@ -589,7 +589,7 @@ impl Command<'_> {
                     block_size,
                     offset,
                     supports_encryption,
-                )?;
+                ).await?;
             }
             Command::FlashDeflData {
                 pad_to,
@@ -597,35 +597,35 @@ impl Command<'_> {
                 data,
                 sequence,
             } => {
-                data_command(writer, data, pad_to, pad_byte, sequence)?;
+                data_command(writer, data, pad_to, pad_byte, sequence).await?;
             }
             Command::FlashDeflEnd { reboot } => {
                 // As per the logic here: https://github.com/espressif/esptool/blob/0a9caaf04cfde6fd97c785d4811f3fde09b1b71f/flasher_stub/stub_flasher.c#L402
                 // 0 means reboot, 1 means do nothing
-                write_basic(writer, &[u8::from(!reboot)], 0)?;
+                write_basic(writer, &[u8::from(!reboot)], 0).await?;
             }
             Command::FlashMd5 { offset, size } => {
                 // length
-                writer.write_all(&(16u16.to_le_bytes()))?;
+                writer.write_all(&(16u16.to_le_bytes())).await?;
                 // checksum
-                writer.write_all(&(0u32.to_le_bytes()))?;
+                writer.write_all(&(0u32.to_le_bytes())).await?;
                 // data
-                writer.write_all(&offset.to_le_bytes())?;
-                writer.write_all(&size.to_le_bytes())?;
-                writer.write_all(&(0u32.to_le_bytes()))?;
-                writer.write_all(&(0u32.to_le_bytes()))?;
+                writer.write_all(&offset.to_le_bytes()).await?;
+                writer.write_all(&size.to_le_bytes()).await?;
+                writer.write_all(&(0u32.to_le_bytes())).await?;
+                writer.write_all(&(0u32.to_le_bytes())).await?;
             }
             Command::EraseFlash => {
-                write_basic(writer, &[], 0)?;
+                write_basic(writer, &[], 0).await?;
             }
             Command::EraseRegion { offset, size } => {
                 // length
-                writer.write_all(&(8u16.to_le_bytes()))?;
+                writer.write_all(&(8u16.to_le_bytes())).await?;
                 // checksum
-                writer.write_all(&(0u32.to_le_bytes()))?;
+                writer.write_all(&(0u32.to_le_bytes())).await?;
                 // data
-                writer.write_all(&offset.to_le_bytes())?;
-                writer.write_all(&size.to_le_bytes())?;
+                writer.write_all(&offset.to_le_bytes()).await?;
+                writer.write_all(&size.to_le_bytes()).await?;
             }
             Command::ReadFlash {
                 offset,
@@ -634,14 +634,14 @@ impl Command<'_> {
                 max_in_flight,
             } => {
                 // length
-                writer.write_all(&(16u16.to_le_bytes()))?;
+                writer.write_all(&(16u16.to_le_bytes())).await?;
                 // checksum
-                writer.write_all(&(0u32.to_le_bytes()))?;
+                writer.write_all(&(0u32.to_le_bytes())).await?;
                 // data
-                writer.write_all(&offset.to_le_bytes())?;
-                writer.write_all(&size.to_le_bytes())?;
-                writer.write_all(&block_size.to_le_bytes())?;
-                writer.write_all(&(max_in_flight.to_le_bytes()))?;
+                writer.write_all(&offset.to_le_bytes()).await?;
+                writer.write_all(&size.to_le_bytes()).await?;
+                writer.write_all(&block_size.to_le_bytes()).await?;
+                writer.write_all(&(max_in_flight.to_le_bytes())).await?;
             }
             Command::ReadFlashSlow {
                 offset,
@@ -650,23 +650,23 @@ impl Command<'_> {
                 max_in_flight,
             } => {
                 // length
-                writer.write_all(&(16u16.to_le_bytes()))?;
+                writer.write_all(&(16u16.to_le_bytes())).await?;
                 // checksum
-                writer.write_all(&(0u32.to_le_bytes()))?;
+                writer.write_all(&(0u32.to_le_bytes())).await?;
                 // data
-                writer.write_all(&offset.to_le_bytes())?;
-                writer.write_all(&size.to_le_bytes())?;
-                writer.write_all(&block_size.to_le_bytes())?;
-                writer.write_all(&(max_in_flight.to_le_bytes()))?;
+                writer.write_all(&offset.to_le_bytes()).await?;
+                writer.write_all(&size.to_le_bytes()).await?;
+                writer.write_all(&block_size.to_le_bytes()).await?;
+                writer.write_all(&(max_in_flight.to_le_bytes())).await?;
             }
             Command::RunUserCode => {
-                write_basic(writer, &[], 0)?;
+                write_basic(writer, &[], 0).await?;
             }
             Command::FlashDetect => {
-                write_basic(writer, &[], 0)?;
+                write_basic(writer, &[], 0).await?;
             }
             Command::GetSecurityInfo => {
-                write_basic(writer, &[], 0)?;
+                write_basic(writer, &[], 0).await?;
             }
         };
         Ok(())
@@ -674,22 +674,22 @@ impl Command<'_> {
 }
 
 /// Write a data array and its checksum to a writer
-fn write_basic<W: Write>(mut writer: W, data: &[u8], checksum: u32) -> std::io::Result<()> {
-    writer.write_all(&((data.len() as u16).to_le_bytes()))?;
-    writer.write_all(&(checksum.to_le_bytes()))?;
-    writer.write_all(data)?;
+async fn write_basic<W: Write>(writer: &mut W, data: &[u8], checksum: u32) -> Result<(), W::Error> {
+    writer.write_all(&((data.len() as u16).to_le_bytes())).await?;
+    writer.write_all(&(checksum.to_le_bytes())).await?;
+    writer.write_all(data).await?;
     Ok(())
 }
 
 /// Write a Begin command to a writer
-fn begin_command<W: Write>(
-    writer: W,
+async fn begin_command<W: Write>(
+    writer: &mut W,
     size: u32,
     blocks: u32,
     block_size: u32,
     offset: u32,
     supports_encryption: bool,
-) -> std::io::Result<()> {
+) -> Result<(), W::Error> {
     #[derive(Zeroable, Pod, Copy, Clone, Debug)]
     #[repr(C)]
     struct BeginParams {
@@ -716,17 +716,17 @@ fn begin_command<W: Write>(
     } else {
         bytes
     };
-    write_basic(writer, data, 0)
+    write_basic(writer, data, 0).await
 }
 
 /// Write a Data command to a writer
-fn data_command<W: Write>(
-    mut writer: W,
+async fn data_command<W: Write>(
+    writer: &mut W,
     block_data: &[u8],
     pad_to: usize,
     pad_byte: u8,
     sequence: u32,
-) -> std::io::Result<()> {
+) -> Result<(), W::Error> {
     #[derive(Zeroable, Pod, Copy, Clone, Debug)]
     #[repr(C)]
     struct BlockParams {
@@ -752,12 +752,12 @@ fn data_command<W: Write>(
     }
 
     let total_length = size_of::<BlockParams>() + block_data.len() + pad_length;
-    writer.write_all(&((total_length as u16).to_le_bytes()))?;
-    writer.write_all(&((check as u32).to_le_bytes()))?;
-    writer.write_all(bytes_of(&params))?;
-    writer.write_all(block_data)?;
+    writer.write_all(&((total_length as u16).to_le_bytes())).await?;
+    writer.write_all(&((check as u32).to_le_bytes())).await?;
+    writer.write_all(bytes_of(&params)).await?;
+    writer.write_all(block_data).await?;
     for _ in 0..pad_length {
-        writer.write_all(&[pad_byte])?;
+        writer.write_all(&[pad_byte]).await?;
     }
     Ok(())
 }

@@ -55,20 +55,21 @@ impl Esp32Target {
         }
     }
 
-    pub fn begin<P: SerialInterface>(&mut self, connection: &mut Connection<P>) -> Result<(), Error> {
-        connection.with_timeout(CommandType::SpiAttach.timeout(), |connection| {
-            let command = if self.use_stub {
-                Command::SpiAttachStub {
-                    spi_params: self.spi_attach_params,
-                }
-            } else {
-                Command::SpiAttach {
-                    spi_params: self.spi_attach_params,
-                }
-            };
-
-            connection.command(command)
-        })?;
+    pub async fn begin<P: SerialInterface>(&mut self, connection: &mut Connection<P>) -> Result<(), Error> {
+        let old_timeout = connection.serial.timeout();
+        connection.serial.set_timeout(CommandType::SpiAttach.timeout())?;
+        let command = if self.use_stub {
+            Command::SpiAttachStub {
+                spi_params: self.spi_attach_params,
+            }
+        } else {
+            Command::SpiAttach {
+                spi_params: self.spi_attach_params,
+            }
+        };
+        let result = connection.command(command).await;
+        connection.serial.set_timeout(old_timeout)?;
+        result?;
 
         // The stub usually disables these watchdog timers, however if we're not using
         // the stub we need to disable them before flashing begins.
@@ -83,24 +84,24 @@ impl Esp32Target {
                     address: wdt_wprotect,
                     value: WDT_WKEY,
                     mask: None,
-                })?; // WP disable
+                }).await?; // WP disable
                 connection.command(Command::WriteReg {
                     address: wdt_config0,
                     value: 0x0,
                     mask: None,
-                })?; // turn off RTC WDT
+                }).await?; // turn off RTC WDT
                 connection.command(Command::WriteReg {
                     address: wdt_wprotect,
                     value: 0x0,
                     mask: None,
-                })?; // WP enable
+                }).await?; // WP enable
             }
         }
 
         Ok(())
     }
 
-    pub fn write_segment<P: SerialInterface>(
+    pub async fn write_segment<P: SerialInterface>(
         &mut self,
         connection: &mut Connection<P>,
         segment: Segment<'_>,
@@ -129,17 +130,15 @@ impl Esp32Target {
         progress.init(addr, num_chunks);
 
         if self.skip {
-            let flash_checksum_md5: u128 = connection.with_timeout(
-                CommandType::FlashMd5.timeout_for_size(segment.data.len() as u32),
-                |connection| {
-                    connection
-                        .command(Command::FlashMd5 {
-                            offset: addr,
-                            size: segment.data.len() as u32,
-                        })?
-                        .try_into()
-                },
-            )?;
+            let old_timeout = connection.serial.timeout();
+            connection.serial.set_timeout(CommandType::FlashMd5.timeout_for_size(segment.data.len() as u32))?;
+            let result = connection
+                .command(Command::FlashMd5 {
+                    offset: addr,
+                    size: segment.data.len() as u32,
+                }).await;
+            connection.serial.set_timeout(old_timeout)?;
+            let flash_checksum_md5: u128 = result?.try_into()?;
 
             if checksum_md5[..] == flash_checksum_md5.to_be_bytes() {
                 debug!("Segment at address '0x{addr:x}' has not changed, skipping write");
@@ -149,19 +148,17 @@ impl Esp32Target {
             }
         }
 
-        connection.with_timeout(
-            CommandType::FlashDeflBegin.timeout_for_size(erase_size),
-            |connection| {
-                connection.command(Command::FlashDeflBegin {
-                    size: segment.data.len() as u32,
-                    blocks: block_count as u32,
-                    block_size: flash_write_size as u32,
-                    offset: addr,
-                    supports_encryption: self.chip != Chip::Esp32 && !self.use_stub,
-                })?;
-                Ok(())
-            },
-        )?;
+        let old_timeout = connection.serial.timeout();
+        connection.serial.set_timeout(CommandType::FlashDeflBegin.timeout_for_size(erase_size))?;
+        let result = connection.command(Command::FlashDeflBegin {
+            size: segment.data.len() as u32,
+            blocks: block_count as u32,
+            block_size: flash_write_size as u32,
+            offset: addr,
+            supports_encryption: self.chip != Chip::Esp32 && !self.use_stub,
+        }).await;
+        connection.serial.set_timeout(old_timeout)?;
+        result?;
         self.need_deflate_end = true;
 
         // decode the chunks to see how much data the device will have to save
@@ -174,35 +171,31 @@ impl Esp32Target {
             let size = decoder.get_ref().len() - decoded_size;
             decoded_size = decoder.get_ref().len();
 
-            connection.with_timeout(
-                CommandType::FlashDeflData.timeout_for_size(size as u32),
-                |connection| {
-                    connection.command(Command::FlashDeflData {
-                        sequence: i as u32,
-                        pad_to: 0,
-                        pad_byte: 0xff,
-                        data: block,
-                    })?;
-                    Ok(())
-                },
-            )?;
+            let old_timeout = connection.serial.timeout();
+            connection.serial.set_timeout(CommandType::FlashDeflData.timeout_for_size(size as u32))?;
+            let result = connection.command(Command::FlashDeflData {
+                sequence: i as u32,
+                pad_to: 0,
+                pad_byte: 0xff,
+                data: block,
+            }).await;
+            connection.serial.set_timeout(old_timeout)?;
+            result?;
 
             progress.update(i + 1)
         }
 
         if self.verify {
             progress.verifying();
-            let flash_checksum_md5: u128 = connection.with_timeout(
-                CommandType::FlashMd5.timeout_for_size(segment.data.len() as u32),
-                |connection| {
-                    connection
-                        .command(Command::FlashMd5 {
-                            offset: addr,
-                            size: segment.data.len() as u32,
-                        })?
-                        .try_into()
-                },
-            )?;
+            let old_timeout = connection.serial.timeout();
+            connection.serial.set_timeout(CommandType::FlashMd5.timeout_for_size(segment.data.len() as u32))?;
+            let result = connection
+                .command(Command::FlashMd5 {
+                    offset: addr,
+                    size: segment.data.len() as u32,
+                }).await;
+            connection.serial.set_timeout(old_timeout)?;
+            let flash_checksum_md5: u128 = result?.try_into()?;
 
             if checksum_md5[..] != flash_checksum_md5.to_be_bytes() {
                 return Err(Error::VerifyFailed);
@@ -217,9 +210,11 @@ impl Esp32Target {
 
     pub async fn finish<P: SerialInterface>(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error> {
         if self.need_deflate_end {
-            connection.with_timeout(CommandType::FlashDeflEnd.timeout(), |connection| {
-                connection.command(Command::FlashDeflEnd { reboot: false })
-            })?;
+            let old_timeout = connection.serial.timeout();
+            connection.serial.set_timeout(CommandType::FlashDeflEnd.timeout())?;
+            let result = connection.command(Command::FlashDeflEnd { reboot: false }).await;
+            connection.serial.set_timeout(old_timeout)?;
+            result?;
         }
 
         if reboot {

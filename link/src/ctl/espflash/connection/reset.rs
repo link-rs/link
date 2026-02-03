@@ -189,7 +189,7 @@ pub async fn hard_reset(serial_port: &mut dyn SerialPort, pid: u16, delay: &mut 
 }
 
 /// Performs a soft reset of the device.
-pub fn soft_reset<P: SerialInterface>(
+pub async fn soft_reset<P: SerialInterface>(
     connection: &mut Connection<P>,
     stay_in_bootloader: bool,
     is_stub: bool,
@@ -201,44 +201,56 @@ pub fn soft_reset<P: SerialInterface>(
             return Ok(());
         } else {
             //  'run user code' is as close to a soft reset as we can do
-            connection.with_timeout(CommandType::FlashBegin.timeout(), |connection| {
-                let size: u32 = 0;
-                let offset: u32 = 0;
-                let blocks: u32 = size.div_ceil(FLASH_WRITE_SIZE as u32);
-                connection.command(Command::FlashBegin {
-                    size,
-                    blocks,
-                    block_size: FLASH_WRITE_SIZE.try_into().unwrap(),
-                    offset,
-                    supports_encryption: false,
-                })
-            })?;
-            connection.with_timeout(CommandType::FlashEnd.timeout(), |connection| {
-                connection.write_command(Command::FlashEnd { reboot: false })
-            })?;
-        }
-    } else if stay_in_bootloader {
-        // Soft resetting from the stub loader will re-load the ROM bootloader
-        connection.with_timeout(CommandType::FlashBegin.timeout(), |connection| {
+            let old_timeout = connection.serial.timeout();
+            connection.serial.set_timeout(CommandType::FlashBegin.timeout())?;
             let size: u32 = 0;
             let offset: u32 = 0;
             let blocks: u32 = size.div_ceil(FLASH_WRITE_SIZE as u32);
-            connection.command(Command::FlashBegin {
+            let result = connection.command(Command::FlashBegin {
                 size,
                 blocks,
                 block_size: FLASH_WRITE_SIZE.try_into().unwrap(),
                 offset,
                 supports_encryption: false,
-            })
-        })?;
-        connection.with_timeout(CommandType::FlashEnd.timeout(), |connection| {
-            connection.write_command(Command::FlashEnd { reboot: true })
-        })?;
+            }).await;
+            connection.serial.set_timeout(old_timeout)?;
+            result?;
+
+            let old_timeout = connection.serial.timeout();
+            connection.serial.set_timeout(CommandType::FlashEnd.timeout())?;
+            let result = connection.write_command(Command::FlashEnd { reboot: false }).await;
+            connection.serial.set_timeout(old_timeout)?;
+            result?;
+        }
+    } else if stay_in_bootloader {
+        // Soft resetting from the stub loader will re-load the ROM bootloader
+        let old_timeout = connection.serial.timeout();
+        connection.serial.set_timeout(CommandType::FlashBegin.timeout())?;
+        let size: u32 = 0;
+        let offset: u32 = 0;
+        let blocks: u32 = size.div_ceil(FLASH_WRITE_SIZE as u32);
+        let result = connection.command(Command::FlashBegin {
+            size,
+            blocks,
+            block_size: FLASH_WRITE_SIZE.try_into().unwrap(),
+            offset,
+            supports_encryption: false,
+        }).await;
+        connection.serial.set_timeout(old_timeout)?;
+        result?;
+
+        let old_timeout = connection.serial.timeout();
+        connection.serial.set_timeout(CommandType::FlashEnd.timeout())?;
+        let result = connection.write_command(Command::FlashEnd { reboot: true }).await;
+        connection.serial.set_timeout(old_timeout)?;
+        result?;
     } else {
         // Running user code from stub loader requires some hacks in the stub loader
-        connection.with_timeout(CommandType::RunUserCode.timeout(), |connection| {
-            connection.command(Command::RunUserCode)
-        })?;
+        let old_timeout = connection.serial.timeout();
+        connection.serial.set_timeout(CommandType::RunUserCode.timeout())?;
+        let result = connection.command(Command::RunUserCode).await;
+        connection.serial.set_timeout(old_timeout)?;
+        result?;
     }
 
     Ok(())

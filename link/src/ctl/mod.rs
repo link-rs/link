@@ -2297,6 +2297,7 @@ where
         // Actually flash
         let info = flasher
             .device_info()
+            .await
             .map_err(|e| EspflashError::Espflash(format!("device_info: {:?}", e)))?;
         let chip = flasher.chip();
 
@@ -2377,10 +2378,12 @@ where
 
         let device_info = flasher
             .device_info()
+            .await
             .map_err(|e| EspflashError::Espflash(format!("device_info: {:?}", e)))?;
 
         let security_info = flasher
             .security_info()
+            .await
             .map_err(|e| EspflashError::Espflash(format!("security_info: {:?}", e)))?;
 
         Ok(EspflashDeviceInfo {

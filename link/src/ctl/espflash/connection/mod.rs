@@ -6,7 +6,7 @@
 
 use alloc::collections::BTreeMap;
 use core::{fmt, iter::zip, time::Duration};
-use std::io::{BufWriter, Write};
+use embedded_io_async::Write;
 
 use embedded_hal_async::delay::DelayNs;
 
@@ -238,7 +238,7 @@ impl fmt::Display for SecurityInfo {
 
 /// An established connection with a target device.
 pub struct Connection<P: SerialInterface> {
-    serial: P,
+    pub serial: P,
     port_info: UsbPortInfo,
     decoder: SlipDecoder,
     after_operation: ResetAfterOperation,
@@ -397,7 +397,7 @@ impl<P: SerialInterface> Connection<P> {
         self.serial.set_timeout(CommandType::Sync.timeout())?;
 
         let result = async {
-            self.command(Command::Sync)?;
+            self.command(Command::Sync).await?;
             self.flush()?;
 
             self.delay.delay_ms(10).await;
@@ -443,7 +443,7 @@ impl<P: SerialInterface> Connection<P> {
             ResetAfterOperation::HardReset => hard_reset(&mut self.serial, pid, &mut self.delay).await,
             ResetAfterOperation::NoReset => {
                 info!("Staying in bootloader");
-                soft_reset(self, true, is_stub)?;
+                soft_reset(self, true, is_stub).await?;
 
                 Ok(())
             }
@@ -462,25 +462,25 @@ impl<P: SerialInterface> Connection<P> {
                     }
                     Chip::Esp32p4 => {
                         // Check if the connection is USB OTG
-                        if chip.is_using_usb_otg(self)? {
+                        if chip.is_using_usb_otg(self).await? {
                             chip.rtc_wdt_reset(self).await?;
                         }
                     }
                     Chip::Esp32s2 => {
                         // Check if the connection is USB OTG
-                        if chip.is_using_usb_otg(self)? {
+                        if chip.is_using_usb_otg(self).await? {
                             // Check the strapping register to see if we can perform RTC WDT
                             // reset
-                            if chip.can_rtc_wdt_reset(self)? {
+                            if chip.can_rtc_wdt_reset(self).await? {
                                 chip.rtc_wdt_reset(self).await?;
                             }
                         }
                     }
                     Chip::Esp32s3 => {
-                        if self.is_using_usb_serial_jtag() || chip.is_using_usb_otg(self)? {
+                        if self.is_using_usb_serial_jtag() || chip.is_using_usb_otg(self).await? {
                             // Check the strapping register to see if we can perform RTC WDT
                             // reset
-                            if chip.can_rtc_wdt_reset(self)? {
+                            if chip.can_rtc_wdt_reset(self).await? {
                                 chip.rtc_wdt_reset(self).await?;
                             }
                         }
@@ -535,9 +535,10 @@ impl<P: SerialInterface> Connection<P> {
     }
 
     /// Runs a command with a timeout defined by the command type.
-    pub fn with_timeout<T, F>(&mut self, timeout: Duration, mut f: F) -> Result<T, Error>
+    pub async fn with_timeout<T, F, Fut>(&mut self, timeout: Duration, f: F) -> Result<T, Error>
     where
-        F: FnMut(&mut Connection<P>) -> Result<T, Error>,
+        F: FnOnce(&mut Connection<P>) -> Fut,
+        Fut: core::future::Future<Output = Result<T, Error>>,
     {
         let old_timeout = {
             let mut binding = Box::new(&mut self.serial);
@@ -547,7 +548,7 @@ impl<P: SerialInterface> Connection<P> {
             old_timeout
         };
 
-        let result = f(self);
+        let result = f(self).await;
 
         self.serial.set_timeout(old_timeout)?;
 
@@ -634,37 +635,48 @@ impl<P: SerialInterface> Connection<P> {
     }
 
     /// Writes raw data to the serial port.
-    pub fn write_raw(&mut self, data: u32) -> Result<(), Error> {
-        let mut binding = Box::new(&mut self.serial);
-        let serial = binding.as_mut();
-        serial.clear(serialport::ClearBuffer::Input)?;
-        let mut writer = BufWriter::new(serial);
-        let mut encoder = SlipEncoder::new(&mut writer)?;
-        encoder.write_all(&data.to_le_bytes())?;
-        encoder.finish()?;
-        writer.flush()?;
+    pub async fn write_raw(&mut self, data: u32) -> Result<(), Error> {
+        use std::io::Write as StdWrite;
+
+        self.serial.clear(serialport::ClearBuffer::Input)?;
+
+        // Serialize and SLIP-encode to a buffer (infallible operations)
+        let mut buf = Vec::new();
+        let mut writer = io::VecWriter::new(&mut buf);
+        let mut encoder = SlipEncoder::new(&mut writer).await.unwrap();
+        encoder.write_all(&data.to_le_bytes()).await.unwrap();
+        encoder.finish().await.unwrap();
+
+        // Write buffer to serial port
+        self.serial.write_all(&buf)?;
+        StdWrite::flush(&mut self.serial)?;
         Ok(())
     }
 
     /// Writes a command to the serial port.
-    pub fn write_command(&mut self, command: Command<'_>) -> Result<(), Error> {
-        debug!("Writing command: {command:02x?}");
-        let mut binding = Box::new(&mut self.serial);
-        let serial = binding.as_mut();
+    pub async fn write_command(&mut self, command: Command<'_>) -> Result<(), Error> {
+        use std::io::Write as StdWrite;
 
-        serial.clear(serialport::ClearBuffer::Input)?;
-        let mut writer = BufWriter::new(serial);
-        let mut encoder = SlipEncoder::new(&mut writer)?;
-        command.write(&mut encoder)?;
-        encoder.finish()?;
-        writer.flush()?;
+        debug!("Writing command: {command:02x?}");
+        self.serial.clear(serialport::ClearBuffer::Input)?;
+
+        // Serialize and SLIP-encode to a buffer (infallible operations)
+        let mut buf = Vec::new();
+        let mut writer = io::VecWriter::new(&mut buf);
+        let mut encoder = SlipEncoder::new(&mut writer).await.unwrap();
+        command.write(&mut encoder).await.unwrap();
+        encoder.finish().await.unwrap();
+
+        // Write buffer to serial port
+        self.serial.write_all(&buf)?;
+        StdWrite::flush(&mut self.serial)?;
         Ok(())
     }
 
     /// Writes a command and reads the response.
-    pub fn command(&mut self, command: Command<'_>) -> Result<CommandResponseValue, Error> {
+    pub async fn command(&mut self, command: Command<'_>) -> Result<CommandResponseValue, Error> {
         let ty = command.command_type();
-        self.write_command(command).for_command(ty)?;
+        self.write_command(command).await.for_command(ty)?;
         for _ in 0..100 {
             match self.read_response().for_command(ty)? {
                 Some(response) if response.return_op == ty as u8 => {
@@ -697,36 +709,37 @@ impl<P: SerialInterface> Connection<P> {
     }
 
     /// Reads a register command with a timeout.
-    pub fn read_reg(&mut self, addr: u32) -> Result<u32, Error> {
-        let resp = self.with_timeout(CommandType::ReadReg.timeout(), |connection| {
-            connection.command(Command::ReadReg { address: addr })
-        })?;
-
-        resp.try_into()
+    pub async fn read_reg(&mut self, addr: u32) -> Result<u32, Error> {
+        let old_timeout = self.serial.timeout();
+        self.serial.set_timeout(CommandType::ReadReg.timeout())?;
+        let resp = self.command(Command::ReadReg { address: addr }).await;
+        self.serial.set_timeout(old_timeout)?;
+        resp?.try_into()
     }
 
     /// Writes a register command with a timeout.
-    pub fn write_reg(&mut self, addr: u32, value: u32, mask: Option<u32>) -> Result<(), Error> {
-        self.with_timeout(CommandType::WriteReg.timeout(), |connection| {
-            connection.command(Command::WriteReg {
-                address: addr,
-                value,
-                mask,
-            })
-        })?;
-
+    pub async fn write_reg(&mut self, addr: u32, value: u32, mask: Option<u32>) -> Result<(), Error> {
+        let old_timeout = self.serial.timeout();
+        self.serial.set_timeout(CommandType::WriteReg.timeout())?;
+        let result = self.command(Command::WriteReg {
+            address: addr,
+            value,
+            mask,
+        }).await;
+        self.serial.set_timeout(old_timeout)?;
+        result?;
         Ok(())
     }
 
     /// Updates a register by applying the new value to the masked out portion
     /// of the old value.
     #[allow(dead_code)]
-    pub(crate) fn update_reg(&mut self, addr: u32, mask: u32, new_value: u32) -> Result<(), Error> {
+    pub(crate) async fn update_reg(&mut self, addr: u32, mask: u32, new_value: u32) -> Result<(), Error> {
         let masked_new_value = new_value.checked_shl(mask.trailing_zeros()).unwrap_or(0) & mask;
 
-        let masked_old_value = self.read_reg(addr)? & !mask;
+        let masked_old_value = self.read_reg(addr).await? & !mask;
 
-        self.write_reg(addr, masked_old_value | masked_new_value, None)
+        self.write_reg(addr, masked_old_value | masked_new_value, None).await
     }
 
     /// Reads a register command with a timeout.
@@ -772,31 +785,33 @@ impl<P: SerialInterface> Connection<P> {
     }
 
     /// Gets security information from the chip.
-    
-    pub fn security_info(&mut self, use_stub: bool) -> Result<SecurityInfo, super::error::Error> {
-        self.with_timeout(CommandType::GetSecurityInfo.timeout(), |connection| {
-            let response = connection.command(Command::GetSecurityInfo)?;
-            // Extract raw bytes and convert them into `SecurityInfo`
-            if let super::command::CommandResponseValue::Vector(data) = response {
-                // HACK: Not quite sure why there seem to be 4 extra bytes at the end of the
-                //       response when the stub is not being used...
-                let end = if use_stub { data.len() } else { data.len() - 4 };
-                SecurityInfo::try_from(&data[..end])
-            } else {
-                Err(Error::InvalidResponse(
-                    "response was not a vector of bytes".into(),
-                ))
-            }
-        })
+
+    pub async fn security_info(&mut self, use_stub: bool) -> Result<SecurityInfo, super::error::Error> {
+        let old_timeout = self.serial.timeout();
+        self.serial.set_timeout(CommandType::GetSecurityInfo.timeout())?;
+        let response = self.command(Command::GetSecurityInfo).await;
+        self.serial.set_timeout(old_timeout)?;
+        let response = response?;
+        // Extract raw bytes and convert them into `SecurityInfo`
+        if let super::command::CommandResponseValue::Vector(data) = response {
+            // HACK: Not quite sure why there seem to be 4 extra bytes at the end of the
+            //       response when the stub is not being used...
+            let end = if use_stub { data.len() } else { data.len() - 4 };
+            SecurityInfo::try_from(&data[..end])
+        } else {
+            Err(Error::InvalidResponse(
+                "response was not a vector of bytes".into(),
+            ))
+        }
     }
 
     /// Detects which chip is connected to this connection.
-    
-    pub fn detect_chip(
+
+    pub async fn detect_chip(
         &mut self,
         use_stub: bool,
     ) -> Result<super::target::Chip, super::error::Error> {
-        match self.security_info(use_stub) {
+        match self.security_info(use_stub).await {
             Ok(info) if info.chip_id.is_some() => {
                 let chip_id = info.chip_id.unwrap() as u16;
                 let chip = Chip::try_from(chip_id)?;
@@ -806,14 +821,15 @@ impl<P: SerialInterface> Connection<P> {
             _ => {
                 // Fall back to reading the magic value from the chip
                 let magic = if use_stub {
-                    self.with_timeout(CommandType::ReadReg.timeout(), |connection| {
-                        connection.command(Command::ReadReg {
-                            address: CHIP_DETECT_MAGIC_REG_ADDR,
-                        })
-                    })?
-                    .try_into()?
+                    let old_timeout = self.serial.timeout();
+                    self.serial.set_timeout(CommandType::ReadReg.timeout())?;
+                    let result = self.command(Command::ReadReg {
+                        address: CHIP_DETECT_MAGIC_REG_ADDR,
+                    }).await;
+                    self.serial.set_timeout(old_timeout)?;
+                    result?.try_into()?
                 } else {
-                    self.read_reg(CHIP_DETECT_MAGIC_REG_ADDR)?
+                    self.read_reg(CHIP_DETECT_MAGIC_REG_ADDR).await?
                 };
                 debug!("Read chip magic value: 0x{magic:08x}");
                 Chip::from_magic(magic)
@@ -822,8 +838,40 @@ impl<P: SerialInterface> Connection<P> {
     }
 }
 
+/// I/O adapters for bridging embedded_io_async with std::io
+mod io {
+    use alloc::vec::Vec;
+    use core::convert::Infallible;
+
+    /// A writer that appends to a Vec<u8>, implementing embedded_io_async::Write.
+    pub struct VecWriter<'a> {
+        vec: &'a mut Vec<u8>,
+    }
+
+    impl<'a> VecWriter<'a> {
+        pub fn new(vec: &'a mut Vec<u8>) -> Self {
+            Self { vec }
+        }
+    }
+
+    impl embedded_io_async::ErrorType for VecWriter<'_> {
+        type Error = Infallible;
+    }
+
+    impl embedded_io_async::Write for VecWriter<'_> {
+        async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+            self.vec.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        async fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+}
+
 mod encoder {
-    use std::io::Write;
+    use embedded_io_async::Write;
 
     use serde::Serialize;
 
@@ -841,33 +889,37 @@ mod encoder {
 
     impl<'a, W: Write> SlipEncoder<'a, W> {
         /// Creates a new encoder context.
-        pub fn new(writer: &'a mut W) -> std::io::Result<Self> {
-            let len = writer.write(&[END])?;
+        pub async fn new(writer: &'a mut W) -> Result<Self, W::Error> {
+            let len = writer.write(&[END]).await?;
             Ok(Self { writer, len })
         }
 
         /// Finishes the encoding.
-        pub fn finish(mut self) -> std::io::Result<usize> {
-            self.len += self.writer.write(&[END])?;
+        pub async fn finish(mut self) -> Result<usize, W::Error> {
+            self.len += self.writer.write(&[END]).await?;
             Ok(self.len)
         }
+    }
+
+    impl<W: Write> embedded_io_async::ErrorType for SlipEncoder<'_, W> {
+        type Error = W::Error;
     }
 
     impl<W: Write> Write for SlipEncoder<'_, W> {
         /// Writes the given buffer replacing the END and ESC bytes.
         ///
         /// See <https://docs.espressif.com/projects/esptool/en/latest/esp32c3/advanced-topics/serial-protocol.html#low-level-protocol>
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
             for value in buf.iter() {
                 match *value {
                     END => {
-                        self.len += self.writer.write(&[ESC, ESC_END])?;
+                        self.len += self.writer.write(&[ESC, ESC_END]).await?;
                     }
                     ESC => {
-                        self.len += self.writer.write(&[ESC, ESC_ESC])?;
+                        self.len += self.writer.write(&[ESC, ESC_ESC]).await?;
                     }
                     _ => {
-                        self.len += self.writer.write(&[*value])?;
+                        self.len += self.writer.write(&[*value]).await?;
                     }
                 }
             }
@@ -875,8 +927,8 @@ mod encoder {
             Ok(buf.len())
         }
 
-        fn flush(&mut self) -> std::io::Result<()> {
-            self.writer.flush()
+        async fn flush(&mut self) -> Result<(), Self::Error> {
+            self.writer.flush().await
         }
     }
 }

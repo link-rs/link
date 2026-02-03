@@ -22,23 +22,23 @@ pub enum FlashTarget {
 
 impl FlashTarget {
     /// Begin the flashing operation.
-    pub fn begin<P: SerialInterface>(&mut self, connection: &mut Connection<P>) -> Result<(), Error> {
+    pub async fn begin<P: SerialInterface>(&mut self, connection: &mut Connection<P>) -> Result<(), Error> {
         match self {
-            FlashTarget::Esp32(target) => target.begin(connection),
-            FlashTarget::Ram(target) => target.begin(connection),
+            FlashTarget::Esp32(target) => target.begin(connection).await,
+            FlashTarget::Ram(target) => target.begin(connection).await,
         }
     }
 
     /// Write a segment to the target device.
-    pub fn write_segment<P: SerialInterface>(
+    pub async fn write_segment<P: SerialInterface>(
         &mut self,
         connection: &mut Connection<P>,
         segment: Segment<'_>,
         progress: &mut dyn ProgressCallbacks,
     ) -> Result<(), Error> {
         match self {
-            FlashTarget::Esp32(target) => target.write_segment(connection, segment, progress),
-            FlashTarget::Ram(target) => target.write_segment(connection, segment, progress),
+            FlashTarget::Esp32(target) => target.write_segment(connection, segment, progress).await,
+            FlashTarget::Ram(target) => target.write_segment(connection, segment, progress).await,
         }
     }
 
@@ -46,7 +46,7 @@ impl FlashTarget {
     pub async fn finish<P: SerialInterface>(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error> {
         match self {
             FlashTarget::Esp32(target) => target.finish(connection, reboot).await,
-            FlashTarget::Ram(target) => target.finish(connection, reboot),
+            FlashTarget::Ram(target) => target.finish(connection, reboot).await,
         }
     }
 }
