@@ -14,21 +14,41 @@ mod ram;
 pub use self::{esp32::Esp32Target, ram::RamTarget};
 use super::super::{Error, connection::{Connection, SerialInterface}, image_format::Segment};
 
-/// Operations for interacting with a flash target.
-pub trait FlashTarget<P: SerialInterface> {
+/// Flash target enum - either ESP32 flash or RAM.
+pub enum FlashTarget {
+    Esp32(Esp32Target),
+    Ram(RamTarget),
+}
+
+impl FlashTarget {
     /// Begin the flashing operation.
-    fn begin(&mut self, connection: &mut Connection<P>) -> Result<(), Error>;
+    pub fn begin<P: SerialInterface>(&mut self, connection: &mut Connection<P>) -> Result<(), Error> {
+        match self {
+            FlashTarget::Esp32(target) => target.begin(connection),
+            FlashTarget::Ram(target) => target.begin(connection),
+        }
+    }
 
     /// Write a segment to the target device.
-    fn write_segment(
+    pub fn write_segment<P: SerialInterface>(
         &mut self,
         connection: &mut Connection<P>,
         segment: Segment<'_>,
         progress: &mut dyn ProgressCallbacks,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Error> {
+        match self {
+            FlashTarget::Esp32(target) => target.write_segment(connection, segment, progress),
+            FlashTarget::Ram(target) => target.write_segment(connection, segment, progress),
+        }
+    }
 
     /// Complete the flashing operation.
-    fn finish(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error>;
+    pub async fn finish<P: SerialInterface>(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error> {
+        match self {
+            FlashTarget::Esp32(target) => target.finish(connection, reboot).await,
+            FlashTarget::Ram(target) => target.finish(connection, reboot),
+        }
+    }
 }
 
 /// Progress update callbacks.

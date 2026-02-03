@@ -10,6 +10,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::Range;
 
+use embedded_hal_async::delay::DelayNs;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator, VariantNames};
 
@@ -248,7 +249,7 @@ impl Chip {
     }
 
     /// Perform RTC WDT reset
-    pub fn rtc_wdt_reset<P: super::connection::SerialInterface>(
+    pub async fn rtc_wdt_reset<P: super::connection::SerialInterface>(
         &self,
         connection: &mut Connection<P>,
     ) -> Result<(), Error> {
@@ -277,7 +278,7 @@ impl Chip {
                 connection.write_reg(wdt_config0, flags, None)?;
                 connection.write_reg(wdt_wprotect, 0, None)?;
 
-                connection.delay().delay_ms(50);
+                connection.delay().delay_ms(50).await;
 
                 Ok(())
             }
@@ -347,23 +348,23 @@ impl Chip {
 
     /// Creates and returns a new [FlashTarget] for [Esp32Target], using the
     /// provided [SpiAttachParams].
-    pub fn flash_target<P: super::connection::SerialInterface>(
+    pub fn flash_target(
         &self,
         spi_params: SpiAttachParams,
         use_stub: bool,
         verify: bool,
         skip: bool,
-    ) -> Box<dyn FlashTarget<P>> {
-        Box::new(Esp32Target::new(*self, spi_params, use_stub, verify, skip))
+    ) -> FlashTarget {
+        FlashTarget::Esp32(Esp32Target::new(*self, spi_params, use_stub, verify, skip))
     }
 
     /// Creates and returns a new [FlashTarget] for [RamTarget].
-    pub fn ram_target<P: super::connection::SerialInterface>(
+    pub fn ram_target(
         &self,
         entry: Option<u32>,
         max_ram_block_size: usize,
-    ) -> Box<dyn FlashTarget<P>> {
-        Box::new(RamTarget::new(entry, max_ram_block_size))
+    ) -> FlashTarget {
+        FlashTarget::Ram(RamTarget::new(entry, max_ram_block_size))
     }
 
     /// Returns the base address of the eFuse register

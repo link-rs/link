@@ -2260,7 +2260,7 @@ where
     ///
     /// If `partition_table` is provided, it should be a path to a CSV or binary
     /// partition table file. Otherwise, the default partition table is used.
-    pub fn flash_net(
+    pub async fn flash_net(
         &mut self,
         elf_data: &[u8],
         partition_table: Option<&Path>,
@@ -2289,6 +2289,7 @@ where
 
         // Allow espflash to negotiate higher baud rate (up to 460800)
         let mut flasher = Flasher::connect(connection, false, false, true, None, Some(460_800))
+            .await
             .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
         println!("About to flash");
@@ -2308,11 +2309,13 @@ where
 
         flasher
             .load_image_to_flash(progress, image_format.into())
+            .await
             .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
         flasher
             .connection()
             .reset()
+            .await
             .map_err(|e| EspflashError::Espflash(format!("reset: {:?}", e)))?;
 
         // Drop flasher to release borrows on self.reader/self.writer
@@ -2349,7 +2352,7 @@ where
     ///
     /// Returns detailed device information including chip type, revision,
     /// flash size, features, MAC address, and security info.
-    pub fn get_net_bootloader_info(&mut self) -> Result<EspflashDeviceInfo, EspflashError> {
+    pub async fn get_net_bootloader_info(&mut self) -> Result<EspflashDeviceInfo, EspflashError> {
         let port = TunnelSerialPort::new(&self.port, &mut self.net_buffer, 115_200);
         let port_info = UsbPortInfo {
             vid: 0,
@@ -2369,6 +2372,7 @@ where
 
         let mut flasher =
             Flasher::connect(connection, false, false, false, Some(Chip::Esp32s3), None)
+                .await
                 .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
         let device_info = flasher
@@ -2386,7 +2390,7 @@ where
     }
 
     /// Erase the NET chip's entire flash.
-    pub fn erase_net(&mut self) -> Result<(), EspflashError> {
+    pub async fn erase_net(&mut self) -> Result<(), EspflashError> {
         let port = TunnelSerialPort::new(&self.port, &mut self.net_buffer, 115_200);
         let port_info = UsbPortInfo {
             vid: 0x303A,
@@ -2405,15 +2409,18 @@ where
         );
 
         let mut flasher = Flasher::connect(connection, false, false, true, None, Some(115_200))
+            .await
             .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
 
         flasher
             .erase_flash()
+            .await
             .map_err(|e| EspflashError::Espflash(format!("erase_flash: {:?}", e)))?;
 
         flasher
             .connection()
             .reset()
+            .await
             .map_err(|e| EspflashError::Espflash(format!("reset: {:?}", e)))?;
 
         Ok(())

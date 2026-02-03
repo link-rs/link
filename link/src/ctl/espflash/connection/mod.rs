@@ -4,12 +4,11 @@
 //! sending/decoding of commands, and provides higher-level operations with the
 //! device.
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use core::{fmt, iter::zip, time::Duration};
 use std::io::{BufWriter, Write};
 
-use embedded_hal::delay::DelayNs;
+use embedded_hal_async::delay::DelayNs;
 
 use log::{debug, info};
 use regex::Regex;
@@ -17,14 +16,10 @@ use serde::{Deserialize, Serialize};
 use serialport::{SerialPort, UsbPortInfo};
 use slip_codec::SlipDecoder;
 
-#[cfg(unix)]
-use self::reset::UnixTightReset;
 use self::{
     encoder::SlipEncoder,
     reset::{
-        ClassicReset,
         ResetStrategy,
-        UsbJtagSerialReset,
         construct_reset_strategy_sequence,
         hard_reset,
         reset_after_flash,
@@ -66,7 +61,7 @@ impl<T: SerialPort + Send> SerialInterface for T {}
 pub struct StdDelay;
 
 impl DelayNs for StdDelay {
-    fn delay_ns(&mut self, ns: u32) {
+    async fn delay_ns(&mut self, ns: u32) {
         std::thread::sleep(Duration::from_nanos(ns as u64));
     }
 }
@@ -250,7 +245,7 @@ pub struct Connection<P: SerialInterface> {
     before_operation: ResetBeforeOperation,
     pub(crate) secure_download_mode: bool,
     pub(crate) baud: u32,
-    delay: Box<dyn DelayNs>,
+    delay: StdDelay,
 }
 
 impl<P: SerialInterface + fmt::Debug> fmt::Debug for Connection<P> {
@@ -262,7 +257,8 @@ impl<P: SerialInterface + fmt::Debug> fmt::Debug for Connection<P> {
             .field("before_operation", &self.before_operation)
             .field("secure_download_mode", &self.secure_download_mode)
             .field("baud", &self.baud)
-            .finish_non_exhaustive()
+            .field("delay", &self.delay)
+            .finish()
     }
 }
 
@@ -275,18 +271,6 @@ impl<P: SerialInterface> Connection<P> {
         before_operation: ResetBeforeOperation,
         baud: u32,
     ) -> Self {
-        Self::with_delay(serial, port_info, after_operation, before_operation, baud, Box::new(StdDelay))
-    }
-
-    /// Creates a new connection with a custom delay provider.
-    pub fn with_delay(
-        serial: P,
-        port_info: UsbPortInfo,
-        after_operation: ResetAfterOperation,
-        before_operation: ResetBeforeOperation,
-        baud: u32,
-        delay: Box<dyn DelayNs>,
-    ) -> Self {
         Connection {
             serial,
             port_info,
@@ -295,17 +279,17 @@ impl<P: SerialInterface> Connection<P> {
             before_operation,
             secure_download_mode: false,
             baud,
-            delay,
+            delay: StdDelay,
         }
     }
 
     /// Returns a mutable reference to the delay provider.
-    pub fn delay(&mut self) -> &mut dyn DelayNs {
-        &mut *self.delay
+    pub fn delay(&mut self) -> &mut StdDelay {
+        &mut self.delay
     }
 
     /// Initializes a connection with a device.
-    pub fn begin(&mut self) -> Result<(), Error> {
+    pub async fn begin(&mut self) -> Result<(), Error> {
         let port_name = self.serial.name().unwrap_or_default();
         let reset_sequence = construct_reset_strategy_sequence(
             &port_name,
@@ -314,7 +298,7 @@ impl<P: SerialInterface> Connection<P> {
         );
 
         for (_, reset_strategy) in zip(0..MAX_CONNECT_ATTEMPTS, reset_sequence.iter().cycle()) {
-            match self.connect_attempt(reset_strategy.as_ref()) {
+            match self.connect_attempt(reset_strategy).await {
                 Ok(_) => {
                     return Ok(());
                 }
@@ -330,7 +314,7 @@ impl<P: SerialInterface> Connection<P> {
     }
 
     /// Connects to a device.
-    fn connect_attempt(&mut self, reset_strategy: &dyn ResetStrategy) -> Result<(), Error> {
+    async fn connect_attempt(&mut self, reset_strategy: &ResetStrategy) -> Result<(), Error> {
         // If we're doing no_sync, we're likely communicating as a pass through
         // with an intermediate device to the ESP32
         if self.before_operation == ResetBeforeOperation::NoResetNoSync {
@@ -342,7 +326,7 @@ impl<P: SerialInterface> Connection<P> {
         let mut buff: Vec<u8>;
         if self.before_operation != ResetBeforeOperation::NoReset {
             // Reset the chip to bootloader (download mode)
-            reset_strategy.reset(&mut self.serial, &mut *self.delay)?;
+            reset_strategy.reset(&mut self.serial, &mut self.delay).await?;
 
             // S2 in USB download mode responds with 0 available bytes here
             let available_bytes = self.serial.bytes_to_read()?;
@@ -387,7 +371,7 @@ impl<P: SerialInterface> Connection<P> {
         for _ in 0..MAX_SYNC_ATTEMPTS {
             self.flush()?;
 
-            if self.sync().is_ok() {
+            if self.sync().await.is_ok() {
                 return Ok(());
             }
         }
@@ -408,18 +392,21 @@ impl<P: SerialInterface> Connection<P> {
     }
 
     /// Syncs with a device.
-    pub(crate) fn sync(&mut self) -> Result<(), Error> {
-        self.with_timeout(CommandType::Sync.timeout(), |connection| {
-            connection.command(Command::Sync)?;
-            connection.flush()?;
+    pub(crate) async fn sync(&mut self) -> Result<(), Error> {
+        let old_timeout = self.serial.timeout();
+        self.serial.set_timeout(CommandType::Sync.timeout())?;
 
-            connection.delay().delay_ms(10);
+        let result = async {
+            self.command(Command::Sync)?;
+            self.flush()?;
+
+            self.delay.delay_ms(10).await;
 
             for _ in 0..MAX_CONNECT_ATTEMPTS {
-                match connection.read_response()? {
+                match self.read_response()? {
                     Some(response) if response.return_op == CommandType::Sync as u8 => {
                         if response.status == 1 {
-                            connection.flush().ok();
+                            self.flush().ok();
                             return Err(Error::RomError(Box::new(RomError::new(
                                 CommandType::Sync,
                                 RomErrorKind::from(response.error),
@@ -436,23 +423,24 @@ impl<P: SerialInterface> Connection<P> {
             }
 
             Ok(())
-        })?;
+        }.await;
 
-        Ok(())
+        self.serial.set_timeout(old_timeout)?;
+        result
     }
 
     /// Resets the device.
-    pub fn reset(&mut self) -> Result<(), Error> {
-        reset_after_flash(&mut self.serial, self.port_info.pid, &mut *self.delay)?;
+    pub async fn reset(&mut self) -> Result<(), Error> {
+        reset_after_flash(&mut self.serial, self.port_info.pid, &mut self.delay).await?;
         Ok(())
     }
 
     /// Resets the device taking into account the reset after argument.
-    pub fn reset_after(&mut self, is_stub: bool, chip: Chip) -> Result<(), Error> {
+    pub async fn reset_after(&mut self, is_stub: bool, chip: Chip) -> Result<(), Error> {
         let pid = self.usb_pid();
 
         match self.after_operation {
-            ResetAfterOperation::HardReset => hard_reset(&mut self.serial, pid, &mut *self.delay),
+            ResetAfterOperation::HardReset => hard_reset(&mut self.serial, pid, &mut self.delay).await,
             ResetAfterOperation::NoReset => {
                 info!("Staying in bootloader");
                 soft_reset(self, true, is_stub)?;
@@ -469,13 +457,13 @@ impl<P: SerialInterface> Connection<P> {
                 match chip {
                     Chip::Esp32c3 => {
                         if self.is_using_usb_serial_jtag() {
-                            chip.rtc_wdt_reset(self)?;
+                            chip.rtc_wdt_reset(self).await?;
                         }
                     }
                     Chip::Esp32p4 => {
                         // Check if the connection is USB OTG
                         if chip.is_using_usb_otg(self)? {
-                            chip.rtc_wdt_reset(self)?;
+                            chip.rtc_wdt_reset(self).await?;
                         }
                     }
                     Chip::Esp32s2 => {
@@ -484,7 +472,7 @@ impl<P: SerialInterface> Connection<P> {
                             // Check the strapping register to see if we can perform RTC WDT
                             // reset
                             if chip.can_rtc_wdt_reset(self)? {
-                                chip.rtc_wdt_reset(self)?;
+                                chip.rtc_wdt_reset(self).await?;
                             }
                         }
                     }
@@ -493,7 +481,7 @@ impl<P: SerialInterface> Connection<P> {
                             // Check the strapping register to see if we can perform RTC WDT
                             // reset
                             if chip.can_rtc_wdt_reset(self)? {
-                                chip.rtc_wdt_reset(self)?;
+                                chip.rtc_wdt_reset(self).await?;
                             }
                         }
                     }
@@ -511,19 +499,20 @@ impl<P: SerialInterface> Connection<P> {
     }
 
     /// Resets the device to flash mode.
-    pub fn reset_to_flash(&mut self, extra_delay: bool) -> Result<(), Error> {
+    pub async fn reset_to_flash(&mut self, extra_delay: bool) -> Result<(), Error> {
         if self.is_using_usb_serial_jtag() {
-            UsbJtagSerialReset.reset(&mut self.serial, &mut *self.delay)
+            ResetStrategy::usb_jtag_serial().reset(&mut self.serial, &mut self.delay).await
         } else {
             #[cfg(unix)]
-            if UnixTightReset::new(extra_delay)
-                .reset(&mut self.serial, &mut *self.delay)
+            if ResetStrategy::unix_tight(extra_delay)
+                .reset(&mut self.serial, &mut self.delay)
+                .await
                 .is_ok()
             {
                 return Ok(());
             }
 
-            ClassicReset::new(extra_delay).reset(&mut self.serial, &mut *self.delay)
+            ResetStrategy::classic(extra_delay).reset(&mut self.serial, &mut self.delay).await
         }
     }
 

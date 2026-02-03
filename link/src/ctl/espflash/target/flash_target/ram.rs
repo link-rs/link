@@ -8,9 +8,8 @@ use super::super::super::{Error, image_format::Segment, target::MAX_RAM_BLOCK_SI
 use super::super::super::{
     command::{Command, CommandType},
     connection::{Connection, SerialInterface},
-    target::FlashTarget,
-    target::ProgressCallbacks,
 };
+use super::ProgressCallbacks;
 
 /// Applications running in the target device's RAM.
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
@@ -32,13 +31,12 @@ impl Default for RamTarget {
     }
 }
 
-
-impl<P: SerialInterface> FlashTarget<P> for RamTarget {
-    fn begin(&mut self, _connection: &mut Connection<P>) -> Result<(), Error> {
+impl RamTarget {
+    pub fn begin<P: SerialInterface>(&mut self, _connection: &mut Connection<P>) -> Result<(), Error> {
         Ok(())
     }
 
-    fn write_segment(
+    pub fn write_segment<P: SerialInterface>(
         &mut self,
         connection: &mut Connection<P>,
         segment: Segment<'_>,
@@ -78,7 +76,7 @@ impl<P: SerialInterface> FlashTarget<P> for RamTarget {
         Ok(())
     }
 
-    fn finish(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error> {
+    pub fn finish<P: SerialInterface>(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error> {
         if reboot {
             let entry = self.entry.unwrap_or_default();
             connection.with_timeout(CommandType::MemEnd.timeout(), |connection| {

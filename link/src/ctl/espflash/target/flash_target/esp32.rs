@@ -22,9 +22,8 @@ use super::super::super::{
 use super::super::super::{
     command::{Command, CommandType},
     connection::{Connection, SerialInterface},
-    target::FlashTarget,
-    target::ProgressCallbacks,
 };
+use super::ProgressCallbacks;
 
 /// Applications running from an ESP32's (or variant's) flash
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
@@ -55,11 +54,8 @@ impl Esp32Target {
             need_deflate_end: false,
         }
     }
-}
 
-
-impl<P: SerialInterface> FlashTarget<P> for Esp32Target {
-    fn begin(&mut self, connection: &mut Connection<P>) -> Result<(), Error> {
+    pub fn begin<P: SerialInterface>(&mut self, connection: &mut Connection<P>) -> Result<(), Error> {
         connection.with_timeout(CommandType::SpiAttach.timeout(), |connection| {
             let command = if self.use_stub {
                 Command::SpiAttachStub {
@@ -104,7 +100,7 @@ impl<P: SerialInterface> FlashTarget<P> for Esp32Target {
         Ok(())
     }
 
-    fn write_segment(
+    pub fn write_segment<P: SerialInterface>(
         &mut self,
         connection: &mut Connection<P>,
         segment: Segment<'_>,
@@ -219,7 +215,7 @@ impl<P: SerialInterface> FlashTarget<P> for Esp32Target {
         Ok(())
     }
 
-    fn finish(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error> {
+    pub async fn finish<P: SerialInterface>(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error> {
         if self.need_deflate_end {
             connection.with_timeout(CommandType::FlashDeflEnd.timeout(), |connection| {
                 connection.command(Command::FlashDeflEnd { reboot: false })
@@ -227,7 +223,7 @@ impl<P: SerialInterface> FlashTarget<P> for Esp32Target {
         }
 
         if reboot {
-            connection.reset_after(self.use_stub, self.chip)?;
+            connection.reset_after(self.use_stub, self.chip).await?;
         }
 
         Ok(())
