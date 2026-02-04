@@ -14,7 +14,8 @@
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
-#[cfg(feature = "std")]
+// alloc is needed for std (which implies alloc) and ctl-core (which uses alloc feature)
+#[cfg(any(feature = "std", feature = "alloc"))]
 extern crate alloc;
 
 // Shared types and utilities (internal module, public items re-exported below)
@@ -30,10 +31,20 @@ pub use shared::{HEADER_SIZE, SYNC_WORD};
 // Re-export uart_config module for chip firmware
 pub use shared::uart_config;
 
-// Re-export async TLV traits and types for web-ctl
+// Re-export async TLV traits and types for firmware modules and async-ctl
 #[cfg(feature = "async-ctl")]
-pub use shared::tlv::{ReadTlv, WriteTlv, Tlv, HEADER_SIZE, SYNC_WORD};
-#[cfg(feature = "async-ctl")]
+pub use shared::tlv::{ReadTlv, WriteTlv, Tlv};
+
+// Re-export Tlv for ctl (not async traits)
+#[cfg(all(feature = "ctl", not(feature = "async-ctl")))]
+pub use shared::tlv::Tlv;
+
+// Re-export TLV types and constants for ctl-core (used by CtlCore internally)
+#[cfg(all(feature = "ctl-core", not(any(feature = "ctl", feature = "esp-idf", feature = "async-ctl"))))]
+pub use shared::tlv::{HEADER_SIZE, SYNC_WORD};
+
+// Re-export WifiSsid for async-ctl and ctl
+#[cfg(any(feature = "async-ctl", feature = "ctl"))]
 pub use shared::wifi::WifiSsid;
 
 // Re-export protocol types
@@ -55,8 +66,10 @@ pub mod net;
 #[cfg(feature = "ui")]
 pub mod ui;
 
-// Host-side control module (requires std)
-#[cfg(feature = "ctl")]
+// Host-side control module
+// - ctl-core: Async-first core implementation (no_std compatible with alloc)
+// - ctl: Full CLI support with sync I/O and flashing (requires std)
+#[cfg(any(feature = "ctl-core", feature = "ctl"))]
 pub mod ctl;
 
 // Integration tests - tests that involve two or more chips.

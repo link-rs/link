@@ -5,11 +5,8 @@
 
 mod serial;
 
-use embedded_io_async::{Read, Write};
-use link::{
-    CtlToMgmt, LoopbackMode, MgmtToCtl, MgmtToNet, MgmtToUi, NetLoopback, NetToMgmt, UiToMgmt,
-    ReadTlv, WriteTlv, Tlv, MAX_VALUE_SIZE, HEADER_SIZE, SYNC_WORD,
-};
+use link::ctl::{CtlCore, CtlError};
+use link::{LoopbackMode, NetLoopback};
 use serde::{Deserialize, Serialize};
 use serial::WebSerial;
 use wasm_bindgen::prelude::*;
@@ -32,121 +29,9 @@ pub struct WifiNetwork {
     pub password: String,
 }
 
-// ============================================================================
-// Async TLV I/O helpers
-// ============================================================================
-
-/// Write a TLV message with sync word prefix.
-async fn write_tlv<T, W>(writer: &mut W, tlv_type: T, value: &[u8]) -> Result<(), W::Error>
-where
-    T: Into<u16> + Copy,
-    W: Write,
-{
-    writer.write_tlv(tlv_type, value).await
-}
-
-/// Write a tunneled TLV message to UI through MGMT.
-async fn write_tlv_ui<W>(writer: &mut W, tlv_type: MgmtToUi, value: &[u8]) -> Result<(), W::Error>
-where
-    W: Write,
-{
-    // Create the inner TLV (sync word + header + value)
-    let inner_type: u16 = tlv_type.into();
-    let mut inner = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
-    let _ = inner.extend_from_slice(&SYNC_WORD);
-    let _ = inner.extend_from_slice(&inner_type.to_be_bytes());
-    let _ = inner.extend_from_slice(&(value.len() as u32).to_be_bytes());
-    let _ = inner.extend_from_slice(value);
-
-    // Wrap in CtlToMgmt::ToUi
-    writer.write_tlv(CtlToMgmt::ToUi, &inner).await
-}
-
-/// Write a tunneled TLV message to NET through MGMT.
-async fn write_tlv_net<W>(writer: &mut W, tlv_type: MgmtToNet, value: &[u8]) -> Result<(), W::Error>
-where
-    W: Write,
-{
-    // Create the inner TLV (sync word + header + value)
-    let inner_type: u16 = tlv_type.into();
-    let mut inner = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
-    let _ = inner.extend_from_slice(&SYNC_WORD);
-    let _ = inner.extend_from_slice(&inner_type.to_be_bytes());
-    let _ = inner.extend_from_slice(&(value.len() as u32).to_be_bytes());
-    let _ = inner.extend_from_slice(value);
-
-    // Wrap in CtlToMgmt::ToNet
-    writer.write_tlv(CtlToMgmt::ToNet, &inner).await
-}
-
-/// Read a TLV response, optionally extracting tunneled responses.
-async fn read_tlv_mgmt<R>(reader: &mut R) -> Option<Tlv<MgmtToCtl>>
-where
-    R: Read,
-{
-    reader.read_tlv().await.ok().flatten()
-}
-
-/// Read a TLV from UI, unwrapping the FromUi tunnel.
-async fn read_tlv_ui<R>(reader: &mut R) -> Option<Tlv<UiToMgmt>>
-where
-    R: Read,
-{
-    loop {
-        let tlv: Tlv<MgmtToCtl> = reader.read_tlv().await.ok()??;
-        if tlv.tlv_type == MgmtToCtl::FromUi {
-            // Parse the inner TLV from the value
-            return parse_inner_tlv(&tlv.value);
-        }
-        // Skip other messages
-    }
-}
-
-/// Read a TLV from NET, unwrapping the FromNet tunnel.
-async fn read_tlv_net<R>(reader: &mut R) -> Option<Tlv<NetToMgmt>>
-where
-    R: Read,
-{
-    loop {
-        let tlv: Tlv<MgmtToCtl> = reader.read_tlv().await.ok()??;
-        if tlv.tlv_type == MgmtToCtl::FromNet {
-            // Parse the inner TLV from the value
-            return parse_inner_tlv(&tlv.value);
-        }
-        // Skip other messages
-    }
-}
-
-/// Parse an inner TLV from a tunneled message value.
-fn parse_inner_tlv<T>(data: &[u8]) -> Option<Tlv<T>>
-where
-    T: TryFrom<u16>,
-{
-    // Data format: [sync_word (4)] [type (2)] [length (4)] [value...]
-    if data.len() < SYNC_WORD.len() + HEADER_SIZE {
-        return None;
-    }
-
-    // Skip sync word, parse header
-    let offset = SYNC_WORD.len();
-    let tlv_type_raw = u16::from_be_bytes([data[offset], data[offset + 1]]);
-    let length = u32::from_be_bytes([
-        data[offset + 2],
-        data[offset + 3],
-        data[offset + 4],
-        data[offset + 5],
-    ]) as usize;
-
-    let value_start = offset + HEADER_SIZE;
-    if data.len() < value_start + length {
-        return None;
-    }
-
-    let tlv_type = T::try_from(tlv_type_raw).ok()?;
-    let mut value = heapless::Vec::new();
-    let _ = value.extend_from_slice(&data[value_start..value_start + length]);
-
-    Some(Tlv { tlv_type, value })
+/// Convert CtlError to JsValue
+fn ctl_error_to_js(e: CtlError) -> JsValue {
+    JsValue::from_str(&format!("{}", e))
 }
 
 // ============================================================================
@@ -157,6 +42,7 @@ where
 #[wasm_bindgen]
 pub struct LinkController {
     serial: WebSerial,
+    core: Option<CtlCore<WebSerial>>,
 }
 
 #[wasm_bindgen]
@@ -166,6 +52,7 @@ impl LinkController {
     pub fn new() -> Self {
         Self {
             serial: WebSerial::new(),
+            core: None,
         }
     }
 
@@ -177,6 +64,10 @@ impl LinkController {
             .connect(baud_rate)
             .await
             .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+
+        // Create CtlCore with a clone of the serial port
+        self.core = Some(CtlCore::new(self.serial.clone()));
+
         log("Connected to Link device");
         Ok(())
     }
@@ -190,6 +81,7 @@ impl LinkController {
     /// Disconnect from the device.
     #[wasm_bindgen]
     pub async fn disconnect(&mut self) -> Result<(), JsValue> {
+        self.core = None;
         self.serial
             .disconnect()
             .await
@@ -198,12 +90,15 @@ impl LinkController {
         Ok(())
     }
 
+    /// Get CtlCore, returning error if not connected.
+    fn core_mut(&mut self) -> Result<&mut CtlCore<WebSerial>, JsValue> {
+        self.core.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))
+    }
+
     /// Test connection with a Hello handshake.
     /// Returns true if the device responds correctly.
     #[wasm_bindgen]
     pub async fn hello(&mut self) -> Result<bool, JsValue> {
-        const MAGIC: &[u8; 4] = b"LINK";
-
         // Generate a random challenge
         let challenge: [u8; 4] = [
             (js_sys::Math::random() * 256.0) as u8,
@@ -212,77 +107,31 @@ impl LinkController {
             (js_sys::Math::random() * 256.0) as u8,
         ];
 
-        let _ = write_tlv(&mut self.serial, CtlToMgmt::Hello, &challenge).await;
-
-        let tlv: Tlv<MgmtToCtl> = match read_tlv_mgmt(&mut self.serial).await {
-            Some(tlv) => tlv,
-            None => return Ok(false),
-        };
-
-        if tlv.tlv_type != MgmtToCtl::Hello || tlv.value.len() != 4 {
-            return Ok(false);
-        }
-
-        // Verify response is challenge XOR'd with MAGIC
-        for i in 0..4 {
-            if tlv.value[i] != (challenge[i] ^ MAGIC[i]) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        let core = self.core_mut()?;
+        Ok(core.hello(&challenge).await)
     }
 
     /// Get the firmware version stored in UI chip EEPROM.
     #[wasm_bindgen]
     pub async fn get_version(&mut self) -> Result<u32, JsValue> {
-        let _ = write_tlv_ui(&mut self.serial, MgmtToUi::GetVersion, &[]).await;
-
-        let tlv = read_tlv_ui(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != UiToMgmt::Version || tlv.value.len() != 4 {
-            return Err(JsValue::from_str("Invalid response"));
-        }
-
-        Ok(u32::from_be_bytes([
-            tlv.value[0],
-            tlv.value[1],
-            tlv.value[2],
-            tlv.value[3],
-        ]))
+        let core = self.core_mut()?;
+        core.get_version().await.map_err(ctl_error_to_js)
     }
 
     /// Set the firmware version in UI chip EEPROM.
     #[wasm_bindgen]
     pub async fn set_version(&mut self, version: u32) -> Result<(), JsValue> {
-        let _ = write_tlv_ui(&mut self.serial, MgmtToUi::SetVersion, &version.to_be_bytes()).await;
-
-        let tlv = read_tlv_ui(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != UiToMgmt::Ack {
-            return Err(JsValue::from_str("Expected Ack"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.set_version(version).await.map_err(ctl_error_to_js)
     }
 
     /// Get the SFrame key from UI chip EEPROM.
     /// Returns the key as a hex string.
     #[wasm_bindgen]
     pub async fn get_sframe_key(&mut self) -> Result<String, JsValue> {
-        let _ = write_tlv_ui(&mut self.serial, MgmtToUi::GetSFrameKey, &[]).await;
-
-        let tlv = read_tlv_ui(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != UiToMgmt::SFrameKey || tlv.value.len() != 16 {
-            return Err(JsValue::from_str("Invalid response"));
-        }
-
-        Ok(hex::encode(&tlv.value))
+        let core = self.core_mut()?;
+        let key = core.get_sframe_key().await.map_err(ctl_error_to_js)?;
+        Ok(hex::encode(key))
     }
 
     /// Set the SFrame key in UI chip EEPROM.
@@ -298,67 +147,34 @@ impl LinkController {
             ));
         }
 
-        let _ = write_tlv_ui(&mut self.serial, MgmtToUi::SetSFrameKey, &key_bytes).await;
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&key_bytes);
 
-        let tlv = read_tlv_ui(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != UiToMgmt::Ack {
-            return Err(JsValue::from_str("Expected Ack"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.set_sframe_key(&key).await.map_err(ctl_error_to_js)
     }
 
     /// Get the relay URL from NET chip storage.
     #[wasm_bindgen]
     pub async fn get_relay_url(&mut self) -> Result<String, JsValue> {
-        let _ = write_tlv_net(&mut self.serial, MgmtToNet::GetRelayUrl, &[]).await;
-
-        let tlv = read_tlv_net(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != NetToMgmt::RelayUrl {
-            return Err(JsValue::from_str("Expected RelayUrl"));
-        }
-
-        String::from_utf8(tlv.value.to_vec())
-            .map_err(|e| JsValue::from_str(&format!("Invalid UTF-8: {}", e)))
+        let core = self.core_mut()?;
+        let url = core.get_relay_url().await.map_err(ctl_error_to_js)?;
+        Ok(url.to_string())
     }
 
     /// Set the relay URL in NET chip storage.
     #[wasm_bindgen]
     pub async fn set_relay_url(&mut self, url: &str) -> Result<(), JsValue> {
-        let _ = write_tlv_net(&mut self.serial, MgmtToNet::SetRelayUrl, url.as_bytes()).await;
-
-        let tlv = read_tlv_net(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != NetToMgmt::Ack {
-            return Err(JsValue::from_str("Expected Ack"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.set_relay_url(url).await.map_err(ctl_error_to_js)
     }
 
     /// Get all WiFi networks from NET chip storage.
     /// Returns a JSON array of {ssid, password} objects.
     #[wasm_bindgen]
     pub async fn get_wifi_networks(&mut self) -> Result<JsValue, JsValue> {
-        let _ = write_tlv_net(&mut self.serial, MgmtToNet::GetWifiSsids, &[]).await;
-
-        let tlv = read_tlv_net(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != NetToMgmt::WifiSsids {
-            return Err(JsValue::from_str("Expected WifiSsids"));
-        }
-
-        // Parse the WiFi SSIDs from postcard format
-        let ssids: heapless::Vec<link::WifiSsid, 8> =
-            postcard::from_bytes(&tlv.value).unwrap_or_default();
+        let core = self.core_mut()?;
+        let ssids = core.get_wifi_ssids().await.map_err(ctl_error_to_js)?;
 
         let networks: Vec<WifiNetwork> = ssids
             .iter()
@@ -375,126 +191,51 @@ impl LinkController {
     /// Add a WiFi network to NET chip storage.
     #[wasm_bindgen]
     pub async fn add_wifi_network(&mut self, ssid: &str, password: &str) -> Result<(), JsValue> {
-        // Serialize as postcard: ssid string + password string
-        let wifi = link::WifiSsid {
-            ssid: ssid.into(),
-            password: password.into(),
-        };
-        let mut buf = [0u8; 256];
-        let data = postcard::to_slice(&wifi, &mut buf)
-            .map_err(|e| JsValue::from_str(&format!("Serialization error: {:?}", e)))?;
-
-        let _ = write_tlv_net(&mut self.serial, MgmtToNet::AddWifiSsid, data).await;
-
-        let tlv = read_tlv_net(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != NetToMgmt::Ack {
-            return Err(JsValue::from_str("Expected Ack"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.add_wifi_ssid(ssid, password).await.map_err(ctl_error_to_js)
     }
 
     /// Clear all WiFi networks from NET chip storage.
     #[wasm_bindgen]
     pub async fn clear_wifi_networks(&mut self) -> Result<(), JsValue> {
-        let _ = write_tlv_net(&mut self.serial, MgmtToNet::ClearWifiSsids, &[]).await;
-
-        let tlv = read_tlv_net(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != NetToMgmt::Ack {
-            return Err(JsValue::from_str("Expected Ack"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.clear_wifi_ssids().await.map_err(ctl_error_to_js)
     }
 
     /// Reset the UI chip into bootloader mode.
     #[wasm_bindgen]
     pub async fn reset_ui_to_bootloader(&mut self) -> Result<(), JsValue> {
-        let _ = write_tlv(&mut self.serial, CtlToMgmt::ResetUiToBootloader, &[]).await;
-
-        // Wait for Ack
-        loop {
-            let tlv = read_tlv_mgmt(&mut self.serial)
-                .await
-                .ok_or_else(|| JsValue::from_str("No response"))?;
-            match tlv.tlv_type {
-                MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue, // Skip tunneled messages
-                MgmtToCtl::Ack => return Ok(()),
-                _ => return Err(JsValue::from_str("Unexpected response")),
-            }
-        }
+        let core = self.core_mut()?;
+        core.reset_ui_to_bootloader().await.map_err(ctl_error_to_js)
     }
 
     /// Reset the UI chip into user mode.
     #[wasm_bindgen]
     pub async fn reset_ui_to_user(&mut self) -> Result<(), JsValue> {
-        let _ = write_tlv(&mut self.serial, CtlToMgmt::ResetUiToUser, &[]).await;
-
-        loop {
-            let tlv = read_tlv_mgmt(&mut self.serial)
-                .await
-                .ok_or_else(|| JsValue::from_str("No response"))?;
-            match tlv.tlv_type {
-                MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue,
-                MgmtToCtl::Ack => return Ok(()),
-                _ => return Err(JsValue::from_str("Unexpected response")),
-            }
-        }
+        let core = self.core_mut()?;
+        core.reset_ui_to_user().await.map_err(ctl_error_to_js)
     }
 
     /// Reset the NET chip into bootloader mode.
     #[wasm_bindgen]
     pub async fn reset_net_to_bootloader(&mut self) -> Result<(), JsValue> {
-        let _ = write_tlv(&mut self.serial, CtlToMgmt::ResetNetToBootloader, &[]).await;
-
-        loop {
-            let tlv = read_tlv_mgmt(&mut self.serial)
-                .await
-                .ok_or_else(|| JsValue::from_str("No response"))?;
-            match tlv.tlv_type {
-                MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue,
-                MgmtToCtl::Ack => return Ok(()),
-                _ => return Err(JsValue::from_str("Unexpected response")),
-            }
-        }
+        let core = self.core_mut()?;
+        core.reset_net_to_bootloader().await.map_err(ctl_error_to_js)
     }
 
     /// Reset the NET chip into user mode.
     #[wasm_bindgen]
     pub async fn reset_net_to_user(&mut self) -> Result<(), JsValue> {
-        let _ = write_tlv(&mut self.serial, CtlToMgmt::ResetNetToUser, &[]).await;
-
-        loop {
-            let tlv = read_tlv_mgmt(&mut self.serial)
-                .await
-                .ok_or_else(|| JsValue::from_str("No response"))?;
-            match tlv.tlv_type {
-                MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue,
-                MgmtToCtl::Ack => return Ok(()),
-                _ => return Err(JsValue::from_str("Unexpected response")),
-            }
-        }
+        let core = self.core_mut()?;
+        core.reset_net_to_user().await.map_err(ctl_error_to_js)
     }
 
     /// Get UI chip loopback mode as string.
     /// Returns: "off", "raw", "alaw", or "sframe"
     #[wasm_bindgen]
     pub async fn get_ui_loopback_mode(&mut self) -> Result<String, JsValue> {
-        let _ = write_tlv_ui(&mut self.serial, MgmtToUi::GetLoopback, &[]).await;
-
-        let tlv = read_tlv_ui(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != UiToMgmt::Loopback || tlv.value.is_empty() {
-            return Err(JsValue::from_str("Invalid response"));
-        }
-
-        let mode = LoopbackMode::try_from(tlv.value[0]).unwrap_or(LoopbackMode::Off);
+        let core = self.core_mut()?;
+        let mode = core.ui_get_loopback().await.map_err(ctl_error_to_js)?;
         let mode_str = match mode {
             LoopbackMode::Off => "off",
             LoopbackMode::Raw => "raw",
@@ -512,16 +253,16 @@ impl LinkController {
             return Err(JsValue::from_str("Invalid loopback mode (0-3)"));
         }
 
-        let _ = write_tlv_ui(&mut self.serial, MgmtToUi::SetLoopback, &[mode]).await;
+        let loopback_mode = match mode {
+            0 => LoopbackMode::Off,
+            1 => LoopbackMode::Raw,
+            2 => LoopbackMode::Alaw,
+            3 => LoopbackMode::Sframe,
+            _ => unreachable!(),
+        };
 
-        let tlv = read_tlv_ui(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != UiToMgmt::Ack {
-            return Err(JsValue::from_str("Expected Ack"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.ui_set_loopback(loopback_mode).await.map_err(ctl_error_to_js)
     }
 
     /// Get UI chip loopback mode (legacy boolean API).
@@ -542,17 +283,8 @@ impl LinkController {
     /// Returns: "off", "raw", or "moq"
     #[wasm_bindgen]
     pub async fn get_net_loopback_mode(&mut self) -> Result<String, JsValue> {
-        let _ = write_tlv_net(&mut self.serial, MgmtToNet::GetLoopback, &[]).await;
-
-        let tlv = read_tlv_net(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != NetToMgmt::Loopback || tlv.value.is_empty() {
-            return Err(JsValue::from_str("Invalid response"));
-        }
-
-        let mode = NetLoopback::try_from(tlv.value[0]).unwrap_or(NetLoopback::Off);
+        let core = self.core_mut()?;
+        let mode = core.net_get_loopback().await.map_err(ctl_error_to_js)?;
         let mode_str = match mode {
             NetLoopback::Off => "off",
             NetLoopback::Raw => "raw",
@@ -569,16 +301,15 @@ impl LinkController {
             return Err(JsValue::from_str("Invalid loopback mode (0-2)"));
         }
 
-        let _ = write_tlv_net(&mut self.serial, MgmtToNet::SetLoopback, &[mode]).await;
+        let loopback_mode = match mode {
+            0 => NetLoopback::Off,
+            1 => NetLoopback::Raw,
+            2 => NetLoopback::Moq,
+            _ => unreachable!(),
+        };
 
-        let tlv = read_tlv_net(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != NetToMgmt::Ack {
-            return Err(JsValue::from_str("Expected Ack"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.net_set_loopback(loopback_mode).await.map_err(ctl_error_to_js)
     }
 
     /// Get NET chip loopback mode (legacy boolean API).
@@ -598,134 +329,75 @@ impl LinkController {
     /// Ping the MGMT chip.
     #[wasm_bindgen]
     pub async fn ping_mgmt(&mut self, data: Vec<u8>) -> Result<(), JsValue> {
-        let _ = write_tlv(&mut self.serial, CtlToMgmt::Ping, &data).await;
-
-        let tlv = read_tlv_mgmt(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != MgmtToCtl::Pong || tlv.value.as_slice() != data.as_slice() {
-            return Err(JsValue::from_str("Ping failed"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.mgmt_ping(&data).await.map_err(ctl_error_to_js)
     }
 
     /// Ping the UI chip.
     #[wasm_bindgen]
     pub async fn ping_ui(&mut self, data: Vec<u8>) -> Result<(), JsValue> {
-        let _ = write_tlv_ui(&mut self.serial, MgmtToUi::Ping, &data).await;
-
-        let tlv = read_tlv_ui(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != UiToMgmt::Pong || tlv.value.as_slice() != data.as_slice() {
-            return Err(JsValue::from_str("Ping failed"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.ui_ping(&data).await.map_err(ctl_error_to_js)
     }
 
     /// Ping the NET chip.
     #[wasm_bindgen]
     pub async fn ping_net(&mut self, data: Vec<u8>) -> Result<(), JsValue> {
-        let _ = write_tlv_net(&mut self.serial, MgmtToNet::Ping, &data).await;
-
-        let tlv = read_tlv_net(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != NetToMgmt::Pong || tlv.value.as_slice() != data.as_slice() {
-            return Err(JsValue::from_str("Ping failed"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.net_ping(&data).await.map_err(ctl_error_to_js)
     }
 
     // ==================== STACK DIAGNOSTICS ====================
 
     /// Get MGMT chip stack usage information.
-    /// Returns JSON with {stack_base, stack_top, stack_size, stack_used, stack_free, usage_percent}.
+    /// Returns JSON with {stackBase, stackTop, stackSize, stackUsed, stackFree, usagePercent}.
     #[wasm_bindgen]
     pub async fn get_mgmt_stack_info(&mut self) -> Result<JsValue, JsValue> {
-        let _ = write_tlv(&mut self.serial, CtlToMgmt::GetStackInfo, &[]).await;
+        let core = self.core_mut()?;
+        let info = core.mgmt_get_stack_info().await.map_err(ctl_error_to_js)?;
 
-        loop {
-            let tlv = read_tlv_mgmt(&mut self.serial)
-                .await
-                .ok_or_else(|| JsValue::from_str("No response"))?;
-            match tlv.tlv_type {
-                MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue,
-                MgmtToCtl::StackInfo if tlv.value.len() >= 16 => {
-                    let stack_base = u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]);
-                    let stack_top = u32::from_le_bytes([tlv.value[4], tlv.value[5], tlv.value[6], tlv.value[7]]);
-                    let stack_size = u32::from_le_bytes([tlv.value[8], tlv.value[9], tlv.value[10], tlv.value[11]]);
-                    let stack_used = u32::from_le_bytes([tlv.value[12], tlv.value[13], tlv.value[14], tlv.value[15]]);
-                    let stack_free = stack_size.saturating_sub(stack_used);
-                    let usage_percent = if stack_size > 0 {
-                        (stack_used as f64 / stack_size as f64) * 100.0
-                    } else {
-                        0.0
-                    };
-
-                    let obj = js_sys::Object::new();
-                    js_sys::Reflect::set(&obj, &"stackBase".into(), &stack_base.into())?;
-                    js_sys::Reflect::set(&obj, &"stackTop".into(), &stack_top.into())?;
-                    js_sys::Reflect::set(&obj, &"stackSize".into(), &stack_size.into())?;
-                    js_sys::Reflect::set(&obj, &"stackUsed".into(), &stack_used.into())?;
-                    js_sys::Reflect::set(&obj, &"stackFree".into(), &stack_free.into())?;
-                    js_sys::Reflect::set(&obj, &"usagePercent".into(), &usage_percent.into())?;
-                    return Ok(obj.into());
-                }
-                _ => return Err(JsValue::from_str("Unexpected response")),
-            }
-        }
-    }
-
-    /// Repaint MGMT chip stack (for fresh high-water mark measurement).
-    #[wasm_bindgen]
-    pub async fn repaint_mgmt_stack(&mut self) -> Result<(), JsValue> {
-        let _ = write_tlv(&mut self.serial, CtlToMgmt::RepaintStack, &[]).await;
-
-        loop {
-            let tlv = read_tlv_mgmt(&mut self.serial)
-                .await
-                .ok_or_else(|| JsValue::from_str("No response"))?;
-            match tlv.tlv_type {
-                MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue,
-                MgmtToCtl::Ack => return Ok(()),
-                _ => return Err(JsValue::from_str("Unexpected response")),
-            }
-        }
-    }
-
-    /// Get UI chip stack usage information.
-    #[wasm_bindgen]
-    pub async fn get_ui_stack_info(&mut self) -> Result<JsValue, JsValue> {
-        let _ = write_tlv_ui(&mut self.serial, MgmtToUi::GetStackInfo, &[]).await;
-
-        let tlv = read_tlv_ui(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != UiToMgmt::StackInfo || tlv.value.len() < 16 {
-            return Err(JsValue::from_str("Invalid response"));
-        }
-
-        let stack_base = u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]);
-        let stack_top = u32::from_le_bytes([tlv.value[4], tlv.value[5], tlv.value[6], tlv.value[7]]);
-        let stack_size = u32::from_le_bytes([tlv.value[8], tlv.value[9], tlv.value[10], tlv.value[11]]);
-        let stack_used = u32::from_le_bytes([tlv.value[12], tlv.value[13], tlv.value[14], tlv.value[15]]);
-        let stack_free = stack_size.saturating_sub(stack_used);
-        let usage_percent = if stack_size > 0 {
-            (stack_used as f64 / stack_size as f64) * 100.0
+        let stack_free = info.stack_size.saturating_sub(info.stack_used);
+        let usage_percent = if info.stack_size > 0 {
+            (info.stack_used as f64 / info.stack_size as f64) * 100.0
         } else {
             0.0
         };
 
         let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"stackBase".into(), &stack_base.into())?;
-        js_sys::Reflect::set(&obj, &"stackTop".into(), &stack_top.into())?;
-        js_sys::Reflect::set(&obj, &"stackSize".into(), &stack_size.into())?;
-        js_sys::Reflect::set(&obj, &"stackUsed".into(), &stack_used.into())?;
+        js_sys::Reflect::set(&obj, &"stackBase".into(), &info.stack_base.into())?;
+        js_sys::Reflect::set(&obj, &"stackTop".into(), &info.stack_top.into())?;
+        js_sys::Reflect::set(&obj, &"stackSize".into(), &info.stack_size.into())?;
+        js_sys::Reflect::set(&obj, &"stackUsed".into(), &info.stack_used.into())?;
+        js_sys::Reflect::set(&obj, &"stackFree".into(), &stack_free.into())?;
+        js_sys::Reflect::set(&obj, &"usagePercent".into(), &usage_percent.into())?;
+        Ok(obj.into())
+    }
+
+    /// Repaint MGMT chip stack (for fresh high-water mark measurement).
+    #[wasm_bindgen]
+    pub async fn repaint_mgmt_stack(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.mgmt_repaint_stack().await.map_err(ctl_error_to_js)
+    }
+
+    /// Get UI chip stack usage information.
+    #[wasm_bindgen]
+    pub async fn get_ui_stack_info(&mut self) -> Result<JsValue, JsValue> {
+        let core = self.core_mut()?;
+        let info = core.ui_get_stack_info().await.map_err(ctl_error_to_js)?;
+
+        let stack_free = info.stack_size.saturating_sub(info.stack_used);
+        let usage_percent = if info.stack_size > 0 {
+            (info.stack_used as f64 / info.stack_size as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"stackBase".into(), &info.stack_base.into())?;
+        js_sys::Reflect::set(&obj, &"stackTop".into(), &info.stack_top.into())?;
+        js_sys::Reflect::set(&obj, &"stackSize".into(), &info.stack_size.into())?;
+        js_sys::Reflect::set(&obj, &"stackUsed".into(), &info.stack_used.into())?;
         js_sys::Reflect::set(&obj, &"stackFree".into(), &stack_free.into())?;
         js_sys::Reflect::set(&obj, &"usagePercent".into(), &usage_percent.into())?;
         Ok(obj.into())
@@ -734,16 +406,8 @@ impl LinkController {
     /// Repaint UI chip stack (for fresh high-water mark measurement).
     #[wasm_bindgen]
     pub async fn repaint_ui_stack(&mut self) -> Result<(), JsValue> {
-        let _ = write_tlv_ui(&mut self.serial, MgmtToUi::RepaintStack, &[]).await;
-
-        let tlv = read_tlv_ui(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != UiToMgmt::Ack {
-            return Err(JsValue::from_str("Expected Ack"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.ui_repaint_stack().await.map_err(ctl_error_to_js)
     }
 
     // ==================== WS TESTS ====================
@@ -752,45 +416,30 @@ impl LinkController {
     /// Returns JSON with test results.
     #[wasm_bindgen]
     pub async fn ws_echo_test(&mut self) -> Result<JsValue, JsValue> {
-        let _ = write_tlv(&mut self.serial, CtlToMgmt::WsEchoTest, &[]).await;
+        let core = self.core_mut()?;
+        let results = core.ws_echo_test().await.map_err(ctl_error_to_js)?;
 
-        loop {
-            let tlv = read_tlv_mgmt(&mut self.serial)
-                .await
-                .ok_or_else(|| JsValue::from_str("No response"))?;
-            match tlv.tlv_type {
-                MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue,
-                MgmtToCtl::WsEchoTestResult => {
-                    // Parse results from NET chip format
-                    let obj = js_sys::Object::new();
-                    js_sys::Reflect::set(&obj, &"raw".into(), &hex::encode(&tlv.value).into())?;
-                    return Ok(obj.into());
-                }
-                _ => return Err(JsValue::from_str("Unexpected response")),
-            }
-        }
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"sent".into(), &results.sent.into())?;
+        js_sys::Reflect::set(&obj, &"received".into(), &results.received.into())?;
+        js_sys::Reflect::set(&obj, &"bufferedOutput".into(), &results.buffered_output.into())?;
+        js_sys::Reflect::set(&obj, &"underruns".into(), &results.underruns.into())?;
+        Ok(obj.into())
     }
 
     /// Run WebSocket speed test.
     /// Returns JSON with test results.
     #[wasm_bindgen]
     pub async fn ws_speed_test(&mut self) -> Result<JsValue, JsValue> {
-        let _ = write_tlv(&mut self.serial, CtlToMgmt::WsSpeedTest, &[]).await;
+        let core = self.core_mut()?;
+        let results = core.ws_speed_test().await.map_err(ctl_error_to_js)?;
 
-        loop {
-            let tlv = read_tlv_mgmt(&mut self.serial)
-                .await
-                .ok_or_else(|| JsValue::from_str("No response"))?;
-            match tlv.tlv_type {
-                MgmtToCtl::FromUi | MgmtToCtl::FromNet => continue,
-                MgmtToCtl::WsSpeedTestResult => {
-                    let obj = js_sys::Object::new();
-                    js_sys::Reflect::set(&obj, &"raw".into(), &hex::encode(&tlv.value).into())?;
-                    return Ok(obj.into());
-                }
-                _ => return Err(JsValue::from_str("Unexpected response")),
-            }
-        }
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"sent".into(), &results.sent.into())?;
+        js_sys::Reflect::set(&obj, &"received".into(), &results.received.into())?;
+        js_sys::Reflect::set(&obj, &"sendTimeMs".into(), &results.send_time_ms.into())?;
+        js_sys::Reflect::set(&obj, &"recvTimeMs".into(), &results.recv_time_ms.into())?;
+        Ok(obj.into())
     }
 
     // ==================== CHAT ====================
@@ -798,16 +447,8 @@ impl LinkController {
     /// Send a chat message through the NET chip.
     #[wasm_bindgen]
     pub async fn send_chat_message(&mut self, message: &str) -> Result<(), JsValue> {
-        let _ = write_tlv_net(&mut self.serial, MgmtToNet::SendChatMessage, message.as_bytes()).await;
-
-        let tlv = read_tlv_net(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != NetToMgmt::ChatMessageSent && tlv.tlv_type != NetToMgmt::Ack {
-            return Err(JsValue::from_str("Expected ChatMessageSent or Ack"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.send_chat_message(message).await.map_err(ctl_error_to_js)
     }
 
     // ==================== CIRCULAR PING ====================
@@ -815,31 +456,15 @@ impl LinkController {
     /// Send a circular ping starting from UI (UI → NET → MGMT → CTL).
     #[wasm_bindgen]
     pub async fn circular_ping_via_ui(&mut self, data: Vec<u8>) -> Result<(), JsValue> {
-        let _ = write_tlv_ui(&mut self.serial, MgmtToUi::CircularPing, &data).await;
-
-        let tlv = read_tlv_net(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != NetToMgmt::CircularPing || tlv.value.as_slice() != data.as_slice() {
-            return Err(JsValue::from_str("Circular ping failed"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.ui_first_circular_ping(&data).await.map_err(ctl_error_to_js)
     }
 
     /// Send a circular ping starting from NET (NET → UI → MGMT → CTL).
     #[wasm_bindgen]
     pub async fn circular_ping_via_net(&mut self, data: Vec<u8>) -> Result<(), JsValue> {
-        let _ = write_tlv_net(&mut self.serial, MgmtToNet::CircularPing, &data).await;
-
-        let tlv = read_tlv_ui(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != UiToMgmt::CircularPing || tlv.value.as_slice() != data.as_slice() {
-            return Err(JsValue::from_str("Circular ping failed"));
-        }
-        Ok(())
+        let core = self.core_mut()?;
+        core.net_first_circular_ping(&data).await.map_err(ctl_error_to_js)
     }
 
     // ==================== JITTER STATS ====================
@@ -848,31 +473,16 @@ impl LinkController {
     /// Returns JSON with {received, output, underruns, overruns, level, state}.
     #[wasm_bindgen]
     pub async fn get_jitter_stats(&mut self, channel_id: u8) -> Result<JsValue, JsValue> {
-        let _ = write_tlv_net(&mut self.serial, MgmtToNet::GetJitterStats, &[channel_id]).await;
-
-        let tlv = read_tlv_net(&mut self.serial)
-            .await
-            .ok_or_else(|| JsValue::from_str("No response"))?;
-
-        if tlv.tlv_type != NetToMgmt::JitterStats || tlv.value.len() < 19 {
-            return Err(JsValue::from_str("Invalid response"));
-        }
-
-        // Parse: received u32, output u32, underruns u32, overruns u32, level u16, state u8
-        let received = u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]);
-        let output = u32::from_le_bytes([tlv.value[4], tlv.value[5], tlv.value[6], tlv.value[7]]);
-        let underruns = u32::from_le_bytes([tlv.value[8], tlv.value[9], tlv.value[10], tlv.value[11]]);
-        let overruns = u32::from_le_bytes([tlv.value[12], tlv.value[13], tlv.value[14], tlv.value[15]]);
-        let level = u16::from_le_bytes([tlv.value[16], tlv.value[17]]);
-        let state = tlv.value[18];
+        let core = self.core_mut()?;
+        let stats = core.get_jitter_stats(channel_id).await.map_err(ctl_error_to_js)?;
 
         let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"received".into(), &received.into())?;
-        js_sys::Reflect::set(&obj, &"output".into(), &output.into())?;
-        js_sys::Reflect::set(&obj, &"underruns".into(), &underruns.into())?;
-        js_sys::Reflect::set(&obj, &"overruns".into(), &overruns.into())?;
-        js_sys::Reflect::set(&obj, &"level".into(), &level.into())?;
-        js_sys::Reflect::set(&obj, &"state".into(), &(if state == 0 { "buffering" } else { "playing" }).into())?;
+        js_sys::Reflect::set(&obj, &"received".into(), &stats.received.into())?;
+        js_sys::Reflect::set(&obj, &"output".into(), &stats.output.into())?;
+        js_sys::Reflect::set(&obj, &"underruns".into(), &stats.underruns.into())?;
+        js_sys::Reflect::set(&obj, &"overruns".into(), &stats.overruns.into())?;
+        js_sys::Reflect::set(&obj, &"level".into(), &stats.level.into())?;
+        js_sys::Reflect::set(&obj, &"state".into(), &(if stats.state == 0 { "buffering" } else { "playing" }).into())?;
         Ok(obj.into())
     }
 

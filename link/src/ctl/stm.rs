@@ -2,8 +2,12 @@
 //!
 //! This module implements the host side of the STM32 bootloader protocol
 //! as described in ST Application Note AN3155.
+//!
+//! The implementation is async-first and works with any type implementing
+//! the `CtlPort` trait.
 
-use std::io::{Read, Write};
+use super::port::CtlPort;
+use core::fmt::Debug;
 
 /// ACK byte sent by the bootloader to acknowledge a command.
 const ACK: u8 = 0x79;
@@ -13,9 +17,6 @@ const NACK: u8 = 0x1F;
 
 /// Initialization byte sent to start communication and trigger auto-baud detection.
 const INIT: u8 = 0x7F;
-
-/// Trait alias for a type that can be used as a serial port with the bootloader.
-pub trait SerialPort: Read + Write {}
 
 /// Bootloader command codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,16 +67,6 @@ pub enum Error<E> {
     InvalidPageCount,
 }
 
-impl From<std::io::Error> for Error<std::io::Error> {
-    fn from(e: std::io::Error) -> Self {
-        if e.kind() == std::io::ErrorKind::UnexpectedEof {
-            Error::UnexpectedEof
-        } else {
-            Error::Io(e)
-        }
-    }
-}
-
 /// Response from the Get command containing bootloader version and supported commands.
 #[derive(Debug, Clone)]
 pub struct GetResponse {
@@ -119,63 +110,62 @@ impl SpecialErase {
     }
 }
 
-/// Blanket implementation for SerialPort trait.
-impl<T: Read + Write> SerialPort for T {}
-
 /// STM32 bootloader client.
 ///
-/// Wraps a serial connection and provides methods for interacting with
-/// the STM32 bootloader.
-pub struct Bootloader<P> {
+/// Wraps a port implementing `CtlPort` and provides async methods for
+/// interacting with the STM32 bootloader.
+pub struct Bootloader<P: CtlPort> {
     port: P,
 }
 
-impl<P> Bootloader<P>
-where
-    P: Read + Write,
-{
-    /// Create a new bootloader client from a serial port.
+impl<P: CtlPort> Bootloader<P> {
+    /// Create a new bootloader client from a port.
     pub fn new(port: P) -> Self {
         Self { port }
     }
 
-    /// Consume the bootloader client and return the serial port.
+    /// Consume the bootloader client and return the port.
     pub fn into_inner(self) -> P {
         self.port
+    }
+
+    /// Get a mutable reference to the underlying port.
+    pub fn port_mut(&mut self) -> &mut P {
+        &mut self.port
     }
 
     /// Initialize communication with the bootloader.
     ///
     /// Sends the 0x7F byte to trigger auto-baud detection and waits for ACK.
     /// This must be called first after the STM32 enters bootloader mode.
-    pub fn init(&mut self) -> Result<(), Error<std::io::Error>> {
-        self.write_byte(INIT)?;
-        self.wait_ack()
+    pub async fn init(&mut self) -> Result<(), Error<P::Error>> {
+        self.write_byte(INIT).await?;
+        self.wait_ack().await
     }
 
     /// Execute the Get command to retrieve bootloader version and supported commands.
-    pub fn get(&mut self) -> Result<GetResponse, Error<std::io::Error>> {
-        self.send_command(Command::Get)?;
-        self.wait_ack()?;
+    pub async fn get(&mut self) -> Result<GetResponse, Error<P::Error>> {
+        self.send_command(Command::Get).await?;
+        self.wait_ack().await?;
 
         // Read number of bytes (N) - version and commands follow
-        let n = self.read_byte()? as usize;
+        let n = self.read_byte().await? as usize;
 
         // Read version
-        let version = self.read_byte()?;
+        let version = self.read_byte().await?;
 
         // Read supported commands (N bytes remaining)
         let mut commands = [0u8; 16];
         let command_count = n.min(16);
         for slot in commands.iter_mut().take(command_count) {
-            *slot = self.read_byte()?;
+            *slot = self.read_byte().await?;
         }
         // Read any remaining commands beyond array capacity
         for _ in command_count..n {
-            let _ = self.read_byte()?;
+            let _ = self.read_byte().await?;
         }
 
-        self.wait_ack()?;
+        self.wait_ack().await?;
 
         Ok(GetResponse {
             version,
@@ -185,15 +175,15 @@ where
     }
 
     /// Execute the Get Version command to retrieve the protocol version.
-    pub fn get_version(&mut self) -> Result<VersionResponse, Error<std::io::Error>> {
-        self.send_command(Command::GetVersion)?;
-        self.wait_ack()?;
+    pub async fn get_version(&mut self) -> Result<VersionResponse, Error<P::Error>> {
+        self.send_command(Command::GetVersion).await?;
+        self.wait_ack().await?;
 
-        let version = self.read_byte()?;
-        let option1 = self.read_byte()?;
-        let option2 = self.read_byte()?;
+        let version = self.read_byte().await?;
+        let option1 = self.read_byte().await?;
+        let option2 = self.read_byte().await?;
 
-        self.wait_ack()?;
+        self.wait_ack().await?;
 
         Ok(VersionResponse {
             version,
@@ -205,18 +195,18 @@ where
     /// Execute the Get ID command to retrieve the chip product ID.
     ///
     /// Returns the product ID as a 16-bit value (MSB first from bootloader).
-    pub fn get_id(&mut self) -> Result<u16, Error<std::io::Error>> {
-        self.send_command(Command::GetId)?;
-        self.wait_ack()?;
+    pub async fn get_id(&mut self) -> Result<u16, Error<P::Error>> {
+        self.send_command(Command::GetId).await?;
+        self.wait_ack().await?;
 
         // N = number of bytes - 1 (always 1 for STM32, meaning 2 bytes)
-        let _n = self.read_byte()?;
+        let _n = self.read_byte().await?;
 
         // Read PID (2 bytes, MSB first)
-        let msb = self.read_byte()?;
-        let lsb = self.read_byte()?;
+        let msb = self.read_byte().await?;
+        let lsb = self.read_byte().await?;
 
-        self.wait_ack()?;
+        self.wait_ack().await?;
 
         Ok(((msb as u16) << 8) | (lsb as u16))
     }
@@ -225,31 +215,34 @@ where
     ///
     /// Reads up to 256 bytes starting at the given address into the provided buffer.
     /// Returns the number of bytes read.
-    pub fn read_memory(
+    pub async fn read_memory(
         &mut self,
         address: u32,
         buffer: &mut [u8],
-    ) -> Result<usize, Error<std::io::Error>> {
+    ) -> Result<usize, Error<P::Error>> {
         if buffer.is_empty() {
             return Ok(0);
         }
 
         let len = buffer.len().min(256);
 
-        self.send_command(Command::ReadMemory)?;
-        self.wait_ack()?;
+        self.send_command(Command::ReadMemory).await?;
+        self.wait_ack().await?;
 
         // Send address with checksum
-        self.send_address(address)?;
-        self.wait_ack()?;
+        self.send_address(address).await?;
+        self.wait_ack().await?;
 
         // Send number of bytes - 1 and its complement
         let n = (len - 1) as u8;
-        self.write_bytes(&[n, !n])?;
-        self.wait_ack()?;
+        self.write_bytes(&[n, !n]).await?;
+        self.wait_ack().await?;
 
         // Read data in bulk
-        self.port.read_exact(&mut buffer[..len])?;
+        self.port
+            .read_exact(&mut buffer[..len])
+            .await
+            .map_err(Error::Io)?;
 
         Ok(len)
     }
@@ -258,12 +251,12 @@ where
     ///
     /// The bootloader will initialize the stack pointer from address and
     /// jump to address+4 (the reset handler).
-    pub fn go(&mut self, address: u32) -> Result<(), Error<std::io::Error>> {
-        self.send_command(Command::Go)?;
-        self.wait_ack()?;
+    pub async fn go(&mut self, address: u32) -> Result<(), Error<P::Error>> {
+        self.send_command(Command::Go).await?;
+        self.wait_ack().await?;
 
-        self.send_address(address)?;
-        self.wait_ack()?;
+        self.send_address(address).await?;
+        self.wait_ack().await?;
 
         Ok(())
     }
@@ -272,7 +265,7 @@ where
     ///
     /// Writes up to 256 bytes starting at the given address.
     /// The data length must be a multiple of 4 bytes.
-    pub fn write_memory(&mut self, address: u32, data: &[u8]) -> Result<(), Error<std::io::Error>> {
+    pub async fn write_memory(&mut self, address: u32, data: &[u8]) -> Result<(), Error<P::Error>> {
         if data.is_empty() {
             return Ok(());
         }
@@ -281,12 +274,12 @@ where
             return Err(Error::DataTooLarge);
         }
 
-        self.send_command(Command::WriteMemory)?;
-        self.wait_ack()?;
+        self.send_command(Command::WriteMemory).await?;
+        self.wait_ack().await?;
 
         // Send address with checksum
-        self.send_address(address)?;
-        self.wait_ack()?;
+        self.send_address(address).await?;
+        self.wait_ack().await?;
 
         // Send N (number of bytes - 1), data, and checksum
         let n = (data.len() - 1) as u8;
@@ -295,10 +288,10 @@ where
             checksum ^= byte;
         }
 
-        self.write_byte(n)?;
-        self.write_bytes(data)?;
-        self.write_byte(checksum)?;
-        self.wait_ack()?;
+        self.write_byte(n).await?;
+        self.write_bytes(data).await?;
+        self.write_byte(checksum).await?;
+        self.wait_ack().await?;
 
         Ok(())
     }
@@ -307,14 +300,14 @@ where
     ///
     /// Pass `None` for global erase, or `Some(&pages)` to erase specific pages.
     /// Each page number is a single byte.
-    pub fn erase(&mut self, pages: Option<&[u8]>) -> Result<(), Error<std::io::Error>> {
-        self.send_command(Command::Erase)?;
-        self.wait_ack()?;
+    pub async fn erase(&mut self, pages: Option<&[u8]>) -> Result<(), Error<P::Error>> {
+        self.send_command(Command::Erase).await?;
+        self.wait_ack().await?;
 
         match pages {
             None => {
                 // Global erase: send 0xFF, 0x00
-                self.write_bytes(&[0xFF, 0x00])?;
+                self.write_bytes(&[0xFF, 0x00]).await?;
             }
             Some(pages) => {
                 if pages.is_empty() || pages.len() > 256 {
@@ -328,13 +321,13 @@ where
                     checksum ^= page;
                 }
 
-                self.write_byte(n)?;
-                self.write_bytes(pages)?;
-                self.write_byte(checksum)?;
+                self.write_byte(n).await?;
+                self.write_bytes(pages).await?;
+                self.write_byte(checksum).await?;
             }
         }
 
-        self.wait_ack()?;
+        self.wait_ack().await?;
         Ok(())
     }
 
@@ -342,20 +335,20 @@ where
     ///
     /// Pass `None` for a special erase (mass/bank), or `Some(&pages)` to erase specific pages.
     /// Each page number is a 16-bit value.
-    pub fn extended_erase(
+    pub async fn extended_erase(
         &mut self,
         pages: Option<&[u16]>,
         special: Option<SpecialErase>,
-    ) -> Result<(), Error<std::io::Error>> {
-        self.send_command(Command::ExtendedErase)?;
-        self.wait_ack()?;
+    ) -> Result<(), Error<P::Error>> {
+        self.send_command(Command::ExtendedErase).await?;
+        self.wait_ack().await?;
 
         if let Some(special) = special {
             // Special erase (mass erase, bank erase)
             let code = special.code();
             let msb = (code >> 8) as u8;
             let lsb = (code & 0xFF) as u8;
-            self.write_bytes(&[msb, lsb, msb ^ lsb])?;
+            self.write_bytes(&[msb, lsb, msb ^ lsb]).await?;
         } else if let Some(pages) = pages {
             if pages.is_empty() {
                 return Err(Error::InvalidPageCount);
@@ -367,67 +360,67 @@ where
             let n_lsb = (n & 0xFF) as u8;
 
             let mut checksum = n_msb ^ n_lsb;
-            self.write_bytes(&[n_msb, n_lsb])?;
+            self.write_bytes(&[n_msb, n_lsb]).await?;
 
             // Send page numbers (2 bytes each, MSB first)
             for &page in pages {
                 let msb = (page >> 8) as u8;
                 let lsb = (page & 0xFF) as u8;
-                self.write_bytes(&[msb, lsb])?;
+                self.write_bytes(&[msb, lsb]).await?;
                 checksum ^= msb ^ lsb;
             }
 
-            self.write_byte(checksum)?;
+            self.write_byte(checksum).await?;
         } else {
             return Err(Error::InvalidPageCount);
         }
 
-        self.wait_ack()?;
+        self.wait_ack().await?;
         Ok(())
     }
 
     /// Execute the Write Protect command to enable write protection for sectors.
-    pub fn write_protect(&mut self, sectors: &[u8]) -> Result<(), Error<std::io::Error>> {
+    pub async fn write_protect(&mut self, sectors: &[u8]) -> Result<(), Error<P::Error>> {
         if sectors.is_empty() {
             return Err(Error::InvalidPageCount);
         }
 
-        self.send_command(Command::WriteProtect)?;
-        self.wait_ack()?;
+        self.send_command(Command::WriteProtect).await?;
+        self.wait_ack().await?;
 
         // Send N (number of sectors - 1)
         let n = (sectors.len() - 1) as u8;
         let mut checksum = n;
-        self.write_byte(n)?;
+        self.write_byte(n).await?;
 
         // Send sector codes
         for &sector in sectors {
-            self.write_byte(sector)?;
+            self.write_byte(sector).await?;
             checksum ^= sector;
         }
 
-        self.write_byte(checksum)?;
-        self.wait_ack()?;
+        self.write_byte(checksum).await?;
+        self.wait_ack().await?;
 
         // Note: Device will reset after this command
         Ok(())
     }
 
     /// Execute the Write Unprotect command to disable write protection for all sectors.
-    pub fn write_unprotect(&mut self) -> Result<(), Error<std::io::Error>> {
-        self.send_command(Command::WriteUnprotect)?;
-        self.wait_ack()?;
-        self.wait_ack()?;
+    pub async fn write_unprotect(&mut self) -> Result<(), Error<P::Error>> {
+        self.send_command(Command::WriteUnprotect).await?;
+        self.wait_ack().await?;
+        self.wait_ack().await?;
 
         // Note: Device will reset after this command
         Ok(())
     }
 
     /// Execute the Readout Protect command to enable flash read protection.
-    pub fn readout_protect(&mut self) -> Result<(), Error<std::io::Error>> {
-        self.send_command(Command::ReadoutProtect)?;
-        self.wait_ack()?;
-        self.wait_ack()?;
+    pub async fn readout_protect(&mut self) -> Result<(), Error<P::Error>> {
+        self.send_command(Command::ReadoutProtect).await?;
+        self.wait_ack().await?;
+        self.wait_ack().await?;
 
         // Note: Device will reset after this command
         Ok(())
@@ -436,10 +429,10 @@ where
     /// Execute the Readout Unprotect command to disable flash read protection.
     ///
     /// WARNING: This will erase all flash memory!
-    pub fn readout_unprotect(&mut self) -> Result<(), Error<std::io::Error>> {
-        self.send_command(Command::ReadoutUnprotect)?;
-        self.wait_ack()?;
-        self.wait_ack()?;
+    pub async fn readout_unprotect(&mut self) -> Result<(), Error<P::Error>> {
+        self.send_command(Command::ReadoutUnprotect).await?;
+        self.wait_ack().await?;
+        self.wait_ack().await?;
 
         // Note: Device will reset after this command and flash is erased
         Ok(())
@@ -447,23 +440,23 @@ where
 
     // --- Helper methods ---
 
-    fn send_command(&mut self, cmd: Command) -> Result<(), Error<std::io::Error>> {
+    async fn send_command(&mut self, cmd: Command) -> Result<(), Error<P::Error>> {
         let code = cmd as u8;
-        self.write_bytes(&[code, !code])?;
+        self.write_bytes(&[code, !code]).await?;
         Ok(())
     }
 
-    fn send_address(&mut self, address: u32) -> Result<(), Error<std::io::Error>> {
+    async fn send_address(&mut self, address: u32) -> Result<(), Error<P::Error>> {
         let bytes = address.to_be_bytes();
         let checksum = bytes[0] ^ bytes[1] ^ bytes[2] ^ bytes[3];
         let packet = [bytes[0], bytes[1], bytes[2], bytes[3], checksum];
-        self.write_bytes(&packet)?;
+        self.write_bytes(&packet).await?;
         Ok(())
     }
 
-    fn wait_ack(&mut self) -> Result<(), Error<std::io::Error>> {
-        self.flush()?;
-        let response = self.read_byte()?;
+    async fn wait_ack(&mut self) -> Result<(), Error<P::Error>> {
+        self.flush().await?;
+        let response = self.read_byte().await?;
         match response {
             ACK => Ok(()),
             NACK => Err(Error::Nack),
@@ -471,24 +464,24 @@ where
         }
     }
 
-    fn read_byte(&mut self) -> Result<u8, Error<std::io::Error>> {
+    async fn read_byte(&mut self) -> Result<u8, Error<P::Error>> {
         let mut buf = [0u8; 1];
-        self.port.read_exact(&mut buf)?;
+        self.port.read_exact(&mut buf).await.map_err(Error::Io)?;
         Ok(buf[0])
     }
 
-    fn write_byte(&mut self, byte: u8) -> Result<(), Error<std::io::Error>> {
-        self.port.write_all(&[byte])?;
+    async fn write_byte(&mut self, byte: u8) -> Result<(), Error<P::Error>> {
+        self.port.write_all(&[byte]).await.map_err(Error::Io)?;
         Ok(())
     }
 
-    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), Error<std::io::Error>> {
-        self.port.write_all(bytes)?;
+    async fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), Error<P::Error>> {
+        self.port.write_all(bytes).await.map_err(Error::Io)?;
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), Error<std::io::Error>> {
-        self.port.flush()?;
+    async fn flush(&mut self) -> Result<(), Error<P::Error>> {
+        self.port.flush().await.map_err(Error::Io)?;
         Ok(())
     }
 }

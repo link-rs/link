@@ -3,7 +3,7 @@
 use crate::{App, GetSetHex, GetSetU32, LoopbackAction, StackAction, UiAction};
 use link::LoopbackMode;
 use indicatif::{ProgressBar, ProgressStyle};
-use link::ctl::FlashPhase;
+use link::ctl::flash::FlashPhase;
 use std::io::Write;
 use std::thread;
 use std::time::Duration;
@@ -253,8 +253,8 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
                         }
                     }
 
-                    // Check for TLV data from UI
-                    match app.read_ui_log() {
+                    // Check for TLV data from UI (timeout-aware)
+                    match app.try_read_ui_log() {
                         Ok(Some(msg)) => {
                             // Use \r\n for raw terminal mode
                             print!("[UI] {}\r\n", msg);
@@ -264,12 +264,6 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
                             // Timeout or non-log TLV, continue
                         }
                         Err(e) => {
-                            // Check if it's just a timeout
-                            if let link::ctl::TlvReadError::Io(ref io_err) = e {
-                                if io_err.kind() == std::io::ErrorKind::TimedOut {
-                                    continue;
-                                }
-                            }
                             return Err(format!("Read error: {:?}", e).into());
                         }
                     }

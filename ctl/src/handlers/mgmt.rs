@@ -2,7 +2,7 @@
 
 use crate::{App, GetSetU32, MgmtAction, StackAction};
 use indicatif::{ProgressBar, ProgressStyle};
-use link::ctl::FlashPhase;
+use link::ctl::flash::FlashPhase;
 use link::{CtlToMgmt, MgmtToCtl};
 use std::io::Write;
 use std::time::{Duration, Instant};

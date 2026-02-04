@@ -1,7 +1,6 @@
 //! NET chip command handlers.
 
 use crate::{App, ChannelAction, GetSetString, NetAction, NetLoopbackMode, WifiAction};
-use futures::executor::block_on;
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::{ChannelConfig, ProgressCallbacks};
 use link::NetLoopback;
@@ -66,7 +65,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         }
         NetAction::Info => {
             println!("Querying NET chip info...");
-            let info = block_on(app.get_net_bootloader_info())
+            let info = app.get_net_bootloader_info()
                 .map_err(|e| format!("Failed to get bootloader info: {:?}", e))?;
 
             let dev = &info.device_info;
@@ -177,7 +176,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             println!("Resetting NET chip to bootloader mode...\n");
 
             let mut progress = FlashProgress::new();
-            let result = block_on(app.flash_net(&firmware, partition_table_data.as_deref(), &mut progress));
+            let result = app.flash_net(&firmware, partition_table_data.as_deref(), &mut progress);
 
             progress.finish();
 
@@ -316,7 +315,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         },
         NetAction::Erase => {
             println!("Erasing NET chip flash...");
-            match block_on(app.erase_net()) {
+            match app.erase_net() {
                 Ok(()) => {
                     println!("Flash erased successfully");
                     Ok(())
@@ -355,7 +354,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                         }
                     }
 
-                    // Check for TLV data
+                    // Check for TLV data (timeout-aware: returns Ok(None) on timeout)
                     match app.read_tlv() {
                         Ok(Some(tlv)) => {
                             if tlv.tlv_type == link::MgmtToCtl::FromNet {
@@ -367,12 +366,6 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                             // Timeout, continue
                         }
                         Err(e) => {
-                            // Check if it's just a timeout
-                            if let link::ctl::TlvReadError::Io(ref io_err) = e {
-                                if io_err.kind() == std::io::ErrorKind::TimedOut {
-                                    continue;
-                                }
-                            }
                             return Err(format!("Read error: {:?}", e).into());
                         }
                     }

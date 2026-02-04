@@ -241,3 +241,42 @@ impl Write for WebSerial {
         Ok(())
     }
 }
+
+// ============================================================================
+// CtlPort implementation for WebSerial
+// ============================================================================
+
+impl link::ctl::CtlPort for WebSerial {
+    type Error = WebSerialError;
+
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        // Use the embedded_io_async::Read implementation
+        <Self as Read>::read(self, buf).await
+    }
+
+    async fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
+        // Use embedded_io_async::Write implementation, looping until all bytes written
+        let mut written = 0;
+        while written < buf.len() {
+            let n = <Self as Write>::write(self, &buf[written..]).await?;
+            written += n;
+        }
+        Ok(())
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        <Self as Write>::flush(self).await
+    }
+
+    async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
+        let mut filled = 0;
+        while filled < buf.len() {
+            let n = <Self as Read>::read(self, &mut buf[filled..]).await?;
+            if n == 0 {
+                return Err(WebSerialError::ReadError("Unexpected EOF".into()));
+            }
+            filled += n;
+        }
+        Ok(())
+    }
+}

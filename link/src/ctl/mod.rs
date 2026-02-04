@@ -1,25 +1,70 @@
 //! CTL (Controller) chip - the host computer interface.
 //!
-//! This module requires `std` for synchronous I/O operations.
+//! This module provides two layers:
+//! - `ctl-core`: Async-first `CtlCore<P>` that works with any `CtlPort` implementation
+//! - `ctl`: Full CLI support with sync I/O, flashing, and espflash integration
+//!
+//! For WASM/async usage, use the `ctl-core` or `async-ctl` features.
+//! For CLI usage, use the `ctl` feature.
 
 extern crate alloc;
 
-pub mod espflash;
+// Core async implementation (available with ctl-core feature)
+pub mod port;
+pub mod core;
+
+// Sync adapter for CLI (requires std)
+#[cfg(feature = "std")]
+pub mod sync_adapter;
+
+// Re-export core types
+pub use self::core::{CtlCore, CtlError, EchoTestResults, SpeedTestResults, StackInfoResult, JitterStatsResult};
+pub use self::port::CtlPort;
+
+#[cfg(feature = "std")]
+pub use self::sync_adapter::{SharedPort, SharedPortAdapter, SyncPortAdapter};
+
+// STM32 bootloader support (async, works with ctl-core)
 pub mod stm;
 
-use crate::shared::{
-    CtlToMgmt, HEADER_SIZE, LoopbackMode, MAX_CHANNELS, MAX_VALUE_SIZE, MgmtToCtl, MgmtToNet,
-    MgmtToUi, NetLoopback, NetToMgmt, SYNC_WORD, Tlv, UiToMgmt, WifiSsid,
-};
+// espflash integration (requires ctl feature with std)
+#[cfg(feature = "ctl")]
+pub mod espflash;
+
+// Flashing support (requires ctl feature)
+// Types are accessed via flash:: to avoid conflict with legacy re-exports
+#[cfg(feature = "ctl")]
+pub mod flash;
+
+// Re-export ChannelConfig from shared
+#[cfg(feature = "ctl")]
 pub use crate::shared::ChannelConfig;
-use self::espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
-use self::espflash::flasher::{FlashData, FlashSettings, Flasher};
-use self::espflash::image_format::idf::IdfBootloaderFormat;
-use self::espflash::target::Chip;
-use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, StopBits, UsbPortInfo};
-use std::io::{self, BufRead, Read, Write};
-use std::time::Duration;
-use stm::Bootloader;
+
+// ============================================================================
+// Legacy App and related types (requires `ctl` feature)
+// ============================================================================
+
+/// Legacy sync-based CTL implementation.
+///
+/// This module contains the original `App` struct and related types that use
+/// synchronous I/O. It's provided for backwards compatibility while CLI code
+/// is migrated to the async-first `CtlCore`.
+#[cfg(feature = "ctl")]
+mod legacy {
+    use super::*;
+    use crate::shared::{
+        CtlToMgmt, HEADER_SIZE, LoopbackMode, MAX_CHANNELS, MAX_VALUE_SIZE, MgmtToCtl, MgmtToNet,
+        MgmtToUi, NetLoopback, NetToMgmt, SYNC_WORD, Tlv, UiToMgmt, WifiSsid,
+    };
+    use super::espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
+    use super::espflash::flasher::{FlashData, FlashSettings, Flasher};
+    use super::espflash::image_format::idf::IdfBootloaderFormat;
+    use super::espflash::target::Chip;
+    use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, StopBits, UsbPortInfo};
+    use std::io::{self, BufRead, Read, Write};
+    use std::time::Duration;
+    use super::stm::Bootloader;
+    use futures::executor::block_on;
 
 // ============================================================================
 // BufferedPort - buffered reading for serial ports
@@ -161,8 +206,8 @@ pub enum EspflashError {
     Espflash(String),
 }
 
-impl core::fmt::Display for EspflashError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl ::core::fmt::Display for EspflashError {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         match self {
             EspflashError::Io(e) => write!(f, "I/O error: {}", e),
             EspflashError::BootloaderTimeout => write!(f, "Bootloader timeout"),
@@ -562,7 +607,7 @@ impl<P: Read> Read for TunnelReader<'_, P> {
             self.buffer.extend_from_slice(&tlv.value).unwrap();
         }
 
-        let to_copy = core::cmp::min(self.buffer.len(), buf.len());
+        let to_copy = ::core::cmp::min(self.buffer.len(), buf.len());
         buf[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
         // Drain from front by copying remaining bytes and truncating
         let remaining = self.buffer.len() - to_copy;
@@ -588,7 +633,7 @@ impl<'a, P> TunnelWriter<'a, P> {
 
 impl<P: Write> Write for TunnelWriter<'_, P> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let to_write = core::cmp::min(MAX_VALUE_SIZE, buf.len());
+        let to_write = ::core::cmp::min(MAX_VALUE_SIZE, buf.len());
         write_tlv(&mut *self.port.lock().unwrap(), self.tlv_type, &buf[..to_write])?;
         Ok(to_write)
     }
@@ -644,7 +689,7 @@ impl<P: Read> Read for TunnelPort<'_, P> {
             self.buffer.extend_from_slice(&tlv.value).unwrap();
         }
 
-        let to_copy = core::cmp::min(self.buffer.len(), buf.len());
+        let to_copy = ::core::cmp::min(self.buffer.len(), buf.len());
         buf[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
         // Drain from front by copying remaining bytes and truncating
         let remaining = self.buffer.len() - to_copy;
@@ -658,7 +703,7 @@ impl<P: Read> Read for TunnelPort<'_, P> {
 
 impl<P: Write> Write for TunnelPort<'_, P> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let to_write = core::cmp::min(MAX_VALUE_SIZE, buf.len());
+        let to_write = ::core::cmp::min(MAX_VALUE_SIZE, buf.len());
         write_tlv(&mut *self.port.lock().unwrap(), self.write_tlv_type, &buf[..to_write])?;
         Ok(to_write)
     }
@@ -783,7 +828,7 @@ where
         };
 
         if tlv.tlv_type == UiToMgmt::Log {
-            match core::str::from_utf8(&tlv.value) {
+            match ::core::str::from_utf8(&tlv.value) {
                 Ok(msg) => Ok(Some(msg.to_string())),
                 Err(_) => Ok(Some(format!("<invalid utf8: {:?}>", tlv.value.as_slice()))),
             }
@@ -1082,7 +1127,7 @@ where
         let tlv: Tlv<UiToMgmt> =
             read_tlv_ui(&mut self.ui_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type == UiToMgmt::Error {
-            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            let msg = ::core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
             return Err(CtlError::DeviceError(msg.to_string()));
         }
         if tlv.tlv_type != UiToMgmt::StackInfo {
@@ -1111,7 +1156,7 @@ where
         let tlv: Tlv<UiToMgmt> =
             read_tlv_ui(&mut self.ui_reader())?.ok_or(CtlError::UnexpectedEof)?;
         if tlv.tlv_type == UiToMgmt::Error {
-            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            let msg = ::core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
             return Err(CtlError::DeviceError(msg.to_string()));
         }
         if tlv.tlv_type != UiToMgmt::Ack {
@@ -1218,7 +1263,7 @@ where
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        let url_str = core::str::from_utf8(&tlv.value).map_err(|_| CtlError::InvalidUtf8)?;
+        let url_str = ::core::str::from_utf8(&tlv.value).map_err(|_| CtlError::InvalidUtf8)?;
         url_str.try_into().map_err(|_| CtlError::TooLong)
     }
 
@@ -1524,17 +1569,17 @@ where
         let mut bl = Bootloader::new(&mut *port_guard);
 
         // Initialize communication (sends 0x7F for auto-baud detection)
-        bl.init()?;
+        block_on(bl.init())?;
 
         // Get bootloader info
-        let info = bl.get()?;
+        let info = block_on(bl.get())?;
 
         // Get chip ID
-        let chip_id = bl.get_id()?;
+        let chip_id = block_on(bl.get_id())?;
 
         // Try to read a small amount of memory from the start of flash
         let mut flash_sample = [0u8; 32];
-        let flash_result = bl.read_memory(0x0800_0000, &mut flash_sample);
+        let flash_result = block_on(bl.read_memory(0x0800_0000, &mut flash_sample));
         let flash_sample = if flash_result.is_ok() {
             Some(flash_sample)
         } else {
@@ -1542,7 +1587,7 @@ where
         };
 
         // Reset MGMT chip back to normal operation by jumping to user firmware
-        bl.go(0x0800_0000)?;
+        block_on(bl.go(0x0800_0000))?;
 
         Ok(MgmtBootloaderInfo {
             bootloader_version: info.version,
@@ -1583,7 +1628,7 @@ where
         let mut bl = Bootloader::new(&mut *port_guard);
 
         // Initialize communication
-        bl.init()?;
+        block_on(bl.init())?;
 
         // Erase pages needed for firmware (STM32F072CB has 2KB pages)
         // Erase page-by-page for progress feedback
@@ -1595,8 +1640,8 @@ where
             progress(FlashPhase::Erasing, page, pages_needed);
             // Try extended erase first, fall back to legacy
             let page_num = page as u16;
-            if bl.extended_erase(Some(&[page_num]), None).is_err() {
-                bl.erase(Some(&[page as u8]))?;
+            if block_on(bl.extended_erase(Some(&[page_num]), None)).is_err() {
+                block_on(bl.erase(Some(&[page as u8])))?;
             }
         }
         progress(FlashPhase::Erasing, pages_needed, pages_needed);
@@ -1608,7 +1653,7 @@ where
 
         for chunk in firmware.chunks(256) {
             let address = base_address + written as u32;
-            bl.write_memory(address, chunk)?;
+            block_on(bl.write_memory(address, chunk))?;
             written += chunk.len();
             progress(FlashPhase::Writing, written, total);
         }
@@ -1619,7 +1664,7 @@ where
 
         for chunk in firmware.chunks(256) {
             let address = base_address + verified as u32;
-            let len = bl.read_memory(address, &mut read_buf[..chunk.len()])?;
+            let len = block_on(bl.read_memory(address, &mut read_buf[..chunk.len()]))?;
             if &read_buf[..len] != chunk {
                 return Err(FlashError::VerifyFailed {
                     address,
@@ -1632,7 +1677,7 @@ where
         }
 
         // Jump to new firmware
-        bl.go(0x0800_0000)?;
+        block_on(bl.go(0x0800_0000))?;
 
         Ok(())
     }
@@ -1850,17 +1895,17 @@ where
         let mut bl = Bootloader::new(&mut ui_tunnel);
 
         // Initialize communication (sends 0x7F for auto-baud detection)
-        bl.init()?;
+        block_on(bl.init())?;
 
         // Get bootloader info
-        let info = bl.get()?;
+        let info = block_on(bl.get())?;
 
         // Get chip ID
-        let chip_id = bl.get_id()?;
+        let chip_id = block_on(bl.get_id())?;
 
         // Try to read a small amount of memory from the start of flash
         let mut flash_sample = [0u8; 32];
-        let flash_sample = match bl.read_memory(0x0800_0000, &mut flash_sample) {
+        let flash_sample = match block_on(bl.read_memory(0x0800_0000, &mut flash_sample)) {
             Ok(_) => Some(flash_sample),
             Err(_) => None, // Read protection may be enabled
         };
@@ -1927,7 +1972,7 @@ where
         let mut bl = Bootloader::new(&mut ui_tunnel);
 
         // Initialize communication
-        bl.init()?;
+        block_on(bl.init())?;
 
         // Erase sectors needed for firmware (STM32F405RG has variable sector sizes)
         // Sectors 0-3: 16KB, Sector 4: 64KB, Sectors 5-11: 128KB
@@ -1935,7 +1980,7 @@ where
 
         for sector in 0..sectors_needed {
             progress(FlashPhase::Erasing, sector, sectors_needed);
-            bl.extended_erase(Some(&[sector as u16]), None)?;
+            block_on(bl.extended_erase(Some(&[sector as u16]), None))?;
         }
         progress(FlashPhase::Erasing, sectors_needed, sectors_needed);
 
@@ -1946,7 +1991,7 @@ where
 
         for chunk in firmware.chunks(256) {
             let address = base_address + written as u32;
-            bl.write_memory(address, chunk)?;
+            block_on(bl.write_memory(address, chunk))?;
             written += chunk.len();
             progress(FlashPhase::Writing, written, total);
         }
@@ -1958,7 +2003,7 @@ where
 
             for chunk in firmware.chunks(256) {
                 let address = base_address + verified as u32;
-                let len = bl.read_memory(address, &mut read_buf[..chunk.len()])?;
+                let len = block_on(bl.read_memory(address, &mut read_buf[..chunk.len()]))?;
                 if &read_buf[..len] != chunk {
                     return Err(FlashError::VerifyFailed {
                         address,
@@ -2441,7 +2486,7 @@ where
         match tlv.tlv_type {
             NetToMgmt::ChatMessageSent => Ok(()),
             NetToMgmt::Error => {
-                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+                let err = ::core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
                 Err(CtlError::DeviceError(err.to_string()))
             }
             other => Err(CtlError::UnexpectedResponse {
@@ -2451,3 +2496,9 @@ where
         }
     }
 }
+
+} // end mod legacy
+
+// Re-export legacy types for backwards compatibility
+#[cfg(feature = "ctl")]
+pub use legacy::*;

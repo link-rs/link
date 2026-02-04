@@ -20,3 +20,4 @@ espflash = { path = "../vendor/espflash/espflash", default-features = false, fea
 log = "0.4"
 crossterm = "0.28"
 futures = { version = "0.3", default-features = false, features = ["executor"] }
+heapless = "0.9"

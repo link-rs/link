@@ -23,12 +23,12 @@ pub mod uart_config;
 #[cfg(feature = "net")]
 pub mod moq;
 
-// WiFi types - only used by ctl, net, and async-ctl
-#[cfg(any(feature = "ctl", feature = "net", feature = "async-ctl"))]
+// WiFi types - only used by ctl, ctl-core, net, and async-ctl
+#[cfg(any(feature = "ctl", feature = "ctl-core", feature = "net", feature = "async-ctl"))]
 pub mod wifi;
 
-// Channel configuration types - used by ctl and net
-#[cfg(any(feature = "ctl", feature = "net"))]
+// Channel configuration types - used by ctl, ctl-core, and net
+#[cfg(any(feature = "ctl", feature = "ctl-core", feature = "net"))]
 pub mod channel;
 
 // Re-export the info macro (no-op when defmt is disabled)
@@ -48,8 +48,8 @@ pub use protocol::*;
 
 // TLV types - core types used by all
 pub use tlv::{MAX_VALUE_SIZE, Tlv};
-// Sync TLV constants - used by ctl and esp-idf (bare-metal firmware uses async traits)
-#[cfg(any(feature = "ctl", feature = "esp-idf"))]
+// Sync TLV constants - used by ctl, ctl-core, and esp-idf (bare-metal firmware uses async traits)
+#[cfg(any(feature = "ctl", feature = "ctl-core", feature = "esp-idf"))]
 pub use tlv::{HEADER_SIZE, SYNC_WORD};
 // Async TLV traits and types - for firmware modules
 #[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
@@ -61,13 +61,13 @@ pub use tlv::{ReadTlv, Value, WriteTlv};
 #[allow(unused_imports)] // Re-exported for public API
 pub use moq::{MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampleType};
 
-// WiFi types - WifiSsid used by ctl, net, and async-ctl
-#[cfg(any(feature = "ctl", feature = "net", feature = "async-ctl"))]
+// WiFi types - WifiSsid used by ctl, ctl-core, net, and async-ctl
+#[cfg(any(feature = "ctl", feature = "ctl-core", feature = "net", feature = "async-ctl"))]
 #[allow(unused_imports)] // Re-exported for public API
 pub use wifi::WifiSsid;
 
-// Channel configuration types - used by ctl and net
-#[cfg(any(feature = "ctl", feature = "net"))]
+// Channel configuration types - used by ctl, ctl-core, and net
+#[cfg(any(feature = "ctl", feature = "ctl-core", feature = "net"))]
 #[allow(unused_imports)] // Re-exported for public API
 pub use channel::{ChannelConfig, MAX_CHANNELS, MAX_CHANNEL_URL_LEN};
 

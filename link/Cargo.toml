@@ -16,7 +16,13 @@ mgmt = ["dep:cortex-m-stack"]  # MGMT has stack measurement
 net = []
 ui = []
 cortex-m-stack = ["dep:cortex-m-stack"]  # Stack usage measurement (UI chip)
+
+# CTL core - async-first implementation, works everywhere (no std required beyond alloc)
+ctl-core = ["alloc"]
+
+# Full CTL with flashing support - requires std
 ctl = [
+    "ctl-core",
     "std",
     "dep:serialport",
     "dep:log",
@@ -36,8 +42,10 @@ ctl = [
     "dep:slip-codec",
     "dep:toml",
     "dep:libc",
-]  # ctl requires std and embedded espflash for NET flashing
-async-ctl = []  # Async CTL support (for WASM) - enables async TLV traits without full firmware features
+]
+
+# Async CTL support (for WASM) - enables async TLV traits and CtlCore
+async-ctl = ["ctl-core"]
 
 # All modules enabled - for development and testing
 all = ["mgmt", "net", "ui", "ctl"]
@@ -48,7 +56,7 @@ defmt = ["dep:defmt", "heapless/defmt"]
 trace-tlv = ["defmt"]  # Verbose TLV read/write logging
 
 # Platform features
-std = ["dep:md-5", "dep:miniz_oxide"]
+std = ["dep:md-5", "dep:miniz_oxide", "futures/executor", "futures/std"]
 alloc = []  # Use heap-allocated types where possible (e.g., WifiSsid)
 audio-buffer = ["dep:embassy-time"]  # Enable jitter buffering for audio playback
 esp-idf = ["std", "alloc"]  # ESP-IDF std environment - uses esp-idf's critical-section impl
@@ -64,7 +72,7 @@ futures = { version = "0.3", default-features = false, features = ["async-await"
 heapless = { version = "0.9", features = ["serde"] }
 num_enum = { version = "0.7.5", default-features = false }
 portable-atomic = { version = "1" }  # critical-section feature conflicts with esp-idf, so we don't enable it by default
-serde = { version = "1", default-features = false, features = ["derive"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 postcard = "1"
 embedded-storage = "0.3"
 aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
