@@ -140,6 +140,11 @@ impl WebSerial {
     /// consumed. Useful before flashing operations where stale data might interfere.
     pub fn clear_read_buffer(&self) {
         if let Some(state) = self.state.borrow_mut().as_mut() {
+            let len = state.read_buffer.len();
+            if len > 0 {
+                let msg = format!("[WebSerial] clear_read_buffer: discarding {} bytes", len);
+                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&msg));
+            }
             state.read_buffer.clear();
         }
     }
@@ -246,6 +251,7 @@ impl WebSerial {
                 read_result.map_err(|e| WebSerialError::ReadError(format!("{:?}", e)))?
             }
             Either::Right((_timeout_result, _)) => {
+                web_sys::console::log_1(&JsValue::from_str("[WebSerial] fill_buffer: timeout"));
                 return Err(WebSerialError::ReadError("Read timeout".into()));
             }
         };
@@ -255,6 +261,7 @@ impl WebSerial {
             .map_err(|e| WebSerialError::ReadError(format!("{:?}", e)))?;
 
         if done.as_bool().unwrap_or(true) {
+            web_sys::console::log_1(&JsValue::from_str("[WebSerial] fill_buffer: stream ended"));
             return Err(WebSerialError::ReadError("Stream ended".into()));
         }
 
@@ -263,6 +270,11 @@ impl WebSerial {
 
         let array: Uint8Array = value.into();
         let data = array.to_vec();
+
+        // Log every chunk that arrives from the browser
+        let hex: String = data.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+        let msg = format!("[WebSerial] fill_buffer: received {} bytes: {}", data.len(), hex);
+        web_sys::console::log_1(&JsValue::from_str(&msg));
 
         let mut state = self.state.borrow_mut();
         let state = state.as_mut().ok_or(WebSerialError::NotConnected)?;
@@ -302,6 +314,9 @@ impl Read for WebSerial {
                 for (i, byte) in state.read_buffer.drain(..to_read).enumerate() {
                     buf[i] = byte;
                 }
+                let hex: String = buf[..to_read].iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+                let msg = format!("[WebSerial] read: returning {} bytes from buffer: {}", to_read, hex);
+                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&msg));
                 return Ok(to_read);
             }
         }
@@ -317,12 +332,19 @@ impl Read for WebSerial {
         for (i, byte) in state.read_buffer.drain(..to_read).enumerate() {
             buf[i] = byte;
         }
+        let hex: String = buf[..to_read].iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+        let msg = format!("[WebSerial] read: returning {} bytes after fill: {}", to_read, hex);
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&msg));
         Ok(to_read)
     }
 }
 
 impl Write for WebSerial {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        let hex: String = buf.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+        let msg = format!("[WebSerial] write: sending {} bytes: {}", buf.len(), hex);
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&msg));
+
         let writer = {
             let state = self.state.borrow();
             let state = state.as_ref().ok_or(WebSerialError::NotConnected)?;
