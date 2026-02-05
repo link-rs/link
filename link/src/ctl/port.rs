@@ -25,8 +25,9 @@ pub trait SetTimeout {
 
 /// Trait for types that support setting the baud rate.
 #[cfg(feature = "std")]
+#[allow(async_fn_in_trait)]
 pub trait SetBaudRate {
-    fn set_baud_rate(&mut self, baud_rate: u32) -> std::io::Result<()>;
+    async fn set_baud_rate(&mut self, baud_rate: u32) -> std::io::Result<()>;
 }
 
 /// Async port trait for CTL communication.

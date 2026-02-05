@@ -141,7 +141,7 @@ pub trait SerialInterface {
     fn baud_rate(&self) -> Result<u32, SerialPortError>;
 
     /// Set the baud rate.
-    fn set_baud_rate(&mut self, baud_rate: u32) -> Result<(), SerialPortError>;
+    async fn set_baud_rate(&mut self, baud_rate: u32) -> Result<(), SerialPortError>;
 
     /// Get the current timeout duration.
     fn timeout(&self) -> Duration;
@@ -632,8 +632,8 @@ impl<P: SerialInterface> Connection<P> {
     }
 
     /// Sets the baud rate for the serial port.
-    pub fn set_baud(&mut self, baud: u32) -> Result<(), Error> {
-        self.serial.set_baud_rate(baud)?;
+    pub async fn set_baud(&mut self, baud: u32) -> Result<(), Error> {
+        self.serial.set_baud_rate(baud).await?;
         self.baud = baud;
         Ok(())
     }

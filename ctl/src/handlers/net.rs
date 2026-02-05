@@ -3,6 +3,7 @@
 use super::Core;
 use crate::{ChannelAction, GetSetString, NetAction, NetLoopbackMode, WifiAction};
 use indicatif::{ProgressBar, ProgressStyle};
+use link::ctl::flash::StdDelay;
 use link::ctl::{ChannelConfig, ProgressCallbacks, SetTimeout};
 use link::NetLoopback;
 
@@ -66,7 +67,7 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
         }
         NetAction::Info => {
             println!("Querying NET chip info...");
-            let info = core.get_net_bootloader_info().await
+            let info = core.get_net_bootloader_info(StdDelay).await
                 .map_err(|e| format!("Failed to get bootloader info: {:?}", e))?;
 
             let dev = &info.device_info;
@@ -168,24 +169,12 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
                 None
             };
 
-            // Hold UI chip in reset during NET flashing to avoid interference
-            println!("Holding UI chip in reset...");
-            if let Err(e) = core.hold_ui_reset().await {
-                eprintln!("Warning: failed to hold UI in reset: {}", e);
-            }
-
-            println!("Resetting NET chip to bootloader mode...\n");
+            println!("Flashing NET chip...\n");
 
             let mut progress = FlashProgress::new();
-            let result = core.flash_net(&firmware, partition_table_data.as_deref(), &mut progress).await;
+            let result = core.flash_net(&firmware, partition_table_data.as_deref(), &mut progress, StdDelay).await;
 
             progress.finish();
-
-            // Release UI chip from reset
-            println!("Releasing UI chip from reset...");
-            if let Err(e) = core.reset_ui_to_user().await {
-                eprintln!("Warning: failed to release UI from reset: {}", e);
-            }
 
             match result {
                 Ok(()) => {
@@ -243,7 +232,7 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
         },
         NetAction::Erase => {
             println!("Erasing NET chip flash...");
-            match core.erase_net().await {
+            match core.erase_net(StdDelay).await {
                 Ok(()) => {
                     println!("Flash erased successfully");
                     Ok(())

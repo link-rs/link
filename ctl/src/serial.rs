@@ -154,7 +154,7 @@ impl SetTimeout for TokioSerialPort {
 }
 
 impl SetBaudRate for TokioSerialPort {
-    fn set_baud_rate(&mut self, baud_rate: u32) -> io::Result<()> {
+    async fn set_baud_rate(&mut self, baud_rate: u32) -> io::Result<()> {
         self.stream
             .set_baud_rate(baud_rate)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))

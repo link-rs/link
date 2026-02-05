@@ -134,6 +134,55 @@ impl WebSerial {
         self.state.borrow().is_some()
     }
 
+    /// Change the baud rate by closing and reopening the port.
+    ///
+    /// This preserves any buffered read data across the reconnection.
+    pub async fn change_baud_rate(&self, baud_rate: u32) -> Result<(), WebSerialError> {
+        // Take the current state
+        let old_state = self.state.borrow_mut().take();
+        let old_state = old_state.ok_or(WebSerialError::NotConnected)?;
+
+        // Preserve the port and read buffer
+        let port = old_state.port;
+        let read_buffer = old_state.read_buffer;
+        let read_timeout_ms = old_state.read_timeout_ms;
+
+        // Release locks and close the port
+        old_state.reader.release_lock();
+        old_state.writer.release_lock();
+
+        JsFuture::from(port.close())
+            .await
+            .map_err(|e| WebSerialError::JsError(format!("Failed to close port: {:?}", e)))?;
+
+        // Reopen with new baud rate
+        let options = web_sys::SerialOptions::new(baud_rate);
+        options.set_parity(web_sys::ParityType::Even);
+        JsFuture::from(port.open(&options))
+            .await
+            .map_err(|e| WebSerialError::JsError(format!("Failed to reopen port: {:?}", e)))?;
+
+        // Get new reader and writer
+        let readable = port.readable();
+        let writable = port.writable();
+
+        let reader: ReadableStreamDefaultReader = readable.get_reader().unchecked_into();
+        let writer: WritableStreamDefaultWriter = writable
+            .get_writer()
+            .map_err(|e| WebSerialError::JsError(format!("Failed to get writer: {:?}", e)))?;
+
+        // Restore state with new reader/writer but preserved buffer
+        *self.state.borrow_mut() = Some(WebSerialState {
+            port,
+            reader,
+            writer,
+            read_buffer,
+            read_timeout_ms,
+        });
+
+        Ok(())
+    }
+
     /// Clear the internal read buffer.
     ///
     /// This discards any data that has been read from the serial port but not yet
@@ -484,10 +533,10 @@ impl link::ctl::SetTimeout for WebSerialAdapter {
 }
 
 impl link::ctl::SetBaudRate for WebSerialAdapter {
-    fn set_baud_rate(&mut self, _baud_rate: u32) -> std::io::Result<()> {
-        // WebSerial requires closing and reopening the port to change baud rate.
-        // For flashing, we stay at the initial baud rate (115200).
-        // The TunnelSerialInterface handles MGMT-NET baud rate via TLV commands.
-        Ok(())
+    async fn set_baud_rate(&mut self, baud_rate: u32) -> std::io::Result<()> {
+        self.inner
+            .change_baud_rate(baud_rate)
+            .await
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
     }
 }

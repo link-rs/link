@@ -523,6 +523,9 @@ impl<P: SerialInterface> Flasher<P> {
     /// The serial port's baud rate should be 115_200 to connect. After
     /// connecting, Flasher will change the baud rate to the `baud`
     /// parameter.
+    ///
+    /// On error, returns the Connection so the caller can recover the underlying
+    /// serial port.
     pub async fn connect(
         mut connection: Connection<P>,
         use_stub: bool,
@@ -530,24 +533,31 @@ impl<P: SerialInterface> Flasher<P> {
         skip: bool,
         chip: Option<Chip>,
         baud: Option<u32>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, (Connection<P>, Error)> {
         // The connection should already be established with the device using the
         // default baud rate of 115,200 and timeout of 3 seconds.
-        connection.begin().await?;
-        connection.set_timeout(DEFAULT_TIMEOUT)?;
+        if let Err(e) = connection.begin().await {
+            return Err((connection, e));
+        }
+        if let Err(e) = connection.set_timeout(DEFAULT_TIMEOUT) {
+            return Err((connection, e));
+        }
 
         detect_sdm(&mut connection).await;
 
         let detected_chip = if connection.before_operation() != ResetBeforeOperation::NoResetNoSync
         {
             // Detect which chip we are connected to.
-            let detected_chip = connection.detect_chip(use_stub).await?;
+            let detected_chip = match connection.detect_chip(use_stub).await {
+                Ok(chip) => chip,
+                Err(e) => return Err((connection, e)),
+            };
             if let Some(chip) = chip {
                 if chip != detected_chip {
-                    return Err(Error::ChipMismatch(
+                    return Err((connection, Error::ChipMismatch(
                         chip.to_string(),
                         detected_chip.to_string(),
-                    ));
+                    )));
                 }
             }
             detected_chip
@@ -556,7 +566,7 @@ impl<P: SerialInterface> Flasher<P> {
         {
             chip.unwrap()
         } else {
-            return Err(Error::ChipNotProvided);
+            return Err((connection, Error::ChipNotProvided));
         };
 
         let mut flasher = Flasher {
@@ -577,10 +587,14 @@ impl<P: SerialInterface> Flasher<P> {
             // Load flash stub if enabled.
             if use_stub {
                 info!("Using flash stub");
-                flasher.load_stub().await?;
+                if let Err(e) = flasher.load_stub().await {
+                    return Err((flasher.into_connection(), e));
+                }
             }
             // Flash size autodetection doesn't work in Secure Download Mode.
-            flasher.spi_autodetect().await?;
+            if let Err(e) = flasher.spi_autodetect().await {
+                return Err((flasher.into_connection(), e));
+            }
         } else if use_stub {
             warn!("Stub is not supported in Secure Download Mode, setting --no-stub");
             flasher.use_stub = false;
@@ -591,7 +605,9 @@ impl<P: SerialInterface> Flasher<P> {
         if let Some(baud) = baud {
             if baud > 115_200 {
                 warn!("Setting baud rate higher than 115,200 can cause issues");
-                flasher.change_baud(baud).await?;
+                if let Err(e) = flasher.change_baud(baud).await {
+                    return Err((flasher.into_connection(), e));
+                }
             }
         }
 
@@ -1042,7 +1058,7 @@ impl<P: SerialInterface> Flasher<P> {
         }).await;
         self.connection.serial.set_timeout(old_timeout)?;
         result?;
-        self.connection.set_baud(baud)?;
+        self.connection.set_baud(baud).await?;
         self.connection.serial.delay_ms(50).await;
         self.connection.flush().await?;
 

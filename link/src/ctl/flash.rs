@@ -211,23 +211,70 @@ impl<P: CtlPort<Error = std::io::Error>> CtlPort for TunnelPort<'_, P> {
 // Async TunnelSerialInterface for NET flashing through MGMT (espflash)
 // ============================================================================
 
+/// Trait for providing async delays.
+///
+/// This allows callers to provide platform-appropriate delay implementations
+/// (e.g., `std::thread::sleep` for native, browser timers for WASM).
+#[allow(async_fn_in_trait)]
+pub trait AsyncDelay {
+    /// Delay for the specified number of milliseconds.
+    async fn delay_ms(&self, ms: u32);
+}
+
+/// Default delay implementation using `std::thread::sleep`.
+///
+/// This works for native platforms but will panic on WASM.
+#[derive(Clone, Copy)]
+pub struct StdDelay;
+
+impl AsyncDelay for StdDelay {
+    async fn delay_ms(&self, ms: u32) {
+        std::thread::sleep(Duration::from_millis(ms as u64));
+    }
+}
+
+/// Size of the TLV header (type: 2 bytes + length: 4 bytes).
+const TLV_HEADER_SIZE: usize = 6;
+
+/// Maximum size for the raw buffer (must hold at least one complete TLV).
+const RAW_BUFFER_SIZE: usize = SYNC_WORD.len() + TLV_HEADER_SIZE + MAX_VALUE_SIZE + 256;
+
 /// Async serial interface for flashing the NET chip (ESP32) through the MGMT tunnel.
 ///
 /// This implements `SerialInterface` for use with espflash. It owns the port `P` directly
 /// since espflash's Connection takes ownership. After flashing, use `into_port()` to
 /// get the port back. DTR/RTS signals are mapped to BOOT/RST pins.
-pub struct TunnelSerialInterface<P> {
+///
+/// The `D` type parameter provides the delay implementation, allowing platform-specific
+/// delays (e.g., `StdDelay` for native, a JS-based delay for WASM).
+///
+/// ## Two-Stage Buffering
+///
+/// To handle timeouts gracefully, this struct uses two buffers:
+/// - `raw_buffer`: Accumulates raw bytes from the port. Partial TLV data is preserved
+///   across timeouts.
+/// - `buffer`: Holds extracted FromNet TLV values ready for the SLIP decoder.
+///
+/// This ensures that SYNC responses inside partially-received TLVs are never lost
+/// due to read timeouts.
+pub struct TunnelSerialInterface<P, D> {
     port: P,
+    delay: D,
+    /// Raw bytes from the port, may contain partial TLVs.
+    raw_buffer: heapless::Vec<u8, RAW_BUFFER_SIZE>,
+    /// Extracted FromNet TLV values, ready for espflash's SLIP decoder.
     buffer: heapless::Vec<u8, MAX_VALUE_SIZE>,
     timeout: Duration,
     baud_rate: u32,
 }
 
-impl<P> TunnelSerialInterface<P> {
+impl<P, D> TunnelSerialInterface<P, D> {
     /// Create a new TunnelSerialInterface for NET chip communication.
-    pub fn new(port: P, baud_rate: u32) -> Self {
+    pub fn new(port: P, baud_rate: u32, delay: D) -> Self {
         Self {
             port,
+            delay,
+            raw_buffer: heapless::Vec::new(),
             buffer: heapless::Vec::new(),
             timeout: Duration::from_secs(3),
             baud_rate,
@@ -240,56 +287,136 @@ impl<P> TunnelSerialInterface<P> {
     }
 }
 
-impl<P: CtlPort<Error = std::io::Error>> TunnelSerialInterface<P> {
+impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P, D> {
     /// Helper to convert io::Error to SerialPortError
     fn io_to_serial(e: std::io::Error) -> SerialPortError {
         SerialPortError::io(e.to_string())
     }
 
-    /// Read a TLV from the port, filtering for FromNet messages.
-    async fn read_net_tlv(&mut self) -> Result<(), std::io::Error> {
-        // Scan for sync word
-        let mut matched = 0usize;
-        while matched < SYNC_WORD.len() {
-            let mut byte = [0u8; 1];
-            self.port.read_exact(&mut byte).await?;
-            if byte[0] == SYNC_WORD[matched] {
-                matched += 1;
-            } else {
-                matched = 0;
-                if byte[0] == SYNC_WORD[0] {
-                    matched = 1;
+    /// Find the position of LINK sync word in the raw buffer.
+    /// Returns None if not found.
+    fn find_sync_word(&self) -> Option<usize> {
+        if self.raw_buffer.len() < SYNC_WORD.len() {
+            return None;
+        }
+        for i in 0..=self.raw_buffer.len() - SYNC_WORD.len() {
+            if &self.raw_buffer[i..i + SYNC_WORD.len()] == SYNC_WORD {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Try to parse complete TLVs from the raw buffer.
+    ///
+    /// This function scans the raw buffer for complete TLVs (LINK + header + value).
+    /// When a complete FromNet TLV is found, its value is appended to `self.buffer`
+    /// and the TLV is removed from the raw buffer.
+    ///
+    /// Returns the number of TLVs successfully parsed.
+    fn try_parse_tlvs(&mut self) -> usize {
+        let mut parsed_count = 0;
+
+        loop {
+            // Find LINK sync word
+            let sync_pos = match self.find_sync_word() {
+                Some(pos) => pos,
+                None => break,
+            };
+
+            // Discard any bytes before the sync word
+            if sync_pos > 0 {
+                // Shift buffer to remove leading garbage
+                let new_len = self.raw_buffer.len() - sync_pos;
+                for i in 0..new_len {
+                    self.raw_buffer[i] = self.raw_buffer[i + sync_pos];
+                }
+                self.raw_buffer.truncate(new_len);
+            }
+
+            // Check if we have enough bytes for header
+            let header_start = SYNC_WORD.len();
+            let header_end = header_start + TLV_HEADER_SIZE;
+            if self.raw_buffer.len() < header_end {
+                // Not enough data for header yet
+                break;
+            }
+
+            // Decode header
+            let raw_type = u16::from_be_bytes([
+                self.raw_buffer[header_start],
+                self.raw_buffer[header_start + 1],
+            ]);
+            let length = u32::from_be_bytes([
+                self.raw_buffer[header_start + 2],
+                self.raw_buffer[header_start + 3],
+                self.raw_buffer[header_start + 4],
+                self.raw_buffer[header_start + 5],
+            ]) as usize;
+
+            // Check if value length is reasonable
+            if length > MAX_VALUE_SIZE {
+                // Invalid TLV - skip this sync word and try to find another
+                // Remove just the LINK bytes and continue scanning
+                let new_len = self.raw_buffer.len() - SYNC_WORD.len();
+                for i in 0..new_len {
+                    self.raw_buffer[i] = self.raw_buffer[i + SYNC_WORD.len()];
+                }
+                self.raw_buffer.truncate(new_len);
+                continue;
+            }
+
+            // Check if we have the complete value
+            let value_end = header_end + length;
+            if self.raw_buffer.len() < value_end {
+                // Not enough data for complete TLV yet
+                break;
+            }
+
+            // Extract value
+            let value = &self.raw_buffer[header_end..value_end];
+
+            // Check if it's FromNet - append to buffer
+            if let Ok(tlv_type) = MgmtToCtl::try_from(raw_type) {
+                if tlv_type == MgmtToCtl::FromNet {
+                    // Append to buffer (don't clear - accumulate values)
+                    let _ = self.buffer.extend_from_slice(value);
                 }
             }
-        }
 
-        // Read header
-        let mut header = [0u8; HEADER_SIZE];
-        self.port.read_exact(&mut header).await?;
-
-        // Decode header
-        let raw_type = u16::from_be_bytes([header[0], header[1]]);
-        let length = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
-
-        // Read value
-        let mut value = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
-        if value.resize(length, 0).is_err() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "TLV too long",
-            ));
-        }
-        self.port.read_exact(&mut value).await?;
-
-        // Check if it's FromNet
-        if let Ok(tlv_type) = MgmtToCtl::try_from(raw_type) {
-            if tlv_type == MgmtToCtl::FromNet {
-                self.buffer.clear();
-                let _ = self.buffer.extend_from_slice(&value);
+            // Remove the parsed TLV from raw buffer
+            let new_len = self.raw_buffer.len() - value_end;
+            for i in 0..new_len {
+                self.raw_buffer[i] = self.raw_buffer[i + value_end];
             }
+            self.raw_buffer.truncate(new_len);
+
+            parsed_count += 1;
         }
 
-        Ok(())
+        parsed_count
+    }
+
+    /// Read available bytes from the port into the raw buffer.
+    ///
+    /// This is a non-blocking read that returns whatever bytes are currently available.
+    /// Returns Ok(n) where n is the number of bytes read, or Err on timeout/error.
+    async fn fill_raw_buffer(&mut self) -> Result<usize, std::io::Error> {
+        // Calculate how much space is available
+        let space = RAW_BUFFER_SIZE - self.raw_buffer.len();
+        if space == 0 {
+            return Ok(0);
+        }
+
+        // Read into a temporary buffer
+        let read_size = space.min(1024);
+        let mut tmp = [0u8; 1024];
+        let n = self.port.read(&mut tmp[..read_size]).await?;
+
+        // Append to raw buffer
+        let _ = self.raw_buffer.extend_from_slice(&tmp[..n]);
+
+        Ok(n)
     }
 
     /// Write a ToNet TLV to the port.
@@ -321,57 +448,98 @@ impl<P: CtlPort<Error = std::io::Error>> TunnelSerialInterface<P> {
         self.port.flush().await
     }
 
+    /// Try to parse TLVs from raw buffer, looking for a specific type.
+    /// Returns Some(value) if found, None if not enough data yet.
+    /// Removes the found TLV from raw_buffer; buffers FromNet values along the way.
+    fn try_parse_tlv_of_type(&mut self, target_type: MgmtToCtl) -> Option<heapless::Vec<u8, MAX_VALUE_SIZE>> {
+        loop {
+            // Find LINK sync word
+            let sync_pos = self.find_sync_word()?;
+
+            // Discard any bytes before the sync word
+            if sync_pos > 0 {
+                let new_len = self.raw_buffer.len() - sync_pos;
+                for i in 0..new_len {
+                    self.raw_buffer[i] = self.raw_buffer[i + sync_pos];
+                }
+                self.raw_buffer.truncate(new_len);
+            }
+
+            // Check if we have enough bytes for header
+            let header_start = SYNC_WORD.len();
+            let header_end = header_start + TLV_HEADER_SIZE;
+            if self.raw_buffer.len() < header_end {
+                return None;
+            }
+
+            // Decode header
+            let raw_type = u16::from_be_bytes([
+                self.raw_buffer[header_start],
+                self.raw_buffer[header_start + 1],
+            ]);
+            let length = u32::from_be_bytes([
+                self.raw_buffer[header_start + 2],
+                self.raw_buffer[header_start + 3],
+                self.raw_buffer[header_start + 4],
+                self.raw_buffer[header_start + 5],
+            ]) as usize;
+
+            // Check if value length is reasonable
+            if length > MAX_VALUE_SIZE {
+                // Invalid TLV - skip this sync word
+                let new_len = self.raw_buffer.len() - SYNC_WORD.len();
+                for i in 0..new_len {
+                    self.raw_buffer[i] = self.raw_buffer[i + SYNC_WORD.len()];
+                }
+                self.raw_buffer.truncate(new_len);
+                continue;
+            }
+
+            // Check if we have the complete value
+            let value_end = header_end + length;
+            if self.raw_buffer.len() < value_end {
+                return None;
+            }
+
+            // Extract value
+            let mut value = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
+            let _ = value.extend_from_slice(&self.raw_buffer[header_end..value_end]);
+
+            // Remove the parsed TLV from raw buffer
+            let new_len = self.raw_buffer.len() - value_end;
+            for i in 0..new_len {
+                self.raw_buffer[i] = self.raw_buffer[i + value_end];
+            }
+            self.raw_buffer.truncate(new_len);
+
+            // Check the TLV type
+            if let Ok(tlv_type) = MgmtToCtl::try_from(raw_type) {
+                if tlv_type == target_type {
+                    return Some(value);
+                }
+                // Buffer FromNet values along the way
+                if tlv_type == MgmtToCtl::FromNet {
+                    let _ = self.buffer.extend_from_slice(&value);
+                }
+                // Continue looking for target type
+            }
+        }
+    }
+
     /// Send a command TLV to MGMT and wait for Ack.
     async fn send_mgmt_command(&mut self, cmd: CtlToMgmt, value: &[u8]) -> Result<(), std::io::Error> {
         // Write command
         self.write_mgmt_command(cmd, value).await?;
 
-        // Wait for Ack (skip FromNet messages)
+        // Wait for Ack (buffer FromNet messages along the way)
         loop {
-            // Scan for sync word
-            let mut matched = 0usize;
-            while matched < SYNC_WORD.len() {
-                let mut byte = [0u8; 1];
-                self.port.read_exact(&mut byte).await?;
-                if byte[0] == SYNC_WORD[matched] {
-                    matched += 1;
-                } else {
-                    matched = 0;
-                    if byte[0] == SYNC_WORD[0] {
-                        matched = 1;
-                    }
-                }
+            // Try to find Ack in existing raw data
+            if self.try_parse_tlv_of_type(MgmtToCtl::Ack).is_some() {
+                return Ok(());
             }
 
-            // Read header
-            let mut header = [0u8; HEADER_SIZE];
-            self.port.read_exact(&mut header).await?;
-
-            let raw_type = u16::from_be_bytes([header[0], header[1]]);
-            let length = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
-
-            // Read value
-            let mut value_buf = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
-            if value_buf.resize(length, 0).is_err() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "TLV too long",
-                ));
-            }
-            self.port.read_exact(&mut value_buf).await?;
-
-            if let Ok(tlv_type) = MgmtToCtl::try_from(raw_type) {
-                match tlv_type {
-                    MgmtToCtl::Ack => return Ok(()),
-                    MgmtToCtl::FromNet => {
-                        // Buffer NET data for later reads
-                        self.buffer.clear();
-                        let _ = self.buffer.extend_from_slice(&value_buf);
-                        continue;
-                    }
-                    _ => continue,
-                }
-            }
+            // Read more data from port
+            self.fill_raw_buffer().await?;
         }
     }
 
@@ -386,8 +554,7 @@ impl<P: CtlPort<Error = std::io::Error>> TunnelSerialInterface<P> {
         self.send_mgmt_command(CtlToMgmt::SetCtlBaudRate, &baud_bytes).await?;
 
         // Small delay for MGMT to complete the baud rate switch
-        // Use async sleep if available, otherwise fall back to thread sleep
-        std::thread::sleep(Duration::from_millis(10));
+        self.delay.delay_ms(10).await;
 
         // Update local baud rate tracking
         self.baud_rate = baud_rate;
@@ -397,7 +564,7 @@ impl<P: CtlPort<Error = std::io::Error>> TunnelSerialInterface<P> {
 }
 
 
-impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static> SerialInterface for TunnelSerialInterface<P> {
+impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static, D: AsyncDelay> SerialInterface for TunnelSerialInterface<P, D> {
     fn name(&self) -> Option<String> {
         Some("tunnel-net".to_string())
     }
@@ -406,10 +573,10 @@ impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static> Se
         Ok(self.baud_rate)
     }
 
-    fn set_baud_rate(&mut self, baud_rate: u32) -> Result<(), SerialPortError> {
-        // Change baud rate on both links and local port (sync wrapper for async)
-        futures::executor::block_on(self.change_baud_rate(baud_rate)).map_err(Self::io_to_serial)?;
-        self.port.set_baud_rate(baud_rate).map_err(Self::io_to_serial)?;
+    async fn set_baud_rate(&mut self, baud_rate: u32) -> Result<(), SerialPortError> {
+        // Change baud rate on both links and local port
+        self.change_baud_rate(baud_rate).await.map_err(Self::io_to_serial)?;
+        self.port.set_baud_rate(baud_rate).await.map_err(Self::io_to_serial)?;
         Ok(())
     }
 
@@ -428,9 +595,27 @@ impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static> Se
     }
 
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, SerialPortError> {
-        // Return buffered data first
+        // Keep trying until we have data in the buffer
         while self.buffer.is_empty() {
-            self.read_net_tlv().await.map_err(Self::io_to_serial)?;
+            // First, try to parse any complete TLVs from existing raw data
+            self.try_parse_tlvs();
+
+            // If we got data, break out
+            if !self.buffer.is_empty() {
+                break;
+            }
+
+            // Read more raw bytes from the port (this may timeout)
+            let n = self.fill_raw_buffer().await.map_err(Self::io_to_serial)?;
+
+            // Try to parse again after reading new data
+            self.try_parse_tlvs();
+
+            // If we still have no data and read returned 0, return what we have
+            // (even if empty - caller will handle)
+            if self.buffer.is_empty() && n == 0 {
+                return Ok(0);
+            }
         }
 
         let to_copy = core::cmp::min(self.buffer.len(), buf.len());
@@ -469,7 +654,11 @@ impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static> Se
     }
 
     async fn clear(&mut self, _buffer_to_clear: ClearBufferType) -> Result<(), SerialPortError> {
+        // Clear both the raw buffer and the parsed buffer
+        self.raw_buffer.clear();
         self.buffer.clear();
+        // Also clear the underlying port's buffer to discard any pending data
+        self.port.clear_buffer();
         Ok(())
     }
 
@@ -492,7 +681,7 @@ impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static> Se
     }
 
     async fn delay_ms(&mut self, ms: u32) {
-        std::thread::sleep(Duration::from_millis(ms as u64));
+        self.delay.delay_ms(ms).await;
     }
 }
 
@@ -938,19 +1127,30 @@ where
     ///
     /// If `partition_table` is provided, it should be the bytes of a CSV or binary
     /// partition table. Otherwise, the default partition table is used.
-    pub async fn flash_net(
+    ///
+    /// The `delay` parameter provides platform-appropriate async delays
+    /// (e.g., `StdDelay` for native, a JS-based delay for WASM).
+    ///
+    /// This method automatically holds the UI chip in reset during flashing
+    /// to avoid interference, and releases it afterward.
+    pub async fn flash_net<D: AsyncDelay>(
         &mut self,
         elf_data: &[u8],
         partition_table: Option<&[u8]>,
         progress: &mut dyn ProgressCallbacks,
+        delay: D,
     ) -> Result<(), EspflashError> {
         const INITIAL_BAUD: u32 = 115_200;
+
+        // Hold UI chip in reset during NET flashing to avoid interference
+        // (done before taking the port)
+        let _ = self.hold_ui_reset().await;
 
         self.drain();
 
         // Take the port out of CtlCore for exclusive use by espflash
         let port = self.take_port();
-        let serial_interface = TunnelSerialInterface::new(port, INITIAL_BAUD);
+        let serial_interface = TunnelSerialInterface::new(port, INITIAL_BAUD, delay);
 
         let port_info = PortInfo {
             vid: 0x303A,
@@ -969,70 +1169,87 @@ where
         );
 
         // Connect to ESP32 bootloader (allow baud rate negotiation up to 460800)
-        let flasher_result = Flasher::connect(connection, false, false, true, None, Some(460_800)).await;
-
-        let mut flasher = match flasher_result {
+        let mut flasher = match Flasher::connect(connection, false, false, true, None, Some(460_800)).await {
             Ok(f) => f,
-            Err(e) => {
-                // Get the port back even on error
-                // Note: We can't easily recover the port from a failed Connection,
-                // so this path may leave the port in a bad state
+            Err((connection, e)) => {
+                // Recover port from the returned connection
+                self.recover_port_from_connection(connection).await;
+                let _ = self.reset_ui_to_user().await;
                 return Err(EspflashError::Espflash(format!("{:?}", e)));
             }
         };
 
         // Get device info for flash settings
-        let info = flasher
-            .device_info()
-            .await
-            .map_err(|e| EspflashError::Espflash(format!("device_info: {:?}", e)))?;
+        let info = match flasher.device_info().await {
+            Ok(info) => info,
+            Err(e) => {
+                self.recover_port_from_connection(flasher.into_connection()).await;
+                let _ = self.reset_ui_to_user().await;
+                return Err(EspflashError::Espflash(format!("device_info: {:?}", e)));
+            }
+        };
         let chip = flasher.chip();
 
         let flash_settings = FlashSettings::new(None, Some(info.flash_size), None);
         let flash_data = FlashData::new(flash_settings, 0, None, chip, info.crystal_frequency);
 
-        let image_format =
-            IdfBootloaderFormat::new(elf_data, &flash_data, partition_table, None, None, None)
-                .map_err(|e| EspflashError::Espflash(format!("IdfBootloaderFormat: {:?}", e)))?;
+        let image_format = match IdfBootloaderFormat::new(elf_data, &flash_data, partition_table, None, None, None) {
+            Ok(fmt) => fmt,
+            Err(e) => {
+                self.recover_port_from_connection(flasher.into_connection()).await;
+                let _ = self.reset_ui_to_user().await;
+                return Err(EspflashError::Espflash(format!("IdfBootloaderFormat: {:?}", e)));
+            }
+        };
 
-        flasher
-            .load_image_to_flash(progress, image_format.into())
-            .await
-            .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
+        if let Err(e) = flasher.load_image_to_flash(progress, image_format.into()).await {
+            self.recover_port_from_connection(flasher.into_connection()).await;
+            let _ = self.reset_ui_to_user().await;
+            return Err(EspflashError::Espflash(format!("{:?}", e)));
+        }
 
-        flasher
-            .connection()
-            .reset()
-            .await
-            .map_err(|e| EspflashError::Espflash(format!("reset: {:?}", e)))?;
+        if let Err(e) = flasher.connection().reset().await {
+            self.recover_port_from_connection(flasher.into_connection()).await;
+            let _ = self.reset_ui_to_user().await;
+            return Err(EspflashError::Espflash(format!("reset: {:?}", e)));
+        }
 
-        // Get the port back via into_connection().into_serial().into_port()
-        let mut tunnel = flasher.into_connection().into_serial();
-
-        // Restore baud rate to initial value before returning port
-        tunnel.change_baud_rate(INITIAL_BAUD)
-            .await
-            .map_err(|e| EspflashError::Espflash(format!("restore baud rate: {:?}", e)))?;
-
-        // Put the port back into CtlCore
-        let mut port = tunnel.into_port();
-        port.set_baud_rate(INITIAL_BAUD)
-            .map_err(|e| EspflashError::Espflash(format!("set local baud rate: {:?}", e)))?;
-        self.put_port(port);
+        // Success path: recover port and release UI
+        self.recover_port_from_connection(flasher.into_connection()).await;
+        let _ = self.reset_ui_to_user().await;
 
         Ok(())
+    }
+
+    /// Helper to recover the port from an espflash Connection and return it to CtlCore.
+    async fn recover_port_from_connection<D: AsyncDelay>(
+        &mut self,
+        connection: Connection<TunnelSerialInterface<P, D>>,
+    ) {
+        const INITIAL_BAUD: u32 = 115_200;
+        let mut tunnel = connection.into_serial();
+        let _ = tunnel.change_baud_rate(INITIAL_BAUD).await;
+        let mut port = tunnel.into_port();
+        let _ = port.set_baud_rate(INITIAL_BAUD).await;
+        self.put_port(port);
     }
 
     /// Get NET chip bootloader info.
     ///
     /// Returns detailed device information including chip type, revision,
     /// flash size, features, MAC address, and security info.
-    pub async fn get_net_bootloader_info(&mut self) -> Result<EspflashDeviceInfo, EspflashError> {
+    ///
+    /// The `delay` parameter provides platform-appropriate async delays
+    /// (e.g., `StdDelay` for native, a JS-based delay for WASM).
+    pub async fn get_net_bootloader_info<D: AsyncDelay>(
+        &mut self,
+        delay: D,
+    ) -> Result<EspflashDeviceInfo, EspflashError> {
         self.drain();
 
         // Take the port out of CtlCore
         let port = self.take_port();
-        let serial_interface = TunnelSerialInterface::new(port, 115_200);
+        let serial_interface = TunnelSerialInterface::new(port, 115_200, delay);
 
         let port_info = PortInfo {
             vid: 0,
@@ -1050,24 +1267,32 @@ where
             115_200,
         );
 
-        let mut flasher =
-            Flasher::connect(connection, false, false, false, Some(Chip::Esp32s3), None)
-                .await
-                .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
+        let mut flasher = match Flasher::connect(connection, false, false, false, Some(Chip::Esp32s3), None).await {
+            Ok(f) => f,
+            Err((connection, e)) => {
+                self.recover_port_from_connection(connection).await;
+                return Err(EspflashError::Espflash(format!("{:?}", e)));
+            }
+        };
 
-        let device_info = flasher
-            .device_info()
-            .await
-            .map_err(|e| EspflashError::Espflash(format!("device_info: {:?}", e)))?;
+        let device_info = match flasher.device_info().await {
+            Ok(info) => info,
+            Err(e) => {
+                self.recover_port_from_connection(flasher.into_connection()).await;
+                return Err(EspflashError::Espflash(format!("device_info: {:?}", e)));
+            }
+        };
 
-        let security_info = flasher
-            .security_info()
-            .await
-            .map_err(|e| EspflashError::Espflash(format!("security_info: {:?}", e)))?;
+        let security_info = match flasher.security_info().await {
+            Ok(info) => info,
+            Err(e) => {
+                self.recover_port_from_connection(flasher.into_connection()).await;
+                return Err(EspflashError::Espflash(format!("security_info: {:?}", e)));
+            }
+        };
 
         // Get the port back and return it to CtlCore
-        let port = flasher.into_connection().into_serial().into_port();
-        self.put_port(port);
+        self.recover_port_from_connection(flasher.into_connection()).await;
 
         Ok(EspflashDeviceInfo {
             device_info,
@@ -1076,12 +1301,15 @@ where
     }
 
     /// Erase the NET chip's entire flash.
-    pub async fn erase_net(&mut self) -> Result<(), EspflashError> {
+    ///
+    /// The `delay` parameter provides platform-appropriate async delays
+    /// (e.g., `StdDelay` for native, a JS-based delay for WASM).
+    pub async fn erase_net<D: AsyncDelay>(&mut self, delay: D) -> Result<(), EspflashError> {
         self.drain();
 
         // Take the port out of CtlCore
         let port = self.take_port();
-        let serial_interface = TunnelSerialInterface::new(port, 115_200);
+        let serial_interface = TunnelSerialInterface::new(port, 115_200, delay);
 
         let port_info = PortInfo {
             vid: 0x303A,
@@ -1099,25 +1327,26 @@ where
             115_200,
         );
 
-        let mut flasher =
-            Flasher::connect(connection, false, false, true, Some(Chip::Esp32s3), None)
-                .await
-                .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
+        let mut flasher = match Flasher::connect(connection, false, false, true, Some(Chip::Esp32s3), None).await {
+            Ok(f) => f,
+            Err((connection, e)) => {
+                self.recover_port_from_connection(connection).await;
+                return Err(EspflashError::Espflash(format!("{:?}", e)));
+            }
+        };
 
-        flasher
-            .erase_flash()
-            .await
-            .map_err(|e| EspflashError::Espflash(format!("{:?}", e)))?;
+        if let Err(e) = flasher.erase_flash().await {
+            self.recover_port_from_connection(flasher.into_connection()).await;
+            return Err(EspflashError::Espflash(format!("{:?}", e)));
+        }
 
-        flasher
-            .connection()
-            .reset()
-            .await
-            .map_err(|e| EspflashError::Espflash(format!("reset: {:?}", e)))?;
+        if let Err(e) = flasher.connection().reset().await {
+            self.recover_port_from_connection(flasher.into_connection()).await;
+            return Err(EspflashError::Espflash(format!("reset: {:?}", e)));
+        }
 
         // Get the port back and return it to CtlCore
-        let port = flasher.into_connection().into_serial().into_port();
-        self.put_port(port);
+        self.recover_port_from_connection(flasher.into_connection()).await;
 
         Ok(())
     }

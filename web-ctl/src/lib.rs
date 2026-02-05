@@ -6,7 +6,7 @@
 mod serial;
 
 use link::ctl::espflash::target::ProgressCallbacks;
-use link::ctl::flash::FlashPhase;
+use link::ctl::flash::{AsyncDelay, FlashPhase};
 use link::ctl::stm;
 use link::ctl::{CtlCore, CtlError, CtlPort, SetTimeout};
 use wasm_bindgen_futures::JsFuture;
@@ -33,6 +33,17 @@ async fn js_sleep(ms: u32) {
         let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32);
     });
     let _ = JsFuture::from(promise).await;
+}
+
+/// JavaScript-based async delay implementation.
+///
+/// This is WASM-compatible and uses `setTimeout` instead of `std::thread::sleep`.
+struct JsDelay;
+
+impl AsyncDelay for JsDelay {
+    async fn delay_ms(&self, ms: u32) {
+        js_sleep(ms).await;
+    }
 }
 
 /// WiFi network configuration.
@@ -835,7 +846,7 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn get_net_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
         let core = self.core_mut()?;
-        let info = core.get_net_bootloader_info().await
+        let info = core.get_net_bootloader_info(JsDelay).await
             .map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
 
         let obj = js_sys::Object::new();
@@ -869,30 +880,58 @@ impl LinkController {
     /// Flash firmware to the NET chip (ESP32).
     ///
     /// Pass an ELF file as Uint8Array - it will be converted to ESP-IDF bootloader format.
-    /// The progress callback receives (address: number, progress: number).
+    /// The progress callback receives (phase: string, current: number, total: number).
     #[wasm_bindgen]
     pub async fn flash_net(&mut self, elf_data: js_sys::Uint8Array, progress_callback: js_sys::Function) -> Result<(), JsValue> {
         let elf_bytes = elf_data.to_vec();
         let core = self.core_mut()?;
 
         // Create a progress callback adapter
+        // Callback signature: (phase: string, current: number, total: number)
+        // where phase is "writing" or "verifying"
         struct JsProgressCallbacks {
             callback: js_sys::Function,
+            total: usize,
+            verifying: bool,
         }
 
         impl ProgressCallbacks for JsProgressCallbacks {
-            fn init(&mut self, addr: u32, _total: usize) {
-                let _ = self.callback.call2(&JsValue::NULL, &JsValue::from(addr), &JsValue::from(0));
+            fn init(&mut self, _addr: u32, total: usize) {
+                self.total = total;
+                self.verifying = false;
+                // Report initial state
+                let phase = if self.verifying { "verifying" } else { "writing" };
+                let _ = self.callback.call3(
+                    &JsValue::NULL,
+                    &JsValue::from_str(phase),
+                    &JsValue::from(0u32),
+                    &JsValue::from(total as u32),
+                );
             }
-            fn update(&mut self, progress: usize) {
-                let _ = self.callback.call2(&JsValue::NULL, &JsValue::from(0u32), &JsValue::from(progress as u32));
+            fn update(&mut self, current: usize) {
+                let phase = if self.verifying { "verifying" } else { "writing" };
+                let _ = self.callback.call3(
+                    &JsValue::NULL,
+                    &JsValue::from_str(phase),
+                    &JsValue::from(current as u32),
+                    &JsValue::from(self.total as u32),
+                );
             }
             fn finish(&mut self, _skipped: bool) {}
-            fn verifying(&mut self) {}
+            fn verifying(&mut self) {
+                self.verifying = true;
+                // Reset position for verification phase
+                let _ = self.callback.call3(
+                    &JsValue::NULL,
+                    &JsValue::from_str("verifying"),
+                    &JsValue::from(0u32),
+                    &JsValue::from(self.total as u32),
+                );
+            }
         }
 
-        let mut progress = JsProgressCallbacks { callback: progress_callback };
-        core.flash_net(&elf_bytes, None, &mut progress).await
+        let mut progress = JsProgressCallbacks { callback: progress_callback, total: 0, verifying: false };
+        core.flash_net(&elf_bytes, None, &mut progress, JsDelay).await
             .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
 
@@ -900,7 +939,7 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn erase_net(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        core.erase_net().await.map_err(|e| JsValue::from_str(&format!("Erase error: {:?}", e)))
+        core.erase_net(JsDelay).await.map_err(|e| JsValue::from_str(&format!("Erase error: {:?}", e)))
     }
 
     // ==================== STATE AGGREGATION ====================

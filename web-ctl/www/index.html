@@ -1746,7 +1746,7 @@
 
             try {
                 // Fetch firmware from server
-                const response = await fetch('firmware/net.bin');
+                const response = await fetch('firmware/net');
                 if (!response.ok) {
                     throw new Error(`Failed to fetch firmware: ${response.status} ${response.statusText}`);
                 }
@@ -1755,9 +1755,10 @@
 
                 progressText.textContent = 'Flashing...';
                 log(`Flashing NET firmware...`, 'info');
-                await controller.flash_net(firmware, (addr, progress) => {
-                    progressFill.style.width = `${progress > 0 ? Math.min(progress, 100) : 0}%`;
-                    progressText.textContent = `Writing 0x${addr.toString(16)}: ${progress}`;
+                await controller.flash_net(firmware, (phase, current, total) => {
+                    const percent = total > 0 ? (current / total) * 100 : 0;
+                    progressFill.style.width = `${percent}%`;
+                    progressText.textContent = `${phase}: ${current} / ${total}`;
                 });
 
                 statusIcon.textContent = '\u2713';
