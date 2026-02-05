@@ -15,6 +15,9 @@ pub mod core;
 pub use self::core::{CtlCore, CtlError, JitterStatsResult, StackInfoResult};
 pub use self::port::CtlPort;
 
+#[cfg(feature = "std")]
+pub use self::port::{SetBaudRate, SetTimeout};
+
 // STM32 bootloader support (async, works with ctl-core)
 pub mod stm;
 

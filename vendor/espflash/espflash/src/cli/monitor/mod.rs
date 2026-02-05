@@ -88,7 +88,7 @@ pub fn monitor(
         println!("    CTRL+C    Exit");
         println!();
     } else if !monitor_args.no_reset {
-        reset_after_flash(&mut serial, pid).into_diagnostic()?;
+        futures::executor::block_on(reset_after_flash(&mut serial, pid)).into_diagnostic()?;
     }
 
     let baud = monitor_args.monitor_baud;
@@ -207,7 +207,7 @@ impl InputHandler {
                 match key.code {
                     KeyCode::Char('c') => return Ok(false),
                     KeyCode::Char('r') => {
-                        reset_after_flash(serial, self.pid).into_diagnostic()?;
+                        futures::executor::block_on(reset_after_flash(serial, self.pid)).into_diagnostic()?;
                         return Ok(true);
                     }
                     _ => {}

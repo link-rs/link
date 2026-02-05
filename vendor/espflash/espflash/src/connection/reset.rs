@@ -5,11 +5,8 @@
 // Most of this module is copied from `esptool.py`:
 // https://github.com/espressif/esptool/blob/a8586d0/esptool/reset.py
 
-use std::{thread::sleep, time::Duration};
-
 use log::debug;
 use serde::{Deserialize, Serialize};
-use serialport::SerialPort;
 use strum::{Display, EnumIter, EnumString, VariantNames};
 
 use super::{Connection, SerialInterface, USB_SERIAL_JTAG_PID};
@@ -24,21 +21,34 @@ const DEFAULT_RESET_DELAY: u64 = 50; // ms
 /// Amount of time to wait if the default reset delay does not work.
 const EXTRA_RESET_DELAY: u64 = 500; // ms
 
-/// Reset strategies for resetting a target device.
-pub trait ResetStrategy {
-    fn reset(&self, serial_port: &mut dyn SerialPort) -> Result<(), Error>;
+/// Reset strategy enum for resetting a target device.
+#[derive(Debug, Clone, Copy)]
+pub enum ResetStrategy {
+    Classic(ClassicReset),
+    #[cfg(unix)]
+    UnixTight(UnixTightReset),
+    UsbJtagSerial(UsbJtagSerialReset),
+}
 
-    fn set_dtr(&self, serial_port: &mut dyn SerialPort, level: bool) -> Result<(), Error> {
-        serial_port.write_data_terminal_ready(level)?;
-
-        Ok(())
+impl ResetStrategy {
+    pub async fn reset<P: SerialInterface>(&self, serial_port: &mut P) -> Result<(), Error> {
+        match self {
+            ResetStrategy::Classic(r) => r.reset(serial_port).await,
+            #[cfg(unix)]
+            ResetStrategy::UnixTight(r) => r.reset(serial_port).await,
+            ResetStrategy::UsbJtagSerial(r) => r.reset(serial_port).await,
+        }
     }
+}
 
-    fn set_rts(&self, serial_port: &mut dyn SerialPort, level: bool) -> Result<(), Error> {
-        serial_port.write_request_to_send(level)?;
+fn set_dtr<P: SerialInterface>(serial_port: &mut P, level: bool) -> Result<(), Error> {
+    serial_port.write_dtr(level)?;
+    Ok(())
+}
 
-        Ok(())
-    }
+fn set_rts<P: SerialInterface>(serial_port: &mut P, level: bool) -> Result<(), Error> {
+    serial_port.write_rts(level)?;
+    Ok(())
 }
 
 /// Classic reset sequence, sets DTR and RTS sequentially.
@@ -60,30 +70,30 @@ impl ClassicReset {
     }
 }
 
-impl ResetStrategy for ClassicReset {
-    fn reset(&self, serial_port: &mut dyn SerialPort) -> Result<(), Error> {
+impl ClassicReset {
+    pub async fn reset<P: SerialInterface>(&self, serial_port: &mut P) -> Result<(), Error> {
         debug!(
             "Using Classic reset strategy with delay of {}ms",
             self.delay
         );
-        self.set_rts(serial_port, false)?;
-        self.set_dtr(serial_port, false)?;
+        set_rts(serial_port, false)?;
+        set_dtr(serial_port, false)?;
 
-        self.set_rts(serial_port, true)?;
-        self.set_dtr(serial_port, true)?;
+        set_rts(serial_port, true)?;
+        set_dtr(serial_port, true)?;
 
-        self.set_rts(serial_port, true)?; // EN = LOW, chip in reset
-        self.set_dtr(serial_port, false)?; // IO0 = HIGH
+        set_rts(serial_port, true)?; // EN = LOW, chip in reset
+        set_dtr(serial_port, false)?; // IO0 = HIGH
 
-        sleep(Duration::from_millis(100));
+        serial_port.delay_ms(100).await;
 
-        self.set_rts(serial_port, false)?; // EN = HIGH, chip out of reset
-        self.set_dtr(serial_port, true)?; // IO0 = LOW
+        set_rts(serial_port, false)?; // EN = HIGH, chip out of reset
+        set_dtr(serial_port, true)?; // IO0 = LOW
 
-        sleep(Duration::from_millis(self.delay));
+        serial_port.delay_ms(self.delay as u32).await;
 
-        self.set_rts(serial_port, false)?;
-        self.set_dtr(serial_port, false)?; // IO0 = HIGH, done
+        set_rts(serial_port, false)?;
+        set_dtr(serial_port, false)?; // IO0 = HIGH, done
 
         Ok(())
     }
@@ -112,29 +122,29 @@ impl UnixTightReset {
 }
 
 #[cfg(unix)]
-impl ResetStrategy for UnixTightReset {
-    fn reset(&self, serial_port: &mut dyn SerialPort) -> Result<(), Error> {
+impl UnixTightReset {
+    pub async fn reset<P: SerialInterface>(&self, serial_port: &mut P) -> Result<(), Error> {
         debug!(
             "Using UnixTight reset strategy with delay of {}ms",
             self.delay
         );
 
-        self.set_dtr(serial_port, false)?;
-        self.set_rts(serial_port, false)?;
-        self.set_dtr(serial_port, true)?;
-        self.set_rts(serial_port, true)?;
-        self.set_dtr(serial_port, false)?; // IO = HIGH
-        self.set_rts(serial_port, true)?; // EN = LOW, chip in reset
+        set_dtr(serial_port, false)?;
+        set_rts(serial_port, false)?;
+        set_dtr(serial_port, true)?;
+        set_rts(serial_port, true)?;
+        set_dtr(serial_port, false)?; // IO = HIGH
+        set_rts(serial_port, true)?; // EN = LOW, chip in reset
 
-        sleep(Duration::from_millis(100));
+        serial_port.delay_ms(100).await;
 
-        self.set_dtr(serial_port, true)?; // IO0 = LOW
-        self.set_rts(serial_port, false)?; // EN = HIGH, chip out of reset
+        set_dtr(serial_port, true)?; // IO0 = LOW
+        set_rts(serial_port, false)?; // EN = HIGH, chip out of reset
 
-        sleep(Duration::from_millis(self.delay));
+        serial_port.delay_ms(self.delay as u32).await;
 
-        self.set_dtr(serial_port, false)?; // IO0 = HIGH, done
-        self.set_rts(serial_port, false)?;
+        set_dtr(serial_port, false)?; // IO0 = HIGH, done
+        set_rts(serial_port, false)?;
 
         Ok(())
     }
@@ -145,74 +155,74 @@ impl ResetStrategy for UnixTightReset {
 #[derive(Debug, Clone, Copy, Serialize, Hash, Deserialize)]
 pub struct UsbJtagSerialReset;
 
-impl ResetStrategy for UsbJtagSerialReset {
-    fn reset(&self, serial_port: &mut dyn SerialPort) -> Result<(), Error> {
+impl UsbJtagSerialReset {
+    pub async fn reset<P: SerialInterface>(&self, serial_port: &mut P) -> Result<(), Error> {
         debug!("Using UsbJtagSerial reset strategy");
 
-        self.set_rts(serial_port, false)?;
-        self.set_dtr(serial_port, false)?; // Idle
+        set_rts(serial_port, false)?;
+        set_dtr(serial_port, false)?; // Idle
 
-        sleep(Duration::from_millis(100));
+        serial_port.delay_ms(100).await;
 
-        self.set_rts(serial_port, false)?;
-        self.set_dtr(serial_port, true)?; // Set IO0
+        set_rts(serial_port, false)?;
+        set_dtr(serial_port, true)?; // Set IO0
 
-        sleep(Duration::from_millis(100));
+        serial_port.delay_ms(100).await;
 
-        self.set_rts(serial_port, true)?; // Reset. Calls inverted to go through (1,1) instead of (0,0)
-        self.set_dtr(serial_port, false)?;
-        self.set_rts(serial_port, true)?; // RTS set as Windows only propagates DTR on RTS setting
+        set_rts(serial_port, true)?; // Reset. Calls inverted to go through (1,1) instead of (0,0)
+        set_dtr(serial_port, false)?;
+        set_rts(serial_port, true)?; // RTS set as Windows only propagates DTR on RTS setting
 
-        sleep(Duration::from_millis(100));
+        serial_port.delay_ms(100).await;
 
-        self.set_rts(serial_port, false)?;
-        self.set_dtr(serial_port, false)?;
+        set_rts(serial_port, false)?;
+        set_dtr(serial_port, false)?;
 
         Ok(())
     }
 }
 
-/// Resets the target device.
-pub fn reset_after_flash(serial: &mut dyn SerialPort, pid: u16) -> Result<(), serialport::Error> {
-    sleep(Duration::from_millis(100));
+/// Resets the target device after flashing.
+pub async fn reset_after_flash<P: SerialInterface>(serial: &mut P, pid: u16) -> Result<(), Error> {
+    serial.delay_ms(100).await;
 
     if pid == USB_SERIAL_JTAG_PID {
-        serial.write_data_terminal_ready(false)?;
+        serial.write_dtr(false)?;
 
-        sleep(Duration::from_millis(100));
+        serial.delay_ms(100).await;
 
-        serial.write_request_to_send(true)?;
-        serial.write_data_terminal_ready(false)?;
-        serial.write_request_to_send(true)?;
+        serial.write_rts(true)?;
+        serial.write_dtr(false)?;
+        serial.write_rts(true)?;
 
-        sleep(Duration::from_millis(100));
+        serial.delay_ms(100).await;
 
-        serial.write_request_to_send(false)?;
+        serial.write_rts(false)?;
     } else {
-        serial.write_request_to_send(true)?;
+        serial.write_rts(true)?;
 
-        sleep(Duration::from_millis(100));
+        serial.delay_ms(100).await;
 
-        serial.write_request_to_send(false)?;
+        serial.write_rts(false)?;
     }
 
     Ok(())
 }
 
 /// Performs a hard reset of the chip.
-pub fn hard_reset(serial_port: &mut dyn SerialPort, pid: u16) -> Result<(), Error> {
+pub async fn hard_reset<P: SerialInterface>(serial_port: &mut P, pid: u16) -> Result<(), Error> {
     debug!("Using HardReset reset strategy");
 
     // Using esptool HardReset strategy (https://github.com/espressif/esptool/blob/3301d0ff4638d4db1760a22540dbd9d07c55ec37/esptool/reset.py#L132-L153)
     // leads to https://github.com/esp-rs/espflash/issues/592 in Windows, using `reset_after_flash` instead works fine for all platforms.
     // We had similar issues in the past: https://github.com/esp-rs/espflash/pull/157
-    reset_after_flash(serial_port, pid)?;
+    reset_after_flash(serial_port, pid).await?;
 
     Ok(())
 }
 
 /// Performs a soft reset of the device.
-pub fn soft_reset<P: SerialInterface>(
+pub async fn soft_reset<P: SerialInterface>(
     connection: &mut Connection<P>,
     stay_in_bootloader: bool,
     is_stub: bool,
@@ -224,44 +234,51 @@ pub fn soft_reset<P: SerialInterface>(
             return Ok(());
         } else {
             //  'run user code' is as close to a soft reset as we can do
-            connection.with_timeout(CommandType::FlashBegin.timeout(), |connection| {
-                let size: u32 = 0;
-                let offset: u32 = 0;
-                let blocks: u32 = size.div_ceil(FLASH_WRITE_SIZE as u32);
-                connection.command(Command::FlashBegin {
+            let size: u32 = 0;
+            let offset: u32 = 0;
+            let blocks: u32 = size.div_ceil(FLASH_WRITE_SIZE as u32);
+
+            connection.set_timeout(CommandType::FlashBegin.timeout())?;
+            connection
+                .command(Command::FlashBegin {
                     size,
                     blocks,
                     block_size: FLASH_WRITE_SIZE.try_into().unwrap(),
                     offset,
                     supports_encryption: false,
                 })
-            })?;
-            connection.with_timeout(CommandType::FlashEnd.timeout(), |connection| {
-                connection.write_command(Command::FlashEnd { reboot: false })
-            })?;
+                .await?;
+
+            connection.set_timeout(CommandType::FlashEnd.timeout())?;
+            connection
+                .write_command(Command::FlashEnd { reboot: false })
+                .await?;
         }
     } else if stay_in_bootloader {
         // Soft resetting from the stub loader will re-load the ROM bootloader
-        connection.with_timeout(CommandType::FlashBegin.timeout(), |connection| {
-            let size: u32 = 0;
-            let offset: u32 = 0;
-            let blocks: u32 = size.div_ceil(FLASH_WRITE_SIZE as u32);
-            connection.command(Command::FlashBegin {
+        let size: u32 = 0;
+        let offset: u32 = 0;
+        let blocks: u32 = size.div_ceil(FLASH_WRITE_SIZE as u32);
+
+        connection.set_timeout(CommandType::FlashBegin.timeout())?;
+        connection
+            .command(Command::FlashBegin {
                 size,
                 blocks,
                 block_size: FLASH_WRITE_SIZE.try_into().unwrap(),
                 offset,
                 supports_encryption: false,
             })
-        })?;
-        connection.with_timeout(CommandType::FlashEnd.timeout(), |connection| {
-            connection.write_command(Command::FlashEnd { reboot: true })
-        })?;
+            .await?;
+
+        connection.set_timeout(CommandType::FlashEnd.timeout())?;
+        connection
+            .write_command(Command::FlashEnd { reboot: true })
+            .await?;
     } else {
         // Running user code from stub loader requires some hacks in the stub loader
-        connection.with_timeout(CommandType::RunUserCode.timeout(), |connection| {
-            connection.command(Command::RunUserCode)
-        })?;
+        connection.set_timeout(CommandType::RunUserCode.timeout())?;
+        connection.command(Command::RunUserCode).await?;
     }
 
     Ok(())
@@ -276,27 +293,27 @@ pub fn construct_reset_strategy_sequence(
     port_name: &str,
     pid: u16,
     mode: ResetBeforeOperation,
-) -> Vec<Box<dyn ResetStrategy>> {
+) -> Vec<ResetStrategy> {
     // USB-JTAG/Serial mode
     if pid == USB_SERIAL_JTAG_PID || mode == ResetBeforeOperation::UsbReset {
-        return vec![Box::new(UsbJtagSerialReset)];
+        return vec![ResetStrategy::UsbJtagSerial(UsbJtagSerialReset)];
     }
 
     // USB-to-Serial bridge
     #[cfg(unix)]
     if cfg!(unix) && !port_name.starts_with("rfc2217:") {
         return vec![
-            Box::new(UnixTightReset::new(false)),
-            Box::new(UnixTightReset::new(true)),
-            Box::new(ClassicReset::new(false)),
-            Box::new(ClassicReset::new(true)),
+            ResetStrategy::UnixTight(UnixTightReset::new(false)),
+            ResetStrategy::UnixTight(UnixTightReset::new(true)),
+            ResetStrategy::Classic(ClassicReset::new(false)),
+            ResetStrategy::Classic(ClassicReset::new(true)),
         ];
     }
 
     // Windows
     vec![
-        Box::new(ClassicReset::new(false)),
-        Box::new(ClassicReset::new(true)),
+        ResetStrategy::Classic(ClassicReset::new(false)),
+        ResetStrategy::Classic(ClassicReset::new(true)),
     ]
 }
 

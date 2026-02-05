@@ -13,7 +13,7 @@ use strum::{Display, EnumIter, EnumString, IntoEnumIterator, VariantNames};
 pub use self::flash_target::{
     DefaultProgressCallback,
     Esp32Target,
-    FlashTarget,
+    FlashTargetType,
     ProgressCallbacks,
     RamTarget,
 };
@@ -182,7 +182,7 @@ impl Chip {
 
     /// Check if RTC WDT reset can be performed
     #[cfg(feature = "serialport")]
-    pub fn can_rtc_wdt_reset<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<bool, Error> {
+    pub async fn can_rtc_wdt_reset<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<bool, Error> {
         match self {
             Chip::Esp32c3 | Chip::Esp32p4 => Ok(true),
             Chip::Esp32s2 => {
@@ -192,8 +192,8 @@ impl Chip {
                 const FORCE_DOWNLOAD_BOOT_MASK: u32 = 0x1;
 
                 Ok(
-                    connection.read_reg(GPIO_STRAP)? & GPIO_STRAP_SPI_BOOT_MASK == 0 // GPIO0 low
-                        && connection.read_reg(OPTION1)? & FORCE_DOWNLOAD_BOOT_MASK == 0,
+                    connection.read_reg(GPIO_STRAP).await? & GPIO_STRAP_SPI_BOOT_MASK == 0 // GPIO0 low
+                        && connection.read_reg(OPTION1).await? & FORCE_DOWNLOAD_BOOT_MASK == 0,
                 )
             }
             Chip::Esp32s3 => {
@@ -203,8 +203,8 @@ impl Chip {
                 const FORCE_DOWNLOAD_BOOT_MASK: u32 = 0x1;
 
                 Ok(
-                    connection.read_reg(GPIO_STRAP)? & GPIO_STRAP_SPI_BOOT_MASK == 0 // GPIO0 low
-                        && connection.read_reg(OPTION1)? & FORCE_DOWNLOAD_BOOT_MASK == 0,
+                    connection.read_reg(GPIO_STRAP).await? & GPIO_STRAP_SPI_BOOT_MASK == 0 // GPIO0 low
+                        && connection.read_reg(OPTION1).await? & FORCE_DOWNLOAD_BOOT_MASK == 0,
                 )
             }
             _ => Err(Error::UnsupportedFeature {
@@ -238,10 +238,10 @@ impl Chip {
 
     /// Check if USB OTG is being used
     #[cfg(feature = "serialport")]
-    pub fn is_using_usb_otg<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<bool, Error> {
+    pub async fn is_using_usb_otg<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<bool, Error> {
         match (self.uartdev_buf_no(), self.uartdev_buf_no_usb_otg()) {
             (Some(buf_no), Some(usb_otg)) => {
-                let value = connection.read_reg(buf_no)?;
+                let value = connection.read_reg(buf_no).await?;
                 Ok(value == usb_otg)
             }
             _ => Err(Error::UnsupportedFeature {
@@ -253,7 +253,7 @@ impl Chip {
 
     /// Perform RTC WDT reset
     #[cfg(feature = "serialport")]
-    pub fn rtc_wdt_reset<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<(), Error> {
+    pub async fn rtc_wdt_reset<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<(), Error> {
         match (self.wdt_wprotect(), self.wdt_config0(), self.wdt_config1()) {
             (Some(wdt_wprotect), Some(wdt_config0), Some(wdt_config1)) => {
                 use bitflags::bitflags;
@@ -274,12 +274,12 @@ impl Chip {
                     .bits();
 
                 log::debug!("Resetting with RTC WDT");
-                connection.write_reg(wdt_wprotect, WDT_WKEY, None)?;
-                connection.write_reg(wdt_config1, 2000, None)?;
-                connection.write_reg(wdt_config0, flags, None)?;
-                connection.write_reg(wdt_wprotect, 0, None)?;
+                connection.write_reg(wdt_wprotect, WDT_WKEY, None).await?;
+                connection.write_reg(wdt_config1, 2000, None).await?;
+                connection.write_reg(wdt_config0, flags, None).await?;
+                connection.write_reg(wdt_wprotect, 0, None).await?;
 
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                connection.serial().delay_ms(50).await;
 
                 Ok(())
             }
@@ -349,26 +349,26 @@ impl Chip {
     }
 
     #[cfg(feature = "serialport")]
-    /// Creates and returns a new [FlashTarget] for [Esp32Target], using the
+    /// Creates and returns a new [FlashTargetType] for [Esp32Target], using the
     /// provided [SpiAttachParams].
-    pub fn flash_target<P: SerialInterface>(
+    pub fn flash_target(
         &self,
         spi_params: SpiAttachParams,
         use_stub: bool,
         verify: bool,
         skip: bool,
-    ) -> Box<dyn FlashTarget<P>> {
-        Box::new(Esp32Target::new(*self, spi_params, use_stub, verify, skip))
+    ) -> FlashTargetType {
+        FlashTargetType::Esp32(Esp32Target::new(*self, spi_params, use_stub, verify, skip))
     }
 
-    /// Creates and returns a new [FlashTarget] for [RamTarget].
+    /// Creates and returns a new [FlashTargetType] for [RamTarget].
     #[cfg(feature = "serialport")]
-    pub fn ram_target<P: SerialInterface>(
+    pub fn ram_target(
         &self,
         entry: Option<u32>,
         max_ram_block_size: usize,
-    ) -> Box<dyn FlashTarget<P>> {
-        Box::new(RamTarget::new(entry, max_ram_block_size))
+    ) -> FlashTargetType {
+        FlashTargetType::Ram(RamTarget::new(entry, max_ram_block_size))
     }
 
     /// Returns the base address of the eFuse register
@@ -459,18 +459,18 @@ impl Chip {
     /// region.
     #[cfg(feature = "serialport")]
     #[deprecated(note = "This only support u32. Use read_efuse_le instead.")]
-    pub fn read_efuse<P: SerialInterface>(&self, connection: &mut Connection<P>, field: EfuseField) -> Result<u32, Error> {
+    pub async fn read_efuse<P: SerialInterface>(&self, connection: &mut Connection<P>, field: EfuseField) -> Result<u32, Error> {
         if field.bit_count > 32 {
             return Err(Error::EfuseFieldTooLarge);
         }
 
-        self.read_efuse_le(connection, field)
+        self.read_efuse_le(connection, field).await
     }
 
     /// Given an active connection, read the specified field of the eFuse
     /// in little endian order.
     #[cfg(feature = "serialport")]
-    pub fn read_efuse_le<T: bytemuck::AnyBitPattern, P: SerialInterface>(
+    pub async fn read_efuse_le<T: bytemuck::AnyBitPattern, P: SerialInterface>(
         &self,
         connection: &mut Connection<P>,
         field: EfuseField,
@@ -498,7 +498,7 @@ impl Chip {
         let mut last_word_off = bit_off / 32;
         let mut last_word = connection.read_reg(
             self.block(block)?.read_address + last_word_off * 4,
-        )?;
+        ).await?;
 
         let word_bit_off = bit_off % 32;
         let word_bit_ext = 32 - word_bit_off;
@@ -510,7 +510,7 @@ impl Chip {
                 last_word_off = word_off;
                 last_word = connection.read_reg(
                     self.block(block)?.read_address + last_word_off * 4,
-                )?;
+                ).await?;
             }
 
             let mut word = last_word >> word_bit_off;
@@ -522,7 +522,7 @@ impl Chip {
                 last_word_off = word_off;
                 last_word = connection.read_reg(
                     self.block(block)?.read_address + last_word_off * 4,
-                )?;
+                ).await?;
                 // Append bits from a beginning of the next word:
                 word |= last_word.wrapping_shl(32 - word_bit_off);
             };
@@ -554,7 +554,7 @@ impl Chip {
     /// Read the raw word in the specified eFuse block, without performing any
     /// bit-shifting or masking of the read value.
     #[cfg(feature = "serialport")]
-    pub fn read_efuse_raw<P: SerialInterface>(
+    pub async fn read_efuse_raw<P: SerialInterface>(
         &self,
         connection: &mut Connection<P>,
         block: u32,
@@ -562,7 +562,7 @@ impl Chip {
     ) -> Result<u32, Error> {
         let addr = self.block(block)?.read_address + (word * 0x4);
 
-        connection.read_reg(addr)
+        connection.read_reg(addr).await
     }
 
     /// Returns whether the provided address `addr` in flash.
@@ -636,18 +636,18 @@ impl Chip {
 
     /// Enumerate the chip's features.
     #[cfg(feature = "serialport")]
-    pub fn chip_features<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<Vec<&str>, Error> {
+    pub async fn chip_features<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<Vec<&str>, Error> {
         match self {
             Chip::Esp32 => {
                 let mut features = vec!["WiFi"];
 
-                let disable_bt = self.read_efuse_le::<u32, _>(connection, efuse::esp32::DISABLE_BT)?;
+                let disable_bt = self.read_efuse_le::<u32, _>(connection, efuse::esp32::DISABLE_BT).await?;
                 if disable_bt == 0 {
                     features.push("BT");
                 }
 
                 let disable_app_cpu =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::DISABLE_APP_CPU)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::DISABLE_APP_CPU).await?;
                 if disable_app_cpu == 0 {
                     features.push("Dual Core");
                 } else {
@@ -655,10 +655,10 @@ impl Chip {
                 }
 
                 let chip_cpu_freq_rated =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::CHIP_CPU_FREQ_RATED)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::CHIP_CPU_FREQ_RATED).await?;
                 if chip_cpu_freq_rated != 0 {
                     let chip_cpu_freq_low =
-                        self.read_efuse_le::<u32, _>(connection, efuse::esp32::CHIP_CPU_FREQ_LOW)?;
+                        self.read_efuse_le::<u32, _>(connection, efuse::esp32::CHIP_CPU_FREQ_LOW).await?;
                     if chip_cpu_freq_low != 0 {
                         features.push("160MHz");
                     } else {
@@ -667,7 +667,7 @@ impl Chip {
                 }
 
                 // Get package version using helper method
-                let pkg_version = self.esp32_package_version(connection)?;
+                let pkg_version = self.esp32_package_version(connection).await?;
                 if [2, 4, 5, 6].contains(&pkg_version) {
                     features.push("Embedded Flash");
                 }
@@ -675,19 +675,19 @@ impl Chip {
                     features.push("Embedded PSRAM");
                 }
 
-                let adc_vref = self.read_efuse_le::<u32, _>(connection, efuse::esp32::ADC_VREF)?;
+                let adc_vref = self.read_efuse_le::<u32, _>(connection, efuse::esp32::ADC_VREF).await?;
                 if adc_vref != 0 {
                     features.push("VRef calibration in efuse");
                 }
 
                 let blk3_part_reserve =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::BLK3_PART_RESERVE)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::BLK3_PART_RESERVE).await?;
                 if blk3_part_reserve != 0 {
                     features.push("BLK3 partially reserved");
                 }
 
                 let coding_scheme =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::CODING_SCHEME)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32::CODING_SCHEME).await?;
                 features.push(match coding_scheme {
                     0 => "Coding Scheme None",
                     1 => "Coding Scheme 3/4",
@@ -706,7 +706,7 @@ impl Chip {
             Chip::Esp32s2 => {
                 let mut features = vec!["WiFi"];
 
-                let flash_version = match self.esp32s2_flash_version(connection)? {
+                let flash_version = match self.esp32s2_flash_version(connection).await? {
                     0 => "No Embedded Flash",
                     1 => "Embedded Flash 2MB",
                     2 => "Embedded Flash 4MB",
@@ -714,7 +714,7 @@ impl Chip {
                 };
                 features.push(flash_version);
 
-                let psram_version = match self.esp32s2_psram_version(connection)? {
+                let psram_version = match self.esp32s2_psram_version(connection).await? {
                     0 => "No Embedded PSRAM",
                     1 => "Embedded PSRAM 2MB",
                     2 => "Embedded PSRAM 4MB",
@@ -722,7 +722,7 @@ impl Chip {
                 };
                 features.push(psram_version);
 
-                let block2_version = match self.esp32s2_block2_version(connection)? {
+                let block2_version = match self.esp32s2_block2_version(connection).await? {
                     0 => "No calibration in BLK2 of efuse",
                     1 => "ADC and temperature sensor calibration in BLK2 of efuse V1",
                     2 => "ADC and temperature sensor calibration in BLK2 of efuse V2",
@@ -736,8 +736,8 @@ impl Chip {
                 let mut features = vec!["WiFi", "BLE"];
 
                 // Special handling for chip revision 0
-                if self.esp32s3_blk_version_major(connection)? == 1
-                    && self.esp32s3_blk_version_minor(connection)? == 1
+                if self.esp32s3_blk_version_major(connection).await? == 1
+                    && self.esp32s3_blk_version_minor(connection).await? == 1
                 {
                     features.push("Embedded PSRAM");
                 } else {
@@ -751,22 +751,22 @@ impl Chip {
 
     /// Determine the chip's revision number
     #[cfg(feature = "serialport")]
-    pub fn revision<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<(u32, u32), Error> {
-        let major = self.major_version(connection)?;
-        let minor = self.minor_version(connection)?;
+    pub async fn revision<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<(u32, u32), Error> {
+        let major = self.major_version(connection).await?;
+        let minor = self.minor_version(connection).await?;
 
         Ok((major, minor))
     }
 
     /// Returns the chip's major version.
     #[cfg(feature = "serialport")]
-    pub fn major_version<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
+    pub async fn major_version<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
         match self {
             Chip::Esp32 => {
-                let apb_ctl_date = connection.read_reg(0x3FF6_607C)?;
+                let apb_ctl_date = connection.read_reg(0x3FF6_607C).await?;
 
-                let word3 = self.read_efuse_raw(connection, 0, 3)?;
-                let word5 = self.read_efuse_raw(connection, 0, 5)?;
+                let word3 = self.read_efuse_raw(connection, 0, 3).await?;
+                let word5 = self.read_efuse_raw(connection, 0, 5).await?;
 
                 let rev_bit0 = (word3 >> 15) & 0x1;
                 let rev_bit1 = (word5 >> 20) & 0x1;
@@ -782,40 +782,40 @@ impl Chip {
                 }
             }
             Chip::Esp32c2 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c2::WAFER_VERSION_MAJOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c2::WAFER_VERSION_MAJOR).await
             }
             Chip::Esp32c3 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c3::WAFER_VERSION_MAJOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c3::WAFER_VERSION_MAJOR).await
             }
             Chip::Esp32c5 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c5::WAFER_VERSION_MAJOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c5::WAFER_VERSION_MAJOR).await
             }
             Chip::Esp32c6 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c6::WAFER_VERSION_MAJOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c6::WAFER_VERSION_MAJOR).await
             }
             Chip::Esp32h2 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32h2::WAFER_VERSION_MAJOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32h2::WAFER_VERSION_MAJOR).await
             }
             Chip::Esp32p4 => {
                 let hi =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32p4::WAFER_VERSION_MAJOR_HI)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32p4::WAFER_VERSION_MAJOR_HI).await?;
                 let lo =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32p4::WAFER_VERSION_MAJOR_LO)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32p4::WAFER_VERSION_MAJOR_LO).await?;
 
                 let version = (hi << 2) | lo;
 
                 Ok(version)
             }
             Chip::Esp32s2 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::WAFER_VERSION_MAJOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::WAFER_VERSION_MAJOR).await
             }
             Chip::Esp32s3 => {
-                if self.esp32s3_blk_version_major(connection)? == 1
-                    && self.esp32s3_blk_version_minor(connection)? == 1
+                if self.esp32s3_blk_version_major(connection).await? == 1
+                    && self.esp32s3_blk_version_minor(connection).await? == 1
                 {
                     Ok(0)
                 } else {
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::WAFER_VERSION_MAJOR)
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::WAFER_VERSION_MAJOR).await
                 }
             }
         }
@@ -823,45 +823,45 @@ impl Chip {
 
     /// Returns the chip's minor version.
     #[cfg(feature = "serialport")]
-    pub fn minor_version<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
+    pub async fn minor_version<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
         match self {
-            Chip::Esp32 => self.read_efuse_le::<u32, _>(connection, efuse::esp32::WAFER_VERSION_MINOR),
+            Chip::Esp32 => self.read_efuse_le::<u32, _>(connection, efuse::esp32::WAFER_VERSION_MINOR).await,
             Chip::Esp32c2 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c2::WAFER_VERSION_MINOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c2::WAFER_VERSION_MINOR).await
             }
             Chip::Esp32c3 => {
                 let hi =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32c3::WAFER_VERSION_MINOR_HI)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32c3::WAFER_VERSION_MINOR_HI).await?;
                 let lo =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32c3::WAFER_VERSION_MINOR_LO)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32c3::WAFER_VERSION_MINOR_LO).await?;
 
                 Ok((hi << 3) + lo)
             }
             Chip::Esp32c5 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c5::WAFER_VERSION_MINOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c5::WAFER_VERSION_MINOR).await
             }
             Chip::Esp32c6 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32c6::WAFER_VERSION_MINOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32c6::WAFER_VERSION_MINOR).await
             }
             Chip::Esp32h2 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32h2::WAFER_VERSION_MINOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32h2::WAFER_VERSION_MINOR).await
             }
             Chip::Esp32p4 => {
-                self.read_efuse_le::<u32, _>(connection, efuse::esp32p4::WAFER_VERSION_MINOR)
+                self.read_efuse_le::<u32, _>(connection, efuse::esp32p4::WAFER_VERSION_MINOR).await
             }
             Chip::Esp32s2 => {
                 let hi =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::WAFER_VERSION_MINOR_HI)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::WAFER_VERSION_MINOR_HI).await?;
                 let lo =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::WAFER_VERSION_MINOR_LO)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::WAFER_VERSION_MINOR_LO).await?;
 
                 Ok((hi << 3) + lo)
             }
             Chip::Esp32s3 => {
                 let hi =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::WAFER_VERSION_MINOR_HI)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::WAFER_VERSION_MINOR_HI).await?;
                 let lo =
-                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::WAFER_VERSION_MINOR_LO)?;
+                    self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::WAFER_VERSION_MINOR_LO).await?;
 
                 Ok((hi << 3) + lo)
             }
@@ -870,14 +870,14 @@ impl Chip {
 
     #[cfg(feature = "serialport")]
     /// retrieve the xtal frequency of the chip.
-    pub fn xtal_frequency<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<XtalFrequency, Error> {
+    pub async fn xtal_frequency<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<XtalFrequency, Error> {
         match self {
             Chip::Esp32 => {
                 const UART_CLKDIV_REG: u32 = 0x3ff4_0014; // UART0_BASE_REG + 0x14
                 const UART_CLKDIV_MASK: u32 = 0xfffff;
                 const XTAL_CLK_DIVIDER: u32 = 1;
 
-                let uart_div = connection.read_reg(UART_CLKDIV_REG)? & UART_CLKDIV_MASK;
+                let uart_div = connection.read_reg(UART_CLKDIV_REG).await? & UART_CLKDIV_MASK;
                 let est_xtal = (connection.baud()? * uart_div) / 1_000_000 / XTAL_CLK_DIVIDER;
                 let norm_xtal = if est_xtal > 33 {
                     XtalFrequency::_40Mhz
@@ -892,7 +892,7 @@ impl Chip {
                 const UART_CLKDIV_MASK: u32 = 0xfffff;
                 const XTAL_CLK_DIVIDER: u32 = 1;
 
-                let uart_div = connection.read_reg(UART_CLKDIV_REG)? & UART_CLKDIV_MASK;
+                let uart_div = connection.read_reg(UART_CLKDIV_REG).await? & UART_CLKDIV_MASK;
                 let est_xtal = (connection.baud()? * uart_div) / 1_000_000 / XTAL_CLK_DIVIDER;
                 let norm_xtal = if est_xtal > 33 {
                     XtalFrequency::_40Mhz
@@ -908,7 +908,7 @@ impl Chip {
                 const UART_CLKDIV_MASK: u32 = 0xfffff;
                 const XTAL_CLK_DIVIDER: u32 = 1;
 
-                let uart_div = connection.read_reg(UART_CLKDIV_REG)? & UART_CLKDIV_MASK;
+                let uart_div = connection.read_reg(UART_CLKDIV_REG).await? & UART_CLKDIV_MASK;
                 let est_xtal = (connection.baud()? * uart_div) / 1_000_000 / XTAL_CLK_DIVIDER;
                 let norm_xtal = if est_xtal > 45 {
                     XtalFrequency::_48Mhz
@@ -943,7 +943,7 @@ impl Chip {
 
     #[cfg(feature = "serialport")]
     /// What is the MAC address?
-    pub fn mac_address<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<String, Error> {
+    pub async fn mac_address<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<String, Error> {
         let (mac0_field, mac1_field) = match self {
             Chip::Esp32 => (self::efuse::esp32::MAC0, self::efuse::esp32::MAC1),
             Chip::Esp32c2 => (self::efuse::esp32c2::MAC0, self::efuse::esp32c2::MAC1),
@@ -956,8 +956,8 @@ impl Chip {
             Chip::Esp32s3 => (self::efuse::esp32s3::MAC0, self::efuse::esp32s3::MAC1),
         };
 
-        let mac0 = self.read_efuse_le::<u32, _>(connection, mac0_field)?;
-        let mac1 = self.read_efuse_le::<u32, _>(connection, mac1_field)?;
+        let mac0 = self.read_efuse_le::<u32, _>(connection, mac0_field).await?;
+        let mac1 = self.read_efuse_le::<u32, _>(connection, mac1_field).await?;
 
         let bytes = ((mac1 as u64) << 32) | mac0 as u64;
         let bytes = bytes.to_be_bytes();
@@ -1050,8 +1050,8 @@ impl Chip {
 
     #[cfg(feature = "serialport")]
     /// Returns the package version based on the eFuses for ESP32
-    fn esp32_package_version<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
-        let word3 = self.read_efuse_raw(connection, 0, 3)?;
+    async fn esp32_package_version<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
+        let word3 = self.read_efuse_raw(connection, 0, 3).await?;
 
         let pkg_version = (word3 >> 9) & 0x7;
         let pkg_version = pkg_version + (((word3 >> 2) & 0x1) << 3);
@@ -1061,39 +1061,39 @@ impl Chip {
 
     #[cfg(feature = "serialport")]
     /// Returns the block2 version based on eFuses for ESP32-S2
-    fn esp32s2_block2_version<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
-        self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::BLK_VERSION_MINOR)
+    async fn esp32s2_block2_version<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
+        self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::BLK_VERSION_MINOR).await
     }
 
     #[cfg(feature = "serialport")]
     /// Returns the flash version based on eFuses for ESP32-S2
-    fn esp32s2_flash_version<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
-        self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::FLASH_VERSION)
+    async fn esp32s2_flash_version<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
+        self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::FLASH_VERSION).await
     }
 
     #[cfg(feature = "serialport")]
     /// Returns the PSRAM version based on eFuses for ESP32-S2
-    fn esp32s2_psram_version<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
-        self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::PSRAM_VERSION)
+    async fn esp32s2_psram_version<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
+        self.read_efuse_le::<u32, _>(connection, efuse::esp32s2::PSRAM_VERSION).await
     }
 
     #[cfg(feature = "serialport")]
     /// Returns the major BLK version based on eFuses for ESP32-S3
-    fn esp32s3_blk_version_major<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
-        self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::BLK_VERSION_MAJOR)
+    async fn esp32s3_blk_version_major<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
+        self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::BLK_VERSION_MAJOR).await
     }
 
     #[cfg(feature = "serialport")]
     /// Returns the minor BLK version based on eFuses for ESP32-S3
-    fn esp32s3_blk_version_minor<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
-        self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::BLK_VERSION_MINOR)
+    async fn esp32s3_blk_version_minor<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<u32, Error> {
+        self.read_efuse_le::<u32, _>(connection, efuse::esp32s3::BLK_VERSION_MINOR).await
     }
 }
 
 #[cfg(feature = "serialport")]
 impl Chip {
     /// Poll the eFuse controller status until it's idle.
-    fn wait_efuse_idle<P: SerialInterface>(self, connection: &mut Connection<P>) -> Result<(), Error> {
+    async fn wait_efuse_idle<P: SerialInterface>(self, connection: &mut Connection<P>) -> Result<(), Error> {
         let (cmd_reg, cmds) = match self {
             Chip::Esp32 => (efuse::esp32::defines::EFUSE_REG_CMD, u32::MAX),
             Chip::Esp32c2 => (
@@ -1137,10 +1137,10 @@ impl Chip {
             // that "due to a hardware error, we have to read READ_CMD again to
             // make sure the efuse clock is normal" but doesn't provide any
             // references.  See if this is documented in the errata.
-            if (connection.read_reg(cmd_reg)? & cmds) != 0 {
+            if (connection.read_reg(cmd_reg).await? & cmds) != 0 {
                 continue;
             }
-            if (connection.read_reg(cmd_reg)? & cmds) != 0 {
+            if (connection.read_reg(cmd_reg).await? & cmds) != 0 {
                 continue;
             }
 
@@ -1151,9 +1151,9 @@ impl Chip {
     }
 
     /// Configure the eFuse controller for writing.
-    fn configure_efuse_write_timing<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<(), Error> {
-        self.wait_efuse_idle(connection)?;
-        let xtal_freq = self.xtal_frequency(connection)?;
+    async fn configure_efuse_write_timing<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<(), Error> {
+        self.wait_efuse_idle(connection).await?;
+        let xtal_freq = self.xtal_frequency(connection).await?;
 
         match self {
             Chip::Esp32 => {
@@ -1171,17 +1171,17 @@ impl Chip {
                     efuse::esp32::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32::defines::EFUSE_DAC_CLK_DIV_MASK,
                     dac_clk_div,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32::defines::EFUSE_CLK_REG,
                     efuse::esp32::defines::EFUSE_CLK_SEL0_MASK,
                     clk_sel0,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32::defines::EFUSE_CLK_REG,
                     efuse::esp32::defines::EFUSE_CLK_SEL1_MASK,
                     clk_sel1,
-                )?;
+                ).await?;
             }
 
             Chip::Esp32c2 => {
@@ -1195,22 +1195,22 @@ impl Chip {
                     efuse::esp32c2::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32c2::defines::EFUSE_DAC_NUM_M,
                     0xFF,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32c2::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32c2::defines::EFUSE_DAC_CLK_DIV_M,
                     0x28,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32c2::defines::EFUSE_WR_TIM_CONF1_REG,
                     efuse::esp32c2::defines::EFUSE_PWR_ON_NUM_M,
                     0x3000,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32c2::defines::EFUSE_WR_TIM_CONF2_REG,
                     efuse::esp32c2::defines::EFUSE_PWR_OFF_NUM_M,
                     0x190,
-                )?;
+                ).await?;
 
                 let tpgm_inactive_val = if xtal_freq == XtalFrequency::_40Mhz {
                     200
@@ -1221,7 +1221,7 @@ impl Chip {
                     efuse::esp32c2::defines::EFUSE_WR_TIM_CONF0_REG,
                     efuse::esp32c2::defines::EFUSE_TPGM_INACTIVE_M,
                     tpgm_inactive_val,
-                )?;
+                ).await?;
             }
 
             Chip::Esp32c3 => {
@@ -1235,22 +1235,22 @@ impl Chip {
                     efuse::esp32c3::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32c3::defines::EFUSE_DAC_NUM_M,
                     0xFF,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32c3::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32c3::defines::EFUSE_DAC_CLK_DIV_M,
                     0x28,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32c3::defines::EFUSE_WR_TIM_CONF1_REG,
                     efuse::esp32c3::defines::EFUSE_PWR_ON_NUM_M,
                     0x3000,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32c3::defines::EFUSE_WR_TIM_CONF2_REG,
                     efuse::esp32c3::defines::EFUSE_PWR_OFF_NUM_M,
                     0x190,
-                )?;
+                ).await?;
             }
 
             Chip::Esp32c5 => {
@@ -1264,22 +1264,22 @@ impl Chip {
                     efuse::esp32c5::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32c5::defines::EFUSE_DAC_NUM_M,
                     0xFF,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32c5::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32c5::defines::EFUSE_DAC_CLK_DIV_M,
                     0x28,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32c5::defines::EFUSE_WR_TIM_CONF1_REG,
                     efuse::esp32c5::defines::EFUSE_PWR_ON_NUM_M,
                     0x3000,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32c5::defines::EFUSE_WR_TIM_CONF2_REG,
                     efuse::esp32c5::defines::EFUSE_PWR_OFF_NUM_M,
                     0x190,
-                )?;
+                ).await?;
             }
 
             Chip::Esp32c6 => {
@@ -1293,22 +1293,22 @@ impl Chip {
                     efuse::esp32c6::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32c6::defines::EFUSE_DAC_NUM_M,
                     0xFF,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32c6::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32c6::defines::EFUSE_DAC_CLK_DIV_M,
                     0x28,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32c6::defines::EFUSE_WR_TIM_CONF1_REG,
                     efuse::esp32c6::defines::EFUSE_PWR_ON_NUM_M,
                     0x3000,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32c6::defines::EFUSE_WR_TIM_CONF2_REG,
                     efuse::esp32c6::defines::EFUSE_PWR_OFF_NUM_M,
                     0x190,
-                )?;
+                ).await?;
             }
 
             Chip::Esp32h2 => {
@@ -1322,22 +1322,22 @@ impl Chip {
                     efuse::esp32s3::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32s3::defines::EFUSE_DAC_NUM_M,
                     0xFF,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32s3::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32s3::defines::EFUSE_DAC_CLK_DIV_M,
                     0x28,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32s3::defines::EFUSE_WR_TIM_CONF1_REG,
                     efuse::esp32s3::defines::EFUSE_PWR_ON_NUM_M,
                     0x3000,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32s3::defines::EFUSE_WR_TIM_CONF2_REG,
                     efuse::esp32s3::defines::EFUSE_PWR_OFF_NUM_M,
                     0x190,
-                )?;
+                ).await?;
             }
 
             Chip::Esp32p4 => {
@@ -1366,22 +1366,22 @@ impl Chip {
                     efuse::esp32s2::defines::EFUSE_WR_TIM_CONF1_REG,
                     efuse::esp32s2::defines::EFUSE_TSUP_A_M,
                     efuse_tsup_a,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32s2::defines::EFUSE_WR_TIM_CONF0_REG,
                     efuse::esp32s2::defines::EFUSE_TPGM_M,
                     efuse_tpgm,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32s2::defines::EFUSE_WR_TIM_CONF0_REG,
                     efuse::esp32s2::defines::EFUSE_THP_A_M,
                     efuse_thp_a,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32s2::defines::EFUSE_WR_TIM_CONF0_REG,
                     efuse::esp32s2::defines::EFUSE_TPGM_INACTIVE_M,
                     efuse_tpgm_inactive,
-                )?;
+                ).await?;
 
                 // From `VDDQ_TIMING_PARAMETERS` in `espefuse/efuse/esp32s2/mem_definition.py`
                 let (efuse_dac_clk_div, efuse_pwr_on_num, efuse_pwr_off_num) = (0x50, 0x5100, 0x80);
@@ -1389,17 +1389,17 @@ impl Chip {
                     efuse::esp32s2::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32s2::defines::EFUSE_DAC_CLK_DIV_M,
                     efuse_dac_clk_div,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32s2::defines::EFUSE_WR_TIM_CONF1_REG,
                     efuse::esp32s2::defines::EFUSE_PWR_ON_NUM_M,
                     efuse_pwr_on_num,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32s2::defines::EFUSE_WR_TIM_CONF2_REG,
                     efuse::esp32s2::defines::EFUSE_PWR_OFF_NUM_M,
                     efuse_pwr_off_num,
-                )?;
+                ).await?;
 
                 // From `EFUSE_READING_PARAMETERS` in `espefuse/efuse/esp32s2/mem_definition.py`
                 let (_efuse_tsur_a, efuse_trd, efuse_thr_a) = (0x1, 0x2, 0x1);
@@ -1411,17 +1411,17 @@ impl Chip {
                 //     efuse::esp32s2::defines::EFUSE_RD_TIM_CONF_REG,
                 //     efuse::esp32s2::defines::EFUSE_TSUR_A_M,
                 //     efuse_tsur_a,
-                // )?;
+                // ).await?;
                 connection.update_reg(
                     efuse::esp32s2::defines::EFUSE_RD_TIM_CONF_REG,
                     efuse::esp32s2::defines::EFUSE_TRD_M,
                     efuse_trd,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32s2::defines::EFUSE_RD_TIM_CONF_REG,
                     efuse::esp32s2::defines::EFUSE_THR_A_M,
                     efuse_thr_a,
-                )?;
+                ).await?;
             }
 
             Chip::Esp32s3 => {
@@ -1435,29 +1435,29 @@ impl Chip {
                     efuse::esp32s3::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32s3::defines::EFUSE_DAC_NUM_M,
                     0xFF,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32s3::defines::EFUSE_DAC_CONF_REG,
                     efuse::esp32s3::defines::EFUSE_DAC_CLK_DIV_M,
                     0x28,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32s3::defines::EFUSE_WR_TIM_CONF1_REG,
                     efuse::esp32s3::defines::EFUSE_PWR_ON_NUM_M,
                     0x3000,
-                )?;
+                ).await?;
                 connection.update_reg(
                     efuse::esp32s3::defines::EFUSE_WR_TIM_CONF2_REG,
                     efuse::esp32s3::defines::EFUSE_PWR_OFF_NUM_M,
                     0x190,
-                )?;
+                ).await?;
             }
         }
 
         Ok(())
     }
 
-    fn efuse_coding_scheme<P: SerialInterface>(
+    async fn efuse_coding_scheme<P: SerialInterface>(
         self,
         connection: &mut Connection<P>,
         block: EfuseBlock,
@@ -1469,7 +1469,7 @@ impl Chip {
 
         match self {
             Chip::Esp32 => {
-                match self.read_efuse_le::<u32, _>(connection, efuse::esp32::CODING_SCHEME)? {
+                match self.read_efuse_le::<u32, _>(connection, efuse::esp32::CODING_SCHEME).await? {
                     efuse::esp32::defines::CODING_SCHEME_NONE => Ok(CodingScheme::None),
                     efuse::esp32::defines::CODING_SCHEME_NONE_RECOVERY => Ok(CodingScheme::None),
                     efuse::esp32::defines::CODING_SCHEME_34 => Ok(CodingScheme::_34),
@@ -1493,8 +1493,8 @@ impl Chip {
     }
 
     /// Trigger the eFuse controller to update its internal registers.
-    fn trigger_efuse_register_read<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<(), Error> {
-        self.wait_efuse_idle(connection)?;
+    async fn trigger_efuse_register_read<P: SerialInterface>(&self, connection: &mut Connection<P>) -> Result<(), Error> {
+        self.wait_efuse_idle(connection).await?;
 
         let (conf_reg, conf_val, cmd_reg, cmd_val) = match self {
             Chip::Esp32 => (
@@ -1553,14 +1553,14 @@ impl Chip {
             ),
         };
 
-        connection.write_reg(conf_reg, conf_val, None)?;
-        connection.write_reg(cmd_reg, cmd_val, None)?;
+        connection.write_reg(conf_reg, conf_val, None).await?;
+        connection.write_reg(cmd_reg, cmd_val, None).await?;
 
         // TODO: `esptool.py` says that if `EFUSE_ENABLE_SECURITY_DOWNLOAD` or
         // `DIS_DOWNLOAD_MODE` was just set then we need to reconnect.  It also
         // uses `dlay_after_us=1000` on the `EFUSE_READ_CMD` write.
 
-        self.wait_efuse_idle(connection)?;
+        self.wait_efuse_idle(connection).await?;
 
         Ok(())
     }
@@ -1569,7 +1569,7 @@ impl Chip {
     ///
     /// Returns `Ok(true)` if write errors did occur.  Returns `Err(_)` if we
     /// failed to communicate with the chip.
-    fn efuse_write_failed<P: SerialInterface>(
+    async fn efuse_write_failed<P: SerialInterface>(
         self,
         connection: &mut Connection<P>,
         block: EfuseBlock,
@@ -1577,11 +1577,11 @@ impl Chip {
         let Some(block_errors) = self.block_errors(block)? else {
             // ESP32 chips can only detect write errors while using the 3/4 encoding scheme,
             // in other cases the return value is meaningless.
-            if self.efuse_coding_scheme(connection, block)? != CodingScheme::_34 {
+            if self.efuse_coding_scheme(connection, block).await? != CodingScheme::_34 {
                 return Ok(true);
             }
 
-            let errors = connection.read_reg(efuse::esp32::defines::EFUSE_REG_DEC_STATUS)?
+            let errors = connection.read_reg(efuse::esp32::defines::EFUSE_REG_DEC_STATUS).await?
                 & efuse::esp32::defines::EFUSE_REG_DEC_STATUS_MASK;
 
             return Ok(errors != 0);
@@ -1600,9 +1600,10 @@ impl Chip {
                 Chip::Esp32s3 => (efuse::esp32s3::defines::EFUSE_RD_REPEAT_ERR0_REG, 5),
             };
 
-            let errors = (0..count)
-                .map(|idx| connection.read_reg(reg + (idx * 4)))
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut errors = Vec::with_capacity(count as usize);
+            for idx in 0..count {
+                errors.push(connection.read_reg(reg + (idx * 4)).await?);
+            }
             let any_errors = errors.into_iter().reduce(|a, b| a | b).unwrap() != 0;
 
             return Ok(any_errors);
@@ -1619,18 +1620,18 @@ impl Chip {
             unreachable!("eFuse block errors weren't set for a non-BLOCK0 block");
         };
 
-        let any_errors = connection.read_reg(err_num_reg)? & (err_num_mask << err_num_offset)
-            | connection.read_reg(fail_bit_reg)? & (1 << fail_bit_offset);
+        let any_errors = connection.read_reg(err_num_reg).await? & (err_num_mask << err_num_offset)
+            | connection.read_reg(fail_bit_reg).await? & (1 << fail_bit_offset);
 
         Ok(any_errors != 0)
     }
 
-    fn clear_efuse_programming_registers<P: SerialInterface>(
+    async fn clear_efuse_programming_registers<P: SerialInterface>(
         self,
         connection: &mut Connection<P>,
         block: EfuseBlock,
     ) -> Result<(), Error> {
-        self.wait_efuse_idle(connection)?;
+        self.wait_efuse_idle(connection).await?;
 
         let words: u32 = if self == Chip::Esp32 {
             // All ESP32 eFuse blocks have 8 data registers with no separate check
@@ -1641,14 +1642,14 @@ impl Chip {
             8 + 3
         };
         for word in 0..words {
-            connection.write_reg(block.write_address + (word * 4), 0x00, None)?;
+            connection.write_reg(block.write_address + (word * 4), 0x00, None).await?;
         }
 
         Ok(())
     }
 
     /// Write a value to an eFuse.
-    pub fn write_efuse<P: SerialInterface>(
+    pub async fn write_efuse<P: SerialInterface>(
         self,
         connection: &mut Connection<P>,
         block: u32,
@@ -1663,8 +1664,8 @@ impl Chip {
             )));
         }
 
-        self.configure_efuse_write_timing(connection)?;
-        self.clear_efuse_programming_registers(connection, block)?;
+        self.configure_efuse_write_timing(connection).await?;
+        self.clear_efuse_programming_registers(connection, block).await?;
 
         // Apply the coding scheme and convert the data into a vector of 4-byte words.
         let coded_data: Vec<u32> = {
@@ -1676,7 +1677,7 @@ impl Chip {
                 buf
             };
 
-            let bytes = match self.efuse_coding_scheme(connection, block)? {
+            let bytes = match self.efuse_coding_scheme(connection, block).await? {
                 CodingScheme::None => data,
                 CodingScheme::_34 => {
                     return Err(Error::UnsupportedEfuseCodingScheme(
@@ -1762,29 +1763,29 @@ impl Chip {
         // burned.
         let mut err = None;
         for _ in 0..3 {
-            self.wait_efuse_idle(connection)?;
+            self.wait_efuse_idle(connection).await?;
 
             // Write the encoded data to the block's write address.
             //
             // The check value registers for the Reed-Solomon follow after the data
             // registers.
             for (idx, word) in coded_data.iter().enumerate() {
-                connection.write_reg(block.write_address + (idx as u32 * 4), *word, None)?;
+                connection.write_reg(block.write_address + (idx as u32 * 4), *word, None).await?;
             }
 
             // Trigger the eFuse write and wait for the burning process to finish.
-            connection.write_reg(conf_reg, conf_val, None)?;
-            connection.write_reg(cmd_reg, cmd_val, None)?;
-            self.wait_efuse_idle(connection)?;
+            connection.write_reg(conf_reg, conf_val, None).await?;
+            connection.write_reg(cmd_reg, cmd_val, None).await?;
+            self.wait_efuse_idle(connection).await?;
 
             // Clear the parameter registers to avoid leaking the programmed contents.
-            self.clear_efuse_programming_registers(connection, block)?;
+            self.clear_efuse_programming_registers(connection, block).await?;
 
             // Trigger eFuse controller to update its internal registers.
-            self.trigger_efuse_register_read(connection)?;
+            self.trigger_efuse_register_read(connection).await?;
 
             // Got at least one error, try burning the eFuse again.
-            if self.efuse_write_failed(connection, block)? {
+            if self.efuse_write_failed(connection, block).await? {
                 let _ = err.insert("eFuse controller returned unreliable burn");
                 continue;
             }
@@ -1792,7 +1793,7 @@ impl Chip {
             // Check that the bits we wrote are actually set.  If there are any differences
             // we perform the burn again.
             for word in 0..block.length {
-                let rd_word = self.read_efuse_raw(connection, block.index.into(), word.into())?;
+                let rd_word = self.read_efuse_raw(connection, block.index.into(), word.into()).await?;
                 let wr_word = coded_data[word as usize];
                 if (rd_word & wr_word) != wr_word {
                     let _ = err.insert("Not all bits were set after burning");

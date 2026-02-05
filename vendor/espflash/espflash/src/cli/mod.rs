@@ -452,21 +452,21 @@ pub fn connect(
 
     let connection = Connection::new(
         *Box::new(serial_port),
-        port_info,
+        port_info.into(),
         args.after,
         args.before,
         args.baud
             .or(config.project_config.baudrate)
             .unwrap_or(115_200),
     );
-    Ok(Flasher::connect(
+    Ok(futures::executor::block_on(Flasher::connect(
         connection,
         !args.no_stub,
         !no_verify,
         !no_skip,
         args.chip,
         args.baud.or(config.project_config.baudrate),
-    )?)
+    ))?)
 }
 
 /// Connect to a target device and print information about its chip
@@ -476,13 +476,13 @@ pub fn board_info(args: &ConnectArgs, config: &Config) -> Result<()> {
 
     let chip = flasher.chip();
     if chip != Chip::Esp32 {
-        let security_info = flasher.security_info()?;
+        let security_info = futures::executor::block_on(flasher.security_info())?;
         println!("{security_info}");
     } else {
         println!("Security features: None");
     }
 
-    flasher.connection().reset_after(!args.no_stub, chip)?;
+    futures::executor::block_on(flasher.connection().reset_after(!args.no_stub, chip))?;
 
     Ok(())
 }
@@ -491,13 +491,13 @@ pub fn board_info(args: &ConnectArgs, config: &Config) -> Result<()> {
 pub fn checksum_md5(args: &ChecksumMd5Args, config: &Config) -> Result<()> {
     let mut flasher = connect(&args.connect_args, config, true, true)?;
 
-    let checksum = flasher.checksum_md5(args.address, args.size)?;
+    let checksum = futures::executor::block_on(flasher.checksum_md5(args.address, args.size))?;
     println!("0x{checksum:x}");
 
     let chip = flasher.chip();
-    flasher
+    futures::executor::block_on(flasher
         .connection()
-        .reset_after(!args.connect_args.no_stub, chip)?;
+        .reset_after(!args.connect_args.no_stub, chip))?;
 
     Ok(())
 }
@@ -617,7 +617,7 @@ pub fn parse_chip_rev(chip_rev: &str) -> Result<u16> {
 
 /// Print information about a chip
 pub fn print_board_info<P: crate::connection::SerialInterface>(flasher: &mut Flasher<P>) -> Result<DeviceInfo> {
-    let info = flasher.device_info()?;
+    let info = futures::executor::block_on(flasher.device_info())?;
     print!("Chip type:         {}", info.chip);
 
     if let Some((major, minor)) = info.revision {
@@ -652,7 +652,7 @@ pub fn serial_monitor(args: MonitorArgs, config: &Config) -> Result<()> {
     };
 
     let chip = flasher.chip();
-    let dev_info = flasher.device_info()?;
+    let dev_info = futures::executor::block_on(flasher.device_info())?;
 
     ensure_chip_compatibility(chip, firmware_elf.as_deref())?;
 
@@ -660,7 +660,7 @@ pub fn serial_monitor(args: MonitorArgs, config: &Config) -> Result<()> {
 
     // The 26MHz ESP32-C2's need to be treated as a special case.
     if chip == Chip::Esp32c2
-        && chip.xtal_frequency(flasher.connection())? == XtalFrequency::_26Mhz
+        && futures::executor::block_on(chip.xtal_frequency(flasher.connection()))? == XtalFrequency::_26Mhz
         && monitor_args.monitor_baud == 115_200
     {
         // 115_200 * 26 MHz / 40 MHz = 74_880
@@ -836,10 +836,10 @@ pub fn erase_flash(args: EraseFlashArgs, config: &Config) -> Result<()> {
 
     let chip = flasher.chip();
 
-    flasher.erase_flash()?;
-    flasher
+    futures::executor::block_on(flasher.erase_flash())?;
+    futures::executor::block_on(flasher
         .connection()
-        .reset_after(!args.connect_args.no_stub, chip)?;
+        .reset_after(!args.connect_args.no_stub, chip))?;
 
     info!("Flash has been erased!");
 
@@ -868,17 +868,17 @@ pub fn erase_region(args: EraseRegionArgs, config: &Config) -> Result<()> {
         args.address, args.size
     );
 
-    flasher.erase_region(args.address, args.size)?;
-    flasher
+    futures::executor::block_on(flasher.erase_region(args.address, args.size))?;
+    futures::executor::block_on(flasher
         .connection()
-        .reset_after(!args.connect_args.no_stub, chip)?;
+        .reset_after(!args.connect_args.no_stub, chip))?;
 
     Ok(())
 }
 
 /// Write an ELF image to a target device's flash
 pub fn flash_image<'a, P: crate::connection::SerialInterface>(flasher: &mut Flasher<P>, image_format: ImageFormat<'a>) -> Result<()> {
-    flasher.load_image_to_flash(&mut EspflashProgress::default(), image_format)?;
+    futures::executor::block_on(flasher.load_image_to_flash(&mut EspflashProgress::default(), image_format))?;
     info!("Flashing has completed!");
 
     Ok(())
@@ -945,7 +945,7 @@ fn erase_partition<P: crate::connection::SerialInterface>(flasher: &mut Flasher<
     let offset = part.offset();
     let size = part.size();
 
-    flasher.erase_region(offset, size).into_diagnostic()
+    futures::executor::block_on(flasher.erase_region(offset, size)).into_diagnostic()
 }
 
 /// Read flash content and write it to a file
@@ -954,27 +954,27 @@ pub fn read_flash(args: ReadFlashArgs, config: &Config) -> Result<()> {
     print_board_info(&mut flasher)?;
 
     if args.connect_args.no_stub {
-        flasher.read_flash_rom(
+        futures::executor::block_on(flasher.read_flash_rom(
             args.address,
             args.size,
             args.block_size,
             args.max_in_flight,
             args.file,
-        )?;
+        ))?;
     } else {
-        flasher.read_flash(
+        futures::executor::block_on(flasher.read_flash(
             args.address,
             args.size,
             args.block_size,
             args.max_in_flight,
             args.file,
-        )?;
+        ))?;
     }
 
     let chip = flasher.chip();
-    flasher
+    futures::executor::block_on(flasher
         .connection()
-        .reset_after(!args.connect_args.no_stub, chip)?;
+        .reset_after(!args.connect_args.no_stub, chip))?;
 
     Ok(())
 }
@@ -1171,9 +1171,9 @@ pub fn write_bin(args: WriteBinArgs, config: &Config) -> Result<()> {
     print_board_info(&mut flasher)?;
 
     let chip = flasher.chip();
-    let target_xtal_freq = chip.xtal_frequency(flasher.connection())?;
+    let target_xtal_freq = futures::executor::block_on(chip.xtal_frequency(flasher.connection()))?;
 
-    flasher.write_bin_to_flash(args.address, &buffer, &mut EspflashProgress::default())?;
+    futures::executor::block_on(flasher.write_bin_to_flash(args.address, &buffer, &mut EspflashProgress::default()))?;
 
     if args.monitor {
         let pid = flasher.connection().usb_pid();
@@ -1202,7 +1202,7 @@ pub fn reset(args: ConnectArgs, config: &Config) -> Result<()> {
     args.no_stub = true;
     let mut flasher = connect(&args, config, true, true)?;
     info!("Resetting target device");
-    flasher.connection().reset()?;
+    futures::executor::block_on(flasher.connection().reset())?;
 
     Ok(())
 }

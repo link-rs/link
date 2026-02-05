@@ -22,7 +22,6 @@ use crate::{
 use crate::{
     command::{Command, CommandType},
     connection::{Connection, SerialInterface},
-    target::FlashTarget,
     target::ProgressCallbacks,
 };
 
@@ -58,21 +57,20 @@ impl Esp32Target {
 }
 
 #[cfg(feature = "serialport")]
-impl<P: SerialInterface> FlashTarget<P> for Esp32Target {
-    fn begin(&mut self, connection: &mut Connection<P>) -> Result<(), Error> {
-        connection.with_timeout(CommandType::SpiAttach.timeout(), |connection| {
-            let command = if self.use_stub {
-                Command::SpiAttachStub {
-                    spi_params: self.spi_attach_params,
-                }
-            } else {
-                Command::SpiAttach {
-                    spi_params: self.spi_attach_params,
-                }
-            };
-
-            connection.command(command)
-        })?;
+impl Esp32Target {
+    /// Begin the flashing operation.
+    pub async fn begin<P: SerialInterface>(&mut self, connection: &mut Connection<P>) -> Result<(), Error> {
+        connection.set_timeout(CommandType::SpiAttach.timeout())?;
+        let command = if self.use_stub {
+            Command::SpiAttachStub {
+                spi_params: self.spi_attach_params,
+            }
+        } else {
+            Command::SpiAttach {
+                spi_params: self.spi_attach_params,
+            }
+        };
+        connection.command(command).await?;
 
         // The stub usually disables these watchdog timers, however if we're not using
         // the stub we need to disable them before flashing begins.
@@ -83,28 +81,35 @@ impl<P: SerialInterface> FlashTarget<P> for Esp32Target {
             if let (Some(wdt_wprotect), Some(wdt_config0)) =
                 (self.chip.wdt_wprotect(), self.chip.wdt_config0())
             {
-                connection.command(Command::WriteReg {
-                    address: wdt_wprotect,
-                    value: WDT_WKEY,
-                    mask: None,
-                })?; // WP disable
-                connection.command(Command::WriteReg {
-                    address: wdt_config0,
-                    value: 0x0,
-                    mask: None,
-                })?; // turn off RTC WDT
-                connection.command(Command::WriteReg {
-                    address: wdt_wprotect,
-                    value: 0x0,
-                    mask: None,
-                })?; // WP enable
+                connection
+                    .command(Command::WriteReg {
+                        address: wdt_wprotect,
+                        value: WDT_WKEY,
+                        mask: None,
+                    })
+                    .await?; // WP disable
+                connection
+                    .command(Command::WriteReg {
+                        address: wdt_config0,
+                        value: 0x0,
+                        mask: None,
+                    })
+                    .await?; // turn off RTC WDT
+                connection
+                    .command(Command::WriteReg {
+                        address: wdt_wprotect,
+                        value: 0x0,
+                        mask: None,
+                    })
+                    .await?; // WP enable
             }
         }
 
         Ok(())
     }
 
-    fn write_segment(
+    /// Write a segment to the target device.
+    pub async fn write_segment<P: SerialInterface>(
         &mut self,
         connection: &mut Connection<P>,
         segment: Segment<'_>,
@@ -133,17 +138,14 @@ impl<P: SerialInterface> FlashTarget<P> for Esp32Target {
         progress.init(addr, num_chunks);
 
         if self.skip {
-            let flash_checksum_md5: u128 = connection.with_timeout(
-                CommandType::FlashMd5.timeout_for_size(segment.data.len() as u32),
-                |connection| {
-                    connection
-                        .command(Command::FlashMd5 {
-                            offset: addr,
-                            size: segment.data.len() as u32,
-                        })?
-                        .try_into()
-                },
-            )?;
+            connection.set_timeout(CommandType::FlashMd5.timeout_for_size(segment.data.len() as u32))?;
+            let flash_checksum_md5: u128 = connection
+                .command(Command::FlashMd5 {
+                    offset: addr,
+                    size: segment.data.len() as u32,
+                })
+                .await?
+                .try_into()?;
 
             if checksum_md5[..] == flash_checksum_md5.to_be_bytes() {
                 debug!("Segment at address '0x{addr:x}' has not changed, skipping write");
@@ -153,19 +155,16 @@ impl<P: SerialInterface> FlashTarget<P> for Esp32Target {
             }
         }
 
-        connection.with_timeout(
-            CommandType::FlashDeflBegin.timeout_for_size(erase_size),
-            |connection| {
-                connection.command(Command::FlashDeflBegin {
-                    size: segment.data.len() as u32,
-                    blocks: block_count as u32,
-                    block_size: flash_write_size as u32,
-                    offset: addr,
-                    supports_encryption: self.chip != Chip::Esp32 && !self.use_stub,
-                })?;
-                Ok(())
-            },
-        )?;
+        connection.set_timeout(CommandType::FlashDeflBegin.timeout_for_size(erase_size))?;
+        connection
+            .command(Command::FlashDeflBegin {
+                size: segment.data.len() as u32,
+                blocks: block_count as u32,
+                block_size: flash_write_size as u32,
+                offset: addr,
+                supports_encryption: self.chip != Chip::Esp32 && !self.use_stub,
+            })
+            .await?;
         self.need_deflate_end = true;
 
         // decode the chunks to see how much data the device will have to save
@@ -178,35 +177,29 @@ impl<P: SerialInterface> FlashTarget<P> for Esp32Target {
             let size = decoder.get_ref().len() - decoded_size;
             decoded_size = decoder.get_ref().len();
 
-            connection.with_timeout(
-                CommandType::FlashDeflData.timeout_for_size(size as u32),
-                |connection| {
-                    connection.command(Command::FlashDeflData {
-                        sequence: i as u32,
-                        pad_to: 0,
-                        pad_byte: 0xff,
-                        data: block,
-                    })?;
-                    Ok(())
-                },
-            )?;
+            connection.set_timeout(CommandType::FlashDeflData.timeout_for_size(size as u32))?;
+            connection
+                .command(Command::FlashDeflData {
+                    sequence: i as u32,
+                    pad_to: 0,
+                    pad_byte: 0xff,
+                    data: block,
+                })
+                .await?;
 
             progress.update(i + 1)
         }
 
         if self.verify {
             progress.verifying();
-            let flash_checksum_md5: u128 = connection.with_timeout(
-                CommandType::FlashMd5.timeout_for_size(segment.data.len() as u32),
-                |connection| {
-                    connection
-                        .command(Command::FlashMd5 {
-                            offset: addr,
-                            size: segment.data.len() as u32,
-                        })?
-                        .try_into()
-                },
-            )?;
+            connection.set_timeout(CommandType::FlashMd5.timeout_for_size(segment.data.len() as u32))?;
+            let flash_checksum_md5: u128 = connection
+                .command(Command::FlashMd5 {
+                    offset: addr,
+                    size: segment.data.len() as u32,
+                })
+                .await?
+                .try_into()?;
 
             if checksum_md5[..] != flash_checksum_md5.to_be_bytes() {
                 return Err(Error::VerifyFailed);
@@ -219,15 +212,17 @@ impl<P: SerialInterface> FlashTarget<P> for Esp32Target {
         Ok(())
     }
 
-    fn finish(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error> {
+    /// Complete the flashing operation.
+    pub async fn finish<P: SerialInterface>(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error> {
         if self.need_deflate_end {
-            connection.with_timeout(CommandType::FlashDeflEnd.timeout(), |connection| {
-                connection.command(Command::FlashDeflEnd { reboot: false })
-            })?;
+            connection.set_timeout(CommandType::FlashDeflEnd.timeout())?;
+            connection
+                .command(Command::FlashDeflEnd { reboot: false })
+                .await?;
         }
 
         if reboot {
-            connection.reset_after(self.use_stub, self.chip)?;
+            connection.reset_after(self.use_stub, self.chip).await?;
         }
 
         Ok(())

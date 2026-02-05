@@ -10,7 +10,6 @@ path = "src/main.rs"
 [dependencies]
 link = { path = "../link", default-features = false, features = ["ctl"] }
 clap = { version = "4", features = ["derive"] }
-serialport = "4.8.1"
 hex = "0.4"
 indicatif = "0.17"
 rand = "0.9"
@@ -19,5 +18,10 @@ reedline-repl-rs = { version = "1.3", features = ["derive"] }
 espflash = { path = "../vendor/espflash/espflash", default-features = false, features = ["serialport"] }
 log = "0.4"
 crossterm = "0.28"
-futures = { version = "0.3", default-features = false, features = ["executor"] }
 heapless = "0.9"
+# Async runtime and serial
+tokio = { version = "1", features = ["rt", "macros"] }
+tokio-serial = "5"
+futures = "0.3"
+# Keep serialport for port enumeration
+serialport = "4.8.1"

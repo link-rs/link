@@ -13,21 +13,46 @@ mod ram;
 pub use self::{esp32::Esp32Target, ram::RamTarget};
 use crate::{Error, connection::{Connection, SerialInterface}, image_format::Segment};
 
-/// Operations for interacting with a flash target.
-pub trait FlashTarget<P: SerialInterface> {
+/// Enum-based flash target to avoid trait object issues with async.
+#[derive(Debug)]
+#[cfg(feature = "serialport")]
+pub enum FlashTargetType {
+    /// ESP32 flash target for writing to flash memory.
+    Esp32(Esp32Target),
+    /// RAM target for writing to static memory.
+    Ram(RamTarget),
+}
+
+#[cfg(feature = "serialport")]
+impl FlashTargetType {
     /// Begin the flashing operation.
-    fn begin(&mut self, connection: &mut Connection<P>) -> Result<(), Error>;
+    pub async fn begin<P: SerialInterface>(&mut self, connection: &mut Connection<P>) -> Result<(), Error> {
+        match self {
+            FlashTargetType::Esp32(t) => t.begin(connection).await,
+            FlashTargetType::Ram(t) => t.begin(connection).await,
+        }
+    }
 
     /// Write a segment to the target device.
-    fn write_segment(
+    pub async fn write_segment<P: SerialInterface>(
         &mut self,
         connection: &mut Connection<P>,
         segment: Segment<'_>,
         progress: &mut dyn ProgressCallbacks,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Error> {
+        match self {
+            FlashTargetType::Esp32(t) => t.write_segment(connection, segment, progress).await,
+            FlashTargetType::Ram(t) => t.write_segment(connection, segment, progress).await,
+        }
+    }
 
     /// Complete the flashing operation.
-    fn finish(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error>;
+    pub async fn finish<P: SerialInterface>(&mut self, connection: &mut Connection<P>, reboot: bool) -> Result<(), Error> {
+        match self {
+            FlashTargetType::Esp32(t) => t.finish(connection, reboot).await,
+            FlashTargetType::Ram(t) => t.finish(connection, reboot).await,
+        }
+    }
 }
 
 /// Progress update callbacks.
