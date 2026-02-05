@@ -982,6 +982,10 @@ impl<P: CtlPort> CtlCore<P> {
     pub async fn net_get_loopback(&mut self) -> Result<NetLoopback, CtlError> {
         self.write_tlv_net(MgmtToNet::GetLoopback, &[]).await?;
         let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToMgmt::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("<invalid utf8>");
+            return Err(CtlError::DeviceError(format!("GetLoopback: {}", msg)));
+        }
         if tlv.tlv_type != NetToMgmt::Loopback {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Loopback",

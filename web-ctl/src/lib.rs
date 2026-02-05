@@ -283,20 +283,6 @@ impl LinkController {
         core.ui_set_loopback(loopback_mode).await.map_err(ctl_error_to_js)
     }
 
-    /// Get UI chip loopback mode (legacy boolean API).
-    #[wasm_bindgen]
-    pub async fn get_ui_loopback(&mut self) -> Result<bool, JsValue> {
-        let mode = self.get_ui_loopback_mode().await?;
-        Ok(mode != "off")
-    }
-
-    /// Set UI chip loopback mode (legacy boolean API).
-    #[wasm_bindgen]
-    pub async fn set_ui_loopback(&mut self, enabled: bool) -> Result<(), JsValue> {
-        let mode = if enabled { 1 } else { 0 };
-        self.set_ui_loopback_mode(mode).await
-    }
-
     /// Get NET chip loopback mode as string.
     /// Returns: "off", "raw", or "moq"
     #[wasm_bindgen]
@@ -328,20 +314,6 @@ impl LinkController {
 
         let core = self.core_mut()?;
         core.net_set_loopback(loopback_mode).await.map_err(ctl_error_to_js)
-    }
-
-    /// Get NET chip loopback mode (legacy boolean API).
-    #[wasm_bindgen]
-    pub async fn get_net_loopback(&mut self) -> Result<bool, JsValue> {
-        let mode = self.get_net_loopback_mode().await?;
-        Ok(mode != "off")
-    }
-
-    /// Set NET chip loopback mode (legacy boolean API).
-    #[wasm_bindgen]
-    pub async fn set_net_loopback(&mut self, enabled: bool) -> Result<(), JsValue> {
-        let mode = if enabled { 1 } else { 0 };
-        self.set_net_loopback_mode(mode).await
     }
 
     /// Ping the MGMT chip.
@@ -774,9 +746,20 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn get_ui_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
         let core = self.core_mut()?;
-        let info = core.get_ui_bootloader_info(|ms| {
-            std::thread::sleep(std::time::Duration::from_millis(ms));
-        }).await.map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
+
+        // Reset UI chip into bootloader mode
+        let _ = core.reset_ui_to_bootloader().await;
+
+        // Wait for bootloader to be ready (use js_sleep instead of std::thread::sleep)
+        js_sleep(1000).await;
+
+        // Query bootloader info
+        let result = core.query_ui_bootloader().await;
+
+        // Always reset UI chip back to user mode
+        let _ = core.reset_ui_to_user().await;
+
+        let info = result.map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
 
         let obj = js_sys::Object::new();
         js_sys::Reflect::set(&obj, &"bootloaderVersion".into(), &info.bootloader_version.into())?;
@@ -814,11 +797,17 @@ impl LinkController {
         let firmware_data = firmware.to_vec();
         let core = self.core_mut()?;
 
-        core.flash_ui(
+        // Reset UI chip into bootloader mode
+        let _ = core.reset_ui_to_bootloader().await;
+
+        // Wait for bootloader to be ready (use js_sleep instead of std::thread::sleep)
+        js_sleep(100).await;
+
+        // Flash the firmware
+        let result = core.flash_ui_in_bootloader_mode(
             &firmware_data,
-            |ms| { std::thread::sleep(std::time::Duration::from_millis(ms)); },
             verify,
-            |phase, current, total| {
+            &mut |phase, current, total| {
                 let phase_str = match phase {
                     FlashPhase::Compressing => "compressing",
                     FlashPhase::Erasing => "erasing",
@@ -832,7 +821,12 @@ impl LinkController {
                     &JsValue::from(total as u32),
                 );
             },
-        ).await.map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
+        ).await;
+
+        // Always reset UI chip back to user mode
+        let _ = core.reset_ui_to_user().await;
+
+        result.map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
 
     /// Get NET chip (ESP32) bootloader information.
@@ -917,6 +911,24 @@ impl LinkController {
     pub async fn get_all_state(&mut self) -> Result<JsValue, JsValue> {
         let obj = js_sys::Object::new();
 
+        // NET chip state (loaded first to diagnose ordering issues)
+        let net_obj = js_sys::Object::new();
+        match self.get_net_loopback_mode().await {
+            Ok(loopback_mode) => {
+                js_sys::Reflect::set(&net_obj, &"loopbackMode".into(), &loopback_mode.into())?;
+            }
+            Err(e) => {
+                log(&format!("get_net_loopback_mode failed: {:?}", e));
+            }
+        }
+        if let Ok(relay_url) = self.get_relay_url().await {
+            js_sys::Reflect::set(&net_obj, &"relayUrl".into(), &relay_url.into())?;
+        }
+        if let Ok(networks) = self.get_wifi_networks().await {
+            js_sys::Reflect::set(&net_obj, &"wifiNetworks".into(), &networks)?;
+        }
+        js_sys::Reflect::set(&obj, &"net".into(), &net_obj)?;
+
         // UI chip state
         let ui_obj = js_sys::Object::new();
         if let Ok(version) = self.get_version().await {
@@ -926,26 +938,9 @@ impl LinkController {
             js_sys::Reflect::set(&ui_obj, &"sframeKey".into(), &sframe_key.into())?;
         }
         if let Ok(loopback_mode) = self.get_ui_loopback_mode().await {
-            let is_loopback = loopback_mode != "off";
             js_sys::Reflect::set(&ui_obj, &"loopbackMode".into(), &loopback_mode.into())?;
-            js_sys::Reflect::set(&ui_obj, &"loopback".into(), &is_loopback.into())?;
         }
         js_sys::Reflect::set(&obj, &"ui".into(), &ui_obj)?;
-
-        // NET chip state
-        let net_obj = js_sys::Object::new();
-        if let Ok(relay_url) = self.get_relay_url().await {
-            js_sys::Reflect::set(&net_obj, &"relayUrl".into(), &relay_url.into())?;
-        }
-        if let Ok(networks) = self.get_wifi_networks().await {
-            js_sys::Reflect::set(&net_obj, &"wifiNetworks".into(), &networks)?;
-        }
-        if let Ok(loopback_mode) = self.get_net_loopback_mode().await {
-            let is_loopback = loopback_mode != "off";
-            js_sys::Reflect::set(&net_obj, &"loopbackMode".into(), &loopback_mode.into())?;
-            js_sys::Reflect::set(&net_obj, &"loopback".into(), &is_loopback.into())?;
-        }
-        js_sys::Reflect::set(&obj, &"net".into(), &net_obj)?;
 
         Ok(obj.into())
     }

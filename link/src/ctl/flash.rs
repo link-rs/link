@@ -737,8 +737,11 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         result
     }
 
-    /// Helper to query the UI bootloader.
-    async fn query_ui_bootloader(&mut self) -> Result<MgmtBootloaderInfo, stm::Error<std::io::Error>> {
+    /// Query the UI bootloader when it's already in bootloader mode.
+    ///
+    /// This is useful for platforms like WASM where you need to handle the
+    /// reset and delay asynchronously before calling this method.
+    pub async fn query_ui_bootloader(&mut self) -> Result<MgmtBootloaderInfo, stm::Error<std::io::Error>> {
         let ui_tunnel = TunnelPort::new(self.port_mut());
         let mut bl = Bootloader::new(ui_tunnel);
 
@@ -796,7 +799,7 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         delay_ms(100);
 
         // Flash the firmware
-        let result = self.do_flash_ui(firmware, verify, &mut progress).await;
+        let result = self.flash_ui_in_bootloader_mode(firmware, verify, &mut progress).await;
 
         // Always reset UI chip back to user mode
         let _ = self.reset_ui_to_user().await;
@@ -804,8 +807,17 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         result
     }
 
-    /// Helper to flash the UI chip.
-    async fn do_flash_ui<F>(
+    /// Flash the UI chip when it's already in bootloader mode.
+    ///
+    /// This is useful for platforms like WASM where you need to handle the
+    /// reset and delay asynchronously before calling this method.
+    ///
+    /// Typical usage:
+    /// 1. Call `reset_ui_to_bootloader()`
+    /// 2. Wait for bootloader to be ready (e.g., 100ms)
+    /// 3. Call this method
+    /// 4. Call `reset_ui_to_user()`
+    pub async fn flash_ui_in_bootloader_mode<F>(
         &mut self,
         firmware: &[u8],
         verify: bool,
