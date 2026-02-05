@@ -1,28 +1,146 @@
 //! Async serial port wrapper for tokio-serial.
+//!
+//! Provides `TokioSerialPort`, a wrapper around `tokio_serial::SerialStream` that adds:
+//! - Internal read buffering
+//! - Timeout support via `tokio::time::timeout()`
+//! - Implementations of `SetTimeout`, `SetBaudRate`, and `clear_buffer()`
 
-use link::ctl::CtlPort;
+use link::ctl::{CtlPort, SetBaudRate, SetTimeout};
+use std::collections::VecDeque;
 use std::io;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_serial::SerialStream;
+use tokio::time::timeout;
+use tokio_serial::{SerialPort, SerialStream};
 
-/// CtlPort implementation for tokio-serial's SerialStream.
-impl CtlPort for SerialStream {
+/// Default read buffer size.
+const DEFAULT_BUF_SIZE: usize = 8192;
+
+/// Default read timeout.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Async serial port wrapper with buffering and timeout support.
+///
+/// This wraps `tokio_serial::SerialStream` to provide:
+/// - Internal read buffering for efficient byte-by-byte reads
+/// - Configurable read timeout via `tokio::time::timeout()`
+/// - `CtlPort`, `SetTimeout`, and `SetBaudRate` trait implementations
+pub struct TokioSerialPort {
+    stream: SerialStream,
+    read_buffer: VecDeque<u8>,
+    timeout: Duration,
+}
+
+impl TokioSerialPort {
+    /// Create a new TokioSerialPort wrapping the given SerialStream.
+    pub fn new(stream: SerialStream) -> Self {
+        Self {
+            stream,
+            read_buffer: VecDeque::with_capacity(DEFAULT_BUF_SIZE),
+            timeout: DEFAULT_TIMEOUT,
+        }
+    }
+
+    /// Get a reference to the underlying SerialStream.
+    pub fn get_ref(&self) -> &SerialStream {
+        &self.stream
+    }
+
+    /// Get a mutable reference to the underlying SerialStream.
+    pub fn get_mut(&mut self) -> &mut SerialStream {
+        &mut self.stream
+    }
+
+    /// Consume the wrapper and return the underlying SerialStream.
+    pub fn into_inner(self) -> SerialStream {
+        self.stream
+    }
+
+    /// Fill the internal buffer by reading from the stream.
+    async fn fill_buffer(&mut self) -> io::Result<usize> {
+        let mut tmp = [0u8; 1024];
+        let n = timeout(self.timeout, self.stream.read(&mut tmp))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "read timeout"))??;
+        self.read_buffer.extend(&tmp[..n]);
+        Ok(n)
+    }
+}
+
+impl CtlPort for TokioSerialPort {
     type Error = io::Error;
 
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        AsyncReadExt::read(self, buf).await
+        // Return buffered data first
+        if !self.read_buffer.is_empty() {
+            let to_read = buf.len().min(self.read_buffer.len());
+            for (i, byte) in self.read_buffer.drain(..to_read).enumerate() {
+                buf[i] = byte;
+            }
+            return Ok(to_read);
+        }
+
+        // Buffer empty, read from stream with timeout
+        let n = self.fill_buffer().await?;
+        if n == 0 {
+            return Ok(0);
+        }
+
+        // Return data from buffer
+        let to_read = buf.len().min(self.read_buffer.len());
+        for (i, byte) in self.read_buffer.drain(..to_read).enumerate() {
+            buf[i] = byte;
+        }
+        Ok(to_read)
     }
 
     async fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
-        AsyncWriteExt::write_all(self, buf).await
+        AsyncWriteExt::write_all(&mut self.stream, buf).await
     }
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
-        AsyncWriteExt::flush(self).await
+        AsyncWriteExt::flush(&mut self.stream).await
     }
 
     async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
-        AsyncReadExt::read_exact(self, buf).await?;
+        let mut filled = 0;
+        while filled < buf.len() {
+            // First drain from buffer
+            while filled < buf.len() && !self.read_buffer.is_empty() {
+                buf[filled] = self.read_buffer.pop_front().unwrap();
+                filled += 1;
+            }
+
+            if filled < buf.len() {
+                // Need more data
+                let n = self.fill_buffer().await?;
+                if n == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "unexpected EOF in read_exact",
+                    ));
+                }
+            }
+        }
         Ok(())
+    }
+
+    fn clear_buffer(&mut self) {
+        self.read_buffer.clear();
+    }
+}
+
+impl SetTimeout for TokioSerialPort {
+    fn set_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.timeout = timeout;
+        Ok(())
+    }
+}
+
+impl SetBaudRate for TokioSerialPort {
+    fn set_baud_rate(&mut self, baud_rate: u32) -> io::Result<()> {
+        self.stream
+            .set_baud_rate(baud_rate)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
     }
 }

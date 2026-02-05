@@ -2,19 +2,18 @@
 
 use super::Core;
 use crate::{GetSetHex, GetSetU32, LoopbackAction, StackAction, UiAction};
-use futures::executor::block_on;
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::FlashPhase;
+use link::ctl::SetTimeout;
 use link::LoopbackMode;
 use std::io::Write;
-use std::thread;
 use std::time::Duration;
 
-pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         UiAction::Ping { data } => {
             println!("Sending UI ping with data: {}", data);
-            block_on(core.ui_ping(data.as_bytes()))?;
+            core.ui_ping(data.as_bytes()).await?;
             println!("Received pong!");
             Ok(())
         }
@@ -23,8 +22,8 @@ pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::e
             println!("==================\n");
             println!("Resetting UI chip to bootloader mode...");
 
-            let delay = |ms| thread::sleep(Duration::from_millis(ms));
-            let info = block_on(core.get_ui_bootloader_info(delay))
+            let delay = |ms| std::thread::sleep(Duration::from_millis(ms));
+            let info = core.get_ui_bootloader_info(delay).await
                 .map_err(|_| "Failed to get bootloader info")?;
 
             let major = info.bootloader_version >> 4;
@@ -89,7 +88,7 @@ pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::e
 
             // Hold NET chip in reset during UI flashing to avoid interference
             println!("Holding NET chip in reset...");
-            if let Err(e) = block_on(core.hold_net_reset()) {
+            if let Err(e) = core.hold_net_reset().await {
                 eprintln!("Warning: failed to hold NET in reset: {}", e);
             }
 
@@ -107,9 +106,9 @@ pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::e
             pb.set_style(sectors_style.clone());
 
             let mut current_phase = None;
-            let delay = |ms| thread::sleep(Duration::from_millis(ms));
+            let delay = |ms| std::thread::sleep(Duration::from_millis(ms));
             let verify = !no_verify;
-            let result = block_on(core.flash_ui(&firmware, delay, verify, |phase, progress, total| {
+            let result = core.flash_ui(&firmware, delay, verify, |phase, progress, total| {
                 if current_phase != Some(phase) {
                     current_phase = Some(phase);
                     match phase {
@@ -131,13 +130,13 @@ pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::e
                     pb.set_position(0);
                 }
                 pb.set_position(progress as u64);
-            }));
+            }).await;
 
             pb.finish_and_clear();
 
             // Release NET chip from reset
             println!("Releasing NET chip from reset...");
-            if let Err(e) = block_on(core.reset_net_to_user()) {
+            if let Err(e) = core.reset_net_to_user().await {
                 eprintln!("Warning: failed to release NET from reset: {}", e);
             }
 
@@ -152,19 +151,19 @@ pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::e
         }
         UiAction::Version { action } => match action.unwrap_or_default() {
             GetSetU32::Get => {
-                let version = block_on(core.get_version())?;
+                let version = core.get_version().await?;
                 println!("{}", version);
                 Ok(())
             }
             GetSetU32::Set { value } => {
-                block_on(core.set_version(value))?;
+                core.set_version(value).await?;
                 println!("Version set to {}", value);
                 Ok(())
             }
         },
         UiAction::SFrameKey { action } => match action.unwrap_or_default() {
             GetSetHex::Get => {
-                let key = block_on(core.get_sframe_key())?;
+                let key = core.get_sframe_key().await?;
                 println!("{}", hex::encode(key));
                 Ok(())
             }
@@ -175,51 +174,51 @@ pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::e
                 }
                 let mut key_array = [0u8; 16];
                 key_array.copy_from_slice(&key_bytes);
-                block_on(core.set_sframe_key(&key_array))?;
+                core.set_sframe_key(&key_array).await?;
                 println!("SFrame key set to {}", value);
                 Ok(())
             }
         },
         UiAction::Loopback { action } => match action.unwrap_or_default() {
             LoopbackAction::Get => {
-                let mode = block_on(core.ui_get_loopback())?;
+                let mode = core.ui_get_loopback().await?;
                 println!("{:?}", mode);
                 Ok(())
             }
             LoopbackAction::Off => {
-                block_on(core.ui_set_loopback(LoopbackMode::Off))?;
+                core.ui_set_loopback(LoopbackMode::Off).await?;
                 println!("UI loopback: off");
                 Ok(())
             }
             LoopbackAction::Raw => {
-                block_on(core.ui_set_loopback(LoopbackMode::Raw))?;
+                core.ui_set_loopback(LoopbackMode::Raw).await?;
                 println!("UI loopback: raw");
                 Ok(())
             }
             LoopbackAction::Alaw => {
-                block_on(core.ui_set_loopback(LoopbackMode::Alaw))?;
+                core.ui_set_loopback(LoopbackMode::Alaw).await?;
                 println!("UI loopback: alaw");
                 Ok(())
             }
             LoopbackAction::Sframe => {
-                block_on(core.ui_set_loopback(LoopbackMode::Sframe))?;
+                core.ui_set_loopback(LoopbackMode::Sframe).await?;
                 println!("UI loopback: sframe");
                 Ok(())
             }
         },
         UiAction::Reset { action } => match action.as_deref() {
             Some("hold") => {
-                block_on(core.hold_ui_reset())?;
+                core.hold_ui_reset().await?;
                 println!("UI chip held in reset");
                 Ok(())
             }
             Some("release") => {
-                block_on(core.reset_ui_to_user())?;
+                core.reset_ui_to_user().await?;
                 println!("UI chip released from reset");
                 Ok(())
             }
             _ => {
-                block_on(core.reset_ui_to_user())?;
+                core.reset_ui_to_user().await?;
                 println!("UI chip reset");
                 Ok(())
             }
@@ -227,12 +226,12 @@ pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::e
         UiAction::Monitor { reset } => {
             if reset {
                 println!("Resetting UI chip...");
-                block_on(core.reset_ui_to_user())?;
+                core.reset_ui_to_user().await?;
             }
             println!("Monitoring UI chip logs (ESC to stop)...\n");
 
             // Set a short timeout for non-blocking reads
-            if let Err(e) = core.port_mut().get_mut().get_mut().set_timeout(Duration::from_millis(100)) {
+            if let Err(e) = core.port_mut().set_timeout(Duration::from_millis(100)) {
                 eprintln!("Warning: couldn't set timeout: {}", e);
             }
 
@@ -242,7 +241,7 @@ pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::e
             // Enable raw mode to capture ESC
             terminal::enable_raw_mode()?;
 
-            let result = (|| {
+            let result = async {
                 loop {
                     // Check for key press (non-blocking)
                     if event::poll(Duration::from_millis(0))? {
@@ -250,12 +249,12 @@ pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::e
                             code: KeyCode::Esc, ..
                         }) = event::read()?
                         {
-                            return Ok(());
+                            return Ok::<(), Box<dyn std::error::Error>>(());
                         }
                     }
 
                     // Check for TLV data from UI (timeout-aware)
-                    match block_on(core.try_read_ui_log()) {
+                    match core.try_read_ui_log().await {
                         Ok(Some(msg)) => {
                             // Use \r\n for raw terminal mode
                             print!("[UI] {}\r\n", msg);
@@ -269,13 +268,13 @@ pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::e
                         }
                     }
                 }
-            })();
+            }.await;
 
             // Always restore terminal mode and timeout
             terminal::disable_raw_mode()?;
 
             // Restore timeout to normal (3 seconds)
-            if let Err(e) = core.port_mut().get_mut().get_mut().set_timeout(Duration::from_secs(3)) {
+            if let Err(e) = core.port_mut().set_timeout(Duration::from_secs(3)) {
                 eprintln!("Warning: couldn't restore timeout: {}", e);
             }
 
@@ -285,7 +284,7 @@ pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::e
         }
         UiAction::Stack { action } => match action.unwrap_or_default() {
             StackAction::Info => {
-                let info = block_on(core.ui_get_stack_info())?;
+                let info = core.ui_get_stack_info().await?;
                 println!("Stack Base:  0x{:08X}", info.stack_base);
                 println!("Stack Top:   0x{:08X}", info.stack_top);
                 println!("Stack Size:  {} bytes ({:.1} KB)", info.stack_size, info.stack_size as f64 / 1024.0);
@@ -294,7 +293,7 @@ pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::e
                 Ok(())
             }
             StackAction::Repaint => {
-                block_on(core.ui_repaint_stack())?;
+                core.ui_repaint_stack().await?;
                 println!("Stack repainted");
                 Ok(())
             }

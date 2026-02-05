@@ -3,29 +3,25 @@
 //! CLI mode:  ctl ui ping hello
 //! REPL mode: ctl (no args) -> interactive prompt
 
-mod buffered_port;
 mod handlers;
-mod sync_adapter;
+mod serial;
 
-use buffered_port::BufferedPort;
 use clap::{FromArgMatches, Parser, Subcommand};
-use futures::executor::block_on;
-use link::ctl::CtlCore;
+use link::ctl::{CtlCore, SetTimeout};
 use rand::Rng;
-use sync_adapter::SyncPortAdapter;
 use reedline_repl_rs::clap::ArgMatches;
 use reedline_repl_rs::{CallBackMap, Repl};
-use serialport::SerialPortType;
+use serial::TokioSerialPort;
 use std::io::Write;
 use std::time::Duration;
+use tokio_serial::{SerialPortInfo, SerialPortType, SerialStream};
 
-/// Type alias for the CtlCore with CLI-specific port types.
-/// This wraps a buffered serial port in a sync adapter for use with block_on().
-pub type Core = CtlCore<SyncPortAdapter<BufferedPort<Box<dyn serialport::SerialPort>>>>;
+/// Type alias for the CtlCore with tokio-serial port.
+pub type Core = CtlCore<TokioSerialPort>;
 
-/// Create a new Core from a buffered serial port.
-fn new_core(port: BufferedPort<Box<dyn serialport::SerialPort>>) -> Core {
-    CtlCore::new(SyncPortAdapter::new(port))
+/// Create a new Core from a TokioSerialPort.
+fn new_core(port: TokioSerialPort) -> Core {
+    CtlCore::new(port)
 }
 
 #[derive(Parser)]
@@ -328,36 +324,37 @@ enum ChannelAction {
     Clear,
 }
 
-/// Open a serial port with standard settings
-fn open_serial_port(
-    port_name: &str,
-    baud: u32,
-) -> Result<Box<dyn serialport::SerialPort>, serialport::Error> {
-    serialport::new(port_name, baud)
-        .parity(serialport::Parity::Even)
-        .timeout(Duration::from_secs(3))
-        .open()
+/// Open a serial port with standard settings using tokio-serial.
+fn open_serial_port(port_name: &str, baud: u32) -> Result<SerialStream, tokio_serial::Error> {
+    let builder = tokio_serial::new(port_name, baud).parity(tokio_serial::Parity::Even);
+    SerialStream::open(&builder)
+}
+
+/// Get available USB serial ports.
+fn available_ports() -> Vec<SerialPortInfo> {
+    tokio_serial::available_ports()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| matches!(p.port_type, SerialPortType::UsbPort(_)))
+        .filter(|p| !p.port_name.starts_with("/dev/tty."))
+        .collect()
 }
 
 /// Try to connect to a specific port and verify it's a Link device.
 /// Returns the Core if successful, None if connection failed or not a Link device.
-fn try_connect(port_name: &str, baud: u32) -> Option<Core> {
-    let mut port = open_serial_port(port_name, baud).ok()?;
+async fn try_connect(port_name: &str, baud: u32) -> Option<Core> {
+    let stream = open_serial_port(port_name, baud).ok()?;
+    let mut port = TokioSerialPort::new(stream);
 
     // Set short timeout for hello check
     port.set_timeout(Duration::from_millis(50)).ok()?;
 
-    let buffered_port = BufferedPort::new(port);
-    let mut core = new_core(buffered_port);
+    let mut core = new_core(port);
     let challenge: [u8; 4] = rand::rng().random();
 
-    if block_on(core.hello(&challenge)) {
+    if core.hello(&challenge).await {
         // Restore normal timeout for subsequent operations
-        core.port_mut()
-            .get_mut()
-            .get_mut()
-            .set_timeout(Duration::from_secs(3))
-            .ok()?;
+        core.port_mut().set_timeout(Duration::from_secs(3)).ok()?;
         Some(core)
     } else {
         None
@@ -365,14 +362,8 @@ fn try_connect(port_name: &str, baud: u32) -> Option<Core> {
 }
 
 /// Find a Link device among available ports and return a connected Core.
-fn find_link_device(baud: u32) -> Option<(Core, String)> {
-    let all_ports: Vec<_> = serialport::available_ports()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|p| matches!(p.port_type, SerialPortType::UsbPort(_)))
-        .map(|p| p.port_name)
-        .filter(|name| !name.starts_with("/dev/tty."))
-        .collect();
+async fn find_link_device(baud: u32) -> Option<(Core, String)> {
+    let all_ports: Vec<_> = available_ports().into_iter().map(|p| p.port_name).collect();
 
     if all_ports.is_empty() {
         return None;
@@ -381,7 +372,7 @@ fn find_link_device(baud: u32) -> Option<(Core, String)> {
     println!("Scanning for Link devices...");
 
     for port_name in &all_ports {
-        if let Some(app) = try_connect(port_name, baud) {
+        if let Some(app) = try_connect(port_name, baud).await {
             println!("Found Link device on {}", port_name);
             return Some((app, port_name.clone()));
         }
@@ -392,13 +383,7 @@ fn find_link_device(baud: u32) -> Option<(Core, String)> {
 
 /// Prompt user to manually select a port and connect.
 fn manually_select_port(baud: u32) -> Result<(Core, String), String> {
-    let all_ports: Vec<_> = serialport::available_ports()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|p| matches!(p.port_type, SerialPortType::UsbPort(_)))
-        .map(|p| p.port_name)
-        .filter(|name| !name.starts_with("/dev/tty."))
-        .collect();
+    let all_ports: Vec<_> = available_ports().into_iter().map(|p| p.port_name).collect();
 
     if all_ports.is_empty() {
         return Err("No USB serial ports found".to_string());
@@ -431,24 +416,27 @@ fn manually_select_port(baud: u32) -> Result<(Core, String), String> {
     }
 
     let port_name = &all_ports[choice - 1];
-    let port =
+    let stream =
         open_serial_port(port_name, baud).map_err(|e| format!("Failed to open port: {}", e))?;
 
-    let buffered_port = BufferedPort::new(port);
-    Ok((new_core(buffered_port), port_name.clone()))
+    let port = TokioSerialPort::new(stream);
+    Ok((new_core(port), port_name.clone()))
 }
 
 /// Open a connection to the device
-fn connect(port: Option<String>, baud: u32) -> Result<(Core, String), Box<dyn std::error::Error>> {
+async fn connect(
+    port: Option<String>,
+    baud: u32,
+) -> Result<(Core, String), Box<dyn std::error::Error>> {
     // If user specified a port, connect directly
     if let Some(port_name) = port {
-        let port = open_serial_port(&port_name, baud)?;
-        let buffered_port = BufferedPort::new(port);
-        return Ok((new_core(buffered_port), port_name));
+        let stream = open_serial_port(&port_name, baud)?;
+        let port = TokioSerialPort::new(stream);
+        return Ok((new_core(port), port_name));
     }
 
     // Try to find a Link device automatically
-    if let Some((app, port_name)) = find_link_device(baud) {
+    if let Some((app, port_name)) = find_link_device(baud).await {
         return Ok((app, port_name));
     }
 
@@ -456,18 +444,18 @@ fn connect(port: Option<String>, baud: u32) -> Result<(Core, String), Box<dyn st
     manually_select_port(baud).map_err(|e| e.into())
 }
 
-fn dispatch(cmd: Command, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
+async fn dispatch(cmd: Command, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        Command::Mgmt { action } => handlers::handle_mgmt(action, core),
-        Command::Ui { action } => handlers::handle_ui(action, core),
-        Command::Net { action } => handlers::handle_net(action, core),
+        Command::Mgmt { action } => handlers::handle_mgmt(action, core).await,
+        Command::Ui { action } => handlers::handle_ui(action, core).await,
+        Command::Net { action } => handlers::handle_net(action, core).await,
         Command::CircularPing { reverse, data } => {
             if reverse {
                 println!("Sending NET-first circular ping with data: {}", data);
-                block_on(core.net_first_circular_ping(data.as_bytes()))?;
+                core.net_first_circular_ping(data.as_bytes()).await?;
             } else {
                 println!("Sending UI-first circular ping with data: {}", data);
-                block_on(core.ui_first_circular_ping(data.as_bytes()))?;
+                core.ui_first_circular_ping(data.as_bytes()).await?;
             }
             println!("Completed circular ping!");
             Ok(())
@@ -484,7 +472,11 @@ fn mgmt_handler(
 ) -> Result<Option<String>, reedline_repl_rs::Error> {
     let action = MgmtAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
-    dispatch(Command::Mgmt { action }, core)
+
+    // Use tokio runtime handle to run async code in sync callback
+    let handle = tokio::runtime::Handle::current();
+    handle
+        .block_on(dispatch(Command::Mgmt { action }, core))
         .map(|()| None)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
@@ -492,7 +484,10 @@ fn mgmt_handler(
 fn ui_handler(args: ArgMatches, core: &mut Core) -> Result<Option<String>, reedline_repl_rs::Error> {
     let action = UiAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
-    dispatch(Command::Ui { action }, core)
+
+    let handle = tokio::runtime::Handle::current();
+    handle
+        .block_on(dispatch(Command::Ui { action }, core))
         .map(|()| None)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
@@ -500,7 +495,10 @@ fn ui_handler(args: ArgMatches, core: &mut Core) -> Result<Option<String>, reedl
 fn net_handler(args: ArgMatches, core: &mut Core) -> Result<Option<String>, reedline_repl_rs::Error> {
     let action = NetAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
-    dispatch(Command::Net { action }, core)
+
+    let handle = tokio::runtime::Handle::current();
+    handle
+        .block_on(dispatch(Command::Net { action }, core))
         .map(|()| None)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
@@ -514,7 +512,10 @@ fn circular_ping_handler(
         .get_one::<String>("data")
         .cloned()
         .unwrap_or_else(|| "hello".to_string());
-    dispatch(Command::CircularPing { reverse, data }, core)
+
+    let handle = tokio::runtime::Handle::current();
+    handle
+        .block_on(dispatch(Command::CircularPing { reverse, data }, core))
         .map(|()| None)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
@@ -523,7 +524,9 @@ fn exit_handler(
     _args: ArgMatches,
     core: &mut Core,
 ) -> Result<Option<String>, reedline_repl_rs::Error> {
-    dispatch(Command::Exit, core)
+    let handle = tokio::runtime::Handle::current();
+    handle
+        .block_on(dispatch(Command::Exit, core))
         .map(|()| None)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
@@ -549,23 +552,24 @@ fn run_repl(core: Core, port_name: &str) -> Result<(), reedline_repl_rs::Error> 
     repl.run()
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
         Some(cmd) => {
             // CLI mode: connect, run one command, exit
-            let (mut core, port_name) = connect(cli.port, cli.baud)?;
+            let (mut core, port_name) = connect(cli.port, cli.baud).await?;
             println!("Connected to {} at {} baud", port_name, cli.baud);
 
-            if let Err(e) = dispatch(cmd, &mut core) {
+            if let Err(e) = dispatch(cmd, &mut core).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
         }
         None => {
             // REPL mode: connect once, run commands in loop
-            let (core, port_name) = connect(cli.port, cli.baud)?;
+            let (core, port_name) = connect(cli.port, cli.baud).await?;
             run_repl(core, &port_name)?;
         }
     }

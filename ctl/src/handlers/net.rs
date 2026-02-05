@@ -2,9 +2,8 @@
 
 use super::Core;
 use crate::{ChannelAction, GetSetString, NetAction, NetLoopbackMode, WifiAction};
-use futures::executor::block_on;
 use indicatif::{ProgressBar, ProgressStyle};
-use link::ctl::{ChannelConfig, ProgressCallbacks};
+use link::ctl::{ChannelConfig, ProgressCallbacks, SetTimeout};
 use link::NetLoopback;
 
 /// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
@@ -57,17 +56,17 @@ impl ProgressCallbacks for FlashProgress {
     }
 }
 
-pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         NetAction::Ping { data } => {
             println!("Sending NET ping with data: {}", data);
-            block_on(core.net_ping(data.as_bytes()))?;
+            core.net_ping(data.as_bytes()).await?;
             println!("Received pong!");
             Ok(())
         }
         NetAction::Info => {
             println!("Querying NET chip info...");
-            let info = block_on(core.get_net_bootloader_info())
+            let info = core.get_net_bootloader_info().await
                 .map_err(|e| format!("Failed to get bootloader info: {:?}", e))?;
 
             let dev = &info.device_info;
@@ -118,7 +117,7 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
         }
         NetAction::Wifi { action } => match action {
             None => {
-                let ssids = block_on(core.get_wifi_ssids())?;
+                let ssids = core.get_wifi_ssids().await?;
                 if ssids.is_empty() {
                     println!("No WiFi networks configured");
                 } else {
@@ -129,24 +128,24 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
                 Ok(())
             }
             Some(WifiAction::Add { ssid, password }) => {
-                block_on(core.add_wifi_ssid(&ssid, &password))?;
+                core.add_wifi_ssid(&ssid, &password).await?;
                 println!("Added WiFi network: {}", ssid);
                 Ok(())
             }
             Some(WifiAction::Clear) => {
-                block_on(core.clear_wifi_ssids())?;
+                core.clear_wifi_ssids().await?;
                 println!("Cleared all WiFi networks");
                 Ok(())
             }
         },
         NetAction::RelayUrl { action } => match action.unwrap_or_default() {
             GetSetString::Get => {
-                let url = block_on(core.get_relay_url())?;
+                let url = core.get_relay_url().await?;
                 println!("{}", url);
                 Ok(())
             }
             GetSetString::Set { value } => {
-                block_on(core.set_relay_url(&value))?;
+                core.set_relay_url(&value).await?;
                 println!("Relay URL set to {}", value);
                 Ok(())
             }
@@ -171,20 +170,20 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
 
             // Hold UI chip in reset during NET flashing to avoid interference
             println!("Holding UI chip in reset...");
-            if let Err(e) = block_on(core.hold_ui_reset()) {
+            if let Err(e) = core.hold_ui_reset().await {
                 eprintln!("Warning: failed to hold UI in reset: {}", e);
             }
 
             println!("Resetting NET chip to bootloader mode...\n");
 
             let mut progress = FlashProgress::new();
-            let result = block_on(core.flash_net(&firmware, partition_table_data.as_deref(), &mut progress));
+            let result = core.flash_net(&firmware, partition_table_data.as_deref(), &mut progress).await;
 
             progress.finish();
 
             // Release UI chip from reset
             println!("Releasing UI chip from reset...");
-            if let Err(e) = block_on(core.reset_ui_to_user()) {
+            if let Err(e) = core.reset_ui_to_user().await {
                 eprintln!("Warning: failed to release UI from reset: {}", e);
             }
 
@@ -199,7 +198,7 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
         }
         NetAction::Loopback { mode } => match mode.unwrap_or_default() {
             NetLoopbackMode::Get => {
-                let loopback = block_on(core.net_get_loopback())?;
+                let loopback = core.net_get_loopback().await?;
                 match loopback {
                     NetLoopback::Off => println!("off"),
                     NetLoopback::Raw => println!("raw"),
@@ -208,22 +207,22 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
                 Ok(())
             }
             NetLoopbackMode::Off => {
-                block_on(core.net_set_loopback(NetLoopback::Off))?;
+                core.net_set_loopback(NetLoopback::Off).await?;
                 println!("NET loopback: off (normal PTT)");
                 Ok(())
             }
             NetLoopbackMode::Raw => {
-                block_on(core.net_set_loopback(NetLoopback::Raw))?;
+                core.net_set_loopback(NetLoopback::Raw).await?;
                 println!("NET loopback: raw (local bypass)");
                 Ok(())
             }
             NetLoopbackMode::Moq => {
-                block_on(core.net_set_loopback(NetLoopback::Moq))?;
+                core.net_set_loopback(NetLoopback::Moq).await?;
                 println!("NET loopback: moq (hear own audio via relay)");
                 Ok(())
             }
         },
-        NetAction::Chat { message } => match block_on(core.send_chat_message(&message)) {
+        NetAction::Chat { message } => match core.send_chat_message(&message).await {
             Ok(()) => {
                 println!("Chat message sent");
                 Ok(())
@@ -232,19 +231,19 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
         },
         NetAction::Reset { action } => match action.as_deref() {
             Some("bootloader") => {
-                block_on(core.reset_net_to_bootloader())?;
+                core.reset_net_to_bootloader().await?;
                 println!("NET chip reset to bootloader mode");
                 Ok(())
             }
             _ => {
-                block_on(core.reset_net_to_user())?;
+                core.reset_net_to_user().await?;
                 println!("NET chip reset");
                 Ok(())
             }
         },
         NetAction::Erase => {
             println!("Erasing NET chip flash...");
-            match block_on(core.erase_net()) {
+            match core.erase_net().await {
                 Ok(()) => {
                     println!("Flash erased successfully");
                     Ok(())
@@ -255,12 +254,12 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
         NetAction::Monitor { reset } => {
             if reset {
                 println!("Resetting NET chip...");
-                block_on(core.reset_net_to_user())?;
+                core.reset_net_to_user().await?;
             }
             println!("Monitoring NET chip (ESC to stop)...\n");
 
             // Set a short timeout for non-blocking reads
-            if let Err(e) = core.port_mut().get_mut().get_mut().set_timeout(std::time::Duration::from_millis(100)) {
+            if let Err(e) = core.port_mut().set_timeout(std::time::Duration::from_millis(100)) {
                 eprintln!("Warning: couldn't set timeout: {}", e);
             }
 
@@ -271,7 +270,7 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
             // Enable raw mode to capture ESC
             terminal::enable_raw_mode()?;
 
-            let result = (|| {
+            let result = async {
                 loop {
                     // Check for key press (non-blocking)
                     if event::poll(std::time::Duration::from_millis(0))? {
@@ -279,12 +278,12 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
                             code: KeyCode::Esc, ..
                         }) = event::read()?
                         {
-                            return Ok(());
+                            return Ok::<(), Box<dyn std::error::Error>>(());
                         }
                     }
 
                     // Check for TLV data (timeout-aware: returns Ok(None) on timeout)
-                    match block_on(core.read_tlv_raw()) {
+                    match core.read_tlv_raw().await {
                         Ok(Some(tlv)) => {
                             if tlv.tlv_type == link::MgmtToCtl::FromNet {
                                 std::io::stdout().write_all(&tlv.value).ok();
@@ -299,13 +298,13 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
                         }
                     }
                 }
-            })();
+            }.await;
 
             // Always restore terminal mode and timeout
             terminal::disable_raw_mode()?;
 
             // Restore timeout to normal (3 seconds)
-            if let Err(e) = core.port_mut().get_mut().get_mut().set_timeout(std::time::Duration::from_secs(3)) {
+            if let Err(e) = core.port_mut().set_timeout(std::time::Duration::from_secs(3)) {
                 eprintln!("Warning: couldn't restore timeout: {}", e);
             }
 
@@ -316,7 +315,7 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
         NetAction::Channel { action } => match action {
             None => {
                 // List all channel configs
-                let configs = block_on(core.get_all_channel_configs())?;
+                let configs = core.get_all_channel_configs().await?;
                 if configs.is_empty() {
                     println!("No channel configurations");
                 } else {
@@ -344,7 +343,7 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
                 Ok(())
             }
             Some(ChannelAction::Get { channel_id }) => {
-                let config = block_on(core.get_channel_config(channel_id))?;
+                let config = core.get_channel_config(channel_id).await?;
                 let channel_name = match config.channel_id {
                     0 => "Ptt",
                     1 => "PttAi",
@@ -373,18 +372,18 @@ pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std:
                     enabled,
                     relay_url: relay_url.as_str().try_into().map_err(|_| "relay_url too long")?,
                 };
-                block_on(core.set_channel_config(&config))?;
+                core.set_channel_config(&config).await?;
                 println!("Channel {} configuration updated", channel_id);
                 Ok(())
             }
             Some(ChannelAction::Clear) => {
-                block_on(core.clear_channel_configs())?;
+                core.clear_channel_configs().await?;
                 println!("All channel configurations cleared");
                 Ok(())
             }
         },
         NetAction::JitterStats { channel_id } => {
-            let stats = block_on(core.get_jitter_stats(channel_id))?;
+            let stats = core.get_jitter_stats(channel_id).await?;
             let channel_name = match channel_id {
                 0 => "Ptt",
                 1 => "PttAi",

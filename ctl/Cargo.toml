@@ -18,8 +18,6 @@ log = "0.4"
 crossterm = "0.28"
 heapless = "0.9"
 # Async runtime and serial
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "io-util"] }
 tokio-serial = "5"
 futures = "0.3"
-# Keep serialport for port enumeration
-serialport = "4.8.1"

@@ -2,18 +2,19 @@
 
 use super::Core;
 use crate::{GetSetU32, MgmtAction, StackAction};
-use futures::executor::block_on;
 use indicatif::{ProgressBar, ProgressStyle};
+use link::ctl::SetTimeout;
 use link::ctl::flash::FlashPhase;
 use link::{CtlToMgmt, MgmtToCtl};
 use std::io::Write;
 use std::time::{Duration, Instant};
+use tokio_serial::SerialPort;
 
-pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         MgmtAction::Ping { data } => {
             println!("Sending MGMT ping with data: {}", data);
-            block_on(core.mgmt_ping(data.as_bytes()))?;
+            core.mgmt_ping(data.as_bytes()).await?;
             println!("Received pong!");
             Ok(())
         }
@@ -34,7 +35,7 @@ pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn st
 
             println!("Querying bootloader information...\n");
 
-            let Ok(info) = block_on(core.get_mgmt_bootloader_info()) else {
+            let Ok(info) = core.get_mgmt_bootloader_info().await else {
                 eprintln!("Failed to get bootloader info");
                 eprintln!("\nMake sure the MGMT chip is in bootloader mode:");
                 eprintln!("  1. Set BOOT0 pin high");
@@ -121,7 +122,7 @@ pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn st
             pb.set_style(pages_style.clone());
 
             let mut current_phase = None;
-            let result = block_on(core.flash_mgmt(&firmware, |phase, progress, total| {
+            let result = core.flash_mgmt(&firmware, |phase, progress, total| {
                 if current_phase != Some(phase) {
                     current_phase = Some(phase);
                     match phase {
@@ -143,7 +144,7 @@ pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn st
                     pb.set_position(0);
                 }
                 pb.set_position(progress as u64);
-            }));
+            }).await;
 
             pb.finish_and_clear();
 
@@ -177,7 +178,7 @@ pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn st
                 }
                 GetSetU32::Set { value } => {
                     println!("Setting NET UART baud rate to {}", value);
-                    block_on(core.set_net_baud_rate(value))?;
+                    core.set_net_baud_rate(value).await?;
                     println!("NET baud rate set to {}", value);
                     Ok(())
                 }
@@ -197,10 +198,10 @@ pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn st
                     println!("Setting CTL UART baud rate to {}", value);
 
                     // Send command to MGMT (ACK is sent before rate change)
-                    block_on(core.set_ctl_baud_rate(value))?;
+                    core.set_ctl_baud_rate(value).await?;
 
                     // Now change local serial port baud rate to match
-                    core.port_mut().get_mut().get_mut().set_baud_rate(value)?;
+                    core.port_mut().get_mut().set_baud_rate(value)?;
 
                     println!("CTL baud rate set to {} (both MGMT and local)", value);
                     Ok(())
@@ -223,7 +224,7 @@ pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn st
             }
 
             // Get current baud rate for reporting
-            let initial_baud = core.port_mut().get_ref().get_ref().baud_rate().unwrap_or(115200);
+            let initial_baud = core.port_mut().get_ref().baud_rate().unwrap_or(115200);
 
             // If a baud rate was specified, change to it first
             let test_baud = if let Some(new_baud) = baud {
@@ -233,13 +234,13 @@ pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn st
                 );
 
                 // Send command to MGMT (ACK is sent before rate change)
-                block_on(core.set_ctl_baud_rate(new_baud))?;
+                core.set_ctl_baud_rate(new_baud).await?;
 
                 // Now change local serial port baud rate to match
-                core.port_mut().get_mut().get_mut().set_baud_rate(new_baud)?;
+                core.port_mut().get_mut().set_baud_rate(new_baud)?;
 
                 // Small delay for baud rate to stabilize
-                std::thread::sleep(Duration::from_millis(10));
+                tokio::time::sleep(Duration::from_millis(10)).await;
 
                 new_baud
             } else {
@@ -261,7 +262,7 @@ pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn st
 
             // Send packets as fast as possible for the duration
             while start.elapsed() < test_duration {
-                if block_on(core.write_tlv_raw(CtlToMgmt::SpeedTestData, &payload)).is_err() {
+                if core.write_tlv_raw(CtlToMgmt::SpeedTestData, &payload).await.is_err() {
                     send_errors += 1;
                 } else {
                     packets_sent += 1;
@@ -272,13 +273,13 @@ pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn st
 
             // Send done signal
             println!("Sending done signal and waiting for results...");
-            block_on(core.write_tlv_raw(CtlToMgmt::SpeedTestDone, &[]))?;
+            core.write_tlv_raw(CtlToMgmt::SpeedTestDone, &[]).await?;
 
             // Wait for result from MGMT (with timeout)
-            core.port_mut().get_mut().get_mut().set_timeout(Duration::from_secs(5))?;
+            core.port_mut().set_timeout(Duration::from_secs(5))?;
 
             let (packets_received, bytes_received) = loop {
-                match block_on(core.read_tlv_raw()) {
+                match core.read_tlv_raw().await {
                     Ok(Some(tlv)) => {
                         if tlv.tlv_type == MgmtToCtl::SpeedTestResult && tlv.value.len() >= 8 {
                             let packets = u32::from_le_bytes([
@@ -338,18 +339,18 @@ pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn st
             // Restore original baud rate if we changed it
             if baud.is_some() && initial_baud != test_baud {
                 println!("\nRestoring baud rate to {}...", initial_baud);
-                block_on(core.set_ctl_baud_rate(initial_baud))?;
-                core.port_mut().get_mut().get_mut().set_baud_rate(initial_baud)?;
+                core.set_ctl_baud_rate(initial_baud).await?;
+                core.port_mut().get_mut().set_baud_rate(initial_baud)?;
             }
 
             // Restore normal timeout
-            core.port_mut().get_mut().get_mut().set_timeout(Duration::from_secs(3))?;
+            core.port_mut().set_timeout(Duration::from_secs(3))?;
 
             Ok(())
         }
         MgmtAction::Stack { action } => match action.unwrap_or_default() {
             StackAction::Info => {
-                let info = block_on(core.mgmt_get_stack_info())?;
+                let info = core.mgmt_get_stack_info().await?;
                 println!("Stack Base:  0x{:08X}", info.stack_base);
                 println!("Stack Top:   0x{:08X}", info.stack_top);
                 println!("Stack Size:  {} bytes ({:.1} KB)", info.stack_size, info.stack_size as f64 / 1024.0);
@@ -358,7 +359,7 @@ pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn st
                 Ok(())
             }
             StackAction::Repaint => {
-                block_on(core.mgmt_repaint_stack())?;
+                core.mgmt_repaint_stack().await?;
                 println!("Stack repainted");
                 Ok(())
             }
