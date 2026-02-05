@@ -1259,10 +1259,10 @@
                 log(`Fetched mgmt.bin (${firmware.length} bytes)`, 'info');
 
                 progressText.textContent = 'Flashing...';
-                await controller.flash_mgmt(Array.from(firmware), (progress) => {
-                    const percent = progress.total > 0 ? (progress.current / progress.total) * 100 : 0;
+                await controller.flash_mgmt(firmware, (phase, current, total) => {
+                    const percent = total > 0 ? (current / total) * 100 : 0;
                     progressFill.style.width = `${percent}%`;
-                    progressText.textContent = `${progress.phase}: ${progress.current} / ${progress.total}`;
+                    progressText.textContent = `${phase}: ${current} / ${total}`;
                 });
 
                 statusIcon.textContent = '\u2713';
@@ -1425,10 +1425,10 @@
                 log(`Fetched ui.bin (${firmware.length} bytes)`, 'info');
 
                 progressText.textContent = 'Flashing...';
-                await controller.flash_ui(Array.from(firmware), (progress) => {
-                    const percent = progress.total > 0 ? (progress.current / progress.total) * 100 : 0;
+                await controller.flash_ui(firmware, true, (phase, current, total) => {
+                    const percent = total > 0 ? (current / total) * 100 : 0;
                     progressFill.style.width = `${percent}%`;
-                    progressText.textContent = `${progress.phase}: ${progress.current} / ${progress.total}`;
+                    progressText.textContent = `${phase}: ${current} / ${total}`;
                 });
 
                 statusIcon.textContent = '\u2713';
@@ -1602,16 +1602,11 @@
                 const firmware = new Uint8Array(await response.arrayBuffer());
                 log(`Fetched net.bin (${firmware.length} bytes)`, 'info');
 
-                const address = 0x10000; // Standard ESP-IDF app address
-                const compress = document.getElementById('netCompress').checked;
-                const verify = document.getElementById('netVerify').checked;
-
                 progressText.textContent = 'Flashing...';
-                log(`Flashing NET firmware at 0x${address.toString(16)} (compress=${compress}, verify=${verify})...`, 'info');
-                await controller.flash_net(Array.from(firmware), address, compress, verify, (progress) => {
-                    const percent = progress.total > 0 ? (progress.current / progress.total) * 100 : 0;
-                    progressFill.style.width = `${percent}%`;
-                    progressText.textContent = `${progress.phase}: ${progress.current} / ${progress.total}`;
+                log(`Flashing NET firmware...`, 'info');
+                await controller.flash_net(firmware, (addr, progress) => {
+                    progressFill.style.width = `${progress > 0 ? Math.min(progress, 100) : 0}%`;
+                    progressText.textContent = `Writing 0x${addr.toString(16)}: ${progress}`;
                 });
 
                 statusIcon.textContent = '\u2713';

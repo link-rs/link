@@ -7,6 +7,8 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
+use futures::future::{select, Either};
+use futures::pin_mut;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{ReadableStreamDefaultReader, SerialPort, WritableStreamDefaultWriter};
 
@@ -46,6 +48,16 @@ struct WebSerialState {
     reader: ReadableStreamDefaultReader,
     writer: WritableStreamDefaultWriter,
     read_buffer: VecDeque<u8>,
+    read_timeout_ms: u32,
+}
+
+/// Create a JS `setTimeout`-based future that resolves after `ms` milliseconds.
+fn js_timeout(ms: u32) -> JsFuture {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let window = web_sys::window().expect("no global window");
+        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32);
+    });
+    JsFuture::from(promise)
 }
 
 /// WebSerial transport implementing embedded-io-async traits.
@@ -111,6 +123,7 @@ impl WebSerial {
             reader,
             writer,
             read_buffer: VecDeque::new(),
+            read_timeout_ms: 3000,
         });
 
         Ok(())
@@ -128,6 +141,13 @@ impl WebSerial {
     pub fn clear_read_buffer(&self) {
         if let Some(state) = self.state.borrow_mut().as_mut() {
             state.read_buffer.clear();
+        }
+    }
+
+    /// Set the read timeout duration.
+    pub fn set_read_timeout(&self, timeout: std::time::Duration) {
+        if let Some(state) = self.state.borrow_mut().as_mut() {
+            state.read_timeout_ms = timeout.as_millis().min(u32::MAX as u128) as u32;
         }
     }
 
@@ -149,15 +169,26 @@ impl WebSerial {
 
     /// Internal: read more data from the port into the buffer.
     async fn fill_buffer(&self) -> Result<(), WebSerialError> {
-        let reader = {
+        let (reader, timeout_ms) = {
             let state = self.state.borrow();
             let state = state.as_ref().ok_or(WebSerialError::NotConnected)?;
-            state.reader.clone()
+            (state.reader.clone(), state.read_timeout_ms)
         };
 
-        let result = JsFuture::from(reader.read())
-            .await
-            .map_err(|e| WebSerialError::ReadError(format!("{:?}", e)))?;
+        let read_fut = JsFuture::from(reader.read());
+        let timeout_fut = js_timeout(timeout_ms);
+
+        pin_mut!(read_fut);
+        pin_mut!(timeout_fut);
+
+        let result = match select(read_fut, timeout_fut).await {
+            Either::Left((read_result, _)) => {
+                read_result.map_err(|e| WebSerialError::ReadError(format!("{:?}", e)))?
+            }
+            Either::Right((_timeout_result, _)) => {
+                return Err(WebSerialError::ReadError("Read timeout".into()));
+            }
+        };
 
         let result: Object = result.into();
         let done = Reflect::get(&result, &JsValue::from_str("done"))
@@ -316,7 +347,13 @@ impl WebSerialAdapter {
 
 impl From<WebSerialError> for std::io::Error {
     fn from(e: WebSerialError) -> Self {
-        std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+        let kind = match &e {
+            WebSerialError::ReadError(msg) if msg == "Read timeout" => {
+                std::io::ErrorKind::TimedOut
+            }
+            _ => std::io::ErrorKind::Other,
+        };
+        std::io::Error::new(kind, e.to_string())
     }
 }
 
@@ -345,10 +382,8 @@ impl link::ctl::CtlPort for WebSerialAdapter {
 }
 
 impl link::ctl::SetTimeout for WebSerialAdapter {
-    fn set_timeout(&mut self, _timeout: std::time::Duration) -> std::io::Result<()> {
-        // WebSerial doesn't support timeouts directly - they're handled by the browser.
-        // The espflash code uses timeouts for flow control, but on WASM we rely on
-        // the browser's built-in timeout handling.
+    fn set_timeout(&mut self, timeout: std::time::Duration) -> std::io::Result<()> {
+        self.inner.set_read_timeout(timeout);
         Ok(())
     }
 }
