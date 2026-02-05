@@ -1175,17 +1175,28 @@
             }
         }
 
-        // Update connection status
-        function updateStatus(connected) {
+        // Update connection status (does NOT show cards - that's done after state loads)
+        function updateStatus(connected, showCards = false) {
             statusIndicator.classList.toggle('connected', connected);
             statusText.textContent = connected ? 'Connected' : 'Disconnected';
             connectBtn.textContent = connected ? 'Disconnect' : 'Connect to Device';
             helloBtn.classList.toggle('hidden', !connected);
 
-            mgmtCard.classList.toggle('hidden', !connected);
-            uiCard.classList.toggle('hidden', !connected);
-            netCard.classList.toggle('hidden', !connected);
-            document.getElementById('testsCard').classList.toggle('hidden', !connected);
+            // Only show/hide cards if explicitly requested or disconnecting
+            if (!connected || showCards) {
+                mgmtCard.classList.toggle('hidden', !connected);
+                uiCard.classList.toggle('hidden', !connected);
+                netCard.classList.toggle('hidden', !connected);
+                document.getElementById('testsCard').classList.toggle('hidden', !connected);
+            }
+        }
+
+        // Show the device cards (called after state is loaded)
+        function showDeviceCards() {
+            mgmtCard.classList.remove('hidden');
+            uiCard.classList.remove('hidden');
+            netCard.classList.remove('hidden');
+            document.getElementById('testsCard').classList.remove('hidden');
         }
 
         // Connect/Disconnect
@@ -1195,7 +1206,7 @@
             try {
                 if (controller.is_connected()) {
                     await controller.disconnect();
-                    updateStatus(false);
+                    updateStatus(false, true); // Hide cards on disconnect
                     // Clear the hello status icon
                     const helloStatus = document.getElementById('helloStatus');
                     helloStatus.textContent = '';
@@ -1215,10 +1226,25 @@
                         if (result) {
                             helloStatus.textContent = '\u2713';
                             helloStatus.className = 'status-icon success';
-                            updateStatus(true);
+                            // Update status but DON'T show cards yet
+                            updateStatus(true, false);
                             log('Connected - device responded correctly', 'success');
-                            // Auto-populate all state variables
-                            await populateAllState();
+
+                            // Show loading state
+                            statusText.textContent = 'Loading device state...';
+
+                            // Load all state before showing cards
+                            try {
+                                await populateAllState();
+                                statusText.textContent = 'Connected';
+                                // Now show the cards with loaded state
+                                showDeviceCards();
+                            } catch (stateError) {
+                                log(`Warning: Could not load all device state: ${stateError}`, 'error');
+                                statusText.textContent = 'Connected (partial state)';
+                                // Still show cards even if state loading partially failed
+                                showDeviceCards();
+                            }
                         } else {
                             helloStatus.textContent = '\u2717';
                             helloStatus.className = 'status-icon error';
