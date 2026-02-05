@@ -4,7 +4,7 @@ use super::Core;
 use crate::{GetSetU32, MgmtAction, StackAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
-use link::ctl::flash::FlashPhase;
+use link::ctl::flash::{FlashPhase, MgmtBootloaderEntry};
 use link::{CtlToMgmt, MgmtToCtl};
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -22,16 +22,38 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             println!("MGMT Bootloader Info");
             println!("====================\n");
 
-            println!("To read bootloader information, the MGMT chip must be in bootloader mode.");
-            println!("Please follow these steps:");
-            println!("  1. Set the BOOT0 pin high on the MGMT chip");
-            println!("  2. Reset the MGMT chip");
-            println!();
-            print!("Press Enter when ready (or Ctrl+C to cancel)... ");
+            // Try automatic bootloader entry (EV16) or detect if already in bootloader
+            print!("Attempting automatic bootloader entry... ");
             std::io::stdout().flush()?;
 
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
+            // Set short timeout for probing
+            let _ = core.port_mut().set_timeout(Duration::from_millis(200));
+
+            let delay_ms = |ms| std::thread::sleep(Duration::from_millis(ms));
+            match core.try_enter_mgmt_bootloader(delay_ms).await {
+                MgmtBootloaderEntry::AutoReset => {
+                    println!("success (EV16 detected)");
+                }
+                MgmtBootloaderEntry::AlreadyActive => {
+                    println!("bootloader already active");
+                }
+                MgmtBootloaderEntry::NotDetected => {
+                    println!("not detected");
+                    println!("\nAutomatic reset failed. Manual bootloader entry required.");
+                    println!("Please follow these steps:");
+                    println!("  1. Set the BOOT0 pin high on the MGMT chip");
+                    println!("  2. Reset the MGMT chip");
+                    println!();
+                    print!("Press Enter when ready (or Ctrl+C to cancel)... ");
+                    std::io::stdout().flush()?;
+
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                }
+            }
+
+            // Restore normal timeout
+            let _ = core.port_mut().set_timeout(Duration::from_secs(3));
 
             println!("Querying bootloader information...\n");
 
@@ -99,16 +121,38 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             let firmware = std::fs::read(&file)?;
             println!("Firmware: {} ({} bytes)", file.display(), firmware.len());
 
-            println!("\nTo flash the MGMT chip, it must be in bootloader mode.");
-            println!("Please follow these steps:");
-            println!("  1. Set the BOOT0 pin high on the MGMT chip");
-            println!("  2. Reset the MGMT chip");
-            println!();
-            print!("Press Enter when ready (or Ctrl+C to cancel)... ");
+            // Try automatic bootloader entry (EV16) or detect if already in bootloader
+            print!("\nAttempting automatic bootloader entry... ");
             std::io::stdout().flush()?;
 
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
+            // Set short timeout for probing
+            let _ = core.port_mut().set_timeout(Duration::from_millis(200));
+
+            let delay_ms = |ms| std::thread::sleep(Duration::from_millis(ms));
+            match core.try_enter_mgmt_bootloader(delay_ms).await {
+                MgmtBootloaderEntry::AutoReset => {
+                    println!("success (EV16 detected)");
+                }
+                MgmtBootloaderEntry::AlreadyActive => {
+                    println!("bootloader already active");
+                }
+                MgmtBootloaderEntry::NotDetected => {
+                    println!("not detected");
+                    println!("\nAutomatic reset failed. Manual bootloader entry required.");
+                    println!("Please follow these steps:");
+                    println!("  1. Set the BOOT0 pin high on the MGMT chip");
+                    println!("  2. Reset the MGMT chip");
+                    println!();
+                    print!("Press Enter when ready (or Ctrl+C to cancel)... ");
+                    std::io::stdout().flush()?;
+
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                }
+            }
+
+            // Restore normal timeout for flashing
+            let _ = core.port_mut().set_timeout(Duration::from_secs(3));
 
             let pb = ProgressBar::new(firmware.len() as u64);
             let bytes_style = ProgressStyle::default_bar()

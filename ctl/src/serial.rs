@@ -128,6 +128,22 @@ impl CtlPort for TokioSerialPort {
     fn clear_buffer(&mut self) {
         self.read_buffer.clear();
     }
+
+    async fn write_dtr(&mut self, level: bool) -> Result<(), Self::Error> {
+        self.stream
+            .write_data_terminal_ready(level)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+    }
+
+    async fn write_rts(&mut self, level: bool) -> Result<(), Self::Error> {
+        self.stream
+            .write_request_to_send(level)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+    }
+
+    fn supports_dtr_rts(&self) -> bool {
+        true
+    }
 }
 
 impl SetTimeout for TokioSerialPort {
@@ -144,3 +160,4 @@ impl SetBaudRate for TokioSerialPort {
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
     }
 }
+

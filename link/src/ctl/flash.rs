@@ -501,11 +501,102 @@ impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static> Se
 // Flashing implementation for CtlCore
 // ============================================================================
 
+/// Result of attempting to enter MGMT bootloader mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MgmtBootloaderEntry {
+    /// Successfully entered bootloader via DTR/RTS reset (EV16).
+    AutoReset,
+    /// Bootloader was already active (user pre-reset the device).
+    AlreadyActive,
+    /// Could not detect bootloader - manual intervention required.
+    NotDetected,
+}
+
 /// Flashing methods for CtlCore.
 ///
 /// These methods require the port to implement `CtlPort<Error = std::io::Error>`.
 /// All I/O is performed through the async `CtlPort` trait.
 impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
+    /// Attempt to enter MGMT bootloader mode automatically.
+    ///
+    /// This implements Strategy 1 for EV15/EV16 detection:
+    /// 1. Send DTR/RTS reset sequence (works on EV16, harmless no-op on EV15)
+    /// 2. Wait for bootloader to start
+    /// 3. Send 0x7F init byte and wait for ACK with short timeout
+    /// 4. If ACK received, bootloader is ready
+    /// 5. If no ACK, return `NotDetected` for manual fallback
+    ///
+    /// On EV16:
+    /// - RTS high sets BOOT0 high (bootloader mode)
+    /// - DTR pulse (high→low) triggers reset
+    ///
+    /// On EV15 (or if DTR/RTS not connected):
+    /// - DTR/RTS commands are ignored
+    /// - If user already reset to bootloader manually, we'll detect it
+    ///
+    /// The `delay_ms` callback should sleep for the given number of milliseconds.
+    pub async fn try_enter_mgmt_bootloader<D>(&mut self, delay_ms: D) -> MgmtBootloaderEntry
+    where
+        D: Fn(u64),
+    {
+        // Clear any stale data
+        self.drain();
+
+        // Try DTR/RTS reset sequence (EV16)
+        // RTS=high sets BOOT0 high (bootloader mode)
+        // DTR pulse triggers reset
+        let _ = self.port_mut().write_rts(true).await;
+        let _ = self.port_mut().write_dtr(true).await;
+        let _ = self.port_mut().write_dtr(false).await;
+
+        // Wait for bootloader to initialize (100ms as per hactar-cli)
+        delay_ms(100);
+
+        // Clear buffer again after reset
+        self.drain();
+
+        // Probe for bootloader with short timeout
+        match self.probe_mgmt_bootloader().await {
+            true => MgmtBootloaderEntry::AutoReset,
+            false => MgmtBootloaderEntry::NotDetected,
+        }
+    }
+
+    /// Probe if MGMT bootloader is currently active.
+    ///
+    /// Sends 0x7F init byte and waits briefly for ACK (0x79).
+    /// Returns `true` if bootloader responds, `false` otherwise.
+    ///
+    /// Note: This has a short timeout (~200ms) to avoid blocking.
+    async fn probe_mgmt_bootloader(&mut self) -> bool {
+        // Send 0x7F init byte (STM32 bootloader auto-baud detection)
+        let init_byte = [0x7F];
+        if self.port_mut().write_all(&init_byte).await.is_err() {
+            return false;
+        }
+        if self.port_mut().flush().await.is_err() {
+            return false;
+        }
+
+        // Wait for ACK (0x79) - the read will timeout if no bootloader
+        // The timeout is controlled by the port's configured timeout
+        let mut response = [0u8; 1];
+        match self.port_mut().read_exact(&mut response).await {
+            Ok(()) => response[0] == 0x79,
+            Err(_) => false,
+        }
+    }
+
+    /// Reset MGMT chip back to user mode via DTR/RTS (EV16).
+    ///
+    /// This sets RTS low (BOOT0 low) and pulses DTR to trigger reset.
+    /// On EV15 or unsupported ports, this is a no-op.
+    pub async fn reset_mgmt_to_user(&mut self) {
+        let _ = self.port_mut().write_rts(false).await;
+        let _ = self.port_mut().write_dtr(true).await;
+        let _ = self.port_mut().write_dtr(false).await;
+    }
+
     /// Get MGMT bootloader information.
     ///
     /// This assumes the MGMT chip is already in bootloader mode and the serial

@@ -6,9 +6,9 @@
 mod serial;
 
 use link::ctl::espflash::target::ProgressCallbacks;
-use link::ctl::flash::FlashPhase;
+use link::ctl::flash::{FlashPhase, MgmtBootloaderEntry};
 use link::ctl::stm;
-use link::ctl::{CtlCore, CtlError};
+use link::ctl::{CtlCore, CtlError, SetTimeout};
 use link::{LoopbackMode, NetLoopback};
 use serde::{Deserialize, Serialize};
 use serial::{WebSerial, WebSerialAdapter};
@@ -500,12 +500,84 @@ impl LinkController {
         Ok(obj.into())
     }
 
+    /// Try to enter MGMT bootloader mode automatically (EV16).
+    ///
+    /// Returns a string indicating the result:
+    /// - "auto_reset": Successfully entered bootloader via DTR/RTS (EV16)
+    /// - "already_active": Bootloader was already active
+    /// - "not_detected": Could not detect bootloader - manual intervention required
+    #[wasm_bindgen]
+    pub async fn try_enter_mgmt_bootloader(&mut self) -> Result<String, JsValue> {
+        let core = self.core_mut()?;
+
+        // Set short timeout for probing
+        let _ = core.port_mut().set_timeout(std::time::Duration::from_millis(200));
+
+        // Use JS setTimeout for async delay
+        let delay_ms = |ms| {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        };
+
+        let result = core.try_enter_mgmt_bootloader(delay_ms).await;
+
+        // Restore normal timeout
+        let _ = core.port_mut().set_timeout(std::time::Duration::from_secs(3));
+
+        let result_str = match result {
+            MgmtBootloaderEntry::AutoReset => "auto_reset",
+            MgmtBootloaderEntry::AlreadyActive => "already_active",
+            MgmtBootloaderEntry::NotDetected => "not_detected",
+        };
+
+        Ok(result_str.to_string())
+    }
+
     /// Flash firmware to the MGMT chip (STM32F072CB).
     ///
-    /// The MGMT chip must be in bootloader mode. Pass firmware as Uint8Array.
+    /// This method will first try to enter bootloader mode automatically (EV16).
+    /// If auto-reset fails, it returns an error with "manual_reset_required" to
+    /// indicate the UI should prompt the user.
+    ///
+    /// Pass firmware as Uint8Array.
     /// The progress callback receives (phase: string, current: number, total: number).
     #[wasm_bindgen]
     pub async fn flash_mgmt(&mut self, firmware: js_sys::Uint8Array, progress_callback: js_sys::Function) -> Result<(), JsValue> {
+        // Try automatic bootloader entry first
+        let entry_result = self.try_enter_mgmt_bootloader().await?;
+
+        if entry_result == "not_detected" {
+            // Return special error to signal UI should prompt user
+            return Err(JsValue::from_str("manual_reset_required"));
+        }
+
+        log(&format!("Bootloader entry: {}", entry_result));
+
+        let firmware_data = firmware.to_vec();
+        let core = self.core_mut()?;
+
+        core.flash_mgmt(&firmware_data, |phase, current, total| {
+            let phase_str = match phase {
+                FlashPhase::Compressing => "compressing",
+                FlashPhase::Erasing => "erasing",
+                FlashPhase::Writing => "writing",
+                FlashPhase::Verifying => "verifying",
+            };
+            let _ = progress_callback.call3(
+                &JsValue::NULL,
+                &JsValue::from_str(phase_str),
+                &JsValue::from(current as u32),
+                &JsValue::from(total as u32),
+            );
+        }).await.map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
+    }
+
+    /// Flash firmware to the MGMT chip after manual bootloader entry.
+    ///
+    /// Use this after the user has manually reset the device to bootloader mode.
+    /// Pass firmware as Uint8Array.
+    /// The progress callback receives (phase: string, current: number, total: number).
+    #[wasm_bindgen]
+    pub async fn flash_mgmt_manual(&mut self, firmware: js_sys::Uint8Array, progress_callback: js_sys::Function) -> Result<(), JsValue> {
         let firmware_data = firmware.to_vec();
         let core = self.core_mut()?;
 

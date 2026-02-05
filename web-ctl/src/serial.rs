@@ -151,6 +151,66 @@ impl WebSerial {
         }
     }
 
+    /// Set the DTR (Data Terminal Ready) signal level.
+    ///
+    /// Uses the WebSerial `setSignals()` API.
+    pub async fn write_dtr(&self, level: bool) -> Result<(), WebSerialError> {
+        let port = {
+            let state = self.state.borrow();
+            let state = state.as_ref().ok_or(WebSerialError::NotConnected)?;
+            state.port.clone()
+        };
+
+        // Create signals object with dataTerminalReady
+        let signals = Object::new();
+        Reflect::set(&signals, &JsValue::from_str("dataTerminalReady"), &JsValue::from_bool(level))
+            .map_err(|e| WebSerialError::JsError(format!("{:?}", e)))?;
+
+        // Call setSignals
+        let set_signals = Reflect::get(&port, &JsValue::from_str("setSignals"))
+            .map_err(|e| WebSerialError::JsError(format!("{:?}", e)))?;
+        let set_signals_fn: js_sys::Function = set_signals.into();
+        let promise = set_signals_fn
+            .call1(&port, &signals)
+            .map_err(|e| WebSerialError::JsError(format!("{:?}", e)))?;
+
+        JsFuture::from(js_sys::Promise::from(promise))
+            .await
+            .map_err(|e| WebSerialError::JsError(format!("setSignals(DTR) failed: {:?}", e)))?;
+
+        Ok(())
+    }
+
+    /// Set the RTS (Request To Send) signal level.
+    ///
+    /// Uses the WebSerial `setSignals()` API.
+    pub async fn write_rts(&self, level: bool) -> Result<(), WebSerialError> {
+        let port = {
+            let state = self.state.borrow();
+            let state = state.as_ref().ok_or(WebSerialError::NotConnected)?;
+            state.port.clone()
+        };
+
+        // Create signals object with requestToSend
+        let signals = Object::new();
+        Reflect::set(&signals, &JsValue::from_str("requestToSend"), &JsValue::from_bool(level))
+            .map_err(|e| WebSerialError::JsError(format!("{:?}", e)))?;
+
+        // Call setSignals
+        let set_signals = Reflect::get(&port, &JsValue::from_str("setSignals"))
+            .map_err(|e| WebSerialError::JsError(format!("{:?}", e)))?;
+        let set_signals_fn: js_sys::Function = set_signals.into();
+        let promise = set_signals_fn
+            .call1(&port, &signals)
+            .map_err(|e| WebSerialError::JsError(format!("{:?}", e)))?;
+
+        JsFuture::from(js_sys::Promise::from(promise))
+            .await
+            .map_err(|e| WebSerialError::JsError(format!("setSignals(RTS) failed: {:?}", e)))?;
+
+        Ok(())
+    }
+
     /// Disconnect from the serial port.
     pub async fn disconnect(&self) -> Result<(), WebSerialError> {
         let state = self.state.borrow_mut().take();
@@ -378,6 +438,19 @@ impl link::ctl::CtlPort for WebSerialAdapter {
 
     fn clear_buffer(&mut self) {
         self.inner.clear_read_buffer();
+    }
+
+    async fn write_dtr(&mut self, level: bool) -> Result<(), Self::Error> {
+        self.inner.write_dtr(level).await.map_err(Into::into)
+    }
+
+    async fn write_rts(&mut self, level: bool) -> Result<(), Self::Error> {
+        self.inner.write_rts(level).await.map_err(Into::into)
+    }
+
+    fn supports_dtr_rts(&self) -> bool {
+        // WebSerial supports DTR/RTS via setSignals()
+        true
     }
 }
 

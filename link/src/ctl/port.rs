@@ -75,6 +75,34 @@ pub trait CtlPort {
     ///
     /// The default implementation is a no-op for ports without internal buffering.
     fn clear_buffer(&mut self) {}
+
+    /// Set the DTR (Data Terminal Ready) signal level.
+    ///
+    /// On EV16 hardware, DTR is connected to the MGMT chip's reset line (directly,
+    /// active high - DTR high = chip in reset, DTR low = chip running).
+    ///
+    /// The default implementation is a no-op for ports that don't support DTR control.
+    async fn write_dtr(&mut self, _level: bool) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Set the RTS (Request To Send) signal level.
+    ///
+    /// On EV16 hardware, RTS is connected to the MGMT chip's BOOT0 pin (directly,
+    /// active high - RTS high = boot to bootloader, RTS low = boot normally).
+    ///
+    /// The default implementation is a no-op for ports that don't support RTS control.
+    async fn write_rts(&mut self, _level: bool) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Check if DTR/RTS control is supported on this port.
+    ///
+    /// Returns `true` if `write_dtr` and `write_rts` are functional.
+    /// The default implementation returns `false`.
+    fn supports_dtr_rts(&self) -> bool {
+        false
+    }
 }
 
 /// Blanket implementation allowing mutable references to CtlPort to be used as CtlPort.
@@ -99,5 +127,17 @@ impl<P: CtlPort> CtlPort for &mut P {
 
     fn clear_buffer(&mut self) {
         P::clear_buffer(*self)
+    }
+
+    async fn write_dtr(&mut self, level: bool) -> Result<(), Self::Error> {
+        P::write_dtr(*self, level).await
+    }
+
+    async fn write_rts(&mut self, level: bool) -> Result<(), Self::Error> {
+        P::write_rts(*self, level).await
+    }
+
+    fn supports_dtr_rts(&self) -> bool {
+        P::supports_dtr_rts(*self)
     }
 }
