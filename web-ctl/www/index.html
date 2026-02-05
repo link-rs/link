@@ -1306,13 +1306,12 @@
 
                 // Populate info display
                 document.getElementById('mgmtVersion').textContent = `v${major}.${minor}`;
-                const chipName = getStm32ChipName(info.chipId);
-                document.getElementById('mgmtChipId').textContent = `${chipName} (${info.chipId})`;
+                document.getElementById('mgmtChipId').textContent = `${info.chipName} (0x${info.chipId.toString(16).padStart(4, '0')})`;
 
                 // Create command badges
                 const cmdContainer = document.getElementById('mgmtCommands');
                 cmdContainer.innerHTML = info.commands.map(cmd =>
-                    `<span class="cmd-badge">${cmd}</span>`
+                    `<span class="cmd-badge" title="0x${cmd.code.toString(16).toUpperCase()}">${cmd.name}</span>`
                 ).join('');
 
                 // Flash sample
@@ -1527,13 +1526,12 @@
 
                 // Populate info display
                 document.getElementById('uiVersion').textContent = `v${major}.${minor}`;
-                const chipName = getStm32ChipName(info.chipId);
-                document.getElementById('uiChipId').textContent = `${chipName} (${info.chipId})`;
+                document.getElementById('uiChipId').textContent = `${info.chipName} (0x${info.chipId.toString(16).padStart(4, '0')})`;
 
                 // Create command badges
                 const cmdContainer = document.getElementById('uiCommands');
                 cmdContainer.innerHTML = info.commands.map(cmd =>
-                    `<span class="cmd-badge">${cmd}</span>`
+                    `<span class="cmd-badge" title="0x${cmd.code.toString(16).toUpperCase()}">${cmd.name}</span>`
                 ).join('');
 
                 // Flash sample
