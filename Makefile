@@ -78,8 +78,8 @@ web-ctl-quick:
 	cd web-ctl && wasm-pack build --target web --out-dir www/pkg
 
 serve-ctl: web-ctl
-	@echo "Serving at http://localhost:8080"
-	cd web-ctl/www && python3 -m http.server 8080
+	@echo "Serving at http://localhost:8000"
+	cd web-ctl/www && python3 -m http.server 8000
 
 # Web Link (Virtual device in WASM)
 web-link:

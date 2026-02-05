@@ -1,18 +1,20 @@
 //! UI chip command handlers.
 
-use crate::{App, GetSetHex, GetSetU32, LoopbackAction, StackAction, UiAction};
-use link::LoopbackMode;
+use super::Core;
+use crate::{GetSetHex, GetSetU32, LoopbackAction, StackAction, UiAction};
+use futures::executor::block_on;
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::FlashPhase;
+use link::LoopbackMode;
 use std::io::Write;
 use std::thread;
 use std::time::Duration;
 
-pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         UiAction::Ping { data } => {
             println!("Sending UI ping with data: {}", data);
-            app.ui_ping(data.as_bytes())?;
+            block_on(core.ui_ping(data.as_bytes()))?;
             println!("Received pong!");
             Ok(())
         }
@@ -22,8 +24,7 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
             println!("Resetting UI chip to bootloader mode...");
 
             let delay = |ms| thread::sleep(Duration::from_millis(ms));
-            let info = app
-                .get_ui_bootloader_info(delay)
+            let info = block_on(core.get_ui_bootloader_info(delay))
                 .map_err(|_| "Failed to get bootloader info")?;
 
             let major = info.bootloader_version >> 4;
@@ -88,7 +89,7 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
 
             // Hold NET chip in reset during UI flashing to avoid interference
             println!("Holding NET chip in reset...");
-            if let Err(e) = app.hold_net_reset() {
+            if let Err(e) = block_on(core.hold_net_reset()) {
                 eprintln!("Warning: failed to hold NET in reset: {}", e);
             }
 
@@ -108,7 +109,7 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
             let mut current_phase = None;
             let delay = |ms| thread::sleep(Duration::from_millis(ms));
             let verify = !no_verify;
-            let result = app.flash_ui(&firmware, delay, verify, |phase, progress, total| {
+            let result = block_on(core.flash_ui(&firmware, delay, verify, |phase, progress, total| {
                 if current_phase != Some(phase) {
                     current_phase = Some(phase);
                     match phase {
@@ -130,13 +131,13 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
                     pb.set_position(0);
                 }
                 pb.set_position(progress as u64);
-            });
+            }));
 
             pb.finish_and_clear();
 
             // Release NET chip from reset
             println!("Releasing NET chip from reset...");
-            if let Err(e) = app.reset_net_to_user() {
+            if let Err(e) = block_on(core.reset_net_to_user()) {
                 eprintln!("Warning: failed to release NET from reset: {}", e);
             }
 
@@ -151,19 +152,19 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
         }
         UiAction::Version { action } => match action.unwrap_or_default() {
             GetSetU32::Get => {
-                let version = app.get_version()?;
+                let version = block_on(core.get_version())?;
                 println!("{}", version);
                 Ok(())
             }
             GetSetU32::Set { value } => {
-                app.set_version(value)?;
+                block_on(core.set_version(value))?;
                 println!("Version set to {}", value);
                 Ok(())
             }
         },
         UiAction::SFrameKey { action } => match action.unwrap_or_default() {
             GetSetHex::Get => {
-                let key = app.get_sframe_key()?;
+                let key = block_on(core.get_sframe_key())?;
                 println!("{}", hex::encode(key));
                 Ok(())
             }
@@ -174,51 +175,51 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
                 }
                 let mut key_array = [0u8; 16];
                 key_array.copy_from_slice(&key_bytes);
-                app.set_sframe_key(&key_array)?;
+                block_on(core.set_sframe_key(&key_array))?;
                 println!("SFrame key set to {}", value);
                 Ok(())
             }
         },
         UiAction::Loopback { action } => match action.unwrap_or_default() {
             LoopbackAction::Get => {
-                let mode = app.ui_get_loopback()?;
+                let mode = block_on(core.ui_get_loopback())?;
                 println!("{:?}", mode);
                 Ok(())
             }
             LoopbackAction::Off => {
-                app.ui_set_loopback(LoopbackMode::Off)?;
+                block_on(core.ui_set_loopback(LoopbackMode::Off))?;
                 println!("UI loopback: off");
                 Ok(())
             }
             LoopbackAction::Raw => {
-                app.ui_set_loopback(LoopbackMode::Raw)?;
+                block_on(core.ui_set_loopback(LoopbackMode::Raw))?;
                 println!("UI loopback: raw");
                 Ok(())
             }
             LoopbackAction::Alaw => {
-                app.ui_set_loopback(LoopbackMode::Alaw)?;
+                block_on(core.ui_set_loopback(LoopbackMode::Alaw))?;
                 println!("UI loopback: alaw");
                 Ok(())
             }
             LoopbackAction::Sframe => {
-                app.ui_set_loopback(LoopbackMode::Sframe)?;
+                block_on(core.ui_set_loopback(LoopbackMode::Sframe))?;
                 println!("UI loopback: sframe");
                 Ok(())
             }
         },
         UiAction::Reset { action } => match action.as_deref() {
             Some("hold") => {
-                app.hold_ui_reset()?;
+                block_on(core.hold_ui_reset())?;
                 println!("UI chip held in reset");
                 Ok(())
             }
             Some("release") => {
-                app.reset_ui_to_user()?;
+                block_on(core.reset_ui_to_user())?;
                 println!("UI chip released from reset");
                 Ok(())
             }
             _ => {
-                app.reset_ui_to_user()?;
+                block_on(core.reset_ui_to_user())?;
                 println!("UI chip reset");
                 Ok(())
             }
@@ -226,12 +227,12 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
         UiAction::Monitor { reset } => {
             if reset {
                 println!("Resetting UI chip...");
-                app.reset_ui_to_user()?;
+                block_on(core.reset_ui_to_user())?;
             }
             println!("Monitoring UI chip logs (ESC to stop)...\n");
 
             // Set a short timeout for non-blocking reads
-            if let Err(e) = app.port_mut().get_mut().set_timeout(Duration::from_millis(100)) {
+            if let Err(e) = core.port_mut().get_mut().get_mut().set_timeout(Duration::from_millis(100)) {
                 eprintln!("Warning: couldn't set timeout: {}", e);
             }
 
@@ -254,7 +255,7 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
                     }
 
                     // Check for TLV data from UI (timeout-aware)
-                    match app.try_read_ui_log() {
+                    match block_on(core.try_read_ui_log()) {
                         Ok(Some(msg)) => {
                             // Use \r\n for raw terminal mode
                             print!("[UI] {}\r\n", msg);
@@ -274,7 +275,7 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
             terminal::disable_raw_mode()?;
 
             // Restore timeout to normal (3 seconds)
-            if let Err(e) = app.port_mut().get_mut().set_timeout(Duration::from_secs(3)) {
+            if let Err(e) = core.port_mut().get_mut().get_mut().set_timeout(Duration::from_secs(3)) {
                 eprintln!("Warning: couldn't restore timeout: {}", e);
             }
 
@@ -284,7 +285,7 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
         }
         UiAction::Stack { action } => match action.unwrap_or_default() {
             StackAction::Info => {
-                let info = app.ui_get_stack_info()?;
+                let info = block_on(core.ui_get_stack_info())?;
                 println!("Stack Base:  0x{:08X}", info.stack_base);
                 println!("Stack Top:   0x{:08X}", info.stack_top);
                 println!("Stack Size:  {} bytes ({:.1} KB)", info.stack_size, info.stack_size as f64 / 1024.0);
@@ -293,7 +294,7 @@ pub fn handle_ui(action: UiAction, app: &mut App) -> Result<(), Box<dyn std::err
                 Ok(())
             }
             StackAction::Repaint => {
-                app.ui_repaint_stack()?;
+                block_on(core.ui_repaint_stack())?;
                 println!("Stack repainted");
                 Ok(())
             }

@@ -75,14 +75,10 @@ pub enum CtlToMgmt {
     ResetNetToUser,
     /// Hello handshake for device detection (4 bytes, XOR'd with b"LINK")
     Hello,
-    /// Start WebSocket echo test: send packets, measure inter-arrival times
-    WsEchoTest,
     /// Hold UI chip in reset
     HoldUiReset,
     /// Hold NET chip in reset
     HoldNetReset,
-    /// Start WebSocket speed test: blast frames as fast as possible
-    WsSpeedTest,
     /// Set NET chip GPIO0/BOOT pin directly (1 byte: 0=low, 1=high)
     /// Low = bootloader mode when reset is released
     SetNetBoot,
@@ -112,14 +108,12 @@ pub enum MgmtToCtl {
     Ack,
     /// Hello response (4 bytes XOR'd with b"LINK")
     Hello,
-    /// WebSocket echo test results
-    WsEchoTestResult,
-    /// WebSocket speed test results
-    WsSpeedTestResult,
     /// CTL-MGMT speed test results (8 bytes: packet_count u32 LE, total_bytes u32 LE)
     SpeedTestResult,
     /// Stack usage information (16 bytes: stack_base u32 LE, stack_top u32 LE, stack_size u32 LE, stack_used u32 LE)
     StackInfo,
+    /// Stack repaint acknowledgement (8 bytes: painted_start u32 LE, painted_end u32 LE)
+    StackRepainted,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -168,15 +162,10 @@ pub enum MgmtToNet {
     ClearWifiSsids,
     GetRelayUrl,
     SetRelayUrl,
-    WsSend,
-    /// Start WebSocket echo test
-    WsEchoTest,
     /// Set loopback mode (1 byte: NetLoopback - 0=Off, 1=Raw, 2=Moq)
     SetLoopback,
     /// Get loopback mode
     GetLoopback,
-    /// Start WebSocket speed test
-    WsSpeedTest,
     /// Send chat message (value: UTF-8 message)
     SendChatMessage,
     // Channel configuration commands
@@ -201,13 +190,6 @@ pub enum NetToMgmt {
     RelayUrl,
     Ack,
     Error,
-    WsReceived,
-    WsConnected,
-    WsDisconnected,
-    /// WebSocket echo test results
-    WsEchoTestResult,
-    /// WebSocket speed test results
-    WsSpeedTestResult,
     /// Loopback mode status (1 byte: NetLoopback - 0=Off, 1=Raw, 2=Moq)
     Loopback,
     /// MoQ connected to relay

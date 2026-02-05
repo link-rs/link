@@ -1154,10 +1154,6 @@ fn handle_mgmt_message(
                 write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
             }
         }
-        MgmtToNet::WsSend | MgmtToNet::WsEchoTest | MgmtToNet::WsSpeedTest => {
-            // WebSocket not implemented in ESP-IDF version
-            write_tlv(mgmt_uart, NetToMgmt::Error, b"not implemented");
-        }
         MgmtToNet::SetLoopback => {
             let mode_byte = value.first().copied().unwrap_or(0);
             *loopback = NetLoopback::try_from(mode_byte).unwrap_or(NetLoopback::Off);

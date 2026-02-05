@@ -57,7 +57,7 @@ trace-tlv = ["defmt"]  # Verbose TLV read/write logging
 
 # Platform features
 std = ["dep:md-5", "dep:miniz_oxide", "futures/executor", "futures/std"]
-alloc = []  # Use heap-allocated types where possible (e.g., WifiSsid)
+alloc = ["serde/alloc"]  # Use heap-allocated types where possible (e.g., WifiSsid)
 audio-buffer = ["dep:embassy-time"]  # Enable jitter buffering for audio playback
 esp-idf = ["std", "alloc"]  # ESP-IDF std environment - uses esp-idf's critical-section impl
 
@@ -72,7 +72,7 @@ futures = { version = "0.3", default-features = false, features = ["async-await"
 heapless = { version = "0.9", features = ["serde"] }
 num_enum = { version = "0.7.5", default-features = false }
 portable-atomic = { version = "1" }  # critical-section feature conflicts with esp-idf, so we don't enable it by default
-serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde = { version = "1", default-features = false, features = ["derive"] }
 postcard = "1"
 embedded-storage = "0.3"
 aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }

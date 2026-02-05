@@ -1,6 +1,8 @@
 //! NET chip command handlers.
 
-use crate::{App, ChannelAction, GetSetString, NetAction, NetLoopbackMode, WifiAction};
+use super::Core;
+use crate::{ChannelAction, GetSetString, NetAction, NetLoopbackMode, WifiAction};
+use futures::executor::block_on;
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::{ChannelConfig, ProgressCallbacks};
 use link::NetLoopback;
@@ -55,17 +57,17 @@ impl ProgressCallbacks for FlashProgress {
     }
 }
 
-pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         NetAction::Ping { data } => {
             println!("Sending NET ping with data: {}", data);
-            app.net_ping(data.as_bytes())?;
+            block_on(core.net_ping(data.as_bytes()))?;
             println!("Received pong!");
             Ok(())
         }
         NetAction::Info => {
             println!("Querying NET chip info...");
-            let info = app.get_net_bootloader_info()
+            let info = block_on(core.get_net_bootloader_info())
                 .map_err(|e| format!("Failed to get bootloader info: {:?}", e))?;
 
             let dev = &info.device_info;
@@ -116,7 +118,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         }
         NetAction::Wifi { action } => match action {
             None => {
-                let ssids = app.get_wifi_ssids()?;
+                let ssids = block_on(core.get_wifi_ssids())?;
                 if ssids.is_empty() {
                     println!("No WiFi networks configured");
                 } else {
@@ -127,24 +129,24 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Ok(())
             }
             Some(WifiAction::Add { ssid, password }) => {
-                app.add_wifi_ssid(&ssid, &password)?;
+                block_on(core.add_wifi_ssid(&ssid, &password))?;
                 println!("Added WiFi network: {}", ssid);
                 Ok(())
             }
             Some(WifiAction::Clear) => {
-                app.clear_wifi_ssids()?;
+                block_on(core.clear_wifi_ssids())?;
                 println!("Cleared all WiFi networks");
                 Ok(())
             }
         },
         NetAction::RelayUrl { action } => match action.unwrap_or_default() {
             GetSetString::Get => {
-                let url = app.get_relay_url()?;
+                let url = block_on(core.get_relay_url())?;
                 println!("{}", url);
                 Ok(())
             }
             GetSetString::Set { value } => {
-                app.set_relay_url(&value)?;
+                block_on(core.set_relay_url(&value))?;
                 println!("Relay URL set to {}", value);
                 Ok(())
             }
@@ -169,20 +171,20 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
 
             // Hold UI chip in reset during NET flashing to avoid interference
             println!("Holding UI chip in reset...");
-            if let Err(e) = app.hold_ui_reset() {
+            if let Err(e) = block_on(core.hold_ui_reset()) {
                 eprintln!("Warning: failed to hold UI in reset: {}", e);
             }
 
             println!("Resetting NET chip to bootloader mode...\n");
 
             let mut progress = FlashProgress::new();
-            let result = app.flash_net(&firmware, partition_table_data.as_deref(), &mut progress);
+            let result = block_on(core.flash_net(&firmware, partition_table_data.as_deref(), &mut progress));
 
             progress.finish();
 
             // Release UI chip from reset
             println!("Releasing UI chip from reset...");
-            if let Err(e) = app.reset_ui_to_user() {
+            if let Err(e) = block_on(core.reset_ui_to_user()) {
                 eprintln!("Warning: failed to release UI from reset: {}", e);
             }
 
@@ -195,82 +197,9 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Err(e) => Err(format!("Flash failed: {}", e).into()),
             }
         }
-        NetAction::WsPing { data } => {
-            println!("Sending WebSocket ping with data: {}", data);
-            app.ws_ping(data.as_bytes())?;
-            println!("Received echo response!");
-            Ok(())
-        }
-        NetAction::WsEchoTest => {
-            println!("Running WebSocket echo test...");
-            println!("  Sending 50 packets (640 bytes each) at 20ms intervals (50 fps)\n");
-
-            let results = app.ws_echo_test()?;
-
-            println!("Results:");
-            println!("  Packets sent:           {}", results.sent);
-            println!("  Packets received (raw): {}", results.received);
-            println!("  Packets output (buf):   {}", results.buffered_output);
-            println!("  Buffer underruns:       {}", results.underruns);
-
-            if results.received > 0 && results.sent > 0 {
-                let loss_pct =
-                    ((results.sent - results.received) as f64 / results.sent as f64) * 100.0;
-                println!("  Packet loss:            {:.1}%", loss_pct);
-            }
-
-            print_jitter_stats(
-                "Raw jitter (before buffer)",
-                results.raw_jitter_us.as_slice(),
-            );
-            print_jitter_stats(
-                "Buffered jitter (after buffer)",
-                results.buffered_jitter_us.as_slice(),
-            );
-
-            if !results.raw_jitter_us.is_empty() {
-                println!("\nRaw timings (µs): {:?}", results.raw_jitter_us.as_slice());
-            }
-            if !results.buffered_jitter_us.is_empty() {
-                println!(
-                    "Buffered timings (µs): {:?}",
-                    results.buffered_jitter_us.as_slice()
-                );
-            }
-
-            Ok(())
-        }
-        NetAction::WsSpeedTest => {
-            println!("Running WebSocket speed test...");
-            println!("  Sending 50 packets (640 bytes each) as fast as possible\n");
-
-            let results = app.ws_speed_test()?;
-
-            println!("Results:");
-            println!("  Packets sent:     {}", results.sent);
-            println!("  Packets received: {}", results.received);
-            println!("  Send time:        {} ms", results.send_time_ms);
-            println!("  Receive time:     {} ms", results.recv_time_ms);
-
-            if results.sent > 0 {
-                let send_rate =
-                    (results.sent as f64 * 640.0) / (results.send_time_ms as f64 / 1000.0) / 1024.0;
-                println!("  Send rate:        {:.1} KB/s", send_rate);
-                let fps = results.sent as f64 / (results.send_time_ms as f64 / 1000.0);
-                println!("  Send FPS:         {:.1}", fps);
-            }
-
-            if results.received > 0 && results.sent > 0 {
-                let loss_pct =
-                    ((results.sent - results.received) as f64 / results.sent as f64) * 100.0;
-                println!("  Packet loss:      {:.1}%", loss_pct);
-            }
-
-            Ok(())
-        }
         NetAction::Loopback { mode } => match mode.unwrap_or_default() {
             NetLoopbackMode::Get => {
-                let loopback = app.net_get_loopback()?;
+                let loopback = block_on(core.net_get_loopback())?;
                 match loopback {
                     NetLoopback::Off => println!("off"),
                     NetLoopback::Raw => println!("raw"),
@@ -279,22 +208,22 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Ok(())
             }
             NetLoopbackMode::Off => {
-                app.net_set_loopback(NetLoopback::Off)?;
+                block_on(core.net_set_loopback(NetLoopback::Off))?;
                 println!("NET loopback: off (normal PTT)");
                 Ok(())
             }
             NetLoopbackMode::Raw => {
-                app.net_set_loopback(NetLoopback::Raw)?;
+                block_on(core.net_set_loopback(NetLoopback::Raw))?;
                 println!("NET loopback: raw (local bypass)");
                 Ok(())
             }
             NetLoopbackMode::Moq => {
-                app.net_set_loopback(NetLoopback::Moq)?;
+                block_on(core.net_set_loopback(NetLoopback::Moq))?;
                 println!("NET loopback: moq (hear own audio via relay)");
                 Ok(())
             }
         },
-        NetAction::Chat { message } => match app.send_chat_message(&message) {
+        NetAction::Chat { message } => match block_on(core.send_chat_message(&message)) {
             Ok(()) => {
                 println!("Chat message sent");
                 Ok(())
@@ -303,19 +232,19 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         },
         NetAction::Reset { action } => match action.as_deref() {
             Some("bootloader") => {
-                app.reset_net_to_bootloader()?;
+                block_on(core.reset_net_to_bootloader())?;
                 println!("NET chip reset to bootloader mode");
                 Ok(())
             }
             _ => {
-                app.reset_net_to_user()?;
+                block_on(core.reset_net_to_user())?;
                 println!("NET chip reset");
                 Ok(())
             }
         },
         NetAction::Erase => {
             println!("Erasing NET chip flash...");
-            match app.erase_net() {
+            match block_on(core.erase_net()) {
                 Ok(()) => {
                     println!("Flash erased successfully");
                     Ok(())
@@ -326,12 +255,12 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         NetAction::Monitor { reset } => {
             if reset {
                 println!("Resetting NET chip...");
-                app.reset_net_to_user()?;
+                block_on(core.reset_net_to_user())?;
             }
             println!("Monitoring NET chip (ESC to stop)...\n");
 
             // Set a short timeout for non-blocking reads
-            if let Err(e) = app.port_mut().get_mut().set_timeout(std::time::Duration::from_millis(100)) {
+            if let Err(e) = core.port_mut().get_mut().get_mut().set_timeout(std::time::Duration::from_millis(100)) {
                 eprintln!("Warning: couldn't set timeout: {}", e);
             }
 
@@ -355,7 +284,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                     }
 
                     // Check for TLV data (timeout-aware: returns Ok(None) on timeout)
-                    match app.read_tlv() {
+                    match block_on(core.read_tlv_raw()) {
                         Ok(Some(tlv)) => {
                             if tlv.tlv_type == link::MgmtToCtl::FromNet {
                                 std::io::stdout().write_all(&tlv.value).ok();
@@ -376,7 +305,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             terminal::disable_raw_mode()?;
 
             // Restore timeout to normal (3 seconds)
-            if let Err(e) = app.port_mut().get_mut().set_timeout(std::time::Duration::from_secs(3)) {
+            if let Err(e) = core.port_mut().get_mut().get_mut().set_timeout(std::time::Duration::from_secs(3)) {
                 eprintln!("Warning: couldn't restore timeout: {}", e);
             }
 
@@ -387,7 +316,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
         NetAction::Channel { action } => match action {
             None => {
                 // List all channel configs
-                let configs = app.get_all_channel_configs()?;
+                let configs = block_on(core.get_all_channel_configs())?;
                 if configs.is_empty() {
                     println!("No channel configurations");
                 } else {
@@ -415,7 +344,7 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                 Ok(())
             }
             Some(ChannelAction::Get { channel_id }) => {
-                let config = app.get_channel_config(channel_id)?;
+                let config = block_on(core.get_channel_config(channel_id))?;
                 let channel_name = match config.channel_id {
                     0 => "Ptt",
                     1 => "PttAi",
@@ -444,18 +373,18 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
                     enabled,
                     relay_url: relay_url.as_str().try_into().map_err(|_| "relay_url too long")?,
                 };
-                app.set_channel_config(&config)?;
+                block_on(core.set_channel_config(&config))?;
                 println!("Channel {} configuration updated", channel_id);
                 Ok(())
             }
             Some(ChannelAction::Clear) => {
-                app.clear_channel_configs()?;
+                block_on(core.clear_channel_configs())?;
                 println!("All channel configurations cleared");
                 Ok(())
             }
         },
         NetAction::JitterStats { channel_id } => {
-            let stats = app.get_jitter_stats(channel_id)?;
+            let stats = block_on(core.get_jitter_stats(channel_id))?;
             let channel_name = match channel_id {
                 0 => "Ptt",
                 1 => "PttAi",
@@ -477,32 +406,4 @@ pub fn handle_net(action: NetAction, app: &mut App) -> Result<(), Box<dyn std::e
             Ok(())
         }
     }
-}
-
-fn print_jitter_stats(label: &str, timings: &[u32]) {
-    if timings.is_empty() {
-        println!("\n{}: No data", label);
-        return;
-    }
-    let min = timings.iter().min().copied().unwrap_or(0);
-    let max = timings.iter().max().copied().unwrap_or(0);
-    let sum: u64 = timings.iter().map(|&x| x as u64).sum();
-    let avg = sum / timings.len() as u64;
-
-    println!("\n{}:", label);
-    println!("  Min: {:>6} µs ({:>5.1} ms)", min, min as f64 / 1000.0);
-    println!("  Max: {:>6} µs ({:>5.1} ms)", max, max as f64 / 1000.0);
-    println!("  Avg: {:>6} µs ({:>5.1} ms)", avg, avg as f64 / 1000.0);
-
-    let target_us = 20000i64;
-    let jitter: i64 = timings
-        .iter()
-        .map(|&x| (x as i64 - target_us).abs())
-        .sum::<i64>()
-        / timings.len() as i64;
-    println!(
-        "  Avg deviation from 20ms: {:>6} µs ({:>5.1} ms)",
-        jitter,
-        jitter as f64 / 1000.0
-    );
 }

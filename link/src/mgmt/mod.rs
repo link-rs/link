@@ -434,16 +434,6 @@ where
             to_ctl.must_write_tlv(MgmtToCtl::Hello, &response).await;
             BaudRateChange::None
         }
-        CtlToMgmt::WsEchoTest => {
-            info!("mgmt: forwarding ws echo test to net");
-            to_net.must_write_tlv(MgmtToNet::WsEchoTest, &[]).await;
-            BaudRateChange::None
-        }
-        CtlToMgmt::WsSpeedTest => {
-            info!("mgmt: forwarding ws speed test to net");
-            to_net.must_write_tlv(MgmtToNet::WsSpeedTest, &[]).await;
-            BaudRateChange::None
-        }
         CtlToMgmt::HoldUiReset => {
             info!("mgmt: holding UI in reset");
             ui_reset_pins.hold_reset();

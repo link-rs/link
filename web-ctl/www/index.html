@@ -579,6 +579,29 @@
                 </div>
 
                 <div class="card-section">
+                    <h3>Stack Diagnostics</h3>
+                    <div class="btn-group" style="margin-bottom: 0.75rem;">
+                        <button class="btn-secondary" id="getMgmtStackBtn">Get Stack Info</button>
+                        <button class="btn-secondary" id="repaintMgmtStackBtn">Repaint Stack</button>
+                        <span class="status-icon" id="mgmtStackStatus"></span>
+                    </div>
+                    <div class="info-display" id="mgmtStackDisplay">
+                        <div class="info-row">
+                            <span class="info-label">Stack Used</span>
+                            <span class="info-value" id="mgmtStackUsed">-</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Stack Free</span>
+                            <span class="info-value" id="mgmtStackFree">-</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Usage</span>
+                            <span class="info-value" id="mgmtStackPercent">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-section">
                     <h3>Bootloader (Manual Mode Required)</h3>
                     <div class="warning-box">
                         <strong>Manual Setup Required</strong>
@@ -662,10 +685,40 @@
                 <div class="card-section">
                     <h3>Audio Loopback</h3>
                     <div class="form-group">
-                        <label>
-                            <input type="checkbox" id="uiLoopbackCheck" style="width: 18px; height: 18px; accent-color: var(--ui-color); margin-right: 0.5rem;">
-                            Enable UI Loopback (mic audio goes directly to speaker)
-                        </label>
+                        <label>Loopback Mode</label>
+                        <div class="inline-form">
+                            <select id="uiLoopbackSelect" style="flex: 1; padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 1rem;">
+                                <option value="0">Off</option>
+                                <option value="1">Raw (mic → speaker)</option>
+                                <option value="2">A-law (mic → encode → decode → speaker)</option>
+                                <option value="3">SFrame (mic → encode → encrypt → decrypt → decode → speaker)</option>
+                            </select>
+                            <button class="btn-secondary" id="getUiLoopbackBtn">Read</button>
+                            <button class="btn-primary" id="setUiLoopbackBtn">Set</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-section">
+                    <h3>Stack Diagnostics</h3>
+                    <div class="btn-group" style="margin-bottom: 0.75rem;">
+                        <button class="btn-secondary" id="getUiStackBtn">Get Stack Info</button>
+                        <button class="btn-secondary" id="repaintUiStackBtn">Repaint Stack</button>
+                        <span class="status-icon" id="uiStackStatus"></span>
+                    </div>
+                    <div class="info-display" id="uiStackDisplay">
+                        <div class="info-row">
+                            <span class="info-label">Stack Used</span>
+                            <span class="info-value" id="uiStackUsed">-</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Stack Free</span>
+                            <span class="info-value" id="uiStackFree">-</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Usage</span>
+                            <span class="info-value" id="uiStackPercent">-</span>
+                        </div>
                     </div>
                 </div>
 
@@ -723,8 +776,6 @@
                     <div class="btn-group">
                         <button class="btn-secondary" id="pingNetBtn">Send Ping</button>
                         <span class="status-icon" id="pingNetStatus"></span>
-                        <button class="btn-secondary" id="wsPingBtn">Send WebSocket Ping</button>
-                        <span class="status-icon" id="wsPingStatus"></span>
                     </div>
                 </div>
 
@@ -765,10 +816,70 @@
                 <div class="card-section">
                     <h3>Audio Loopback</h3>
                     <div class="form-group">
-                        <label>
-                            <input type="checkbox" id="netLoopbackCheck" style="width: 18px; height: 18px; accent-color: var(--net-color); margin-right: 0.5rem;">
-                            Enable NET Loopback (audio from UI goes back to UI via jitter buffer)
-                        </label>
+                        <label>Loopback Mode</label>
+                        <div class="inline-form">
+                            <select id="netLoopbackSelect" style="flex: 1; padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 1rem;">
+                                <option value="0">Off (normal PTT)</option>
+                                <option value="1">Raw (local bypass through jitter buffer)</option>
+                                <option value="2">MoQ (hear own audio via relay)</option>
+                            </select>
+                            <button class="btn-secondary" id="getNetLoopbackBtn">Read</button>
+                            <button class="btn-primary" id="setNetLoopbackBtn">Set</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-section">
+                    <h3>Jitter Buffer Stats</h3>
+                    <div class="inline-form" style="margin-bottom: 0.75rem;">
+                        <div class="form-group" style="flex: 0 0 auto; width: 120px;">
+                            <label>Channel</label>
+                            <select id="jitterChannelSelect" style="width: 100%; padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 1rem;">
+                                <option value="0">PTT (0)</option>
+                                <option value="1">PTT AI (1)</option>
+                                <option value="3">Chat AI (3)</option>
+                            </select>
+                        </div>
+                        <button class="btn-secondary" id="getJitterStatsBtn">Get Stats</button>
+                        <span class="status-icon" id="jitterStatsStatus"></span>
+                    </div>
+                    <div class="info-display" id="jitterStatsDisplay">
+                        <div class="info-row">
+                            <span class="info-label">Received</span>
+                            <span class="info-value" id="jitterReceived">-</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Output</span>
+                            <span class="info-value" id="jitterOutput">-</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Underruns</span>
+                            <span class="info-value" id="jitterUnderruns">-</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Overruns</span>
+                            <span class="info-value" id="jitterOverruns">-</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Level</span>
+                            <span class="info-value" id="jitterLevel">-</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">State</span>
+                            <span class="info-value" id="jitterState">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-section">
+                    <h3>Chat Message</h3>
+                    <div class="inline-form">
+                        <div class="form-group">
+                            <label>Message</label>
+                            <input type="text" id="chatMessageInput" placeholder="Type a message...">
+                        </div>
+                        <button class="btn-primary" id="sendChatBtn">Send</button>
+                        <span class="status-icon" id="chatStatus"></span>
                     </div>
                 </div>
 
@@ -822,6 +933,25 @@
                             <div class="progress-fill" id="netProgressFill"></div>
                         </div>
                         <div class="progress-text" id="netProgressText">Ready</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- System Tests Section -->
+        <div class="card hidden" id="testsCard">
+            <h2>System Tests<span class="collapse-icon">&#9662;</span></h2>
+            <div class="card-content">
+                <div class="card-section">
+                    <h3>Circular Ping</h3>
+                    <p style="color: var(--text-secondary); margin-bottom: 1rem; font-size: 0.875rem;">
+                        Tests communication path through all chips. Data travels in a ring and returns to CTL.
+                    </p>
+                    <div class="btn-group">
+                        <button class="btn-secondary" id="circularPingUiBtn">Via UI (UI→NET→MGMT→CTL)</button>
+                        <span class="status-icon" id="circularPingUiStatus"></span>
+                        <button class="btn-secondary" id="circularPingNetBtn">Via NET (NET→UI→MGMT→CTL)</button>
+                        <span class="status-icon" id="circularPingNetStatus"></span>
                     </div>
                 </div>
             </div>
@@ -984,6 +1114,7 @@
             mgmtCard.classList.toggle('hidden', !connected);
             uiCard.classList.toggle('hidden', !connected);
             netCard.classList.toggle('hidden', !connected);
+            document.getElementById('testsCard').classList.toggle('hidden', !connected);
         }
 
         // Connect/Disconnect
@@ -1329,19 +1460,6 @@
             }
         });
 
-        document.getElementById('wsPingBtn').addEventListener('click', async () => {
-            const btn = document.getElementById('wsPingBtn');
-            const statusIcon = document.getElementById('wsPingStatus');
-            try {
-                await runWithStatus(btn, statusIcon, async () => {
-                    return await controller.ws_ping(new Uint8Array([0x68, 0x65, 0x6c, 0x6c, 0x6f])); // "hello"
-                });
-                log('WebSocket ping successful - received echo', 'success');
-            } catch (e) {
-                log(`WebSocket ping error: ${e}`, 'error');
-            }
-        });
-
         // WiFi Networks
         async function refreshWifiNetworks() {
             try {
@@ -1512,27 +1630,186 @@
 
         // ==================== LOOPBACK CONTROLS ====================
 
-        // UI Loopback checkbox
-        document.getElementById('uiLoopbackCheck').addEventListener('change', async (e) => {
+        // UI Loopback dropdown
+        document.getElementById('getUiLoopbackBtn').addEventListener('click', async () => {
             try {
-                await controller.set_ui_loopback(e.target.checked);
-                log(`UI loopback ${e.target.checked ? 'enabled' : 'disabled'}`, 'success');
-            } catch (err) {
-                log(`Set UI loopback error: ${err}`, 'error');
-                // Revert checkbox on error
-                e.target.checked = !e.target.checked;
+                const mode = await controller.get_ui_loopback_mode();
+                const modeMap = { 'off': '0', 'raw': '1', 'alaw': '2', 'sframe': '3' };
+                document.getElementById('uiLoopbackSelect').value = modeMap[mode] || '0';
+                log(`UI loopback mode: ${mode}`, 'success');
+            } catch (e) {
+                log(`Get UI loopback error: ${e}`, 'error');
             }
         });
 
-        // NET Loopback checkbox
-        document.getElementById('netLoopbackCheck').addEventListener('change', async (e) => {
+        document.getElementById('setUiLoopbackBtn').addEventListener('click', async () => {
             try {
-                await controller.set_net_loopback(e.target.checked);
-                log(`NET loopback ${e.target.checked ? 'enabled' : 'disabled'}`, 'success');
-            } catch (err) {
-                log(`Set NET loopback error: ${err}`, 'error');
-                // Revert checkbox on error
-                e.target.checked = !e.target.checked;
+                const mode = parseInt(document.getElementById('uiLoopbackSelect').value);
+                await controller.set_ui_loopback_mode(mode);
+                const modeNames = ['off', 'raw', 'alaw', 'sframe'];
+                log(`UI loopback mode set to: ${modeNames[mode]}`, 'success');
+            } catch (e) {
+                log(`Set UI loopback error: ${e}`, 'error');
+            }
+        });
+
+        // NET Loopback dropdown
+        document.getElementById('getNetLoopbackBtn').addEventListener('click', async () => {
+            try {
+                const mode = await controller.get_net_loopback_mode();
+                const modeMap = { 'off': '0', 'raw': '1', 'moq': '2' };
+                document.getElementById('netLoopbackSelect').value = modeMap[mode] || '0';
+                log(`NET loopback mode: ${mode}`, 'success');
+            } catch (e) {
+                log(`Get NET loopback error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('setNetLoopbackBtn').addEventListener('click', async () => {
+            try {
+                const mode = parseInt(document.getElementById('netLoopbackSelect').value);
+                await controller.set_net_loopback_mode(mode);
+                const modeNames = ['off', 'raw', 'moq'];
+                log(`NET loopback mode set to: ${modeNames[mode]}`, 'success');
+            } catch (e) {
+                log(`Set NET loopback error: ${e}`, 'error');
+            }
+        });
+
+        // ==================== STACK DIAGNOSTICS ====================
+
+        // MGMT Stack
+        document.getElementById('getMgmtStackBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('getMgmtStackBtn');
+            const statusIcon = document.getElementById('mgmtStackStatus');
+            const display = document.getElementById('mgmtStackDisplay');
+            try {
+                const info = await runWithStatus(btn, statusIcon, async () => {
+                    return await controller.get_mgmt_stack_info();
+                });
+                document.getElementById('mgmtStackUsed').textContent = `${info.stackUsed} bytes`;
+                document.getElementById('mgmtStackFree').textContent = `${info.stackFree} bytes`;
+                document.getElementById('mgmtStackPercent').textContent = `${info.usagePercent.toFixed(1)}%`;
+                display.classList.add('visible');
+                log(`MGMT stack: ${info.stackUsed}/${info.stackSize} bytes used (${info.usagePercent.toFixed(1)}%)`, 'success');
+            } catch (e) {
+                display.classList.remove('visible');
+                log(`Get MGMT stack info error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('repaintMgmtStackBtn').addEventListener('click', async () => {
+            try {
+                await controller.repaint_mgmt_stack();
+                document.getElementById('mgmtStackDisplay').classList.remove('visible');
+                log('MGMT stack repainted (watermark reset)', 'success');
+            } catch (e) {
+                log(`Repaint MGMT stack error: ${e}`, 'error');
+            }
+        });
+
+        // UI Stack
+        document.getElementById('getUiStackBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('getUiStackBtn');
+            const statusIcon = document.getElementById('uiStackStatus');
+            const display = document.getElementById('uiStackDisplay');
+            try {
+                const info = await runWithStatus(btn, statusIcon, async () => {
+                    return await controller.get_ui_stack_info();
+                });
+                document.getElementById('uiStackUsed').textContent = `${info.stackUsed} bytes`;
+                document.getElementById('uiStackFree').textContent = `${info.stackFree} bytes`;
+                document.getElementById('uiStackPercent').textContent = `${info.usagePercent.toFixed(1)}%`;
+                display.classList.add('visible');
+                log(`UI stack: ${info.stackUsed}/${info.stackSize} bytes used (${info.usagePercent.toFixed(1)}%)`, 'success');
+            } catch (e) {
+                display.classList.remove('visible');
+                log(`Get UI stack info error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('repaintUiStackBtn').addEventListener('click', async () => {
+            try {
+                await controller.repaint_ui_stack();
+                document.getElementById('uiStackDisplay').classList.remove('visible');
+                log('UI stack repainted (watermark reset)', 'success');
+            } catch (e) {
+                log(`Repaint UI stack error: ${e}`, 'error');
+            }
+        });
+
+        // ==================== JITTER STATS ====================
+
+        document.getElementById('getJitterStatsBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('getJitterStatsBtn');
+            const statusIcon = document.getElementById('jitterStatsStatus');
+            const display = document.getElementById('jitterStatsDisplay');
+            try {
+                const channelId = parseInt(document.getElementById('jitterChannelSelect').value);
+                const stats = await runWithStatus(btn, statusIcon, async () => {
+                    return await controller.get_jitter_stats(channelId);
+                });
+                document.getElementById('jitterReceived').textContent = stats.received;
+                document.getElementById('jitterOutput').textContent = stats.output;
+                document.getElementById('jitterUnderruns').textContent = stats.underruns;
+                document.getElementById('jitterOverruns').textContent = stats.overruns;
+                document.getElementById('jitterLevel').textContent = stats.level;
+                document.getElementById('jitterState').textContent = stats.state;
+                display.classList.add('visible');
+                log(`Jitter stats (ch ${channelId}): received=${stats.received}, output=${stats.output}, underruns=${stats.underruns}, overruns=${stats.overruns}`, 'success');
+            } catch (e) {
+                display.classList.remove('visible');
+                log(`Get jitter stats error: ${e}`, 'error');
+            }
+        });
+
+        // ==================== CHAT ====================
+
+        document.getElementById('sendChatBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('sendChatBtn');
+            const statusIcon = document.getElementById('chatStatus');
+            const input = document.getElementById('chatMessageInput');
+            const message = input.value.trim();
+            if (!message) {
+                log('Chat message cannot be empty', 'error');
+                return;
+            }
+            try {
+                await runWithStatus(btn, statusIcon, async () => {
+                    return await controller.send_chat_message(message);
+                });
+                input.value = '';
+                log(`Chat message sent: "${message}"`, 'success');
+            } catch (e) {
+                log(`Send chat error: ${e}`, 'error');
+            }
+        });
+
+        // ==================== CIRCULAR PING ====================
+
+        document.getElementById('circularPingUiBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('circularPingUiBtn');
+            const statusIcon = document.getElementById('circularPingUiStatus');
+            try {
+                await runWithStatus(btn, statusIcon, async () => {
+                    return await controller.circular_ping_via_ui(new Uint8Array([0xCA, 0xFE, 0xBA, 0xBE]));
+                }, 3000);
+                log('Circular ping via UI successful (UI→NET→MGMT→CTL)', 'success');
+            } catch (e) {
+                log(`Circular ping via UI error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('circularPingNetBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('circularPingNetBtn');
+            const statusIcon = document.getElementById('circularPingNetStatus');
+            try {
+                await runWithStatus(btn, statusIcon, async () => {
+                    return await controller.circular_ping_via_net(new Uint8Array([0xDE, 0xAD, 0xBE, 0xEF]));
+                }, 3000);
+                log('Circular ping via NET successful (NET→UI→MGMT→CTL)', 'success');
+            } catch (e) {
+                log(`Circular ping via NET error: ${e}`, 'error');
             }
         });
 
@@ -1546,45 +1823,71 @@
                 // UI chip state
                 if (state.ui) {
                     // Version
-                    const version = state.ui.version;
-                    document.getElementById('versionInput').value = '0x' + version.toString(16).padStart(8, '0');
-                    log(`  UI version: 0x${version.toString(16).padStart(8, '0')}`, 'info');
+                    if (state.ui.version !== undefined) {
+                        const version = state.ui.version;
+                        document.getElementById('versionInput').value = '0x' + version.toString(16).padStart(8, '0');
+                        log(`  UI version: 0x${version.toString(16).padStart(8, '0')}`, 'info');
+                    } else {
+                        log(`  UI version: (failed to read)`, 'warning');
+                    }
 
                     // SFrame key
-                    document.getElementById('sframeKeyInput').value = state.ui.sframeKey;
-                    log(`  UI SFrame key: ${state.ui.sframeKey}`, 'info');
+                    if (state.ui.sframeKey !== undefined) {
+                        document.getElementById('sframeKeyInput').value = state.ui.sframeKey;
+                        log(`  UI SFrame key: ${state.ui.sframeKey}`, 'info');
+                    } else {
+                        log(`  UI SFrame key: (failed to read)`, 'warning');
+                    }
 
-                    // Loopback
-                    document.getElementById('uiLoopbackCheck').checked = state.ui.loopback;
-                    log(`  UI loopback: ${state.ui.loopback}`, 'info');
+                    // Loopback mode
+                    if (state.ui.loopbackMode !== undefined) {
+                        const uiModeMap = { 'off': '0', 'raw': '1', 'alaw': '2', 'sframe': '3' };
+                        document.getElementById('uiLoopbackSelect').value = uiModeMap[state.ui.loopbackMode] || '0';
+                        log(`  UI loopback: ${state.ui.loopbackMode}`, 'info');
+                    } else {
+                        log(`  UI loopback: (failed to read)`, 'warning');
+                    }
                 }
 
                 // NET chip state
                 if (state.net) {
                     // Relay URL
-                    document.getElementById('relayUrlInput').value = state.net.relayUrl;
-                    log(`  NET relay URL: ${state.net.relayUrl || '(empty)'}`, 'info');
+                    if (state.net.relayUrl !== undefined) {
+                        document.getElementById('relayUrlInput').value = state.net.relayUrl;
+                        log(`  NET relay URL: ${state.net.relayUrl || '(empty)'}`, 'info');
+                    } else {
+                        log(`  NET relay URL: (failed to read)`, 'warning');
+                    }
 
                     // WiFi networks
-                    const networks = state.net.wifiNetworks;
-                    const wifiList = document.getElementById('wifiList');
-                    if (networks.length === 0) {
-                        wifiList.innerHTML = '<div class="empty-state">No networks configured</div>';
-                    } else {
-                        wifiList.innerHTML = networks.map(n => `
-                            <div class="wifi-item">
-                                <div>
-                                    <div class="ssid">${escapeHtml(n.ssid)}</div>
-                                    <div class="password">${'*'.repeat(n.password.length)}</div>
+                    if (state.net.wifiNetworks !== undefined) {
+                        const networks = state.net.wifiNetworks;
+                        const wifiList = document.getElementById('wifiList');
+                        if (networks.length === 0) {
+                            wifiList.innerHTML = '<div class="empty-state">No networks configured</div>';
+                        } else {
+                            wifiList.innerHTML = networks.map(n => `
+                                <div class="wifi-item">
+                                    <div>
+                                        <div class="ssid">${escapeHtml(n.ssid)}</div>
+                                        <div class="password">${'*'.repeat(n.password.length)}</div>
+                                    </div>
                                 </div>
-                            </div>
-                        `).join('');
+                            `).join('');
+                        }
+                        log(`  NET WiFi networks: ${networks.length} configured`, 'info');
+                    } else {
+                        log(`  NET WiFi networks: (failed to read)`, 'warning');
                     }
-                    log(`  NET WiFi networks: ${networks.length} configured`, 'info');
 
-                    // Loopback
-                    document.getElementById('netLoopbackCheck').checked = state.net.loopback;
-                    log(`  NET loopback: ${state.net.loopback}`, 'info');
+                    // Loopback mode
+                    if (state.net.loopbackMode !== undefined) {
+                        const netModeMap = { 'off': '0', 'raw': '1', 'moq': '2' };
+                        document.getElementById('netLoopbackSelect').value = netModeMap[state.net.loopbackMode] || '0';
+                        log(`  NET loopback: ${state.net.loopbackMode}`, 'info');
+                    } else {
+                        log(`  NET loopback: (failed to read)`, 'warning');
+                    }
                 }
 
                 log('Device state loaded successfully', 'success');

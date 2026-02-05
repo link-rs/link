@@ -706,3 +706,101 @@ pub fn async_async_channel() -> ((AsyncReader, AsyncWriter), (AsyncReader, Async
 
     (end1, end2)
 }
+
+// ============================================================================
+// MockCtlPort - for testing CtlCore with async channels
+// ============================================================================
+
+/// A mock port that implements `CtlPort` for testing `CtlCore`.
+///
+/// Combines an `AsyncReader` and `AsyncWriter` into a single type.
+#[cfg(any(feature = "ctl-core", feature = "ctl"))]
+pub struct MockCtlPort {
+    reader: AsyncReader,
+    writer: AsyncWriter,
+}
+
+#[cfg(any(feature = "ctl-core", feature = "ctl"))]
+impl MockCtlPort {
+    pub fn new(reader: AsyncReader, writer: AsyncWriter) -> Self {
+        Self { reader, writer }
+    }
+}
+
+#[cfg(any(feature = "ctl-core", feature = "ctl"))]
+impl crate::ctl::CtlPort for MockCtlPort {
+    type Error = std::convert::Infallible;
+
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        use embedded_io_async::Read;
+        self.reader.read(buf).await
+    }
+
+    async fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
+        use embedded_io_async::Write;
+        let mut written = 0;
+        while written < buf.len() {
+            let n = self.writer.write(&buf[written..]).await?;
+            written += n;
+        }
+        Ok(())
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        use embedded_io_async::Write;
+        self.writer.flush().await
+    }
+}
+
+/// Create a bidirectional channel pair for CTL (using CtlCore) and MGMT firmware.
+///
+/// Returns `(MockCtlPort, (AsyncReader, AsyncWriter))`.
+///
+/// - The CTL side uses `MockCtlPort` with `CtlCore`
+/// - The MGMT side uses `(async_reader, async_writer)` tuples
+/// - Data flows: ctl_port.write -> mgmt_reader, mgmt_writer -> ctl_port.read
+#[cfg(any(feature = "ctl-core", feature = "ctl"))]
+pub fn ctl_async_channel() -> (MockCtlPort, (AsyncReader, AsyncWriter)) {
+    // ctl_writer -> mgmt_reader (CTL sends to MGMT)
+    let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel();
+    // mgmt_writer -> ctl_reader (MGMT sends to CTL)
+    let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
+
+    let ctl_port = MockCtlPort::new(AsyncReader::new(rx2), AsyncWriter::new(tx1));
+    let mgmt_end = (AsyncReader::new(rx1), AsyncWriter::new(tx2));
+
+    (ctl_port, mgmt_end)
+}
+
+/// Create a bidirectional channel pair for CTL with baud rate tracking.
+///
+/// Returns `(MockCtlPort, (AsyncReader, AsyncWriter), ctl_baud, net_baud)`.
+#[cfg(any(feature = "ctl-core", feature = "ctl"))]
+pub fn ctl_async_channel_with_baud_tracking() -> (
+    MockCtlPort,
+    (AsyncReader, AsyncWriter),
+    std::sync::Arc<std::sync::atomic::AtomicU32>,
+    std::sync::Arc<std::sync::atomic::AtomicU32>,
+) {
+    use std::sync::atomic::AtomicU32;
+    use std::sync::Arc;
+
+    let ctl_baud = Arc::new(AtomicU32::new(115200));
+    let net_baud = Arc::new(AtomicU32::new(115200));
+
+    // ctl_writer -> mgmt_reader (CTL sends to MGMT)
+    let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel();
+    // mgmt_writer -> ctl_reader (MGMT sends to CTL)
+    let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
+
+    let ctl_port = MockCtlPort::new(
+        AsyncReader::with_baud_tracking(rx2, ctl_baud.clone()),
+        AsyncWriter::with_baud_tracking(tx1, ctl_baud.clone()),
+    );
+    let mgmt_end = (
+        AsyncReader::with_baud_tracking(rx1, net_baud.clone()),
+        AsyncWriter::with_baud_tracking(tx2, net_baud.clone()),
+    );
+
+    (ctl_port, mgmt_end, ctl_baud, net_baud)
+}

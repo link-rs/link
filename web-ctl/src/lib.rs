@@ -41,7 +41,6 @@ fn ctl_error_to_js(e: CtlError) -> JsValue {
 /// The main controller interface exposed to JavaScript.
 #[wasm_bindgen]
 pub struct LinkController {
-    serial: WebSerial,
     core: Option<CtlCore<WebSerial>>,
 }
 
@@ -51,7 +50,6 @@ impl LinkController {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self {
-            serial: WebSerial::new(),
             core: None,
         }
     }
@@ -60,13 +58,14 @@ impl LinkController {
     /// This will prompt the user to select a serial port.
     #[wasm_bindgen]
     pub async fn connect(&mut self, baud_rate: u32) -> Result<(), JsValue> {
-        self.serial
+        let serial = WebSerial::new();
+        serial
             .connect(baud_rate)
             .await
             .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
 
-        // Create CtlCore with a clone of the serial port
-        self.core = Some(CtlCore::new(self.serial.clone()));
+        // Create CtlCore - it takes ownership of the serial port
+        self.core = Some(CtlCore::new(serial));
 
         log("Connected to Link device");
         Ok(())
@@ -75,17 +74,20 @@ impl LinkController {
     /// Check if connected to a device.
     #[wasm_bindgen]
     pub fn is_connected(&self) -> bool {
-        self.serial.is_connected()
+        self.core.is_some()
     }
 
     /// Disconnect from the device.
     #[wasm_bindgen]
     pub async fn disconnect(&mut self) -> Result<(), JsValue> {
-        self.core = None;
-        self.serial
-            .disconnect()
-            .await
-            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        if let Some(core) = self.core.take() {
+            // Get the serial port from the core and disconnect
+            let serial: WebSerial = core.into_inner();
+            serial
+                .disconnect()
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        }
         log("Disconnected from Link device");
         Ok(())
     }
@@ -108,7 +110,8 @@ impl LinkController {
         ];
 
         let core = self.core_mut()?;
-        Ok(core.hello(&challenge).await)
+        let result = core.hello(&challenge).await;
+        Ok(result)
     }
 
     /// Get the firmware version stored in UI chip EEPROM.
@@ -408,38 +411,6 @@ impl LinkController {
     pub async fn repaint_ui_stack(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
         core.ui_repaint_stack().await.map_err(ctl_error_to_js)
-    }
-
-    // ==================== WS TESTS ====================
-
-    /// Run WebSocket echo test.
-    /// Returns JSON with test results.
-    #[wasm_bindgen]
-    pub async fn ws_echo_test(&mut self) -> Result<JsValue, JsValue> {
-        let core = self.core_mut()?;
-        let results = core.ws_echo_test().await.map_err(ctl_error_to_js)?;
-
-        let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"sent".into(), &results.sent.into())?;
-        js_sys::Reflect::set(&obj, &"received".into(), &results.received.into())?;
-        js_sys::Reflect::set(&obj, &"bufferedOutput".into(), &results.buffered_output.into())?;
-        js_sys::Reflect::set(&obj, &"underruns".into(), &results.underruns.into())?;
-        Ok(obj.into())
-    }
-
-    /// Run WebSocket speed test.
-    /// Returns JSON with test results.
-    #[wasm_bindgen]
-    pub async fn ws_speed_test(&mut self) -> Result<JsValue, JsValue> {
-        let core = self.core_mut()?;
-        let results = core.ws_speed_test().await.map_err(ctl_error_to_js)?;
-
-        let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"sent".into(), &results.sent.into())?;
-        js_sys::Reflect::set(&obj, &"received".into(), &results.received.into())?;
-        js_sys::Reflect::set(&obj, &"sendTimeMs".into(), &results.send_time_ms.into())?;
-        js_sys::Reflect::set(&obj, &"recvTimeMs".into(), &results.recv_time_ms.into())?;
-        Ok(obj.into())
     }
 
     // ==================== CHAT ====================

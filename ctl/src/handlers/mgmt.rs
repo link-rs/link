@@ -1,17 +1,19 @@
 //! MGMT chip command handlers.
 
-use crate::{App, GetSetU32, MgmtAction, StackAction};
+use super::Core;
+use crate::{GetSetU32, MgmtAction, StackAction};
+use futures::executor::block_on;
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::FlashPhase;
 use link::{CtlToMgmt, MgmtToCtl};
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         MgmtAction::Ping { data } => {
             println!("Sending MGMT ping with data: {}", data);
-            app.mgmt_ping(data.as_bytes())?;
+            block_on(core.mgmt_ping(data.as_bytes()))?;
             println!("Received pong!");
             Ok(())
         }
@@ -32,7 +34,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
 
             println!("Querying bootloader information...\n");
 
-            let Ok(info) = app.get_mgmt_bootloader_info() else {
+            let Ok(info) = block_on(core.get_mgmt_bootloader_info()) else {
                 eprintln!("Failed to get bootloader info");
                 eprintln!("\nMake sure the MGMT chip is in bootloader mode:");
                 eprintln!("  1. Set BOOT0 pin high");
@@ -119,7 +121,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
             pb.set_style(pages_style.clone());
 
             let mut current_phase = None;
-            let result = app.flash_mgmt(&firmware, |phase, progress, total| {
+            let result = block_on(core.flash_mgmt(&firmware, |phase, progress, total| {
                 if current_phase != Some(phase) {
                     current_phase = Some(phase);
                     match phase {
@@ -141,7 +143,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
                     pb.set_position(0);
                 }
                 pb.set_position(progress as u64);
-            });
+            }));
 
             pb.finish_and_clear();
 
@@ -175,7 +177,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
                 }
                 GetSetU32::Set { value } => {
                     println!("Setting NET UART baud rate to {}", value);
-                    app.set_net_baud_rate(value)?;
+                    block_on(core.set_net_baud_rate(value))?;
                     println!("NET baud rate set to {}", value);
                     Ok(())
                 }
@@ -195,10 +197,10 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
                     println!("Setting CTL UART baud rate to {}", value);
 
                     // Send command to MGMT (ACK is sent before rate change)
-                    app.set_ctl_baud_rate(value)?;
+                    block_on(core.set_ctl_baud_rate(value))?;
 
                     // Now change local serial port baud rate to match
-                    app.port_mut().get_mut().set_baud_rate(value)?;
+                    core.port_mut().get_mut().get_mut().set_baud_rate(value)?;
 
                     println!("CTL baud rate set to {} (both MGMT and local)", value);
                     Ok(())
@@ -221,7 +223,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
             }
 
             // Get current baud rate for reporting
-            let initial_baud = app.port_mut().get_ref().baud_rate().unwrap_or(115200);
+            let initial_baud = core.port_mut().get_ref().get_ref().baud_rate().unwrap_or(115200);
 
             // If a baud rate was specified, change to it first
             let test_baud = if let Some(new_baud) = baud {
@@ -231,10 +233,10 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
                 );
 
                 // Send command to MGMT (ACK is sent before rate change)
-                app.set_ctl_baud_rate(new_baud)?;
+                block_on(core.set_ctl_baud_rate(new_baud))?;
 
                 // Now change local serial port baud rate to match
-                app.port_mut().get_mut().set_baud_rate(new_baud)?;
+                core.port_mut().get_mut().get_mut().set_baud_rate(new_baud)?;
 
                 // Small delay for baud rate to stabilize
                 std::thread::sleep(Duration::from_millis(10));
@@ -259,7 +261,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
 
             // Send packets as fast as possible for the duration
             while start.elapsed() < test_duration {
-                if app.write_tlv(CtlToMgmt::SpeedTestData, &payload).is_err() {
+                if block_on(core.write_tlv_raw(CtlToMgmt::SpeedTestData, &payload)).is_err() {
                     send_errors += 1;
                 } else {
                     packets_sent += 1;
@@ -270,13 +272,13 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
 
             // Send done signal
             println!("Sending done signal and waiting for results...");
-            app.write_tlv(CtlToMgmt::SpeedTestDone, &[])?;
+            block_on(core.write_tlv_raw(CtlToMgmt::SpeedTestDone, &[]))?;
 
             // Wait for result from MGMT (with timeout)
-            app.port_mut().get_mut().set_timeout(Duration::from_secs(5))?;
+            core.port_mut().get_mut().get_mut().set_timeout(Duration::from_secs(5))?;
 
             let (packets_received, bytes_received) = loop {
-                match app.read_tlv() {
+                match block_on(core.read_tlv_raw()) {
                     Ok(Some(tlv)) => {
                         if tlv.tlv_type == MgmtToCtl::SpeedTestResult && tlv.value.len() >= 8 {
                             let packets = u32::from_le_bytes([
@@ -336,18 +338,18 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
             // Restore original baud rate if we changed it
             if baud.is_some() && initial_baud != test_baud {
                 println!("\nRestoring baud rate to {}...", initial_baud);
-                app.set_ctl_baud_rate(initial_baud)?;
-                app.port_mut().get_mut().set_baud_rate(initial_baud)?;
+                block_on(core.set_ctl_baud_rate(initial_baud))?;
+                core.port_mut().get_mut().get_mut().set_baud_rate(initial_baud)?;
             }
 
             // Restore normal timeout
-            app.port_mut().get_mut().set_timeout(Duration::from_secs(3))?;
+            core.port_mut().get_mut().get_mut().set_timeout(Duration::from_secs(3))?;
 
             Ok(())
         }
         MgmtAction::Stack { action } => match action.unwrap_or_default() {
             StackAction::Info => {
-                let info = app.mgmt_get_stack_info()?;
+                let info = block_on(core.mgmt_get_stack_info())?;
                 println!("Stack Base:  0x{:08X}", info.stack_base);
                 println!("Stack Top:   0x{:08X}", info.stack_top);
                 println!("Stack Size:  {} bytes ({:.1} KB)", info.stack_size, info.stack_size as f64 / 1024.0);
@@ -356,7 +358,7 @@ pub fn handle_mgmt(action: MgmtAction, app: &mut App) -> Result<(), Box<dyn std:
                 Ok(())
             }
             StackAction::Repaint => {
-                app.mgmt_repaint_stack()?;
+                block_on(core.mgmt_repaint_stack())?;
                 println!("Stack repainted");
                 Ok(())
             }
