@@ -243,7 +243,7 @@ impl<P> TunnelSerialInterface<P> {
 impl<P: CtlPort<Error = std::io::Error>> TunnelSerialInterface<P> {
     /// Helper to convert io::Error to SerialPortError
     fn io_to_serial(e: std::io::Error) -> SerialPortError {
-        serialport::Error::new(serialport::ErrorKind::Io(e.kind()), e.to_string())
+        SerialPortError::io(e.to_string())
     }
 
     /// Read a TLV from the port, filtering for FromNet messages.
@@ -397,7 +397,7 @@ impl<P: CtlPort<Error = std::io::Error>> TunnelSerialInterface<P> {
 }
 
 
-impl<P: CtlPort<Error = std::io::Error> + Send + SetTimeout + SetBaudRate + 'static> SerialInterface for TunnelSerialInterface<P> {
+impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static> SerialInterface for TunnelSerialInterface<P> {
     fn name(&self) -> Option<String> {
         Some("tunnel-net".to_string())
     }
@@ -495,6 +495,7 @@ impl<P: CtlPort<Error = std::io::Error> + Send + SetTimeout + SetBaudRate + 'sta
         std::thread::sleep(Duration::from_millis(ms as u64));
     }
 }
+
 
 // ============================================================================
 // Flashing implementation for CtlCore
@@ -822,10 +823,10 @@ pub struct EspflashDeviceInfo {
 ///
 /// These methods require the port to implement:
 /// - `CtlPort<Error = std::io::Error>` (for async TLV protocol)
-/// - `Send + SetTimeout + SetBaudRate + 'static` (for espflash SerialInterface)
+/// - `SetTimeout + SetBaudRate + 'static` (for espflash SerialInterface)
 impl<P> CtlCore<P>
 where
-    P: CtlPort<Error = std::io::Error> + Send + SetTimeout + SetBaudRate + 'static,
+    P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static,
 {
     /// Flash firmware to the NET chip (ESP32).
     ///

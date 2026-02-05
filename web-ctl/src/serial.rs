@@ -121,6 +121,16 @@ impl WebSerial {
         self.state.borrow().is_some()
     }
 
+    /// Clear the internal read buffer.
+    ///
+    /// This discards any data that has been read from the serial port but not yet
+    /// consumed. Useful before flashing operations where stale data might interfere.
+    pub fn clear_read_buffer(&self) {
+        if let Some(state) = self.state.borrow_mut().as_mut() {
+            state.read_buffer.clear();
+        }
+    }
+
     /// Disconnect from the serial port.
     pub async fn disconnect(&self) -> Result<(), WebSerialError> {
         let state = self.state.borrow_mut().take();
@@ -277,6 +287,77 @@ impl link::ctl::CtlPort for WebSerial {
             }
             filled += n;
         }
+        Ok(())
+    }
+}
+
+// ============================================================================
+// WebSerialAdapter - wraps WebSerial with std::io::Error for flash operations
+// ============================================================================
+
+/// Adapter that wraps WebSerial to use std::io::Error instead of WebSerialError.
+///
+/// This is needed because the CtlCore flash methods require CtlPort<Error = std::io::Error>.
+pub struct WebSerialAdapter {
+    inner: WebSerial,
+}
+
+impl WebSerialAdapter {
+    /// Create a new adapter wrapping a WebSerial.
+    pub fn new(inner: WebSerial) -> Self {
+        Self { inner }
+    }
+
+    /// Consume the adapter and return the inner WebSerial.
+    pub fn into_inner(self) -> WebSerial {
+        self.inner
+    }
+}
+
+impl From<WebSerialError> for std::io::Error {
+    fn from(e: WebSerialError) -> Self {
+        std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+    }
+}
+
+impl link::ctl::CtlPort for WebSerialAdapter {
+    type Error = std::io::Error;
+
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        <WebSerial as link::ctl::CtlPort>::read(&mut self.inner, buf).await.map_err(Into::into)
+    }
+
+    async fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
+        link::ctl::CtlPort::write_all(&mut self.inner, buf).await.map_err(Into::into)
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        link::ctl::CtlPort::flush(&mut self.inner).await.map_err(Into::into)
+    }
+
+    async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
+        link::ctl::CtlPort::read_exact(&mut self.inner, buf).await.map_err(Into::into)
+    }
+
+    fn clear_buffer(&mut self) {
+        self.inner.clear_read_buffer();
+    }
+}
+
+impl link::ctl::SetTimeout for WebSerialAdapter {
+    fn set_timeout(&mut self, _timeout: std::time::Duration) -> std::io::Result<()> {
+        // WebSerial doesn't support timeouts directly - they're handled by the browser.
+        // The espflash code uses timeouts for flow control, but on WASM we rely on
+        // the browser's built-in timeout handling.
+        Ok(())
+    }
+}
+
+impl link::ctl::SetBaudRate for WebSerialAdapter {
+    fn set_baud_rate(&mut self, _baud_rate: u32) -> std::io::Result<()> {
+        // WebSerial requires closing and reopening the port to change baud rate.
+        // For flashing, we stay at the initial baud rate (115200).
+        // The TunnelSerialInterface handles MGMT-NET baud rate via TLV commands.
         Ok(())
     }
 }

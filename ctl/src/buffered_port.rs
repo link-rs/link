@@ -51,6 +51,15 @@ impl<P> BufferedPort<P> {
     pub fn into_inner(self) -> P {
         self.port
     }
+
+    /// Clear the internal read buffer.
+    ///
+    /// This discards any data that has been read from the serial port but not yet
+    /// consumed. Useful before operations like flashing where stale data might interfere.
+    pub fn clear_buffer(&mut self) {
+        self.read_pos = 0;
+        self.read_cap = 0;
+    }
 }
 
 impl<P: Read> BufferedPort<P> {

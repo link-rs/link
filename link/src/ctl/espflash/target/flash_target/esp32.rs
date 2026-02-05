@@ -3,14 +3,9 @@
 //! This module defines the traits and types used for flashing operations on a
 //! target device's flash memory.
 
-use std::io::Write;
-
-use flate2::{
-    Compression,
-    write::{ZlibDecoder, ZlibEncoder},
-};
 use log::debug;
 use md5::{Digest, Md5};
+use miniz_oxide::deflate::compress_to_vec_zlib;
 
 use super::super::super::{
     Error,
@@ -113,9 +108,8 @@ impl Esp32Target {
         md5_hasher.update(&segment.data);
         let checksum_md5 = md5_hasher.finalize();
 
-        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
-        encoder.write_all(&segment.data)?;
-        let compressed = encoder.finish()?;
+        // Compress with zlib format at maximum compression level (10)
+        let compressed = compress_to_vec_zlib(&segment.data, 10);
 
         let flash_write_size = self.chip.flash_write_size();
         let block_count = compressed.len().div_ceil(flash_write_size);
@@ -161,18 +155,21 @@ impl Esp32Target {
         result?;
         self.need_deflate_end = true;
 
-        // decode the chunks to see how much data the device will have to save
-        let mut decoder = ZlibDecoder::new(Vec::new());
-        let mut decoded_size = 0;
+        // Estimate decompressed size per chunk for timeout calculation.
+        // We know the total uncompressed size, so we estimate per-chunk as average.
+        let total_uncompressed = segment.data.len();
+        let avg_decoded_per_chunk = total_uncompressed.div_ceil(num_chunks);
 
         for (i, block) in chunks.enumerate() {
-            decoder.write_all(block)?;
-            decoder.flush()?;
-            let size = decoder.get_ref().len() - decoded_size;
-            decoded_size = decoder.get_ref().len();
+            // Use average decompressed size for timeout (last chunk may be smaller)
+            let estimated_size = if i == num_chunks - 1 {
+                total_uncompressed - (avg_decoded_per_chunk * i)
+            } else {
+                avg_decoded_per_chunk
+            };
 
             let old_timeout = connection.serial.timeout();
-            connection.serial.set_timeout(CommandType::FlashDeflData.timeout_for_size(size as u32))?;
+            connection.serial.set_timeout(CommandType::FlashDeflData.timeout_for_size(estimated_size as u32))?;
             let result = connection.command(Command::FlashDeflData {
                 sequence: i as u32,
                 pad_to: 0,

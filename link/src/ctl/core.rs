@@ -192,9 +192,12 @@ impl<P: CtlPort> CtlCore<P> {
     // ========================================================================
 
     /// Drain any pending data from buffers.
+    ///
+    /// This clears both the internal TLV buffers and the port's read buffer.
     pub fn drain(&mut self) {
         self.ui_buffer.clear();
         self.net_buffer.clear();
+        self.port_mut().clear_buffer();
     }
 
     /// Read a TLV from the port, scanning for sync word.

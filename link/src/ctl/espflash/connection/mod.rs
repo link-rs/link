@@ -5,6 +5,7 @@
 //! device.
 
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use core::{fmt, iter::zip, time::Duration};
 use embedded_io_async::Write;
 
@@ -13,8 +14,6 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "std")]
 use regex::Regex;
-#[cfg(feature = "std")]
-use serialport::{SerialPort, UsbPortInfo, ClearBuffer};
 
 use self::{
     encoder::SlipEncoder,
@@ -39,21 +38,9 @@ pub use reset::{ResetAfterOperation, ResetBeforeOperation};
 
 const MAX_CONNECT_ATTEMPTS: usize = 7;
 const MAX_SYNC_ATTEMPTS: usize = 5;
-const USB_SERIAL_JTAG_PID: u16 = 0x1001;
-
-#[cfg(all(feature = "std", unix))]
-/// Alias for the serial TTYPort.
-pub type Port = serialport::TTYPort;
-#[cfg(all(feature = "std", windows))]
-/// Alias for the serial COMPort.
-pub type Port = serialport::COMPort;
+pub(crate) const USB_SERIAL_JTAG_PID: u16 = 0x1001;
 
 /// Buffer type for clear operations.
-#[cfg(feature = "std")]
-pub type ClearBufferType = ClearBuffer;
-
-/// Buffer type for clear operations (no_std stub).
-#[cfg(not(feature = "std"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClearBufferType {
     /// Clear the input buffer.
@@ -64,22 +51,8 @@ pub enum ClearBufferType {
     All,
 }
 
-/// Serial port error type.
-#[cfg(feature = "std")]
-pub type SerialPortError = serialport::Error;
-
-/// Serial port error type (no_std stub).
-#[cfg(not(feature = "std"))]
-#[derive(Debug)]
-pub struct SerialPortError {
-    /// Error kind
-    pub kind: SerialPortErrorKind,
-    /// Error description
-    pub description: &'static str,
-}
-
-#[cfg(not(feature = "std"))]
-#[derive(Debug, Clone, Copy)]
+/// Serial port error kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SerialPortErrorKind {
     /// No device found
     NoDevice,
@@ -93,23 +66,57 @@ pub enum SerialPortErrorKind {
     Timeout,
 }
 
-#[cfg(not(feature = "std"))]
+/// Serial port error type.
+#[derive(Debug)]
+pub struct SerialPortError {
+    /// Error kind
+    pub kind: SerialPortErrorKind,
+    /// Error description
+    pub description: String,
+}
+
+impl SerialPortError {
+    /// Create a new serial port error.
+    pub fn new(kind: SerialPortErrorKind, description: impl Into<String>) -> Self {
+        Self {
+            kind,
+            description: description.into(),
+        }
+    }
+
+    /// Create an I/O error.
+    pub fn io(description: impl Into<String>) -> Self {
+        Self::new(SerialPortErrorKind::Io, description)
+    }
+
+    /// Create a timeout error.
+    pub fn timeout(description: impl Into<String>) -> Self {
+        Self::new(SerialPortErrorKind::Timeout, description)
+    }
+}
+
 impl core::fmt::Display for SerialPortError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{:?}: {}", self.kind, self.description)
     }
 }
 
-/// USB port information.
 #[cfg(feature = "std")]
-pub type PortInfo = UsbPortInfo;
+impl std::error::Error for SerialPortError {}
 
-/// USB port information (no_std stub with just PID).
-#[cfg(not(feature = "std"))]
-#[derive(Debug, Clone, Copy)]
+/// USB port information.
+#[derive(Debug, Clone, Default)]
 pub struct PortInfo {
-    /// USB product ID
+    /// USB Vendor ID
+    pub vid: u16,
+    /// USB Product ID
     pub pid: u16,
+    /// Serial number
+    pub serial_number: Option<String>,
+    /// Manufacturer
+    pub manufacturer: Option<String>,
+    /// Product name
+    pub product: Option<String>,
 }
 
 /// Async serial port interface modeled after WebSerial API.
@@ -174,69 +181,6 @@ pub trait SerialInterface {
     async fn delay_ms(&mut self, ms: u32);
 }
 
-/// Blanket implementation of async SerialInterface for any type that implements SerialPort.
-///
-/// This provides a trivial pass-through where async methods simply call the
-/// underlying synchronous SerialPort methods. This allows existing serial port
-/// implementations to be used with the async interface.
-#[cfg(feature = "std")]
-impl<T: SerialPort> SerialInterface for T {
-    fn name(&self) -> Option<String> {
-        SerialPort::name(self)
-    }
-
-    fn baud_rate(&self) -> Result<u32, SerialPortError> {
-        SerialPort::baud_rate(self)
-    }
-
-    fn set_baud_rate(&mut self, baud_rate: u32) -> Result<(), SerialPortError> {
-        SerialPort::set_baud_rate(self, baud_rate)
-    }
-
-    fn timeout(&self) -> Duration {
-        SerialPort::timeout(self)
-    }
-
-    fn set_timeout(&mut self, timeout: Duration) -> Result<(), SerialPortError> {
-        SerialPort::set_timeout(self, timeout)
-    }
-
-    fn bytes_to_read(&self) -> Result<u32, SerialPortError> {
-        SerialPort::bytes_to_read(self)
-    }
-
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, SerialPortError> {
-        std::io::Read::read(self, buf).map_err(SerialPortError::from)
-    }
-
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, SerialPortError> {
-        std::io::Write::write(self, buf).map_err(SerialPortError::from)
-    }
-
-    async fn write_all(&mut self, buf: &[u8]) -> Result<(), SerialPortError> {
-        std::io::Write::write_all(self, buf).map_err(SerialPortError::from)
-    }
-
-    async fn flush(&mut self) -> Result<(), SerialPortError> {
-        std::io::Write::flush(self).map_err(SerialPortError::from)
-    }
-
-    async fn clear(&mut self, buffer_to_clear: ClearBufferType) -> Result<(), SerialPortError> {
-        SerialPort::clear(self, buffer_to_clear)
-    }
-
-    async fn write_data_terminal_ready(&mut self, level: bool) -> Result<(), SerialPortError> {
-        SerialPort::write_data_terminal_ready(self, level)
-    }
-
-    async fn write_request_to_send(&mut self, level: bool) -> Result<(), SerialPortError> {
-        SerialPort::write_request_to_send(self, level)
-    }
-
-    async fn delay_ms(&mut self, ms: u32) {
-        std::thread::sleep(Duration::from_millis(ms as u64));
-    }
-}
 
 
 /// Security Info Response containing chip security information
@@ -801,7 +745,7 @@ impl<P: SerialInterface> Connection<P> {
 
     /// Writes raw data to the serial port.
     pub async fn write_raw(&mut self, data: u32) -> Result<(), Error> {
-        self.serial.clear(ClearBuffer::Input).await?;
+        self.serial.clear(ClearBufferType::Input).await?;
 
         // Serialize and SLIP-encode to a buffer (infallible operations)
         let mut buf = Vec::new();
@@ -819,7 +763,7 @@ impl<P: SerialInterface> Connection<P> {
     /// Writes a command to the serial port.
     pub async fn write_command(&mut self, command: Command<'_>) -> Result<(), Error> {
         debug!("Writing command: {command:02x?}");
-        self.serial.clear(ClearBuffer::Input).await?;
+        self.serial.clear(ClearBufferType::Input).await?;
 
         // Serialize and SLIP-encode to a buffer (infallible operations)
         let mut buf = Vec::new();

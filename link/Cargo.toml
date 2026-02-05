@@ -20,11 +20,10 @@ cortex-m-stack = ["dep:cortex-m-stack"]  # Stack usage measurement (UI chip)
 # CTL core - async-first implementation, works everywhere (no std required beyond alloc)
 ctl-core = ["alloc"]
 
-# Full CTL with flashing support - requires std
+# Full CTL with flashing support
 ctl = [
     "ctl-core",
     "std",
-    "dep:serialport",
     "dep:log",
     "dep:thiserror",
     # espflash dependencies (now embedded)
@@ -32,7 +31,6 @@ ctl = [
     "dep:bitflags",
     "dep:bytemuck",
     "dep:esp-idf-part",
-    "dep:flate2",
     "dep:gimli",
     "dep:miette",
     "dep:object",
@@ -83,8 +81,7 @@ embassy-time = { version = "0.4", optional = true }
 md-5 = { version = "0.10", optional = true, default-features = false }
 miniz_oxide = { version = "0.8", optional = true, default-features = false, features = ["with-alloc"] }
 audio-codec-algorithms = { version = "0.7", default-features = false }
-# CTL dependencies (NET chip flashing - espflash embedded)
-serialport = { version = "4.8.1", optional = true }
+# CTL dependencies
 log = { version = "0.4", optional = true }
 thiserror = { version = "2", optional = true }
 cortex-m-stack = { version = "0.1", optional = true }
@@ -93,7 +90,6 @@ base64 = { version = "0.22", optional = true }
 bitflags = { version = "2.9", optional = true }
 bytemuck = { version = "1.23", features = ["derive"], optional = true }
 esp-idf-part = { version = "0.6", optional = true }
-flate2 = { version = "1.1", optional = true }
 gimli = { version = "0.32.3", optional = true }
 miette = { version = "7.6", optional = true }
 object = { version = "0.38", optional = true }

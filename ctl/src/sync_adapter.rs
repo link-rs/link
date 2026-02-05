@@ -2,9 +2,22 @@
 //!
 //! This module provides `SyncPortAdapter<T>` for using synchronous I/O with async `CtlCore`.
 
+use crate::buffered_port::BufferedPort;
 use link::ctl::{CtlPort, SetBaudRate, SetTimeout};
 use std::io::{Read, Write};
 use std::time::Duration;
+
+/// Trait for types that support clearing their read buffer.
+pub trait ClearBuffer {
+    fn clear_buffer(&mut self);
+}
+
+// Implement ClearBuffer for BufferedPort
+impl<P> ClearBuffer for BufferedPort<P> {
+    fn clear_buffer(&mut self) {
+        BufferedPort::clear_buffer(self)
+    }
+}
 
 /// A wrapper that adapts sync I/O to the async CtlPort trait.
 ///
@@ -67,7 +80,7 @@ impl<P> SyncPortAdapter<P> {
     }
 }
 
-impl<P: Read + Write> CtlPort for SyncPortAdapter<P> {
+impl<P: Read + Write + ClearBuffer> CtlPort for SyncPortAdapter<P> {
     type Error = std::io::Error;
 
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
@@ -85,6 +98,10 @@ impl<P: Read + Write> CtlPort for SyncPortAdapter<P> {
 
     async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
         Read::read_exact(self.get_mut(), buf)
+    }
+
+    fn clear_buffer(&mut self) {
+        self.get_mut().clear_buffer()
     }
 }
 

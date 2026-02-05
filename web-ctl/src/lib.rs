@@ -5,10 +5,13 @@
 
 mod serial;
 
+use link::ctl::espflash::target::ProgressCallbacks;
+use link::ctl::flash::FlashPhase;
+use link::ctl::stm;
 use link::ctl::{CtlCore, CtlError};
 use link::{LoopbackMode, NetLoopback};
 use serde::{Deserialize, Serialize};
-use serial::WebSerial;
+use serial::{WebSerial, WebSerialAdapter};
 use wasm_bindgen::prelude::*;
 
 /// Initialize panic hook for better error messages.
@@ -41,7 +44,7 @@ fn ctl_error_to_js(e: CtlError) -> JsValue {
 /// The main controller interface exposed to JavaScript.
 #[wasm_bindgen]
 pub struct LinkController {
-    core: Option<CtlCore<WebSerial>>,
+    core: Option<CtlCore<WebSerialAdapter>>,
 }
 
 #[wasm_bindgen]
@@ -64,8 +67,9 @@ impl LinkController {
             .await
             .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
 
-        // Create CtlCore - it takes ownership of the serial port
-        self.core = Some(CtlCore::new(serial));
+        // Wrap in adapter and create CtlCore
+        let adapter = WebSerialAdapter::new(serial);
+        self.core = Some(CtlCore::new(adapter));
 
         log("Connected to Link device");
         Ok(())
@@ -82,7 +86,8 @@ impl LinkController {
     pub async fn disconnect(&mut self) -> Result<(), JsValue> {
         if let Some(core) = self.core.take() {
             // Get the serial port from the core and disconnect
-            let serial: WebSerial = core.into_inner();
+            let adapter = core.into_inner();
+            let serial = adapter.into_inner();
             serial
                 .disconnect()
                 .await
@@ -93,7 +98,7 @@ impl LinkController {
     }
 
     /// Get CtlCore, returning error if not connected.
-    fn core_mut(&mut self) -> Result<&mut CtlCore<WebSerial>, JsValue> {
+    fn core_mut(&mut self) -> Result<&mut CtlCore<WebSerialAdapter>, JsValue> {
         self.core.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))
     }
 
@@ -455,6 +460,210 @@ impl LinkController {
         js_sys::Reflect::set(&obj, &"level".into(), &stats.level.into())?;
         js_sys::Reflect::set(&obj, &"state".into(), &(if stats.state == 0 { "buffering" } else { "playing" }).into())?;
         Ok(obj.into())
+    }
+
+    // ==================== FLASHING ====================
+
+    /// Get MGMT chip bootloader information.
+    ///
+    /// This assumes the MGMT chip is already in bootloader mode (press BOOT0 button
+    /// while powering on the device).
+    #[wasm_bindgen]
+    pub async fn get_mgmt_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
+        let core = self.core_mut()?;
+        let info = core.get_mgmt_bootloader_info().await
+            .map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
+
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"bootloaderVersion".into(), &info.bootloader_version.into())?;
+        js_sys::Reflect::set(&obj, &"chipId".into(), &info.chip_id.into())?;
+        js_sys::Reflect::set(&obj, &"chipName".into(), &stm::chip_name(info.chip_id).into())?;
+        js_sys::Reflect::set(&obj, &"commandCount".into(), &(info.command_count as u32).into())?;
+
+        let commands = js_sys::Array::new();
+        for i in 0..info.command_count {
+            let cmd_obj = js_sys::Object::new();
+            let code = info.commands[i];
+            js_sys::Reflect::set(&cmd_obj, &"code".into(), &code.into())?;
+            js_sys::Reflect::set(&cmd_obj, &"name".into(), &stm::command_name(code).into())?;
+            commands.push(&cmd_obj);
+        }
+        js_sys::Reflect::set(&obj, &"commands".into(), &commands)?;
+
+        if let Some(flash_sample) = info.flash_sample {
+            js_sys::Reflect::set(&obj, &"flashSample".into(), &hex::encode(flash_sample).into())?;
+            js_sys::Reflect::set(&obj, &"readProtected".into(), &false.into())?;
+        } else {
+            js_sys::Reflect::set(&obj, &"readProtected".into(), &true.into())?;
+        }
+
+        Ok(obj.into())
+    }
+
+    /// Flash firmware to the MGMT chip (STM32F072CB).
+    ///
+    /// The MGMT chip must be in bootloader mode. Pass firmware as Uint8Array.
+    /// The progress callback receives (phase: string, current: number, total: number).
+    #[wasm_bindgen]
+    pub async fn flash_mgmt(&mut self, firmware: js_sys::Uint8Array, progress_callback: js_sys::Function) -> Result<(), JsValue> {
+        let firmware_data = firmware.to_vec();
+        let core = self.core_mut()?;
+
+        core.flash_mgmt(&firmware_data, |phase, current, total| {
+            let phase_str = match phase {
+                FlashPhase::Compressing => "compressing",
+                FlashPhase::Erasing => "erasing",
+                FlashPhase::Writing => "writing",
+                FlashPhase::Verifying => "verifying",
+            };
+            let _ = progress_callback.call3(
+                &JsValue::NULL,
+                &JsValue::from_str(phase_str),
+                &JsValue::from(current as u32),
+                &JsValue::from(total as u32),
+            );
+        }).await.map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
+    }
+
+    /// Get UI chip bootloader information.
+    ///
+    /// This resets the UI chip into bootloader mode, queries info, then resets back.
+    #[wasm_bindgen]
+    pub async fn get_ui_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
+        let core = self.core_mut()?;
+        let info = core.get_ui_bootloader_info(|ms| {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }).await.map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
+
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"bootloaderVersion".into(), &info.bootloader_version.into())?;
+        js_sys::Reflect::set(&obj, &"chipId".into(), &info.chip_id.into())?;
+        js_sys::Reflect::set(&obj, &"chipName".into(), &stm::chip_name(info.chip_id).into())?;
+        js_sys::Reflect::set(&obj, &"commandCount".into(), &(info.command_count as u32).into())?;
+
+        let commands = js_sys::Array::new();
+        for i in 0..info.command_count {
+            let cmd_obj = js_sys::Object::new();
+            let code = info.commands[i];
+            js_sys::Reflect::set(&cmd_obj, &"code".into(), &code.into())?;
+            js_sys::Reflect::set(&cmd_obj, &"name".into(), &stm::command_name(code).into())?;
+            commands.push(&cmd_obj);
+        }
+        js_sys::Reflect::set(&obj, &"commands".into(), &commands)?;
+
+        if let Some(flash_sample) = info.flash_sample {
+            js_sys::Reflect::set(&obj, &"flashSample".into(), &hex::encode(flash_sample).into())?;
+            js_sys::Reflect::set(&obj, &"readProtected".into(), &false.into())?;
+        } else {
+            js_sys::Reflect::set(&obj, &"readProtected".into(), &true.into())?;
+        }
+
+        Ok(obj.into())
+    }
+
+    /// Flash firmware to the UI chip (STM32F405RG).
+    ///
+    /// This will reset the UI chip to bootloader mode, flash, and reset back.
+    /// Pass firmware as Uint8Array.
+    /// The progress callback receives (phase: string, current: number, total: number).
+    #[wasm_bindgen]
+    pub async fn flash_ui(&mut self, firmware: js_sys::Uint8Array, verify: bool, progress_callback: js_sys::Function) -> Result<(), JsValue> {
+        let firmware_data = firmware.to_vec();
+        let core = self.core_mut()?;
+
+        core.flash_ui(
+            &firmware_data,
+            |ms| { std::thread::sleep(std::time::Duration::from_millis(ms)); },
+            verify,
+            |phase, current, total| {
+                let phase_str = match phase {
+                    FlashPhase::Compressing => "compressing",
+                    FlashPhase::Erasing => "erasing",
+                    FlashPhase::Writing => "writing",
+                    FlashPhase::Verifying => "verifying",
+                };
+                let _ = progress_callback.call3(
+                    &JsValue::NULL,
+                    &JsValue::from_str(phase_str),
+                    &JsValue::from(current as u32),
+                    &JsValue::from(total as u32),
+                );
+            },
+        ).await.map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
+    }
+
+    /// Get NET chip (ESP32) bootloader information.
+    ///
+    /// Returns device info including chip type, flash size, MAC address, and security info.
+    #[wasm_bindgen]
+    pub async fn get_net_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
+        let core = self.core_mut()?;
+        let info = core.get_net_bootloader_info().await
+            .map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
+
+        let obj = js_sys::Object::new();
+
+        // Device info
+        let device = &info.device_info;
+        js_sys::Reflect::set(&obj, &"chip".into(), &format!("{:?}", device.chip).into())?;
+        js_sys::Reflect::set(&obj, &"flashSize".into(), &format!("{:?}", device.flash_size).into())?;
+        js_sys::Reflect::set(&obj, &"crystalFrequency".into(), &format!("{:?}", device.crystal_frequency).into())?;
+
+        let features = js_sys::Array::new();
+        for feature in &device.features {
+            features.push(&JsValue::from_str(feature));
+        }
+        js_sys::Reflect::set(&obj, &"features".into(), &features)?;
+
+        if let Some(mac) = &device.mac_address {
+            js_sys::Reflect::set(&obj, &"macAddress".into(), &mac.clone().into())?;
+        }
+
+        // Security info
+        let security = &info.security_info;
+        let secure_boot = (security.flags & 1) != 0;
+        let flash_encryption = security.flash_crypt_cnt.count_ones() % 2 != 0;
+        js_sys::Reflect::set(&obj, &"secureBoot".into(), &secure_boot.into())?;
+        js_sys::Reflect::set(&obj, &"flashEncryption".into(), &flash_encryption.into())?;
+
+        Ok(obj.into())
+    }
+
+    /// Flash firmware to the NET chip (ESP32).
+    ///
+    /// Pass an ELF file as Uint8Array - it will be converted to ESP-IDF bootloader format.
+    /// The progress callback receives (address: number, progress: number).
+    #[wasm_bindgen]
+    pub async fn flash_net(&mut self, elf_data: js_sys::Uint8Array, progress_callback: js_sys::Function) -> Result<(), JsValue> {
+        let elf_bytes = elf_data.to_vec();
+        let core = self.core_mut()?;
+
+        // Create a progress callback adapter
+        struct JsProgressCallbacks {
+            callback: js_sys::Function,
+        }
+
+        impl ProgressCallbacks for JsProgressCallbacks {
+            fn init(&mut self, addr: u32, _total: usize) {
+                let _ = self.callback.call2(&JsValue::NULL, &JsValue::from(addr), &JsValue::from(0));
+            }
+            fn update(&mut self, progress: usize) {
+                let _ = self.callback.call2(&JsValue::NULL, &JsValue::from(0u32), &JsValue::from(progress as u32));
+            }
+            fn finish(&mut self, _skipped: bool) {}
+            fn verifying(&mut self) {}
+        }
+
+        let mut progress = JsProgressCallbacks { callback: progress_callback };
+        core.flash_net(&elf_bytes, None, &mut progress).await
+            .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
+    }
+
+    /// Erase the entire NET chip (ESP32) flash.
+    #[wasm_bindgen]
+    pub async fn erase_net(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.erase_net().await.map_err(|e| JsValue::from_str(&format!("Erase error: {:?}", e)))
     }
 
     // ==================== STATE AGGREGATION ====================

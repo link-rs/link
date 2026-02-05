@@ -66,6 +66,15 @@ pub trait CtlPort {
         }
         Ok(())
     }
+
+    /// Clear any buffered read data.
+    ///
+    /// This discards data that has been read from the underlying transport but not
+    /// yet consumed. Useful before operations like flashing where stale data in the
+    /// buffer could interfere with protocol communication.
+    ///
+    /// The default implementation is a no-op for ports without internal buffering.
+    fn clear_buffer(&mut self) {}
 }
 
 /// Blanket implementation allowing mutable references to CtlPort to be used as CtlPort.
@@ -86,5 +95,9 @@ impl<P: CtlPort> CtlPort for &mut P {
 
     async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
         P::read_exact(*self, buf).await
+    }
+
+    fn clear_buffer(&mut self) {
+        P::clear_buffer(*self)
     }
 }

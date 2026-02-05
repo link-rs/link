@@ -384,9 +384,8 @@ impl From<io::Error> for Error {
     }
 }
 
-#[cfg(feature = "std")]
-impl From<serialport::Error> for Error {
-    fn from(err: serialport::Error) -> Self {
+impl From<super::connection::SerialPortError> for Error {
+    fn from(err: super::connection::SerialPortError) -> Self {
         Self::Connection(err.into())
     }
 }
@@ -503,10 +502,9 @@ pub(crate) enum ConnectionError {
     #[diagnostic(code(espflash::timeout))]
     Timeout(TimedOutCommand),
 
-    #[cfg(feature = "std")]
     #[error("IO error while using serial port: {0}")]
     #[diagnostic(code(espflash::serial_error))]
-    Serial(#[source] serialport::Error),
+    Serial(super::connection::SerialPortError),
 
     #[error("Wrong boot mode detected ({0})! The chip needs to be in download mode.")]
     #[diagnostic(code(espflash::wrong_boot_mode))]
@@ -520,14 +518,13 @@ impl From<io::Error> for ConnectionError {
     }
 }
 
-#[cfg(feature = "std")]
-impl From<serialport::Error> for ConnectionError {
-    fn from(err: serialport::Error) -> Self {
-        use serialport::ErrorKind;
+impl From<super::connection::SerialPortError> for ConnectionError {
+    fn from(err: super::connection::SerialPortError) -> Self {
+        use super::connection::SerialPortErrorKind;
 
-        match err.kind() {
-            ErrorKind::Io(kind) => from_error_kind(kind, err),
-            ErrorKind::NoDevice => ConnectionError::DeviceNotFound,
+        match err.kind {
+            SerialPortErrorKind::NoDevice => ConnectionError::DeviceNotFound,
+            SerialPortErrorKind::Timeout => ConnectionError::Timeout(TimedOutCommand::default()),
             _ => ConnectionError::Serial(err),
         }
     }
@@ -715,15 +712,13 @@ impl<T> ResultExt for Result<T, Error> {
 }
 
 #[cfg(feature = "std")]
-fn from_error_kind<E>(kind: io::ErrorKind, err: E) -> ConnectionError
-where
-    E: Into<serialport::Error>,
-{
+fn from_error_kind(kind: io::ErrorKind, err: impl core::fmt::Display) -> ConnectionError {
     use io::ErrorKind;
+    use super::connection::{SerialPortError, SerialPortErrorKind};
 
     match kind {
         ErrorKind::TimedOut => ConnectionError::Timeout(TimedOutCommand::default()),
         ErrorKind::NotFound => ConnectionError::DeviceNotFound,
-        _ => ConnectionError::Serial(err.into()),
+        _ => ConnectionError::Serial(SerialPortError::new(SerialPortErrorKind::Io, err.to_string())),
     }
 }
