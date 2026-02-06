@@ -1170,7 +1170,7 @@
             }
         }
 
-        // Update connection status (does NOT show cards - that's done after state loads)
+        // Update connection status
         function updateStatus(connected, showCards = false) {
             statusIndicator.classList.toggle('connected', connected);
             statusText.textContent = connected ? 'Connected' : 'Disconnected';
@@ -1186,7 +1186,7 @@
             }
         }
 
-        // Show the device cards (called after state is loaded)
+        // Show the device cards
         function showDeviceCards() {
             mgmtCard.classList.remove('hidden');
             uiCard.classList.remove('hidden');
@@ -1209,7 +1209,11 @@
                     log('Disconnected from device', 'info');
                 } else {
                     await controller.connect(115200);
-                    log('Serial port opened at 115200 baud, testing connection...', 'info');
+                    log('Serial port opened at 115200 baud', 'info');
+
+                    // Show UI immediately after connection
+                    updateStatus(true);
+                    showDeviceCards();
 
                     // Test connection with hello handshake
                     const helloStatus = document.getElementById('helloStatus');
@@ -1221,36 +1225,21 @@
                         if (result) {
                             helloStatus.textContent = '\u2713';
                             helloStatus.className = 'status-icon success';
-                            // Update status but DON'T show cards yet
-                            updateStatus(true, false);
-                            log('Connected - device responded correctly', 'success');
+                            log('Device responded correctly', 'success');
 
-                            // Show loading state
-                            statusText.textContent = 'Loading device state...';
-
-                            // Load all state before showing cards
-                            try {
-                                await populateAllState();
-                                statusText.textContent = 'Connected';
-                                // Now show the cards with loaded state
-                                showDeviceCards();
-                            } catch (stateError) {
-                                log(`Warning: Could not load all device state: ${stateError}`, 'error');
-                                statusText.textContent = 'Connected (partial state)';
-                                // Still show cards even if state loading partially failed
-                                showDeviceCards();
-                            }
+                            // Load state in background (don't block UI)
+                            populateAllState().catch(e => {
+                                log(`Warning: Could not load device state: ${e}`, 'error');
+                            });
                         } else {
                             helloStatus.textContent = '\u2717';
                             helloStatus.className = 'status-icon error';
-                            await controller.disconnect();
-                            log('Connection test failed - device did not respond correctly', 'error');
+                            log('Hello test failed - device did not respond correctly', 'error');
                         }
                     } catch (e) {
                         helloStatus.textContent = '\u2717';
                         helloStatus.className = 'status-icon error';
-                        await controller.disconnect();
-                        log(`Connection test failed: ${e}`, 'error');
+                        log(`Hello test failed: ${e}`, 'error');
                     }
                 }
             } catch (e) {

@@ -464,7 +464,7 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn get_mgmt_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
         let core = self.core_mut()?;
-        let info = core.get_mgmt_bootloader_info().await
+        let info = core.get_mgmt_bootloader_info(false).await
             .map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
 
         let obj = js_sys::Object::new();
@@ -555,7 +555,7 @@ impl LinkController {
         let firmware_data = firmware.to_vec();
         let core = self.core_mut()?;
 
-        core.flash_mgmt(&firmware_data, |phase, current, total| {
+        core.flash_mgmt(&firmware_data, false, |phase, current, total| {
             let phase_str = match phase {
                 FlashPhase::Compressing => "compressing",
                 FlashPhase::Erasing => "erasing",
@@ -613,7 +613,7 @@ impl LinkController {
         let firmware_data = firmware.to_vec();
         let core = self.core_mut()?;
 
-        core.flash_mgmt(&firmware_data, |phase, current, total| {
+        core.flash_mgmt(&firmware_data, false, |phase, current, total| {
             let phase_str = match phase {
                 FlashPhase::Compressing => "compressing",
                 FlashPhase::Erasing => "erasing",

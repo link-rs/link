@@ -728,27 +728,30 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     where
         D: Fn(u64),
     {
-        // Clear any stale data
         self.drain();
 
-        // Try DTR/RTS reset sequence (EV16)
-        // RTS=high sets BOOT0 high (bootloader mode)
-        // DTR pulse triggers reset
-        let _ = self.port_mut().write_rts(true).await;
-        let _ = self.port_mut().write_dtr(true).await;
+        // Establish known starting state (both signals low)
         let _ = self.port_mut().write_dtr(false).await;
-
-        // Wait for bootloader to initialize (100ms as per hactar-cli)
+        let _ = self.port_mut().write_rts(false).await;
         delay_ms(100);
 
-        // Clear buffer again after reset
+        // BOOT0 high, then pulse reset (RTS=true, DTR high→low)
+        let _ = self.port_mut().write_rts(true).await;
+        delay_ms(50);
+        let _ = self.port_mut().write_dtr(true).await;
+        delay_ms(50);
+        let _ = self.port_mut().write_dtr(false).await;
+        delay_ms(500);
+
         self.drain();
 
-        // Probe for bootloader with short timeout
-        match self.probe_mgmt_bootloader().await {
-            true => MgmtBootloaderEntry::AutoReset,
-            false => MgmtBootloaderEntry::NotDetected,
+        // Probe for bootloader. This consumes the init byte (0x7F → ACK),
+        // so callers should pass skip_init=true to flash_mgmt/get_mgmt_bootloader_info.
+        if self.probe_mgmt_bootloader().await {
+            return MgmtBootloaderEntry::AutoReset;
         }
+
+        MgmtBootloaderEntry::NotDetected
     }
 
     /// Probe if MGMT bootloader is currently active.
@@ -758,6 +761,16 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     ///
     /// Note: This has a short timeout (~200ms) to avoid blocking.
     async fn probe_mgmt_bootloader(&mut self) -> bool {
+        // Drain any stale bytes from the OS serial buffer by reading
+        // until we get a timeout (nothing left to read).
+        let mut junk = [0u8; 256];
+        loop {
+            match self.port_mut().read(&mut junk).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => continue,
+            }
+        }
+
         // Send 0x7F init byte (STM32 bootloader auto-baud detection)
         let init_byte = [0x7F];
         if self.port_mut().write_all(&init_byte).await.is_err() {
@@ -780,9 +793,15 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     ///
     /// This sets RTS low (BOOT0 low) and pulses DTR to trigger reset.
     /// On EV15 or unsupported ports, this is a no-op.
-    pub async fn reset_mgmt_to_user(&mut self) {
+    pub async fn reset_mgmt_to_user<D>(&mut self, delay_ms: D)
+    where
+        D: Fn(u64),
+    {
+        // BOOT0 low, then pulse reset (RTS=false, DTR high→low)
         let _ = self.port_mut().write_rts(false).await;
+        delay_ms(50);
         let _ = self.port_mut().write_dtr(true).await;
+        delay_ms(50);
         let _ = self.port_mut().write_dtr(false).await;
     }
 
@@ -790,16 +809,23 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     ///
     /// This assumes the MGMT chip is already in bootloader mode and the serial
     /// connection is configured correctly (even parity, 115200 baud).
+    ///
+    /// Set `skip_init` to `true` if the bootloader has already been initialized
+    /// (e.g., by `try_enter_mgmt_bootloader` which probes with 0x7F).
     pub async fn get_mgmt_bootloader_info(
         &mut self,
+        skip_init: bool,
     ) -> Result<MgmtBootloaderInfo, stm::Error<P::Error>> {
-        // Drain any stale data
-        self.drain();
+        if !skip_init {
+            self.drain();
+        }
 
         let mut bl = Bootloader::new(self.port_mut());
 
         // Initialize communication (sends 0x7F for auto-baud detection)
-        bl.init().await?;
+        if !skip_init {
+            bl.init().await?;
+        }
 
         // Get bootloader info
         let info = bl.get().await?;
@@ -832,21 +858,28 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     ///
     /// This assumes the MGMT chip is already in bootloader mode.
     /// The progress callback is called with (phase, bytes_processed, total_bytes).
+    ///
+    /// Set `skip_init` to `true` if the bootloader has already been initialized
+    /// (e.g., by `try_enter_mgmt_bootloader` which probes with 0x7F).
     pub async fn flash_mgmt<F>(
         &mut self,
         firmware: &[u8],
+        skip_init: bool,
         mut progress: F,
     ) -> Result<(), FlashError<P::Error>>
     where
         F: FnMut(FlashPhase, usize, usize),
     {
-        // Drain any stale data
-        self.drain();
+        if !skip_init {
+            self.drain();
+        }
 
         let mut bl = Bootloader::new(self.port_mut());
 
         // Initialize communication
-        bl.init().await?;
+        if !skip_init {
+            bl.init().await?;
+        }
 
         // Erase pages needed for firmware (STM32F072CB has 2KB pages)
         const PAGE_SIZE: usize = 2048;

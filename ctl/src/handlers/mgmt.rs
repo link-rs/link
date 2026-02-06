@@ -30,12 +30,14 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             let _ = core.port_mut().set_timeout(Duration::from_millis(200));
 
             let delay_ms = |ms| std::thread::sleep(Duration::from_millis(ms));
-            match core.try_enter_mgmt_bootloader(delay_ms).await {
+            let skip_init = match core.try_enter_mgmt_bootloader(delay_ms).await {
                 MgmtBootloaderEntry::AutoReset => {
                     println!("success (EV16 detected)");
+                    true
                 }
                 MgmtBootloaderEntry::AlreadyActive => {
                     println!("bootloader already active");
+                    true
                 }
                 MgmtBootloaderEntry::NotDetected => {
                     println!("not detected");
@@ -49,20 +51,24 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
 
                     let mut input = String::new();
                     std::io::stdin().read_line(&mut input)?;
+                    false
                 }
-            }
+            };
 
             // Restore normal timeout
             let _ = core.port_mut().set_timeout(Duration::from_secs(3));
 
             println!("Querying bootloader information...\n");
 
-            let Ok(info) = core.get_mgmt_bootloader_info().await else {
-                eprintln!("Failed to get bootloader info");
-                eprintln!("\nMake sure the MGMT chip is in bootloader mode:");
-                eprintln!("  1. Set BOOT0 pin high");
-                eprintln!("  2. Reset the device");
-                return Err("Bootloader communication failed".into());
+            let info = match core.get_mgmt_bootloader_info(skip_init).await {
+                Ok(info) => info,
+                Err(e) => {
+                    eprintln!("Failed to get bootloader info: {:?}", e);
+                    eprintln!("\nMake sure the MGMT chip is in bootloader mode:");
+                    eprintln!("  1. Set BOOT0 pin high");
+                    eprintln!("  2. Reset the device");
+                    return Err("Bootloader communication failed".into());
+                }
             };
 
             let major = info.bootloader_version >> 4;
@@ -111,6 +117,12 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
                 println!("\nFlash Memory: Could not read (read protection may be enabled)");
             }
 
+            // Release BOOT0 and reset to user mode so the chip is in a
+            // clean state when the port closes (avoids HUPCL-triggered
+            // bootloader re-entry).
+            let delay_ms = |ms| std::thread::sleep(Duration::from_millis(ms));
+            core.reset_mgmt_to_user(delay_ms).await;
+
             println!("\nDone!");
             Ok(())
         }
@@ -129,12 +141,14 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             let _ = core.port_mut().set_timeout(Duration::from_millis(200));
 
             let delay_ms = |ms| std::thread::sleep(Duration::from_millis(ms));
-            match core.try_enter_mgmt_bootloader(delay_ms).await {
+            let skip_init = match core.try_enter_mgmt_bootloader(delay_ms).await {
                 MgmtBootloaderEntry::AutoReset => {
                     println!("success (EV16 detected)");
+                    true
                 }
                 MgmtBootloaderEntry::AlreadyActive => {
                     println!("bootloader already active");
+                    true
                 }
                 MgmtBootloaderEntry::NotDetected => {
                     println!("not detected");
@@ -148,8 +162,9 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
 
                     let mut input = String::new();
                     std::io::stdin().read_line(&mut input)?;
+                    false
                 }
-            }
+            };
 
             // Restore normal timeout for flashing
             let _ = core.port_mut().set_timeout(Duration::from_secs(3));
@@ -166,7 +181,7 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             pb.set_style(pages_style.clone());
 
             let mut current_phase = None;
-            let result = core.flash_mgmt(&firmware, |phase, progress, total| {
+            let result = core.flash_mgmt(&firmware, skip_init, |phase, progress, total| {
                 if current_phase != Some(phase) {
                     current_phase = Some(phase);
                     match phase {
@@ -194,11 +209,13 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
 
             match result {
                 Ok(()) => {
+                    // Release BOOT0 and reset to user mode so the chip is in a
+                    // clean state when the port closes.
+                    let delay_ms = |ms| std::thread::sleep(Duration::from_millis(ms));
+                    core.reset_mgmt_to_user(delay_ms).await;
+
                     println!("\nFlash complete!");
                     println!("The MGMT chip should now be running the new firmware.");
-                    println!(
-                        "\nNote: Set BOOT0 low and reset to ensure normal boot on next power cycle."
-                    );
                     Ok(())
                 }
                 Err(e) => {
