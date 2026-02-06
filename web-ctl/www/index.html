@@ -675,11 +675,6 @@
 
                 <div class="card-section">
                     <h3>Bootloader</h3>
-                    <div class="warning-box">
-                        <strong>Note: EV16 vs EV15</strong>
-                        EV16 hardware supports automatic bootloader entry via DTR/RTS.
-                        EV15 requires manual setup: Set BOOT0 HIGH and reset the device.
-                    </div>
                     <div class="btn-group" style="margin-bottom: 1rem;">
                         <button class="btn-secondary" id="getMgmtInfoBtn">Read Bootloader Info</button>
                         <span class="status-icon" id="getMgmtInfoStatus"></span>
@@ -1296,10 +1291,30 @@
             const statusIcon = document.getElementById('getMgmtInfoStatus');
             const infoDisplay = document.getElementById('mgmtInfoDisplay');
 
+            statusIcon.textContent = '\u21BB';
+            statusIcon.className = 'status-icon pending';
+            btn.disabled = true;
+
             try {
-                const info = await runWithStatus(btn, statusIcon, async () => {
-                    return await controller.get_mgmt_bootloader_info();
-                }, 5000); // 5 second timeout for bootloader info
+                // Try automatic bootloader entry first (EV16)
+                log('Attempting automatic bootloader entry...', 'info');
+                await controller.try_enter_mgmt_bootloader();
+
+                // Try to read bootloader info - this will do the actual init
+                let info;
+                try {
+                    info = await controller.get_mgmt_bootloader_info();
+                    log('Auto-reset to bootloader succeeded', 'info');
+                } catch (e) {
+                    // Auto-reset likely failed, prompt for manual reset
+                    log('Auto-reset failed, manual bootloader entry required', 'info');
+                    await showManualResetModal();
+                    log('User confirmed manual reset, retrying...', 'info');
+                    // Wait for bootloader to settle, then drain any stale data
+                    await new Promise(r => setTimeout(r, 100));
+                    await controller.drain_buffer();
+                    info = await controller.get_mgmt_bootloader_info();
+                }
 
                 const major = info.bootloaderVersion >> 4;
                 const minor = info.bootloaderVersion & 0x0F;
@@ -1323,11 +1338,16 @@
                 }
 
                 infoDisplay.classList.add('visible');
+                statusIcon.textContent = '\u2713';
+                statusIcon.className = 'status-icon success';
                 log('MGMT bootloader info retrieved successfully', 'success');
             } catch (e) {
                 infoDisplay.classList.remove('visible');
+                statusIcon.textContent = '\u2717';
+                statusIcon.className = 'status-icon error';
                 log(`MGMT bootloader info error: ${e}`, 'error');
-                log('  Make sure BOOT0 is HIGH and device was reset', 'info');
+            } finally {
+                btn.disabled = false;
             }
         });
 
@@ -1385,8 +1405,10 @@
 
                 progressText.textContent = 'Entering bootloader...';
 
-                // Progress callback for flashing
+                // Track if we've received any progress - if so, bootloader was active
+                let gotProgress = false;
                 const progressCallback = (phase, current, total) => {
+                    gotProgress = true;
                     const percent = total > 0 ? (current / total) * 100 : 0;
                     progressFill.style.width = `${percent}%`;
                     progressText.textContent = `${phase}: ${current} / ${total}`;
@@ -1397,22 +1419,27 @@
                     await controller.flash_mgmt(firmware, progressCallback);
                     log('Auto-reset to bootloader succeeded (EV16 detected)', 'info');
                 } catch (e) {
-                    // Check if manual reset is required
-                    if (e === 'manual_reset_required' || (e && e.toString && e.toString().includes('manual_reset_required'))) {
-                        log('Auto-reset failed, manual bootloader entry required', 'info');
-                        progressText.textContent = 'Manual reset required...';
-
-                        // Show modal and wait for user
-                        await showManualResetModal();
-                        log('User confirmed manual reset, flashing...', 'info');
-
-                        // Flash using manual method (bootloader already active)
-                        progressText.textContent = 'Flashing...';
-                        await controller.flash_mgmt_manual(firmware, progressCallback);
-                    } else {
-                        // Re-throw other errors
+                    // If we got progress, bootloader was active - this is a real flash error
+                    if (gotProgress) {
                         throw e;
                     }
+
+                    // No progress means bootloader likely wasn't ready - prompt for manual reset
+                    log('Auto-reset failed, manual bootloader entry required', 'info');
+                    progressText.textContent = 'Manual reset required...';
+
+                    // Show modal and wait for user
+                    await showManualResetModal();
+                    log('User confirmed manual reset, flashing...', 'info');
+
+                    // Wait for bootloader to settle, then drain any stale data
+                    await new Promise(r => setTimeout(r, 100));
+                    await controller.drain_buffer();
+
+                    // Flash using manual method (bootloader already active)
+                    progressText.textContent = 'Flashing...';
+                    gotProgress = false;
+                    await controller.flash_mgmt_manual(firmware, progressCallback);
                 }
 
                 statusIcon.textContent = '\u2713';

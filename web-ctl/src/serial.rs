@@ -198,6 +198,82 @@ impl WebSerial {
         }
     }
 
+    /// Drain all pending data from the serial port.
+    ///
+    /// This reads and discards all buffered data, then refreshes the reader
+    /// to cancel any pending read operations.
+    pub async fn drain(&self) -> Result<(), WebSerialError> {
+        // Clear the internal buffer
+        self.clear_read_buffer();
+
+        // Read and discard from the stream until timeout
+        let reader = {
+            let state = self.state.borrow();
+            let state = state.as_ref().ok_or(WebSerialError::NotConnected)?;
+            state.reader.clone()
+        };
+
+        let mut total_drained = 0usize;
+        let drain_timeout_ms = 50u32;
+
+        loop {
+            let read_fut = JsFuture::from(reader.read());
+            let timeout_fut = js_timeout(drain_timeout_ms);
+
+            pin_mut!(read_fut);
+            pin_mut!(timeout_fut);
+
+            match select(read_fut, timeout_fut).await {
+                Either::Left((read_result, _)) => {
+                    let result = read_result.map_err(|e| WebSerialError::ReadError(format!("{:?}", e)))?;
+                    let result: Object = result.into();
+                    let done = Reflect::get(&result, &JsValue::from_str("done"))
+                        .map_err(|e| WebSerialError::ReadError(format!("{:?}", e)))?;
+
+                    if done.as_bool().unwrap_or(true) {
+                        break;
+                    }
+
+                    let value = Reflect::get(&result, &JsValue::from_str("value"))
+                        .map_err(|e| WebSerialError::ReadError(format!("{:?}", e)))?;
+                    let array: Uint8Array = value.into();
+                    total_drained += array.length() as usize;
+                }
+                Either::Right((_timeout, _)) => {
+                    // Timeout - no more data, but read() might still be pending
+                    break;
+                }
+            }
+        }
+
+        if total_drained > 0 {
+            let msg = format!("[WebSerial] drain: discarded {} bytes", total_drained);
+            web_sys::console::log_1(&JsValue::from_str(&msg));
+        }
+
+        // Now refresh the reader to cancel any pending read from the timeout case
+        let port = {
+            let mut state = self.state.borrow_mut();
+            let state = state.as_mut().ok_or(WebSerialError::NotConnected)?;
+            state.reader.release_lock();
+            state.port.clone()
+        };
+
+        let readable = port.readable();
+        let new_reader: ReadableStreamDefaultReader = readable.get_reader().unchecked_into();
+
+        {
+            let mut state = self.state.borrow_mut();
+            if let Some(state) = state.as_mut() {
+                state.reader = new_reader;
+            }
+        }
+
+        web_sys::console::log_1(&JsValue::from_str("[WebSerial] drain: reader refreshed"));
+
+        Ok(())
+    }
+
     /// Set the read timeout duration.
     pub fn set_read_timeout(&self, timeout: std::time::Duration) {
         if let Some(state) = self.state.borrow_mut().as_mut() {
@@ -473,6 +549,14 @@ impl WebSerialAdapter {
     /// Consume the adapter and return the inner WebSerial.
     pub fn into_inner(self) -> WebSerial {
         self.inner
+    }
+
+    /// Drain all pending data from the serial port.
+    ///
+    /// This reads and discards data from both the internal buffer and the
+    /// underlying WebSerial stream until no more data is available.
+    pub async fn drain(&self) -> Result<(), std::io::Error> {
+        self.inner.drain().await.map_err(Into::into)
     }
 }
 

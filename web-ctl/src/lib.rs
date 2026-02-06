@@ -493,18 +493,32 @@ impl LinkController {
         Ok(obj.into())
     }
 
+    /// Drain any pending data from the serial buffer.
+    ///
+    /// Call this after a delay following manual reset to clear any
+    /// stale data before communicating with the bootloader. This reads
+    /// and discards data from both internal buffers and the WebSerial stream.
+    #[wasm_bindgen]
+    pub async fn drain_buffer(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        // Clear internal TLV buffers
+        core.drain();
+        // Also drain the underlying WebSerial stream
+        core.port_mut().drain().await
+            .map_err(|e| JsValue::from_str(&format!("Drain error: {:?}", e)))?;
+        Ok(())
+    }
+
     /// Try to enter MGMT bootloader mode automatically (EV16).
     ///
-    /// Returns a string indicating the result:
-    /// - "auto_reset": Successfully entered bootloader via DTR/RTS (EV16)
-    /// - "already_active": Bootloader was already active
-    /// - "not_detected": Could not detect bootloader - manual intervention required
+    /// This performs the DTR/RTS reset sequence to enter bootloader mode.
+    /// It does NOT probe the bootloader - the actual operation (get_info or flash)
+    /// will do the init and fail if the bootloader isn't active.
+    ///
+    /// Returns "reset_sent" to indicate the reset sequence was performed.
     #[wasm_bindgen]
     pub async fn try_enter_mgmt_bootloader(&mut self) -> Result<String, JsValue> {
         let core = self.core_mut()?;
-
-        // Set short timeout for probing
-        let _ = core.port_mut().set_timeout(std::time::Duration::from_millis(200));
 
         // Clear any stale data
         core.drain();
@@ -522,47 +536,21 @@ impl LinkController {
         // Clear buffer again after reset
         core.drain();
 
-        // Probe for bootloader - send 0x7F and wait for ACK
-        let init_byte = [0x7F];
-        let probe_result = async {
-            core.port_mut().write_all(&init_byte).await?;
-            core.port_mut().flush().await?;
-
-            let mut response = [0u8; 1];
-            core.port_mut().read_exact(&mut response).await?;
-            Ok::<bool, std::io::Error>(response[0] == 0x79)
-        }.await;
-
-        // Restore normal timeout
-        let _ = core.port_mut().set_timeout(std::time::Duration::from_secs(3));
-
-        let result_str = match probe_result {
-            Ok(true) => "auto_reset",
-            _ => "not_detected",
-        };
-
-        Ok(result_str.to_string())
+        Ok("reset_sent".to_string())
     }
 
     /// Flash firmware to the MGMT chip (STM32F072CB).
     ///
     /// This method will first try to enter bootloader mode automatically (EV16).
-    /// If auto-reset fails, it returns an error with "manual_reset_required" to
-    /// indicate the UI should prompt the user.
+    /// If the bootloader init fails, it returns an error - the JS should catch this
+    /// and show the manual reset dialog, then call flash_mgmt_manual.
     ///
     /// Pass firmware as Uint8Array.
     /// The progress callback receives (phase: string, current: number, total: number).
     #[wasm_bindgen]
     pub async fn flash_mgmt(&mut self, firmware: js_sys::Uint8Array, progress_callback: js_sys::Function) -> Result<(), JsValue> {
-        // Try automatic bootloader entry first
-        let entry_result = self.try_enter_mgmt_bootloader().await?;
-
-        if entry_result == "not_detected" {
-            // Return special error to signal UI should prompt user
-            return Err(JsValue::from_str("manual_reset_required"));
-        }
-
-        log(&format!("Bootloader entry: {}", entry_result));
+        // Try automatic bootloader entry (DTR/RTS reset)
+        self.try_enter_mgmt_bootloader().await?;
 
         let firmware_data = firmware.to_vec();
         let core = self.core_mut()?;
@@ -616,124 +604,14 @@ impl LinkController {
 
     /// Flash firmware to the MGMT chip after manual bootloader entry.
     ///
-    /// Use this after the user has manually reset the device to bootloader mode.
+    /// Use this after the user has manually reset the device to bootloader mode
+    /// and drain_buffer() has been called. This just calls flash_mgmt directly.
     /// Pass firmware as Uint8Array.
     /// The progress callback receives (phase: string, current: number, total: number).
     #[wasm_bindgen]
     pub async fn flash_mgmt_manual(&mut self, firmware: js_sys::Uint8Array, progress_callback: js_sys::Function) -> Result<(), JsValue> {
         let firmware_data = firmware.to_vec();
         let core = self.core_mut()?;
-
-        // Aggressive buffer clearing - multiple rounds with delays to catch any incoming data
-        let mut all_discarded = Vec::new();
-        for round in 0..3 {
-            // Clear internal buffers
-            core.drain();
-
-            // Read and discard any data pending in the stream
-            // Use longer timeout to catch data that might still be arriving
-            let _ = core.port_mut().set_timeout(std::time::Duration::from_millis(100));
-            let mut discard_buf = [0u8; 256];
-            let mut round_discarded = 0;
-            loop {
-                match core.port_mut().read(&mut discard_buf).await {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        // Capture the data for logging
-                        all_discarded.extend_from_slice(&discard_buf[..n]);
-                        round_discarded += n;
-                        continue;
-                    }
-                    Err(_) => break, // Timeout or error, buffer is clear
-                }
-            }
-
-            if round_discarded > 0 {
-                log(&format!("Round {}: discarded {} bytes", round + 1, round_discarded));
-            }
-
-            // Short delay between rounds to let more data arrive if it's still coming
-            js_sleep(50).await;
-        }
-
-        // Log the discarded data content
-        if !all_discarded.is_empty() {
-            // Show as text if it looks like ASCII, otherwise show hex
-            let text_preview: String = all_discarded.iter()
-                .take(200)
-                .map(|&b| if b >= 0x20 && b < 0x7f { b as char } else { '.' })
-                .collect();
-            log(&format!("Discarded data preview: {}", text_preview));
-
-            // Also show first 32 bytes as hex
-            let hex_preview: String = all_discarded.iter()
-                .take(32)
-                .map(|b| format!("{:02x}", b))
-                .collect::<Vec<_>>()
-                .join(" ");
-            log(&format!("Discarded data hex: {}", hex_preview));
-        }
-
-        // Restore normal timeout
-        let _ = core.port_mut().set_timeout(std::time::Duration::from_secs(3));
-
-        // Diagnostic: try to probe the bootloader directly
-        log("Probing bootloader...");
-
-        // DON'T drain here - we already drained above, and the bootloader
-        // might have responded to something already
-
-        // Send the STM32 bootloader init byte (0x7F) directly via WebSerial
-        // Bypass CtlCore to ensure we're doing raw I/O
-        log("Sending 0x7F init byte...");
-
-        // Small delay to let bootloader settle after reset
-        js_sleep(50).await;
-
-        core.port_mut().write_all(&[0x7F]).await
-            .map_err(|e| JsValue::from_str(&format!("Failed to send init byte: {:?}", e)))?;
-        core.port_mut().flush().await
-            .map_err(|e| JsValue::from_str(&format!("Failed to flush: {:?}", e)))?;
-
-        log("Init byte sent, waiting for response...");
-
-        // Wait for response - try multiple short reads to see what comes back
-        let _ = core.port_mut().set_timeout(std::time::Duration::from_millis(200));
-
-        for attempt in 1..=5 {
-            let mut response = [0u8; 64];
-            match core.port_mut().read(&mut response).await {
-                Ok(0) => {
-                    log(&format!("Attempt {}: got 0 bytes (EOF?)", attempt));
-                }
-                Ok(n) => {
-                    let hex: String = response[..n].iter()
-                        .map(|b| format!("{:02x}", b))
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    log(&format!("Attempt {}: got {} bytes: {}", attempt, n, hex));
-
-                    // Check for ACK anywhere in the response
-                    if response[..n].contains(&0x79) {
-                        log("Found ACK (0x79) - bootloader is active!");
-                        break;
-                    } else if response[..n].contains(&0x1f) {
-                        log("Found NACK (0x1F) - bootloader rejected");
-                        break;
-                    }
-                }
-                Err(_) => {
-                    log(&format!("Attempt {}: timeout", attempt));
-                }
-            }
-            js_sleep(100).await;
-        }
-
-        // Now try the actual flash - if bootloader is active, it should work
-        log("Proceeding with flash attempt...");
-
-        // Restore normal timeout for flashing
-        let _ = core.port_mut().set_timeout(std::time::Duration::from_secs(3));
 
         core.flash_mgmt(&firmware_data, |phase, current, total| {
             let phase_str = match phase {
