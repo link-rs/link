@@ -62,6 +62,8 @@ enum Command {
         action: NetAction,
     },
 
+    Hello,
+
     CircularPing {
         #[arg(short, long)]
         reverse: bool,
@@ -344,14 +346,17 @@ fn available_ports() -> Vec<SerialPortInfo> {
 /// Returns the Core if successful, None if connection failed or not a Link device.
 async fn try_connect(port_name: &str, baud: u32) -> Option<Core> {
     let stream = open_serial_port(port_name, baud).ok()?;
-    let mut port = TokioSerialPort::new(stream);
+    let port = TokioSerialPort::new(stream);
+    let mut core = new_core(port);
+
+    // Ensure MGMT chip is running (not held in reset by DTR)
+    let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
+    core.init_port(delay_ms).await;
 
     // Set short timeout for hello check
-    port.set_timeout(Duration::from_millis(50)).ok()?;
+    core.port_mut().set_timeout(Duration::from_millis(500)).ok()?;
 
-    let mut core = new_core(port);
     let challenge: [u8; 4] = rand::rng().random();
-
     if core.hello(&challenge).await {
         // Restore normal timeout for subsequent operations
         core.port_mut().set_timeout(Duration::from_secs(3)).ok()?;
@@ -428,20 +433,26 @@ async fn connect(
     port: Option<String>,
     baud: u32,
 ) -> Result<(Core, String), Box<dyn std::error::Error>> {
+    let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
+
     // If user specified a port, connect directly
     if let Some(port_name) = port {
         let stream = open_serial_port(&port_name, baud)?;
         let port = TokioSerialPort::new(stream);
-        return Ok((new_core(port), port_name));
+        let mut core = new_core(port);
+        core.init_port(delay_ms).await;
+        return Ok((core, port_name));
     }
 
-    // Try to find a Link device automatically
+    // Try to find a Link device automatically (init_port called inside try_connect)
     if let Some((app, port_name)) = find_link_device(baud).await {
         return Ok((app, port_name));
     }
 
     // Fall back to manual selection
-    manually_select_port(baud).map_err(|e| e.into())
+    let (mut core, port_name) = manually_select_port(baud)?;
+    core.init_port(delay_ms).await;
+    Ok((core, port_name))
 }
 
 async fn dispatch(cmd: Command, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
@@ -449,6 +460,16 @@ async fn dispatch(cmd: Command, core: &mut Core) -> Result<(), Box<dyn std::erro
         Command::Mgmt { action } => handlers::handle_mgmt(action, core).await,
         Command::Ui { action } => handlers::handle_ui(action, core).await,
         Command::Net { action } => handlers::handle_net(action, core).await,
+        Command::Hello => {
+            let challenge: [u8; 4] = rand::rng().random();
+            println!("Sending hello with challenge: {:02x}{:02x}{:02x}{:02x}", challenge[0], challenge[1], challenge[2], challenge[3]);
+            if core.hello(&challenge).await {
+                println!("Hello OK!");
+            } else {
+                println!("Hello failed!");
+            }
+            Ok(())
+        }
         Command::CircularPing { reverse, data } => {
             if reverse {
                 println!("Sending NET-first circular ping with data: {}", data);
@@ -496,6 +517,15 @@ fn net_handler(args: ArgMatches, core: &mut Core) -> Result<Option<String>, reed
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
 
+fn hello_handler(
+    _args: ArgMatches,
+    core: &mut Core,
+) -> Result<Option<String>, reedline_repl_rs::Error> {
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(dispatch(Command::Hello, core)))
+        .map(|()| None)
+        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+}
+
 fn circular_ping_handler(
     args: ArgMatches,
     core: &mut Core,
@@ -528,6 +558,7 @@ fn run_repl(core: Core, port_name: &str) -> Result<(), reedline_repl_rs::Error> 
     callbacks.insert("mgmt".to_string(), mgmt_handler);
     callbacks.insert("ui".to_string(), ui_handler);
     callbacks.insert("net".to_string(), net_handler);
+    callbacks.insert("hello".to_string(), hello_handler);
     callbacks.insert("circular-ping".to_string(), circular_ping_handler);
     callbacks.insert("exit".to_string(), exit_handler);
 

@@ -6,9 +6,9 @@
 mod serial;
 
 use link::ctl::espflash::target::ProgressCallbacks;
-use link::ctl::flash::{AsyncDelay, FlashPhase};
+use link::ctl::flash::{AsyncDelay, FlashPhase, MgmtBootloaderEntry};
 use link::ctl::stm;
-use link::ctl::{CtlCore, CtlError, CtlPort, SetTimeout};
+use link::ctl::{CtlCore, CtlError, SetTimeout};
 use wasm_bindgen_futures::JsFuture;
 use link::{LoopbackMode, NetLoopback};
 use serde::{Deserialize, Serialize};
@@ -91,6 +91,10 @@ impl LinkController {
         // Wrap in adapter and create CtlCore
         let adapter = WebSerialAdapter::new(serial);
         self.core = Some(CtlCore::new(adapter));
+
+        // Initialize DTR/RTS to known good state and wait for stabilization
+        let core = self.core.as_mut().unwrap();
+        core.init_port(|ms| js_sleep(ms as u32)).await;
 
         log("Connected to Link device");
         Ok(())
@@ -459,12 +463,12 @@ impl LinkController {
 
     /// Get MGMT chip bootloader information.
     ///
-    /// This assumes the MGMT chip is already in bootloader mode (press BOOT0 button
-    /// while powering on the device).
+    /// Set `skip_init` to `true` if `try_enter_mgmt_bootloader` returned "auto_reset"
+    /// (the probe already consumed the 0x7F init byte).
     #[wasm_bindgen]
-    pub async fn get_mgmt_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
+    pub async fn get_mgmt_bootloader_info(&mut self, skip_init: bool) -> Result<JsValue, JsValue> {
         let core = self.core_mut()?;
-        let info = core.get_mgmt_bootloader_info(false).await
+        let info = core.get_mgmt_bootloader_info(skip_init).await
             .map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
 
         let obj = js_sys::Object::new();
@@ -511,32 +515,37 @@ impl LinkController {
 
     /// Try to enter MGMT bootloader mode automatically (EV16).
     ///
-    /// This performs the DTR/RTS reset sequence to enter bootloader mode.
-    /// It does NOT probe the bootloader - the actual operation (get_info or flash)
-    /// will do the init and fail if the bootloader isn't active.
-    ///
-    /// Returns "reset_sent" to indicate the reset sequence was performed.
+    /// This performs the DTR/RTS reset sequence, waits for the bootloader,
+    /// and probes with 0x7F. Returns "auto_reset" if the bootloader responds,
+    /// or "not_detected" if it doesn't (manual intervention required).
     #[wasm_bindgen]
     pub async fn try_enter_mgmt_bootloader(&mut self) -> Result<String, JsValue> {
         let core = self.core_mut()?;
 
-        // Clear any stale data
-        core.drain();
+        // Set short timeout for probing
+        let _ = core.port_mut().set_timeout(std::time::Duration::from_millis(200));
 
-        // Try DTR/RTS reset sequence (EV16)
-        // RTS=high sets BOOT0 high (bootloader mode)
-        // DTR pulse triggers reset
-        let _ = core.port_mut().write_rts(true).await;
-        let _ = core.port_mut().write_dtr(true).await;
-        let _ = core.port_mut().write_dtr(false).await;
+        let result = core.try_enter_mgmt_bootloader(|ms| js_sleep(ms as u32)).await;
 
-        // Wait for bootloader to initialize using JS setTimeout
-        js_sleep(100).await;
+        // Restore normal timeout
+        let _ = core.port_mut().set_timeout(std::time::Duration::from_secs(3));
 
-        // Clear buffer again after reset
-        core.drain();
+        match result {
+            MgmtBootloaderEntry::AutoReset => Ok("auto_reset".to_string()),
+            MgmtBootloaderEntry::AlreadyActive => Ok("auto_reset".to_string()),
+            MgmtBootloaderEntry::NotDetected => Ok("not_detected".to_string()),
+        }
+    }
 
-        Ok("reset_sent".to_string())
+    /// Exit MGMT bootloader and jump to user code.
+    ///
+    /// Issues the STM32 Go command to jump to the application, and releases
+    /// BOOT0 (RTS low). Call this after bootloader operations (info, flash).
+    #[wasm_bindgen]
+    pub async fn exit_mgmt_bootloader(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.exit_mgmt_bootloader(|ms| js_sleep(ms as u32)).await;
+        Ok(())
     }
 
     /// Flash firmware to the MGMT chip (STM32F072CB).
@@ -550,12 +559,13 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn flash_mgmt(&mut self, firmware: js_sys::Uint8Array, progress_callback: js_sys::Function) -> Result<(), JsValue> {
         // Try automatic bootloader entry (DTR/RTS reset)
-        self.try_enter_mgmt_bootloader().await?;
+        let result = self.try_enter_mgmt_bootloader().await?;
+        let skip_init = result == "auto_reset";
 
         let firmware_data = firmware.to_vec();
         let core = self.core_mut()?;
 
-        core.flash_mgmt(&firmware_data, false, |phase, current, total| {
+        core.flash_mgmt(&firmware_data, skip_init, |phase, current, total| {
             let phase_str = match phase {
                 FlashPhase::Compressing => "compressing",
                 FlashPhase::Erasing => "erasing",
@@ -569,37 +579,6 @@ impl LinkController {
                 &JsValue::from(total as u32),
             );
         }).await.map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
-    }
-
-    /// Probe if MGMT bootloader is currently active (without reset).
-    ///
-    /// Returns true if the bootloader responds to the init byte (0x7F).
-    /// Use this to verify manual bootloader entry before flashing.
-    #[wasm_bindgen]
-    pub async fn probe_mgmt_bootloader(&mut self) -> Result<bool, JsValue> {
-        let core = self.core_mut()?;
-
-        // Set short timeout for probing
-        let _ = core.port_mut().set_timeout(std::time::Duration::from_millis(500));
-
-        // Clear any stale data
-        core.drain();
-
-        // Send 0x7F init byte and wait for ACK
-        let init_byte = [0x7F];
-        let probe_result = async {
-            core.port_mut().write_all(&init_byte).await?;
-            core.port_mut().flush().await?;
-
-            let mut response = [0u8; 1];
-            core.port_mut().read_exact(&mut response).await?;
-            Ok::<bool, std::io::Error>(response[0] == 0x79)
-        }.await;
-
-        // Restore normal timeout
-        let _ = core.port_mut().set_timeout(std::time::Duration::from_secs(3));
-
-        Ok(probe_result.unwrap_or(false))
     }
 
     /// Flash firmware to the MGMT chip after manual bootloader entry.

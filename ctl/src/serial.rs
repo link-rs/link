@@ -129,6 +129,21 @@ impl CtlPort for TokioSerialPort {
         self.read_buffer.clear();
     }
 
+    async fn drain_port(&mut self) {
+        self.read_buffer.clear();
+        // Use a short timeout for draining regardless of configured timeout
+        let old_timeout = self.timeout;
+        self.timeout = Duration::from_millis(50);
+        let mut junk = [0u8; 256];
+        loop {
+            match <Self as CtlPort>::read(self, &mut junk).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => continue,
+            }
+        }
+        self.timeout = old_timeout;
+    }
+
     async fn write_dtr(&mut self, level: bool) -> Result<(), Self::Error> {
         self.stream
             .write_data_terminal_ready(level)

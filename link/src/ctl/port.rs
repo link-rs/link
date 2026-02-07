@@ -77,6 +77,23 @@ pub trait CtlPort {
     /// The default implementation is a no-op for ports without internal buffering.
     fn clear_buffer(&mut self) {}
 
+    /// Drain all pending data from the port.
+    ///
+    /// This clears internal buffers and reads from the underlying transport
+    /// until no more data is available (timeout). Implementations that use
+    /// streaming readers (e.g., WebSerial) should override this to also
+    /// refresh the reader after draining.
+    async fn drain_port(&mut self) {
+        self.clear_buffer();
+        let mut junk = [0u8; 256];
+        loop {
+            match self.read(&mut junk).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => continue,
+            }
+        }
+    }
+
     /// Set the DTR (Data Terminal Ready) signal level.
     ///
     /// On EV16 hardware, DTR is connected to the MGMT chip's reset line (directly,
@@ -128,6 +145,10 @@ impl<P: CtlPort> CtlPort for &mut P {
 
     fn clear_buffer(&mut self) {
         P::clear_buffer(*self)
+    }
+
+    async fn drain_port(&mut self) {
+        P::drain_port(*self).await
     }
 
     async fn write_dtr(&mut self, level: bool) -> Result<(), Self::Error> {

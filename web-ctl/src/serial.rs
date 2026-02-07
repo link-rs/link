@@ -595,6 +595,12 @@ impl link::ctl::CtlPort for WebSerialAdapter {
         self.inner.clear_read_buffer();
     }
 
+    async fn drain_port(&mut self) {
+        // Use WebSerial's proper drain which also refreshes the reader
+        // to cancel any pending read operations.
+        let _ = self.inner.drain().await;
+    }
+
     async fn write_dtr(&mut self, level: bool) -> Result<(), Self::Error> {
         self.inner.write_dtr(level).await.map_err(Into::into)
     }

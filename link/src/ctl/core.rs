@@ -525,21 +525,31 @@ impl<P: CtlPort> CtlCore<P> {
     // MGMT operations
     // ========================================================================
 
+    /// Initialize DTR/RTS to known good state after opening the serial port.
+    ///
+    /// On EV16 hardware: DTR→NRST (high=reset), RTS→BOOT0 (high=bootloader).
+    /// Setting both low ensures the MGMT chip is running in normal mode.
+    /// Waits 100ms for the chip to stabilize after deasserting reset.
+    pub async fn init_port<D, F>(&mut self, delay_ms: D)
+    where
+        D: Fn(u64) -> F,
+        F: core::future::Future<Output = ()>,
+    {
+        let _ = self.port_mut().write_dtr(false).await;
+        let _ = self.port_mut().write_rts(false).await;
+        delay_ms(100).await;
+    }
+
     /// Send Hello handshake to detect if a valid device is connected.
     ///
     /// Returns true if the device responds correctly with challenge XOR'd with b"LINK".
     ///
-    /// This method scans the raw byte stream for the expected Hello response pattern,
-    /// which is more robust than parsing TLVs when debug output may have incorrect
-    /// length fields or when TLVs are interleaved.
+    /// Uses `read_tlv()` which scans for sync words byte-by-byte, making it robust
+    /// against misaligned data (e.g. NET boot spam that arrives before the first TLV).
     pub async fn hello(&mut self, challenge: &[u8; 4]) -> bool {
         const MAGIC: &[u8; 4] = b"LINK";
-        const HELLO_TYPE: [u8; 2] = [0x00, 0x14]; // MgmtToCtl::Hello = 20 = 0x0014
-        const HELLO_LEN: [u8; 4] = [0x00, 0x00, 0x00, 0x04]; // 4 bytes
-        const MAX_SCAN_BYTES: usize = 8192; // Give up after scanning this many bytes
+        const MAX_TLVS: usize = 1024; // Give up after skipping this many TLVs
 
-        // Build the expected response pattern:
-        // LINK (4) + type (2) + length (4) + value (4) = 14 bytes
         let expected_value: [u8; 4] = [
             challenge[0] ^ MAGIC[0],
             challenge[1] ^ MAGIC[1],
@@ -547,43 +557,25 @@ impl<P: CtlPort> CtlCore<P> {
             challenge[3] ^ MAGIC[3],
         ];
 
-        let mut pattern = [0u8; 14];
-        pattern[0..4].copy_from_slice(&SYNC_WORD);
-        pattern[4..6].copy_from_slice(&HELLO_TYPE);
-        pattern[6..10].copy_from_slice(&HELLO_LEN);
-        pattern[10..14].copy_from_slice(&expected_value);
-
         // Send the Hello request
         if self.write_tlv(CtlToMgmt::Hello, challenge).await.is_err() {
             return false;
         }
 
-        // Scan the byte stream for the exact response pattern
-        let mut matched = 0usize;
-        let mut bytes_scanned = 0usize;
-
-        while bytes_scanned < MAX_SCAN_BYTES {
-            let mut byte = [0u8; 1];
-            match self.port_mut().read(&mut byte).await {
-                Ok(0) => return false, // EOF
-                Ok(_) => {
-                    bytes_scanned += 1;
-
-                    if byte[0] == pattern[matched] {
-                        matched += 1;
-                        if matched == pattern.len() {
-                            return true; // Found the complete pattern!
-                        }
-                    } else {
-                        // Mismatch - reset, but check if this byte starts a new match
-                        matched = if byte[0] == pattern[0] { 1 } else { 0 };
+        // Read TLV frames using sync word scanning, skipping non-Hello ones
+        for _ in 0..MAX_TLVS {
+            match self.read_tlv::<MgmtToCtl>().await {
+                Ok(Some(tlv)) => {
+                    if tlv.tlv_type == MgmtToCtl::Hello && tlv.value.len() == 4 {
+                        return tlv.value.as_slice() == expected_value;
                     }
+                    // Skip non-Hello TLVs (e.g. FromNet boot spam)
                 }
-                Err(_) => return false, // Port error
+                Ok(None) | Err(_) => return false,
             }
         }
 
-        false // Gave up after scanning MAX_SCAN_BYTES
+        false // Too many non-Hello TLVs
     }
 
     /// Ping the MGMT chip.

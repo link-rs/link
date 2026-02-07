@@ -1287,22 +1287,19 @@
             try {
                 // Try automatic bootloader entry first (EV16)
                 log('Attempting automatic bootloader entry...', 'info');
-                await controller.try_enter_mgmt_bootloader();
+                const entryResult = await controller.try_enter_mgmt_bootloader();
 
-                // Try to read bootloader info - this will do the actual init
                 let info;
-                try {
-                    info = await controller.get_mgmt_bootloader_info();
-                    log('Auto-reset to bootloader succeeded', 'info');
-                } catch (e) {
-                    // Auto-reset likely failed, prompt for manual reset
+                if (entryResult === 'auto_reset') {
+                    log('Auto-reset to bootloader succeeded (EV16 detected)', 'info');
+                    info = await controller.get_mgmt_bootloader_info(true);
+                } else {
                     log('Auto-reset failed, manual bootloader entry required', 'info');
                     await showManualResetModal();
                     log('User confirmed manual reset, retrying...', 'info');
-                    // Wait for bootloader to settle, then drain any stale data
                     await new Promise(r => setTimeout(r, 100));
                     await controller.drain_buffer();
-                    info = await controller.get_mgmt_bootloader_info();
+                    info = await controller.get_mgmt_bootloader_info(false);
                 }
 
                 const major = info.bootloaderVersion >> 4;
@@ -1325,6 +1322,9 @@
                 } else {
                     document.getElementById('mgmtFlashSample').textContent = '-';
                 }
+
+                // Reset MGMT chip back to user mode
+                await controller.exit_mgmt_bootloader();
 
                 infoDisplay.classList.add('visible');
                 statusIcon.textContent = '\u2713';
@@ -1431,10 +1431,12 @@
                     await controller.flash_mgmt_manual(firmware, progressCallback);
                 }
 
+                // Reset MGMT chip back to user mode
+                await controller.exit_mgmt_bootloader();
+
                 statusIcon.textContent = '\u2713';
                 statusIcon.className = 'status-icon success';
                 log('MGMT firmware flashed successfully!', 'success');
-                log('  Note: Set BOOT0 LOW and reset to run new firmware', 'info');
                 progressText.textContent = 'Complete!';
             } catch (e) {
                 statusIcon.textContent = '\u2717';

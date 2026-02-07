@@ -723,25 +723,28 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     /// - DTR/RTS commands are ignored
     /// - If user already reset to bootloader manually, we'll detect it
     ///
-    /// The `delay_ms` callback should sleep for the given number of milliseconds.
-    pub async fn try_enter_mgmt_bootloader<D>(&mut self, delay_ms: D) -> MgmtBootloaderEntry
+    /// The `delay_ms` callback should return a future that sleeps for the given
+    /// number of milliseconds. Use `tokio::time::sleep` for native or `js_sleep`
+    /// for WASM.
+    pub async fn try_enter_mgmt_bootloader<D, F>(&mut self, delay_ms: D) -> MgmtBootloaderEntry
     where
-        D: Fn(u64),
+        D: Fn(u64) -> F,
+        F: core::future::Future<Output = ()>,
     {
         self.drain();
 
         // Establish known starting state (both signals low)
         let _ = self.port_mut().write_dtr(false).await;
         let _ = self.port_mut().write_rts(false).await;
-        delay_ms(100);
+        delay_ms(100).await;
 
         // BOOT0 high, then pulse reset (RTS=true, DTR high→low)
         let _ = self.port_mut().write_rts(true).await;
-        delay_ms(50);
+        delay_ms(50).await;
         let _ = self.port_mut().write_dtr(true).await;
-        delay_ms(50);
+        delay_ms(50).await;
         let _ = self.port_mut().write_dtr(false).await;
-        delay_ms(500);
+        delay_ms(500).await;
 
         self.drain();
 
@@ -761,15 +764,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     ///
     /// Note: This has a short timeout (~200ms) to avoid blocking.
     async fn probe_mgmt_bootloader(&mut self) -> bool {
-        // Drain any stale bytes from the OS serial buffer by reading
-        // until we get a timeout (nothing left to read).
-        let mut junk = [0u8; 256];
-        loop {
-            match self.port_mut().read(&mut junk).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => continue,
-            }
-        }
+        // Drain any stale bytes from the serial buffer (OS buffer, WebSerial
+        // stream, etc.) so they don't get mistaken for a bootloader ACK.
+        self.port_mut().drain_port().await;
 
         // Send 0x7F init byte (STM32 bootloader auto-baud detection)
         let init_byte = [0x7F];
@@ -789,19 +786,26 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         }
     }
 
-    /// Reset MGMT chip back to user mode via DTR/RTS (EV16).
+    /// Exit the MGMT bootloader and return to user code.
     ///
-    /// This sets RTS low (BOOT0 low) and pulses DTR to trigger reset.
-    /// On EV15 or unsupported ports, this is a no-op.
-    pub async fn reset_mgmt_to_user<D>(&mut self, delay_ms: D)
+    /// Issues the STM32 Go command to jump to the application, then does a
+    /// clean hardware reset via DTR/RTS (BOOT0 low + NRST pulse) if available.
+    /// The hardware reset ensures peripherals are properly reinitialized.
+    /// On EV15 (no DTR/RTS), only the Go command is used.
+    pub async fn exit_mgmt_bootloader<D, F>(&mut self, delay_ms: D)
     where
-        D: Fn(u64),
+        D: Fn(u64) -> F,
+        F: core::future::Future<Output = ()>,
     {
-        // BOOT0 low, then pulse reset (RTS=false, DTR high→low)
+        let mut bl = Bootloader::new(self.port_mut());
+        let _ = bl.go(0x0800_0000).await;
+
+        // Release BOOT0 and do a clean hardware reset so peripherals
+        // are properly reinitialized (Go alone doesn't reset them).
         let _ = self.port_mut().write_rts(false).await;
-        delay_ms(50);
+        delay_ms(50).await;
         let _ = self.port_mut().write_dtr(true).await;
-        delay_ms(50);
+        delay_ms(50).await;
         let _ = self.port_mut().write_dtr(false).await;
     }
 

@@ -29,7 +29,7 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             // Set short timeout for probing
             let _ = core.port_mut().set_timeout(Duration::from_millis(200));
 
-            let delay_ms = |ms| std::thread::sleep(Duration::from_millis(ms));
+            let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
             let skip_init = match core.try_enter_mgmt_bootloader(delay_ms).await {
                 MgmtBootloaderEntry::AutoReset => {
                     println!("success (EV16 detected)");
@@ -117,11 +117,9 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
                 println!("\nFlash Memory: Could not read (read protection may be enabled)");
             }
 
-            // Release BOOT0 and reset to user mode so the chip is in a
-            // clean state when the port closes (avoids HUPCL-triggered
-            // bootloader re-entry).
-            let delay_ms = |ms| std::thread::sleep(Duration::from_millis(ms));
-            core.reset_mgmt_to_user(delay_ms).await;
+            // Exit bootloader and reset to user code
+            let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
+            core.exit_mgmt_bootloader(delay_ms).await;
 
             println!("\nDone!");
             Ok(())
@@ -140,7 +138,7 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             // Set short timeout for probing
             let _ = core.port_mut().set_timeout(Duration::from_millis(200));
 
-            let delay_ms = |ms| std::thread::sleep(Duration::from_millis(ms));
+            let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
             let skip_init = match core.try_enter_mgmt_bootloader(delay_ms).await {
                 MgmtBootloaderEntry::AutoReset => {
                     println!("success (EV16 detected)");
@@ -209,10 +207,9 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
 
             match result {
                 Ok(()) => {
-                    // Release BOOT0 and reset to user mode so the chip is in a
-                    // clean state when the port closes.
-                    let delay_ms = |ms| std::thread::sleep(Duration::from_millis(ms));
-                    core.reset_mgmt_to_user(delay_ms).await;
+                    // Exit bootloader and reset to user code
+                    let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
+                    core.exit_mgmt_bootloader(delay_ms).await;
 
                     println!("\nFlash complete!");
                     println!("The MGMT chip should now be running the new firmware.");
