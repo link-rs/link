@@ -159,6 +159,10 @@ impl CtlPort for TokioSerialPort {
     fn supports_dtr_rts(&self) -> bool {
         true
     }
+
+    fn is_timeout(error: &Self::Error) -> bool {
+        error.kind() == io::ErrorKind::TimedOut
+    }
 }
 
 impl SetTimeout for TokioSerialPort {

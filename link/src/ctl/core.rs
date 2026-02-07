@@ -227,11 +227,11 @@ impl<P: CtlPort> CtlCore<P> {
         let mut matched = 0usize;
         let mut buf = [0u8; 1];
         while matched < SYNC_WORD.len() {
-            let n = self
-                .port_mut()
-                .read(&mut buf)
-                .await
-                .map_err(|e| CtlError::Port(format!("{:?}", e)))?;
+            let n = match self.port_mut().read(&mut buf).await {
+                Ok(n) => n,
+                Err(e) if P::is_timeout(&e) => return Ok(None),
+                Err(e) => return Err(CtlError::Port(format!("{:?}", e))),
+            };
             if n == 0 {
                 return Ok(None); // EOF
             }

@@ -121,6 +121,16 @@ pub trait CtlPort {
     fn supports_dtr_rts(&self) -> bool {
         false
     }
+
+    /// Check if an error represents a read timeout.
+    ///
+    /// Used by `read_tlv` to distinguish "no data yet" (returns `Ok(None)`)
+    /// from real I/O errors during sync word scanning.
+    /// The default implementation returns `false`.
+    fn is_timeout(error: &Self::Error) -> bool {
+        let _ = error;
+        false
+    }
 }
 
 /// Blanket implementation allowing mutable references to CtlPort to be used as CtlPort.
@@ -161,5 +171,9 @@ impl<P: CtlPort> CtlPort for &mut P {
 
     fn supports_dtr_rts(&self) -> bool {
         P::supports_dtr_rts(*self)
+    }
+
+    fn is_timeout(error: &Self::Error) -> bool {
+        P::is_timeout(error)
     }
 }

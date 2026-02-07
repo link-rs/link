@@ -543,6 +543,10 @@ impl link::ctl::CtlPort for WebSerial {
         }
         Ok(())
     }
+
+    fn is_timeout(error: &Self::Error) -> bool {
+        matches!(error, WebSerialError::ReadError(msg) if msg == "Read timeout")
+    }
 }
 
 // ============================================================================
@@ -628,6 +632,10 @@ impl link::ctl::CtlPort for WebSerialAdapter {
     fn supports_dtr_rts(&self) -> bool {
         // WebSerial supports DTR/RTS via setSignals()
         true
+    }
+
+    fn is_timeout(error: &Self::Error) -> bool {
+        error.kind() == std::io::ErrorKind::TimedOut
     }
 }
 
