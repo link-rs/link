@@ -5,9 +5,8 @@ use crate::{GetSetU32, MgmtAction, StackAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
 use link::ctl::flash::{FlashPhase, MgmtBootloaderEntry};
-use link::{CtlToMgmt, MgmtToCtl};
 use std::io::Write;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio_serial::SerialPort;
 
 pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
@@ -265,146 +264,6 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
                     Ok(())
                 }
             }
-        }
-        MgmtAction::SpeedTest {
-            baud,
-            duration,
-            size,
-        } => {
-            // Validate and clamp payload size
-            const MAX_PAYLOAD: usize = 640; // MAX_VALUE_SIZE from TLV
-            let payload_size = size.min(MAX_PAYLOAD);
-            if size > MAX_PAYLOAD {
-                println!(
-                    "Warning: payload size clamped to {} (max TLV value size)",
-                    MAX_PAYLOAD
-                );
-            }
-
-            // Get current baud rate for reporting
-            let initial_baud = core.port_mut().get_ref().baud_rate().unwrap_or(115200);
-
-            // If a baud rate was specified, change to it first
-            let test_baud = if let Some(new_baud) = baud {
-                println!(
-                    "Changing baud rate from {} to {}...",
-                    initial_baud, new_baud
-                );
-
-                // Send command to MGMT (ACK is sent before rate change)
-                core.set_ctl_baud_rate(new_baud).await?;
-
-                // Now change local serial port baud rate to match
-                core.port_mut().get_mut().set_baud_rate(new_baud)?;
-
-                // Small delay for baud rate to stabilize
-                tokio::time::sleep(Duration::from_millis(10)).await;
-
-                new_baud
-            } else {
-                initial_baud
-            };
-
-            println!(
-                "Running CTL-MGMT speed test at {} baud for {} second(s) with {} byte packets...",
-                test_baud, duration, payload_size
-            );
-
-            // Create payload buffer
-            let payload: Vec<u8> = (0..payload_size).map(|i| (i & 0xFF) as u8).collect();
-
-            let test_duration = Duration::from_secs(duration as u64);
-            let start = Instant::now();
-            let mut packets_sent: u32 = 0;
-            let mut send_errors: u32 = 0;
-
-            // Send packets as fast as possible for the duration
-            while start.elapsed() < test_duration {
-                if core.write_tlv_raw(CtlToMgmt::SpeedTestData, &payload).await.is_err() {
-                    send_errors += 1;
-                } else {
-                    packets_sent += 1;
-                }
-            }
-
-            let send_elapsed = start.elapsed();
-
-            // Send done signal
-            println!("Sending done signal and waiting for results...");
-            core.write_tlv_raw(CtlToMgmt::SpeedTestDone, &[]).await?;
-
-            // Wait for result from MGMT (with timeout)
-            core.port_mut().set_timeout(Duration::from_secs(5))?;
-
-            let (packets_received, bytes_received) = loop {
-                match core.read_tlv_raw().await {
-                    Ok(Some(tlv)) => {
-                        if tlv.tlv_type == MgmtToCtl::SpeedTestResult && tlv.value.len() >= 8 {
-                            let packets = u32::from_le_bytes([
-                                tlv.value[0],
-                                tlv.value[1],
-                                tlv.value[2],
-                                tlv.value[3],
-                            ]);
-                            let bytes = u32::from_le_bytes([
-                                tlv.value[4],
-                                tlv.value[5],
-                                tlv.value[6],
-                                tlv.value[7],
-                            ]);
-                            break (packets, bytes);
-                        }
-                        // Ignore other TLVs
-                    }
-                    Ok(None) | Err(_) => {
-                        eprintln!("Timeout waiting for speed test result");
-                        break (0, 0);
-                    }
-                }
-            };
-
-            // Calculate statistics
-            let packets_per_second = packets_received as f64 / send_elapsed.as_secs_f64();
-            // Total bytes on wire per packet: sync(4) + header(6) + payload
-            let bytes_per_packet = 4 + 6 + payload_size;
-            let total_wire_bytes = packets_received as usize * bytes_per_packet;
-            // Bits per second (10 bits per byte for UART: 8 data + start + stop)
-            let bits_per_second = (total_wire_bytes as f64 * 10.0) / send_elapsed.as_secs_f64();
-            let efficiency = (bits_per_second / test_baud as f64) * 100.0;
-
-            println!("\nSpeed Test Results:");
-            println!("  Baud rate:          {} bps", test_baud);
-            println!(
-                "  Duration:           {:.2} seconds",
-                send_elapsed.as_secs_f64()
-            );
-            println!("  Payload size:       {} bytes", payload_size);
-            println!("  Packets sent:       {}", packets_sent);
-            println!("  Packets received:   {}", packets_received);
-            println!("  Payload received:   {} bytes", bytes_received);
-            if send_errors > 0 {
-                println!("  Send errors:        {}", send_errors);
-            }
-            println!(
-                "  Packet rate:        {:.1} packets/sec",
-                packets_per_second
-            );
-            println!(
-                "  Throughput:         {:.0} bits/sec ({:.1}% efficiency)",
-                bits_per_second, efficiency
-            );
-
-            // Restore original baud rate if we changed it
-            if baud.is_some() && initial_baud != test_baud {
-                println!("\nRestoring baud rate to {}...", initial_baud);
-                core.set_ctl_baud_rate(initial_baud).await?;
-                core.port_mut().get_mut().set_baud_rate(initial_baud)?;
-            }
-
-            // Restore normal timeout
-            core.port_mut().set_timeout(Duration::from_secs(3))?;
-
-            Ok(())
         }
         MgmtAction::Stack { action } => match action.unwrap_or_default() {
             StackAction::Info => {

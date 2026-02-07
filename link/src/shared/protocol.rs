@@ -89,10 +89,6 @@ pub enum CtlToMgmt {
     /// Set CTL UART baud rate (4 bytes: u32 little-endian)
     /// ACK is sent before the baud rate change takes effect.
     SetCtlBaudRate,
-    /// Speed test data packet (value contains test payload)
-    SpeedTestData,
-    /// Speed test done signal (no payload)
-    SpeedTestDone,
     /// Get MGMT chip stack usage information
     GetStackInfo,
     /// Repaint the MGMT chip stack with the paint pattern
@@ -108,8 +104,6 @@ pub enum MgmtToCtl {
     Ack,
     /// Hello response (4 bytes XOR'd with b"LINK")
     Hello,
-    /// CTL-MGMT speed test results (8 bytes: packet_count u32 LE, total_bytes u32 LE)
-    SpeedTestResult,
     /// Stack usage information (16 bytes: stack_base u32 LE, stack_top u32 LE, stack_size u32 LE, stack_used u32 LE)
     StackInfo,
     /// Stack repaint acknowledgement (8 bytes: painted_start u32 LE, painted_end u32 LE)
