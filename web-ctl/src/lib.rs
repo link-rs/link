@@ -762,48 +762,6 @@ impl LinkController {
         let core = self.core_mut()?;
         core.erase_net(JsDelay).await.map_err(|e| JsValue::from_str(&format!("Erase error: {:?}", e)))
     }
-
-    // ==================== STATE AGGREGATION ====================
-
-    /// Get all state variables from all chips.
-    /// Returns a JSON object with all current device state.
-    #[wasm_bindgen]
-    pub async fn get_all_state(&mut self) -> Result<JsValue, JsValue> {
-        let obj = js_sys::Object::new();
-
-        // NET chip state (loaded first to diagnose ordering issues)
-        let net_obj = js_sys::Object::new();
-        match self.get_net_loopback_mode().await {
-            Ok(loopback_mode) => {
-                js_sys::Reflect::set(&net_obj, &"loopbackMode".into(), &loopback_mode.into())?;
-            }
-            Err(e) => {
-                log(&format!("get_net_loopback_mode failed: {:?}", e));
-            }
-        }
-        if let Ok(relay_url) = self.get_relay_url().await {
-            js_sys::Reflect::set(&net_obj, &"relayUrl".into(), &relay_url.into())?;
-        }
-        if let Ok(networks) = self.get_wifi_networks().await {
-            js_sys::Reflect::set(&net_obj, &"wifiNetworks".into(), &networks)?;
-        }
-        js_sys::Reflect::set(&obj, &"net".into(), &net_obj)?;
-
-        // UI chip state
-        let ui_obj = js_sys::Object::new();
-        if let Ok(version) = self.get_version().await {
-            js_sys::Reflect::set(&ui_obj, &"version".into(), &version.into())?;
-        }
-        if let Ok(sframe_key) = self.get_sframe_key().await {
-            js_sys::Reflect::set(&ui_obj, &"sframeKey".into(), &sframe_key.into())?;
-        }
-        if let Ok(loopback_mode) = self.get_ui_loopback_mode().await {
-            js_sys::Reflect::set(&ui_obj, &"loopbackMode".into(), &loopback_mode.into())?;
-        }
-        js_sys::Reflect::set(&obj, &"ui".into(), &ui_obj)?;
-
-        Ok(obj.into())
-    }
 }
 
 impl Default for LinkController {

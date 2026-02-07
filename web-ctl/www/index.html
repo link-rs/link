@@ -733,7 +733,7 @@
                     <div class="form-group">
                         <label>Firmware Version (stored in UI EEPROM)</label>
                         <div class="inline-form">
-                            <input type="text" id="versionInput" placeholder="0x00000000" class="mono">
+                            <input type="text" id="versionInput" placeholder="(click Read Version)" class="mono">
                             <button class="btn-secondary" id="getVersionBtn">Read Version</button>
                             <button class="btn-primary" id="setVersionBtn">Write Version</button>
                         </div>
@@ -741,7 +741,7 @@
                     <div class="form-group">
                         <label>SFrame Encryption Key (16 bytes, stored in UI EEPROM)</label>
                         <div class="inline-form">
-                            <input type="text" id="sframeKeyInput" placeholder="00112233445566778899aabbccddeeff" class="mono" maxlength="32">
+                            <input type="text" id="sframeKeyInput" placeholder="(click Read Key)" class="mono" maxlength="32">
                             <button class="btn-secondary" id="getSframeKeyBtn">Read Key</button>
                             <button class="btn-primary" id="setSframeKeyBtn">Write Key</button>
                         </div>
@@ -754,6 +754,7 @@
                         <label>Loopback Mode</label>
                         <div class="inline-form">
                             <select id="uiLoopbackSelect" style="flex: 1; padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 1rem;">
+                                <option value="" disabled selected>-- click Read --</option>
                                 <option value="0">Off</option>
                                 <option value="1">Raw (mic → speaker)</option>
                                 <option value="2">A-law (mic → encode → decode → speaker)</option>
@@ -848,7 +849,7 @@
                 <div class="card-section">
                     <h3>WiFi Configuration (stored in NET flash)</h3>
                     <div class="wifi-list" id="wifiList">
-                        <div class="empty-state">No networks configured</div>
+                        <div class="empty-state">(click Refresh to load)</div>
                     </div>
                     <div class="btn-group" style="margin-bottom: 1rem;">
                         <button class="btn-secondary" id="refreshWifiBtn">Refresh Network List</button>
@@ -872,7 +873,7 @@
                     <div class="inline-form">
                         <div class="form-group">
                             <label>WebSocket Relay URL</label>
-                            <input type="text" id="relayUrlInput" placeholder="wss://relay.example.com/stream">
+                            <input type="text" id="relayUrlInput" placeholder="(click Read URL)">
                         </div>
                         <button class="btn-secondary" id="getRelayUrlBtn">Read URL</button>
                         <button class="btn-primary" id="setRelayUrlBtn">Write URL</button>
@@ -885,6 +886,7 @@
                         <label>Loopback Mode</label>
                         <div class="inline-form">
                             <select id="netLoopbackSelect" style="flex: 1; padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 1rem;">
+                                <option value="" disabled selected>-- click Read --</option>
                                 <option value="0">Off (normal PTT)</option>
                                 <option value="1">Raw (local bypass through jitter buffer)</option>
                                 <option value="2">MoQ (hear own audio via relay)</option>
@@ -1227,10 +1229,7 @@
                             helloStatus.className = 'status-icon success';
                             log('Device responded correctly', 'success');
 
-                            // Load state in background (don't block UI)
-                            populateAllState().catch(e => {
-                                log(`Warning: Could not load device state: ${e}`, 'error');
-                            });
+
                         } else {
                             helloStatus.textContent = '\u2717';
                             helloStatus.className = 'status-icon error';
@@ -1976,88 +1975,6 @@
             }
         });
 
-        // ==================== AUTO-POPULATE STATE ====================
-
-        async function populateAllState() {
-            log('Fetching device state...', 'info');
-            try {
-                const state = await controller.get_all_state();
-
-                // UI chip state
-                if (state.ui) {
-                    // Version
-                    if (state.ui.version !== undefined) {
-                        const version = state.ui.version;
-                        document.getElementById('versionInput').value = '0x' + version.toString(16).padStart(8, '0');
-                        log(`  UI version: 0x${version.toString(16).padStart(8, '0')}`, 'info');
-                    } else {
-                        log(`  UI version: (failed to read)`, 'warning');
-                    }
-
-                    // SFrame key
-                    if (state.ui.sframeKey !== undefined) {
-                        document.getElementById('sframeKeyInput').value = state.ui.sframeKey;
-                        log(`  UI SFrame key: ${state.ui.sframeKey}`, 'info');
-                    } else {
-                        log(`  UI SFrame key: (failed to read)`, 'warning');
-                    }
-
-                    // Loopback mode
-                    if (state.ui.loopbackMode !== undefined) {
-                        const uiModeMap = { 'off': '0', 'raw': '1', 'alaw': '2', 'sframe': '3' };
-                        document.getElementById('uiLoopbackSelect').value = uiModeMap[state.ui.loopbackMode] || '0';
-                        log(`  UI loopback: ${state.ui.loopbackMode}`, 'info');
-                    } else {
-                        log(`  UI loopback: (failed to read)`, 'warning');
-                    }
-                }
-
-                // NET chip state
-                if (state.net) {
-                    // Relay URL
-                    if (state.net.relayUrl !== undefined) {
-                        document.getElementById('relayUrlInput').value = state.net.relayUrl;
-                        log(`  NET relay URL: ${state.net.relayUrl || '(empty)'}`, 'info');
-                    } else {
-                        log(`  NET relay URL: (failed to read)`, 'warning');
-                    }
-
-                    // WiFi networks
-                    if (state.net.wifiNetworks !== undefined) {
-                        const networks = state.net.wifiNetworks;
-                        const wifiList = document.getElementById('wifiList');
-                        if (networks.length === 0) {
-                            wifiList.innerHTML = '<div class="empty-state">No networks configured</div>';
-                        } else {
-                            wifiList.innerHTML = networks.map(n => `
-                                <div class="wifi-item">
-                                    <div>
-                                        <div class="ssid">${escapeHtml(n.ssid)}</div>
-                                        <div class="password">${'*'.repeat(n.password.length)}</div>
-                                    </div>
-                                </div>
-                            `).join('');
-                        }
-                        log(`  NET WiFi networks: ${networks.length} configured`, 'info');
-                    } else {
-                        log(`  NET WiFi networks: (failed to read)`, 'warning');
-                    }
-
-                    // Loopback mode
-                    if (state.net.loopbackMode !== undefined) {
-                        const netModeMap = { 'off': '0', 'raw': '1', 'moq': '2' };
-                        document.getElementById('netLoopbackSelect').value = netModeMap[state.net.loopbackMode] || '0';
-                        log(`  NET loopback: ${state.net.loopbackMode}`, 'info');
-                    } else {
-                        log(`  NET loopback: (failed to read)`, 'warning');
-                    }
-                }
-
-                log('Device state loaded successfully', 'success');
-            } catch (e) {
-                log(`Failed to fetch device state: ${e}`, 'error');
-            }
-        }
 
         // Clear log
         document.getElementById('clearLogBtn').addEventListener('click', () => {

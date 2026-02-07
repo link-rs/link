@@ -377,6 +377,22 @@ impl WebSerial {
             }
             Either::Right((_timeout_result, _)) => {
                 web_sys::console::log_1(&JsValue::from_str("[WebSerial] fill_buffer: timeout"));
+                // Refresh the reader to cancel the pending read from the timeout case
+                let port = {
+                    let mut state = self.state.borrow_mut();
+                    let state = state.as_mut().ok_or(WebSerialError::NotConnected)?;
+                    state.reader.release_lock();
+                    state.port.clone()
+                };
+                let readable = port.readable();
+                let new_reader: ReadableStreamDefaultReader =
+                    readable.get_reader().unchecked_into();
+                {
+                    let mut state = self.state.borrow_mut();
+                    if let Some(state) = state.as_mut() {
+                        state.reader = new_reader;
+                    }
+                }
                 return Err(WebSerialError::ReadError("Read timeout".into()));
             }
         };
