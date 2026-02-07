@@ -10,7 +10,7 @@ use link::ctl::flash::{AsyncDelay, FlashPhase, MgmtBootloaderEntry};
 use link::ctl::stm;
 use link::ctl::{CtlCore, CtlError, SetTimeout};
 use wasm_bindgen_futures::JsFuture;
-use link::{LoopbackMode, MgmtToCtl, NetLoopback};
+use link::{UiLoopbackMode, MgmtToCtl, NetLoopbackMode};
 use serde::{Deserialize, Serialize};
 use serial::{WebSerial, WebSerialAdapter};
 use wasm_bindgen::prelude::*;
@@ -270,10 +270,10 @@ impl LinkController {
         let core = self.core_mut()?;
         let mode = core.ui_get_loopback().await.map_err(ctl_error_to_js)?;
         let mode_str = match mode {
-            LoopbackMode::Off => "off",
-            LoopbackMode::Raw => "raw",
-            LoopbackMode::Alaw => "alaw",
-            LoopbackMode::Sframe => "sframe",
+            UiLoopbackMode::Off => "off",
+            UiLoopbackMode::Raw => "raw",
+            UiLoopbackMode::Alaw => "alaw",
+            UiLoopbackMode::Sframe => "sframe",
         };
         Ok(mode_str.to_string())
     }
@@ -287,10 +287,10 @@ impl LinkController {
         }
 
         let loopback_mode = match mode {
-            0 => LoopbackMode::Off,
-            1 => LoopbackMode::Raw,
-            2 => LoopbackMode::Alaw,
-            3 => LoopbackMode::Sframe,
+            0 => UiLoopbackMode::Off,
+            1 => UiLoopbackMode::Raw,
+            2 => UiLoopbackMode::Alaw,
+            3 => UiLoopbackMode::Sframe,
             _ => unreachable!(),
         };
 
@@ -305,9 +305,9 @@ impl LinkController {
         let core = self.core_mut()?;
         let mode = core.net_get_loopback().await.map_err(ctl_error_to_js)?;
         let mode_str = match mode {
-            NetLoopback::Off => "off",
-            NetLoopback::Raw => "raw",
-            NetLoopback::Moq => "moq",
+            NetLoopbackMode::Off => "off",
+            NetLoopbackMode::Raw => "raw",
+            NetLoopbackMode::Moq => "moq",
         };
         Ok(mode_str.to_string())
     }
@@ -321,9 +321,9 @@ impl LinkController {
         }
 
         let loopback_mode = match mode {
-            0 => NetLoopback::Off,
-            1 => NetLoopback::Raw,
-            2 => NetLoopback::Moq,
+            0 => NetLoopbackMode::Off,
+            1 => NetLoopbackMode::Raw,
+            2 => NetLoopbackMode::Moq,
             _ => unreachable!(),
         };
 
@@ -399,15 +399,6 @@ impl LinkController {
     pub async fn repaint_ui_stack(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
         core.ui_repaint_stack().await.map_err(ctl_error_to_js)
-    }
-
-    // ==================== CHAT ====================
-
-    /// Send a chat message through the NET chip.
-    #[wasm_bindgen]
-    pub async fn send_chat_message(&mut self, message: &str) -> Result<(), JsValue> {
-        let core = self.core_mut()?;
-        core.send_chat_message(message).await.map_err(ctl_error_to_js)
     }
 
     // ==================== CIRCULAR PING ====================

@@ -2,6 +2,8 @@
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
+use serde::{Deserialize, Serialize};
+
 /// Channel ID for routing messages (matches hactar ui_net_link.hh)
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -33,7 +35,7 @@ pub enum MessageType {
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
-pub enum LoopbackMode {
+pub enum UiLoopbackMode {
     /// No loopback - normal operation, audio sent to NET
     #[default]
     Off = 0,
@@ -49,7 +51,7 @@ pub enum LoopbackMode {
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
-pub enum NetLoopback {
+pub enum NetLoopbackMode {
     /// Normal operation - audio to MoQ, filter self-echo
     #[default]
     Off = 0,
@@ -65,28 +67,21 @@ pub enum CtlToMgmt {
     Ping = 0x00,
     ToUi,
     ToNet,
-    /// Reset UI chip into bootloader mode (BOOT0 high, then reset)
-    ResetUiToBootloader,
-    /// Reset UI chip into user mode (BOOT0 low, then reset)
-    ResetUiToUser,
-    /// Reset NET chip into bootloader mode (BOOT0 high, then reset)
-    ResetNetToBootloader,
-    /// Reset NET chip into user mode (BOOT0 low, then reset)
-    ResetNetToUser,
     /// Hello handshake for device detection (4 bytes, XOR'd with b"LINK")
     Hello,
-    /// Hold UI chip in reset
-    HoldUiReset,
-    /// Hold NET chip in reset
-    HoldNetReset,
+    /// Set UI chip BOOT0 pin directly (1 byte: 0=low, 1=high)
+    SetUiBoot0,
+    /// Set UI chip BOOT1 pin directly (1 byte: 0=low, 1=high)
+    SetUiBoot1,
+    /// Set UI chip RST pin directly (1 byte: 0=low/reset, 1=high/run)
+    SetUiRst,
     /// Set NET chip GPIO0/BOOT pin directly (1 byte: 0=low, 1=high)
-    /// Low = bootloader mode when reset is released
     SetNetBoot,
     /// Set NET chip EN/RST pin directly (1 byte: 0=low/reset, 1=high/run)
     SetNetRst,
-    /// Set NET UART baud rate (4 bytes: u32 little-endian)
+    /// Set NET UART baud rate (4 bytes: u32 big-endian)
     SetNetBaudRate,
-    /// Set CTL UART baud rate (4 bytes: u32 little-endian)
+    /// Set CTL UART baud rate (4 bytes: u32 big-endian)
     /// ACK is sent before the baud rate change takes effect.
     SetCtlBaudRate,
     /// Get MGMT chip stack usage information
@@ -104,22 +99,20 @@ pub enum MgmtToCtl {
     Ack,
     /// Hello response (4 bytes XOR'd with b"LINK")
     Hello,
-    /// Stack usage information (16 bytes: stack_base u32 LE, stack_top u32 LE, stack_size u32 LE, stack_used u32 LE)
+    /// Stack usage information (postcard-serialized StackInfo)
     StackInfo,
-    /// Stack repaint acknowledgement (8 bytes: painted_start u32 LE, painted_end u32 LE)
-    StackRepainted,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
-pub enum MgmtToUi {
+pub enum CtlToUi {
     Ping = 0x20,
     CircularPing,
     GetVersion,
     SetVersion,
     GetSFrameKey,
     SetSFrameKey,
-    /// Set loopback mode (1 byte: LoopbackMode)
+    /// Set loopback mode (1 byte: UiLoopbackMode)
     SetLoopback,
     /// Get loopback mode
     GetLoopback,
@@ -131,24 +124,24 @@ pub enum MgmtToUi {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
-pub enum UiToMgmt {
+pub enum UiToCtl {
     Pong = 0x30,
     CircularPing,
     Version,
     SFrameKey,
     Ack,
     Error,
-    /// Loopback mode status (1 byte: LoopbackMode)
+    /// Loopback mode status (1 byte: UiLoopbackMode)
     Loopback,
     /// Debug log message (UTF-8 string)
     Log,
-    /// Stack usage information (16 bytes: stack_base u32 LE, stack_top u32 LE, stack_size u32 LE, stack_used u32 LE)
+    /// Stack usage information (postcard-serialized StackInfo)
     StackInfo,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
-pub enum MgmtToNet {
+pub enum CtlToNet {
     Ping = 0x40,
     CircularPing,
     AddWifiSsid,
@@ -156,19 +149,15 @@ pub enum MgmtToNet {
     ClearWifiSsids,
     GetRelayUrl,
     SetRelayUrl,
-    /// Set loopback mode (1 byte: NetLoopback - 0=Off, 1=Raw, 2=Moq)
+    /// Set loopback mode (1 byte: NetLoopbackMode - 0=Off, 1=Raw, 2=Moq)
     SetLoopback,
     /// Get loopback mode
     GetLoopback,
-    /// Send chat message (value: UTF-8 message)
-    SendChatMessage,
     // Channel configuration commands
     /// Get channel configuration (value: channel_id u8)
     GetChannelConfig,
     /// Set channel configuration (value: postcard-serialized ChannelConfig)
     SetChannelConfig,
-    /// Get all channel configurations (no payload)
-    GetAllChannelConfigs,
     /// Clear all channel configurations (no payload)
     ClearChannelConfigs,
     /// Get jitter buffer stats for a channel (value: channel_id u8)
@@ -177,29 +166,19 @@ pub enum MgmtToNet {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
-pub enum NetToMgmt {
+pub enum NetToCtl {
     Pong = 0x50,
     CircularPing,
     WifiSsids,
     RelayUrl,
     Ack,
     Error,
-    /// Loopback mode status (1 byte: NetLoopback - 0=Off, 1=Raw, 2=Moq)
+    /// Loopback mode status (1 byte: NetLoopbackMode - 0=Off, 1=Raw, 2=Moq)
     Loopback,
-    /// MoQ connected to relay
-    MoqConnected,
-    /// MoQ disconnected from relay
-    MoqDisconnected,
-    /// Chat message sent confirmation
-    ChatMessageSent,
-    /// Chat message received (value: UTF-8 message)
-    ChatMessageReceived,
     // Channel configuration responses
     /// Channel configuration (value: postcard-serialized ChannelConfig)
     ChannelConfig,
-    /// All channel configurations (value: postcard-serialized Vec<ChannelConfig>)
-    AllChannelConfigs,
-    /// Jitter buffer statistics (19 bytes: received u32, output u32, underruns u32, overruns u32, level u16, state u8)
+    /// Jitter buffer statistics (postcard-serialized JitterStatsInfo)
     JitterStats,
 }
 
@@ -207,10 +186,6 @@ pub enum NetToMgmt {
 #[repr(u16)]
 pub enum UiToNet {
     CircularPing = 0x60,
-    /// Legacy: Audio frame from button A press (no channel_id prefix)
-    AudioFrameA,
-    /// Legacy: Audio frame from button B press (no channel_id prefix)
-    AudioFrameB,
     /// Audio frame with channel_id prefix + encrypted chunk (hactar format)
     /// Format: [channel_id: u8][sframe_header][encrypted_chunk][auth_tag]
     AudioFrame,
@@ -222,4 +197,53 @@ pub enum NetToUi {
     CircularPing = 0x70,
     /// Audio frame to play out
     AudioFrame,
+}
+
+/// Stack usage information (wire format, postcard-serialized).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct StackInfo {
+    /// Stack base address (highest address, start of stack memory).
+    pub stack_base: u32,
+    /// Stack top address (lowest address, end of stack memory).
+    pub stack_top: u32,
+    /// Total stack size in bytes.
+    pub stack_size: u32,
+    /// Stack usage (bytes from top to high-water mark).
+    pub stack_used: u32,
+}
+
+impl StackInfo {
+    pub fn stack_free(&self) -> u32 {
+        self.stack_size.saturating_sub(self.stack_used)
+    }
+    pub fn usage_percent(&self) -> f64 {
+        if self.stack_size > 0 {
+            (self.stack_used as f64 / self.stack_size as f64) * 100.0
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Jitter buffer statistics (wire format, postcard-serialized).
+///
+/// This is the wire-format struct used for TLV communication.
+/// The internal `JitterStats` in jitter_buffer.rs uses `usize` for level
+/// and gets converted to this when serializing for the wire.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct JitterStatsInfo {
+    /// Total frames received.
+    pub received: u32,
+    /// Total frames output.
+    pub output: u32,
+    /// Number of underruns (had to output silence).
+    pub underruns: u32,
+    /// Number of overruns (had to drop frames).
+    pub overruns: u32,
+    /// Current buffer level.
+    pub level: u16,
+    /// Current state (0=Buffering, 1=Playing).
+    pub state: u8,
 }

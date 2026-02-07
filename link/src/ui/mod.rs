@@ -15,8 +15,8 @@ pub use log::{LogMessage, LogSender, MAX_LOG_SIZE};
 
 use crate::info;
 use crate::shared::{
-    chunk, read_tlv_loop, Channel, ChannelId, Color, CriticalSectionRawMutex, Led, LoopbackMode,
-    MgmtToUi, NetToUi, Sender, Tlv, UiToMgmt, UiToNet, WriteTlv,
+    chunk, read_tlv_loop, Channel, ChannelId, Color, CriticalSectionRawMutex, Led, UiLoopbackMode,
+    CtlToUi, NetToUi, Sender, Tlv, UiToCtl, UiToNet, WriteTlv,
 };
 use crate::tlv_log;
 use embedded_hal::delay::DelayNs;
@@ -38,7 +38,7 @@ pub enum Button {
 const AUDIO_BUF_SIZE: usize = 256;
 
 enum Event {
-    Mgmt(Tlv<MgmtToUi>),
+    Mgmt(Tlv<CtlToUi>),
     Net(Tlv<NetToUi>),
     ButtonDown(Button),
     ButtonUp(Button),
@@ -98,7 +98,7 @@ where
     let log_sender = log_channel.sender();
 
     // Shared loopback mode (atomic for cross-task access)
-    let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+    let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
 
     // Shared button state - true when any button is pressed
     // This allows audio_task to skip sending frames when no button is held
@@ -181,11 +181,11 @@ where
                         break 'audio;
                     };
 
-                    let mode = LoopbackMode::try_from(loopback_mode.load(Ordering::Relaxed))
-                        .unwrap_or(LoopbackMode::Off);
+                    let mode = UiLoopbackMode::try_from(loopback_mode.load(Ordering::Relaxed))
+                        .unwrap_or(UiLoopbackMode::Off);
 
                     // Raw loopback is handled in audio_task
-                    if mode == LoopbackMode::Raw {
+                    if mode == UiLoopbackMode::Raw {
                         break 'audio;
                     }
 
@@ -194,7 +194,7 @@ where
                     rx_stereo.encode_into(&mut buf);
 
                     // Alaw loopback: play directly (no encryption)
-                    if mode == LoopbackMode::Alaw {
+                    if mode == UiLoopbackMode::Alaw {
                         if let Some(frame) = Frame::from_bytes(&buf) {
                             playback_channel.send(frame).await;
                         }
@@ -226,7 +226,7 @@ where
                     }
 
                     // SFrame loopback: decrypt and play locally
-                    if mode == LoopbackMode::Sframe {
+                    if mode == UiLoopbackMode::Sframe {
                         if sframe_state.unprotect(&[], &mut buf).is_ok() {
                             if let Some(parsed) = chunk::parse_chunk(&buf) {
                                 let audio_data = &buf[parsed.audio_offset
@@ -251,7 +251,7 @@ where
 
             // Drain any pending log messages
             while let Ok(msg) = log_channel.try_receive() {
-                to_mgmt.must_write_tlv(UiToMgmt::Log, msg.as_bytes()).await;
+                to_mgmt.must_write_tlv(UiToCtl::Log, msg.as_bytes()).await;
             }
         }
     };
@@ -279,11 +279,11 @@ where
         let mut raw_loopback_frame = StereoFrame::default();
 
         loop {
-            let mode = LoopbackMode::try_from(loopback_mode.load(Ordering::Relaxed))
-                .unwrap_or(LoopbackMode::Off);
+            let mode = UiLoopbackMode::try_from(loopback_mode.load(Ordering::Relaxed))
+                .unwrap_or(UiLoopbackMode::Off);
 
             // Raw loopback: bypass encode/decode, just echo stereo directly
-            if mode == LoopbackMode::Raw {
+            if mode == UiLoopbackMode::Raw {
                 let mut rx_stereo = StereoFrame::default();
                 if audio_system
                     .read_write(&raw_loopback_frame, &mut rx_stereo)
@@ -364,7 +364,7 @@ async fn button_monitor<'a, B: Wait, const N: usize>(
 }
 
 async fn handle_mgmt<M, N, I, D>(
-    tlv: Tlv<MgmtToUi>,
+    tlv: Tlv<CtlToUi>,
     to_mgmt: &mut M,
     to_net: &mut N,
     i2c: &mut I,
@@ -372,23 +372,23 @@ async fn handle_mgmt<M, N, I, D>(
     loopback_mode: &AtomicU8,
     sframe_state: &mut sframe::SFrameState,
 ) where
-    M: WriteTlv<UiToMgmt>,
+    M: WriteTlv<UiToCtl>,
     N: WriteTlv<UiToNet>,
     I: I2c,
     D: DelayNs,
 {
     match tlv.tlv_type {
-        MgmtToUi::Ping => {
+        CtlToUi::Ping => {
             info!("ui: mgmt ping, sending pong");
-            to_mgmt.must_write_tlv(UiToMgmt::Pong, &tlv.value).await;
+            to_mgmt.must_write_tlv(UiToCtl::Pong, &tlv.value).await;
         }
-        MgmtToUi::CircularPing => {
+        CtlToUi::CircularPing => {
             info!("ui: mgmt circular ping -> net");
             to_net
                 .must_write_tlv(UiToNet::CircularPing, &tlv.value)
                 .await;
         }
-        MgmtToUi::GetVersion => {
+        CtlToUi::GetVersion => {
             info!("ui: get version");
             let mut eeprom = Eeprom::new(i2c, delay);
             let Ok(version) = eeprom.get_version() else {
@@ -396,13 +396,13 @@ async fn handle_mgmt<M, N, I, D>(
                 return;
             };
             let value = version.to_be_bytes();
-            to_mgmt.must_write_tlv(UiToMgmt::Version, &value).await;
+            to_mgmt.must_write_tlv(UiToCtl::Version, &value).await;
         }
-        MgmtToUi::SetVersion => {
+        CtlToUi::SetVersion => {
             info!("ui: set version");
             if tlv.value.len() != 4 {
                 info!("ui: invalid version length: {}", tlv.value.len());
-                to_mgmt.must_write_tlv(UiToMgmt::Error, b"length").await;
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"length").await;
                 return;
             }
             let version =
@@ -410,25 +410,25 @@ async fn handle_mgmt<M, N, I, D>(
             let mut eeprom = Eeprom::new(i2c, delay);
             if eeprom.set_version(version).is_err() {
                 info!("ui: failed to write version to EEPROM");
-                to_mgmt.must_write_tlv(UiToMgmt::Error, b"eeprom").await;
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"eeprom").await;
                 return;
             }
-            to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
-        MgmtToUi::GetSFrameKey => {
+        CtlToUi::GetSFrameKey => {
             info!("ui: get sframe key");
             let mut eeprom = Eeprom::new(i2c, delay);
             let Ok(key) = eeprom.get_sframe_key() else {
                 info!("ui: failed to read sframe key from EEPROM");
                 return;
             };
-            to_mgmt.must_write_tlv(UiToMgmt::SFrameKey, &key).await;
+            to_mgmt.must_write_tlv(UiToCtl::SFrameKey, &key).await;
         }
-        MgmtToUi::SetSFrameKey => {
+        CtlToUi::SetSFrameKey => {
             info!("ui: set sframe key");
             if tlv.value.len() != 16 {
                 info!("ui: invalid sframe key length: {}", tlv.value.len());
-                to_mgmt.must_write_tlv(UiToMgmt::Error, b"length").await;
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"length").await;
                 return;
             }
             let mut key = [0u8; 16];
@@ -436,57 +436,62 @@ async fn handle_mgmt<M, N, I, D>(
             let mut eeprom = Eeprom::new(i2c, delay);
             if eeprom.set_sframe_key(&key).is_err() {
                 info!("ui: failed to write sframe key to EEPROM");
-                to_mgmt.must_write_tlv(UiToMgmt::Error, b"eeprom").await;
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"eeprom").await;
                 return;
             }
             // Derive new key material and reset counter
             sframe_state.reset(&key, 0);
-            to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
-        MgmtToUi::SetLoopback => {
+        CtlToUi::SetLoopback => {
             let mode_byte = tlv.value.first().copied().unwrap_or(0);
-            let mode = LoopbackMode::try_from(mode_byte).unwrap_or(LoopbackMode::Off);
+            let mode = UiLoopbackMode::try_from(mode_byte).unwrap_or(UiLoopbackMode::Off);
             info!("ui: set loopback = {:?}", mode);
             loopback_mode.store(mode as u8, Ordering::Relaxed);
-            to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
-        MgmtToUi::GetLoopback => {
+        CtlToUi::GetLoopback => {
             let mode = loopback_mode.load(Ordering::Relaxed);
             info!("ui: get loopback = {}", mode);
-            to_mgmt.must_write_tlv(UiToMgmt::Loopback, &[mode]).await;
+            to_mgmt.must_write_tlv(UiToCtl::Loopback, &[mode]).await;
         }
-        MgmtToUi::GetStackInfo => {
+        CtlToUi::GetStackInfo => {
             info!("ui: get stack info");
             #[cfg(feature = "cortex-m-stack")]
             {
                 use cortex_m_stack::{stack, stack_size, stack_painted};
+                use crate::shared::StackInfo;
                 let range = stack();
-                let base = range.end as u32;  // Stack grows down, so end is higher address (base)
-                let top = range.start as u32; // Start is lower address (top/limit)
+                let base = range.end as u32;
+                let top = range.start as u32;
                 let size = stack_size() as u32;
                 let used = size.saturating_sub(stack_painted() as u32);
-                let mut value = [0u8; 16];
-                value[0..4].copy_from_slice(&base.to_le_bytes());
-                value[4..8].copy_from_slice(&top.to_le_bytes());
-                value[8..12].copy_from_slice(&size.to_le_bytes());
-                value[12..16].copy_from_slice(&used.to_le_bytes());
-                to_mgmt.must_write_tlv(UiToMgmt::StackInfo, &value).await;
+                let info = StackInfo {
+                    stack_base: base,
+                    stack_top: top,
+                    stack_size: size,
+                    stack_used: used,
+                };
+                let mut buf = [0u8; 32];
+                if let Ok(serialized) = postcard::to_slice(&info, &mut buf) {
+                    to_mgmt.must_write_tlv(UiToCtl::StackInfo, serialized).await;
+                }
             }
             #[cfg(not(feature = "cortex-m-stack"))]
             {
-                to_mgmt.must_write_tlv(UiToMgmt::Error, b"stack measurement not available").await;
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"stack measurement not available").await;
             }
         }
-        MgmtToUi::RepaintStack => {
+        CtlToUi::RepaintStack => {
             info!("ui: repaint stack");
             #[cfg(feature = "cortex-m-stack")]
             {
                 cortex_m_stack::repaint_stack();
-                to_mgmt.must_write_tlv(UiToMgmt::Ack, &[]).await;
+                to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
             }
             #[cfg(not(feature = "cortex-m-stack"))]
             {
-                to_mgmt.must_write_tlv(UiToMgmt::Error, b"stack measurement not available").await;
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"stack measurement not available").await;
             }
         }
     }
@@ -494,13 +499,13 @@ async fn handle_mgmt<M, N, I, D>(
 
 async fn handle_net<M>(tlv: Tlv<NetToUi>, to_mgmt: &mut M) -> Option<Frame>
 where
-    M: WriteTlv<UiToMgmt>,
+    M: WriteTlv<UiToCtl>,
 {
     match tlv.tlv_type {
         NetToUi::CircularPing => {
             info!("ui: net circular ping -> mgmt");
             to_mgmt
-                .must_write_tlv(UiToMgmt::CircularPing, &tlv.value)
+                .must_write_tlv(UiToCtl::CircularPing, &tlv.value)
                 .await;
             None
         }
@@ -523,7 +528,7 @@ mod tests {
 
     /// Mock writer that captures TLVs
     struct MockTlvWriter {
-        written: std::vec::Vec<(UiToMgmt, std::vec::Vec<u8>)>,
+        written: std::vec::Vec<(UiToCtl, std::vec::Vec<u8>)>,
     }
 
     impl MockTlvWriter {
@@ -534,10 +539,10 @@ mod tests {
         }
     }
 
-    impl WriteTlv<UiToMgmt> for MockTlvWriter {
+    impl WriteTlv<UiToCtl> for MockTlvWriter {
         type Error = ();
 
-        async fn write_tlv(&mut self, tlv_type: UiToMgmt, value: &[u8]) -> Result<(), ()> {
+        async fn write_tlv(&mut self, tlv_type: UiToCtl, value: &[u8]) -> Result<(), ()> {
             self.written.push((tlv_type, value.to_vec()));
             Ok(())
         }
@@ -569,11 +574,11 @@ mod tests {
 
         // Create GetVersion TLV
         let tlv = Tlv {
-            tlv_type: MgmtToUi::GetVersion,
+            tlv_type: CtlToUi::GetVersion,
             value: Value::new(),
         };
 
-        let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+        let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -587,7 +592,7 @@ mod tests {
         .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
-        assert_eq!(to_mgmt.written[0].0, UiToMgmt::Version);
+        assert_eq!(to_mgmt.written[0].0, UiToCtl::Version);
         assert_eq!(to_mgmt.written[0].1, &[0xaa, 0xbb, 0xcc, 0xdd]);
     }
 
@@ -602,11 +607,11 @@ mod tests {
         let mut value: Value = Value::new();
         value.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]).unwrap();
         let tlv = Tlv {
-            tlv_type: MgmtToUi::SetVersion,
+            tlv_type: CtlToUi::SetVersion,
             value,
         };
 
-        let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+        let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -621,7 +626,7 @@ mod tests {
 
         // Verify version was set and Ack was sent
         assert_eq!(to_mgmt.written.len(), 1);
-        assert_eq!(to_mgmt.written[0].0, UiToMgmt::Ack);
+        assert_eq!(to_mgmt.written[0].0, UiToCtl::Ack);
         let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         assert_eq!(eeprom.get_version().unwrap(), 0x11223344);
     }
@@ -642,11 +647,11 @@ mod tests {
 
         // Create GetSFrameKey TLV
         let tlv = Tlv {
-            tlv_type: MgmtToUi::GetSFrameKey,
+            tlv_type: CtlToUi::GetSFrameKey,
             value: Value::new(),
         };
 
-        let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+        let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -660,7 +665,7 @@ mod tests {
         .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
-        assert_eq!(to_mgmt.written[0].0, UiToMgmt::SFrameKey);
+        assert_eq!(to_mgmt.written[0].0, UiToCtl::SFrameKey);
         assert_eq!(to_mgmt.written[0].1, &key);
     }
 
@@ -679,11 +684,11 @@ mod tests {
         let mut value: Value = Value::new();
         value.extend_from_slice(&key).unwrap();
         let tlv = Tlv {
-            tlv_type: MgmtToUi::SetSFrameKey,
+            tlv_type: CtlToUi::SetSFrameKey,
             value,
         };
 
-        let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+        let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -698,7 +703,7 @@ mod tests {
 
         // Verify key was set and Ack was sent
         assert_eq!(to_mgmt.written.len(), 1);
-        assert_eq!(to_mgmt.written[0].0, UiToMgmt::Ack);
+        assert_eq!(to_mgmt.written[0].0, UiToCtl::Ack);
         let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         assert_eq!(eeprom.get_sframe_key().unwrap(), key);
     }
@@ -714,11 +719,11 @@ mod tests {
         let mut value: Value = Value::new();
         value.extend_from_slice(&[0x11, 0x22]).unwrap();
         let tlv = Tlv {
-            tlv_type: MgmtToUi::SetVersion,
+            tlv_type: CtlToUi::SetVersion,
             value,
         };
 
-        let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+        let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -733,7 +738,7 @@ mod tests {
 
         // Version should remain default (0xffffffff) and Error should be sent
         assert_eq!(to_mgmt.written.len(), 1);
-        assert_eq!(to_mgmt.written[0].0, UiToMgmt::Error);
+        assert_eq!(to_mgmt.written[0].0, UiToCtl::Error);
         let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         assert_eq!(eeprom.get_version().unwrap(), 0xffffffff);
     }
@@ -749,11 +754,11 @@ mod tests {
         let mut value: Value = Value::new();
         value.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
         let tlv = Tlv {
-            tlv_type: MgmtToUi::SetSFrameKey,
+            tlv_type: CtlToUi::SetSFrameKey,
             value,
         };
 
-        let loopback_mode = AtomicU8::new(LoopbackMode::Off as u8);
+        let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -768,7 +773,7 @@ mod tests {
 
         // Key should remain default (0xff) and Error should be sent
         assert_eq!(to_mgmt.written.len(), 1);
-        assert_eq!(to_mgmt.written[0].0, UiToMgmt::Error);
+        assert_eq!(to_mgmt.written[0].0, UiToCtl::Error);
         let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         assert_eq!(eeprom.get_sframe_key().unwrap(), [0xff; 16]);
     }
@@ -824,14 +829,6 @@ mod audio_streaming_tests {
                 let result: Result<Option<Tlv<UiToNet>>, _> = reader.read_tlv().await;
                 if let Ok(Some(tlv)) = result {
                     match tlv.tlv_type {
-                        // Legacy formats (backwards compatibility)
-                        UiToNet::AudioFrameA => {
-                            self.frames_a.lock().unwrap().push(tlv.value.to_vec());
-                        }
-                        UiToNet::AudioFrameB => {
-                            self.frames_b.lock().unwrap().push(tlv.value.to_vec());
-                        }
-                        // New hactar format: channel_id (1 byte) + encrypted chunk
                         UiToNet::AudioFrame => {
                             if let Some(&channel_id) = tlv.value.first() {
                                 let payload = tlv.value[1..].to_vec();

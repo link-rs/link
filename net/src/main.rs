@@ -23,7 +23,7 @@ use link::{
         ChannelConfig, JitterBuffer, JitterState, WifiSsid, MAX_CHANNELS, MAX_RELAY_URL_LEN,
         MAX_WIFI_SSIDS,
     },
-    uart_config, ChannelId, Color, MgmtToNet, NetLoopback, NetToMgmt, NetToUi, UiToNet,
+    uart_config, ChannelId, Color, CtlToNet, NetLoopbackMode, NetToCtl, NetToUi, UiToNet,
     HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD,
 };
 use log::{info, warn};
@@ -60,7 +60,7 @@ enum MoqCommand {
     /// Set active PTT channel for publishing.
     SetPttChannel(PttChannel),
     /// Set loopback mode.
-    SetLoopback(NetLoopback),
+    SetLoopback(NetLoopbackMode),
 }
 
 /// Events sent from the MoQ task back to the main loop.
@@ -242,7 +242,7 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
             let mut ptt_ready = false;
 
             // Loopback mode (communicated from main loop)
-            let mut loopback = NetLoopback::Off;
+            let mut loopback = NetLoopbackMode::Off;
 
             // PTT mode state (hactar-compatible)
             let mut ptt_pub_track: Option<std::sync::Arc<quicr::PublishTrack>> = None;
@@ -330,7 +330,7 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                     }
                     Ok(MoqCommand::AudioFrame { data }) => {
                         // Only publish if PTT is ready and loopback is not Raw
-                        if ptt_ready && loopback != NetLoopback::Raw {
+                        if ptt_ready && loopback != NetLoopbackMode::Raw {
                             // Data format: [channel_id][payload...]
                             // channel_id 0 = PTT, 1 = AI
                             if data.is_empty() {
@@ -382,13 +382,13 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                 }
 
                 // PTT subscription handling (when ready and not in Raw loopback)
-                if ptt_ready && loopback != NetLoopback::Raw {
+                if ptt_ready && loopback != NetLoopbackMode::Raw {
                     // Drain PTT subscription (receive from other users)
                     if let Some(ref mut subscription) = ptt_subscription {
                         while let Ok(object) = subscription.try_recv() {
                             // Self-echo filter: only filter when loopback is Off
                             // When loopback is Moq, we want to hear our own audio via relay
-                            if loopback == NetLoopback::Off {
+                            if loopback == NetLoopbackMode::Off {
                                 let dominated_by_self = object.headers.group_id == ptt_group_id
                                     && object.headers.object_id < ptt_object_id;
                                 if dominated_by_self {
@@ -790,7 +790,7 @@ fn main() {
     spawn_moq_task(moq_cmd_rx, moq_event_tx);
 
     // Loopback mode state
-    let mut loopback = NetLoopback::Off;
+    let mut loopback = NetLoopbackMode::Off;
 
     // Per-channel jitter buffers
     let mut ptt_buffer = JitterBuffer::new();
@@ -830,7 +830,7 @@ fn main() {
         if let Some((msg_type, value)) =
             try_read_tlv(&mgmt_uart, &mut mgmt_rx_buf, &mut mgmt_rx_pos)
         {
-            if let Ok(tlv_type) = MgmtToNet::try_from(msg_type) {
+            if let Ok(tlv_type) = CtlToNet::try_from(msg_type) {
                 handle_mgmt_message(
                     tlv_type,
                     &value,
@@ -1092,90 +1092,86 @@ fn write_tlv<T: Into<u16>>(uart: &UartDriver, msg_type: T, value: &[u8]) {
 
 /// Handle message from MGMT chip
 fn handle_mgmt_message(
-    msg_type: MgmtToNet,
+    msg_type: CtlToNet,
     value: &[u8],
     mgmt_uart: &UartDriver,
     ui_uart: &UartDriver,
     storage: &mut NvsStorage,
-    loopback: &mut NetLoopback,
+    loopback: &mut NetLoopbackMode,
     moq_cmd_tx: &Sender<MoqCommand>,
     ptt_buffer: &JitterBuffer,
     ptt_ai_buffer: &JitterBuffer,
 ) {
     match msg_type {
-        MgmtToNet::Ping => {
-            write_tlv(mgmt_uart, NetToMgmt::Pong, value);
+        CtlToNet::Ping => {
+            write_tlv(mgmt_uart, NetToCtl::Pong, value);
         }
-        MgmtToNet::CircularPing => {
+        CtlToNet::CircularPing => {
             write_tlv(ui_uart, NetToUi::CircularPing, value);
         }
-        MgmtToNet::AddWifiSsid => {
+        CtlToNet::AddWifiSsid => {
             if let Ok(wifi) = postcard::from_bytes::<WifiSsid>(value) {
                 if storage.add_wifi_ssid(&wifi.ssid, &wifi.password).is_ok() {
                     if storage.save().is_ok() {
-                        write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                        write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
                     } else {
-                        write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+                        write_tlv(mgmt_uart, NetToCtl::Error, b"save");
                     }
                 } else {
-                    write_tlv(mgmt_uart, NetToMgmt::Error, b"add");
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"add");
                 }
             } else {
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"deserialize");
+                write_tlv(mgmt_uart, NetToCtl::Error, b"deserialize");
             }
         }
-        MgmtToNet::GetWifiSsids => {
+        CtlToNet::GetWifiSsids => {
             if let Ok(serialized) = postcard::to_allocvec(&storage.wifi_ssids) {
-                write_tlv(mgmt_uart, NetToMgmt::WifiSsids, &serialized);
+                write_tlv(mgmt_uart, NetToCtl::WifiSsids, &serialized);
             }
         }
-        MgmtToNet::ClearWifiSsids => {
+        CtlToNet::ClearWifiSsids => {
             storage.wifi_ssids.clear();
             if storage.save().is_ok() {
-                write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
             } else {
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+                write_tlv(mgmt_uart, NetToCtl::Error, b"save");
             }
         }
-        MgmtToNet::GetRelayUrl => {
-            write_tlv(mgmt_uart, NetToMgmt::RelayUrl, storage.relay_url.as_bytes());
+        CtlToNet::GetRelayUrl => {
+            write_tlv(mgmt_uart, NetToCtl::RelayUrl, storage.relay_url.as_bytes());
         }
-        MgmtToNet::SetRelayUrl => {
+        CtlToNet::SetRelayUrl => {
             if let Ok(url) = core::str::from_utf8(value) {
                 storage.relay_url = url.to_string();
                 if storage.save().is_ok() {
                     // Also trigger MoQ connection to new relay
                     let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(url.to_string()));
-                    write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
                 } else {
-                    write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"save");
                 }
             } else {
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"utf8");
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
             }
         }
-        MgmtToNet::SetLoopback => {
+        CtlToNet::SetLoopback => {
             let mode_byte = value.first().copied().unwrap_or(0);
-            *loopback = NetLoopback::try_from(mode_byte).unwrap_or(NetLoopback::Off);
+            *loopback = NetLoopbackMode::try_from(mode_byte).unwrap_or(NetLoopbackMode::Off);
             // Notify MoQ task of loopback change
             let _ = moq_cmd_tx.send(MoqCommand::SetLoopback(*loopback));
-            write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+            write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
         }
-        MgmtToNet::GetLoopback => {
-            write_tlv(mgmt_uart, NetToMgmt::Loopback, &[*loopback as u8]);
-        }
-        MgmtToNet::SendChatMessage => {
-            // Chat not implemented yet
-            write_tlv(mgmt_uart, NetToMgmt::Error, b"not implemented");
+        CtlToNet::GetLoopback => {
+            write_tlv(mgmt_uart, NetToCtl::Loopback, &[*loopback as u8]);
         }
         // Channel configuration commands
-        MgmtToNet::GetChannelConfig => {
+        CtlToNet::GetChannelConfig => {
             let channel_id = value.first().copied().unwrap_or(0);
             if let Some(config) = storage.get_channel_config(channel_id) {
                 if let Ok(serialized) = postcard::to_allocvec(config) {
-                    write_tlv(mgmt_uart, NetToMgmt::ChannelConfig, &serialized);
+                    write_tlv(mgmt_uart, NetToCtl::ChannelConfig, &serialized);
                 } else {
-                    write_tlv(mgmt_uart, NetToMgmt::Error, b"serialize");
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"serialize");
                 }
             } else {
                 // Return default config for unconfigured channel
@@ -1185,43 +1181,36 @@ fn handle_mgmt_message(
                     relay_url: heapless::String::new(),
                 };
                 if let Ok(serialized) = postcard::to_allocvec(&default_config) {
-                    write_tlv(mgmt_uart, NetToMgmt::ChannelConfig, &serialized);
+                    write_tlv(mgmt_uart, NetToCtl::ChannelConfig, &serialized);
                 } else {
-                    write_tlv(mgmt_uart, NetToMgmt::Error, b"serialize");
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"serialize");
                 }
             }
         }
-        MgmtToNet::SetChannelConfig => {
+        CtlToNet::SetChannelConfig => {
             if let Ok(config) = postcard::from_bytes::<ChannelConfig>(value) {
                 if storage.set_channel_config(config).is_ok() {
                     if storage.save().is_ok() {
-                        write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                        write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
                     } else {
-                        write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+                        write_tlv(mgmt_uart, NetToCtl::Error, b"save");
                     }
                 } else {
-                    write_tlv(mgmt_uart, NetToMgmt::Error, b"set");
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"set");
                 }
             } else {
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"deserialize");
+                write_tlv(mgmt_uart, NetToCtl::Error, b"deserialize");
             }
         }
-        MgmtToNet::GetAllChannelConfigs => {
-            if let Ok(serialized) = postcard::to_allocvec(&storage.channels) {
-                write_tlv(mgmt_uart, NetToMgmt::AllChannelConfigs, &serialized);
-            } else {
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"serialize");
-            }
-        }
-        MgmtToNet::ClearChannelConfigs => {
+        CtlToNet::ClearChannelConfigs => {
             storage.clear_channel_configs();
             if storage.save().is_ok() {
-                write_tlv(mgmt_uart, NetToMgmt::Ack, &[]);
+                write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
             } else {
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"save");
+                write_tlv(mgmt_uart, NetToCtl::Error, b"save");
             }
         }
-        MgmtToNet::GetJitterStats => {
+        CtlToNet::GetJitterStats => {
             let channel_id = value.first().copied().unwrap_or(0);
             let stats = match ChannelId::try_from(channel_id) {
                 Ok(ChannelId::Ptt) => Some(ptt_buffer.stats()),
@@ -1229,17 +1218,22 @@ fn handle_mgmt_message(
                 _ => None,
             };
             if let Some(s) = stats {
-                // Serialize: received(4) + output(4) + underruns(4) + overruns(4) + level(2) + state(1) = 19 bytes
-                let mut buf = [0u8; 19];
-                buf[0..4].copy_from_slice(&s.received.to_le_bytes());
-                buf[4..8].copy_from_slice(&s.output.to_le_bytes());
-                buf[8..12].copy_from_slice(&s.underruns.to_le_bytes());
-                buf[12..16].copy_from_slice(&s.overruns.to_le_bytes());
-                buf[16..18].copy_from_slice(&(s.level as u16).to_le_bytes());
-                buf[18] = s.state as u8;
-                write_tlv(mgmt_uart, NetToMgmt::JitterStats, &buf);
+                let info = link::JitterStatsInfo {
+                    received: s.received as u32,
+                    output: s.output as u32,
+                    underruns: s.underruns as u32,
+                    overruns: s.overruns as u32,
+                    level: s.level as u16,
+                    state: s.state as u8,
+                };
+                let mut buf = [0u8; 64];
+                if let Ok(serialized) = postcard::to_slice(&info, &mut buf) {
+                    write_tlv(mgmt_uart, NetToCtl::JitterStats, serialized);
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"serialize");
+                }
             } else {
-                write_tlv(mgmt_uart, NetToMgmt::Error, b"invalid channel");
+                write_tlv(mgmt_uart, NetToCtl::Error, b"invalid channel");
             }
         }
     }
@@ -1251,17 +1245,17 @@ fn handle_ui_message(
     value: &[u8],
     mgmt_uart: &UartDriver,
     ui_uart: &UartDriver,
-    loopback: NetLoopback,
+    loopback: NetLoopbackMode,
     moq_cmd_tx: &Sender<MoqCommand>,
 ) {
     match msg_type {
         UiToNet::CircularPing => {
-            write_tlv(mgmt_uart, NetToMgmt::CircularPing, value);
+            write_tlv(mgmt_uart, NetToCtl::CircularPing, value);
         }
         UiToNet::AudioFrameA => {
             // Button A = PTT channel
             let _ = moq_cmd_tx.send(MoqCommand::SetPttChannel(PttChannel::Ptt));
-            if loopback == NetLoopback::Raw {
+            if loopback == NetLoopbackMode::Raw {
                 // Raw loopback - forward directly to UI without MoQ
                 write_tlv(ui_uart, NetToUi::AudioFrame, value);
             } else {
@@ -1275,7 +1269,7 @@ fn handle_ui_message(
         UiToNet::AudioFrameB => {
             // Button B = AI channel
             let _ = moq_cmd_tx.send(MoqCommand::SetPttChannel(PttChannel::Ai));
-            if loopback == NetLoopback::Raw {
+            if loopback == NetLoopbackMode::Raw {
                 // Raw loopback - forward directly to UI without MoQ
                 write_tlv(ui_uart, NetToUi::AudioFrame, value);
             } else {
@@ -1288,7 +1282,7 @@ fn handle_ui_message(
         }
         UiToNet::AudioFrame => {
             // New hactar format: channel_id (1 byte) + encrypted payload
-            if loopback == NetLoopback::Raw {
+            if loopback == NetLoopbackMode::Raw {
                 // Raw loopback - forward directly to UI without MoQ
                 write_tlv(ui_uart, NetToUi::AudioFrame, value);
             } else {

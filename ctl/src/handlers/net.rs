@@ -1,11 +1,11 @@
 //! NET chip command handlers.
 
 use super::Core;
-use crate::{ChannelAction, GetSetString, NetAction, NetLoopbackMode, WifiAction};
+use crate::{ChannelAction, GetSetString, NetAction, NetLoopbackAction, WifiAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::StdDelay;
 use link::ctl::{ChannelConfig, ProgressCallbacks, SetTimeout};
-use link::NetLoopback;
+use link::NetLoopbackMode;
 
 /// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
 struct FlashProgress {
@@ -186,37 +186,30 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
             }
         }
         NetAction::Loopback { mode } => match mode.unwrap_or_default() {
-            NetLoopbackMode::Get => {
+            NetLoopbackAction::Get => {
                 let loopback = core.net_get_loopback().await?;
                 match loopback {
-                    NetLoopback::Off => println!("off"),
-                    NetLoopback::Raw => println!("raw"),
-                    NetLoopback::Moq => println!("moq"),
+                    NetLoopbackMode::Off => println!("off"),
+                    NetLoopbackMode::Raw => println!("raw"),
+                    NetLoopbackMode::Moq => println!("moq"),
                 }
                 Ok(())
             }
-            NetLoopbackMode::Off => {
-                core.net_set_loopback(NetLoopback::Off).await?;
+            NetLoopbackAction::Off => {
+                core.net_set_loopback(NetLoopbackMode::Off).await?;
                 println!("NET loopback: off (normal PTT)");
                 Ok(())
             }
-            NetLoopbackMode::Raw => {
-                core.net_set_loopback(NetLoopback::Raw).await?;
+            NetLoopbackAction::Raw => {
+                core.net_set_loopback(NetLoopbackMode::Raw).await?;
                 println!("NET loopback: raw (local bypass)");
                 Ok(())
             }
-            NetLoopbackMode::Moq => {
-                core.net_set_loopback(NetLoopback::Moq).await?;
+            NetLoopbackAction::Moq => {
+                core.net_set_loopback(NetLoopbackMode::Moq).await?;
                 println!("NET loopback: moq (hear own audio via relay)");
                 Ok(())
             }
-        },
-        NetAction::Chat { message } => match core.send_chat_message(&message).await {
-            Ok(()) => {
-                println!("Chat message sent");
-                Ok(())
-            }
-            Err(e) => Err(format!("Failed to send chat message: {}", e).into()),
         },
         NetAction::Reset { action } => match action.as_deref() {
             Some("bootloader") => {
@@ -303,31 +296,41 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
         }
         NetAction::Channel { action } => match action {
             None => {
-                // List all channel configs
-                let configs = core.get_all_channel_configs().await?;
-                if configs.is_empty() {
-                    println!("No channel configurations");
-                } else {
-                    println!("Channel configurations:");
-                    for config in configs.iter() {
-                        let channel_name = match config.channel_id {
-                            0 => "Ptt",
-                            1 => "PttAi",
-                            3 => "ChatAi",
-                            id => &format!("Unknown({})", id),
-                        };
-                        println!(
-                            "  {} ({}): enabled={}, relay_url={}",
-                            config.channel_id,
-                            channel_name,
-                            config.enabled,
-                            if config.relay_url.is_empty() {
-                                "(global)"
-                            } else {
-                                config.relay_url.as_str()
+                // List all channel configs by querying each known channel
+                let channel_ids = [0u8, 1, 3]; // Ptt, PttAi, ChatAi
+                let mut found_any = false;
+                for &id in &channel_ids {
+                    match core.get_channel_config(id).await {
+                        Ok(config) => {
+                            if !found_any {
+                                println!("Channel configurations:");
+                                found_any = true;
                             }
-                        );
+                            let channel_name = match config.channel_id {
+                                0 => "Ptt",
+                                1 => "PttAi",
+                                3 => "ChatAi",
+                                _ => "Unknown",
+                            };
+                            println!(
+                                "  {} ({}): enabled={}, relay_url={}",
+                                config.channel_id,
+                                channel_name,
+                                config.enabled,
+                                if config.relay_url.is_empty() {
+                                    "(global)"
+                                } else {
+                                    config.relay_url.as_str()
+                                }
+                            );
+                        }
+                        Err(_) => {
+                            // Channel not configured, skip
+                        }
                     }
+                }
+                if !found_any {
+                    println!("No channel configurations");
                 }
                 Ok(())
             }

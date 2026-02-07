@@ -180,7 +180,7 @@ enum GetSetHex {
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
-enum NetLoopbackMode {
+enum NetLoopbackAction {
     #[default]
     Get,
     /// Normal PTT operation - audio to MoQ, filter self-echo
@@ -242,13 +242,7 @@ enum NetAction {
     /// Set loopback mode: off (normal PTT), raw (local bypass), moq (hear own audio via relay)
     Loopback {
         #[command(subcommand)]
-        mode: Option<NetLoopbackMode>,
-    },
-
-    #[command(name = "chat")]
-    Chat {
-        /// Chat message to send
-        message: String,
+        mode: Option<NetLoopbackAction>,
     },
 
     /// Reset the NET chip

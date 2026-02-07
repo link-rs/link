@@ -9,8 +9,9 @@ use alloc::format;
 use alloc::string::String;
 
 use crate::shared::{
-    ChannelConfig, CtlToMgmt, LoopbackMode, MgmtToCtl, MgmtToNet, MgmtToUi, NetLoopback, NetToMgmt,
-    Tlv, UiToMgmt, WifiSsid, HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD,
+    ChannelConfig, CtlToMgmt, CtlToNet, CtlToUi, JitterStatsInfo, MgmtToCtl, NetLoopbackMode,
+    NetToCtl, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid, HEADER_SIZE, MAX_VALUE_SIZE,
+    SYNC_WORD,
 };
 
 use super::port::CtlPort;
@@ -96,48 +97,11 @@ impl std::error::Error for CtlError {}
 // Result Types
 // ============================================================================
 
-/// Stack usage information.
-#[derive(Debug, Clone, Default)]
-pub struct StackInfoResult {
-    /// Stack base address (highest address, start of stack memory).
-    pub stack_base: u32,
-    /// Stack top address (lowest address, end of stack memory).
-    pub stack_top: u32,
-    /// Total stack size in bytes.
-    pub stack_size: u32,
-    /// Stack usage (bytes from top to high-water mark).
-    pub stack_used: u32,
-}
+/// Stack usage information (re-exported from shared protocol).
+pub type StackInfoResult = StackInfo;
 
-impl StackInfoResult {
-    pub fn stack_free(&self) -> u32 {
-        self.stack_size.saturating_sub(self.stack_used)
-    }
-    pub fn usage_percent(&self) -> f64 {
-        if self.stack_size > 0 {
-            (self.stack_used as f64 / self.stack_size as f64) * 100.0
-        } else {
-            0.0
-        }
-    }
-}
-
-/// Jitter buffer statistics from the NET chip.
-#[derive(Debug, Clone, Default)]
-pub struct JitterStatsResult {
-    /// Total frames received.
-    pub received: u32,
-    /// Total frames output.
-    pub output: u32,
-    /// Number of underruns (had to output silence).
-    pub underruns: u32,
-    /// Number of overruns (had to drop frames).
-    pub overruns: u32,
-    /// Current buffer level.
-    pub level: u16,
-    /// Current state (0=Buffering, 1=Playing).
-    pub state: u8,
-}
+/// Jitter buffer statistics (re-exported from shared protocol).
+pub type JitterStatsResult = JitterStatsInfo;
 
 // ============================================================================
 // CtlCore
@@ -307,7 +271,7 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Write a tunneled TLV to UI through MGMT.
-    async fn write_tlv_ui(&mut self, tlv_type: MgmtToUi, value: &[u8]) -> Result<(), CtlError> {
+    async fn write_tlv_ui(&mut self, tlv_type: CtlToUi, value: &[u8]) -> Result<(), CtlError> {
         // Create inner TLV (sync word + header + value)
         let inner_type: u16 = tlv_type.into();
         let mut inner = Vec::<u8>::new();
@@ -320,7 +284,7 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Write a tunneled TLV to NET through MGMT.
-    async fn write_tlv_net(&mut self, tlv_type: MgmtToNet, value: &[u8]) -> Result<(), CtlError> {
+    async fn write_tlv_net(&mut self, tlv_type: CtlToNet, value: &[u8]) -> Result<(), CtlError> {
         // Create inner TLV (sync word + header + value)
         let inner_type: u16 = tlv_type.into();
         let mut inner = Vec::<u8>::new();
@@ -361,10 +325,10 @@ impl<P: CtlPort> CtlCore<P> {
     ///
     /// The UI tunnel data is treated as a byte stream - TLVs may span multiple
     /// FromUi messages. This method scans for sync words and parses complete TLVs.
-    async fn read_tlv_ui(&mut self) -> Result<Tlv<UiToMgmt>, CtlError> {
+    async fn read_tlv_ui(&mut self) -> Result<Tlv<UiToCtl>, CtlError> {
         loop {
             // Try to parse a TLV from the buffer
-            if let Some(tlv) = Self::try_parse_tlv_from_buffer::<UiToMgmt>(&mut self.ui_buffer)? {
+            if let Some(tlv) = Self::try_parse_tlv_from_buffer::<UiToCtl>(&mut self.ui_buffer)? {
                 return Ok(tlv);
             }
 
@@ -390,10 +354,10 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Read a TLV from UI tunnel, skipping Log messages.
-    async fn read_tlv_ui_skip_log(&mut self) -> Result<Tlv<UiToMgmt>, CtlError> {
+    async fn read_tlv_ui_skip_log(&mut self) -> Result<Tlv<UiToCtl>, CtlError> {
         loop {
             let tlv = self.read_tlv_ui().await?;
-            if tlv.tlv_type != UiToMgmt::Log {
+            if tlv.tlv_type != UiToCtl::Log {
                 return Ok(tlv);
             }
             // Skip log messages
@@ -404,10 +368,10 @@ impl<P: CtlPort> CtlCore<P> {
     ///
     /// The NET tunnel data is treated as a byte stream - TLVs may span multiple
     /// FromNet messages, and non-TLV data (like raw log output) is discarded.
-    async fn read_tlv_net(&mut self) -> Result<Tlv<NetToMgmt>, CtlError> {
+    async fn read_tlv_net(&mut self) -> Result<Tlv<NetToCtl>, CtlError> {
         loop {
             // Try to parse a TLV from the buffer
-            if let Some(tlv) = Self::try_parse_tlv_from_buffer::<NetToMgmt>(&mut self.net_buffer)? {
+            if let Some(tlv) = Self::try_parse_tlv_from_buffer::<NetToCtl>(&mut self.net_buffer)? {
                 return Ok(tlv);
             }
 
@@ -641,43 +605,17 @@ impl<P: CtlPort> CtlCore<P> {
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        if tlv.value.len() != 16 {
-            return Err(CtlError::InvalidLength {
-                expected: 16,
-                actual: tlv.value.len(),
-            });
-        }
-        Ok(StackInfoResult {
-            stack_base: u32::from_le_bytes([
-                tlv.value[0],
-                tlv.value[1],
-                tlv.value[2],
-                tlv.value[3],
-            ]),
-            stack_top: u32::from_le_bytes([tlv.value[4], tlv.value[5], tlv.value[6], tlv.value[7]]),
-            stack_size: u32::from_le_bytes([
-                tlv.value[8],
-                tlv.value[9],
-                tlv.value[10],
-                tlv.value[11],
-            ]),
-            stack_used: u32::from_le_bytes([
-                tlv.value[12],
-                tlv.value[13],
-                tlv.value[14],
-                tlv.value[15],
-            ]),
-        })
+        let info: StackInfo = postcard::from_bytes(&tlv.value).map_err(|_| CtlError::InvalidData)?;
+        Ok(info)
     }
 
     /// Repaint the MGMT chip stack for future measurement.
     pub async fn mgmt_repaint_stack(&mut self) -> Result<(), CtlError> {
         self.write_tlv(CtlToMgmt::RepaintStack, &[]).await?;
         let tlv = self.read_tlv_mgmt().await?;
-        // Accept either Ack (old firmware) or StackRepainted (new firmware)
-        if tlv.tlv_type != MgmtToCtl::Ack && tlv.tlv_type != MgmtToCtl::StackRepainted {
+        if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
-                expected: "Ack or StackRepainted",
+                expected: "Ack",
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
@@ -688,7 +626,7 @@ impl<P: CtlPort> CtlCore<P> {
     ///
     /// This changes the baud rate between MGMT and NET chips.
     pub async fn set_net_baud_rate(&mut self, baud_rate: u32) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::SetNetBaudRate, &baud_rate.to_le_bytes())
+        self.write_tlv(CtlToMgmt::SetNetBaudRate, &baud_rate.to_be_bytes())
             .await?;
         let tlv = self.read_tlv_mgmt().await?;
         if tlv.tlv_type != MgmtToCtl::Ack {
@@ -707,7 +645,7 @@ impl<P: CtlPort> CtlCore<P> {
     /// After calling this, the caller must change their own serial port baud rate
     /// to match before continuing communication.
     pub async fn set_ctl_baud_rate(&mut self, baud_rate: u32) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::SetCtlBaudRate, &baud_rate.to_le_bytes())
+        self.write_tlv(CtlToMgmt::SetCtlBaudRate, &baud_rate.to_be_bytes())
             .await?;
         let tlv = self.read_tlv_mgmt().await?;
         if tlv.tlv_type != MgmtToCtl::Ack {
@@ -739,9 +677,9 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Ping the UI chip through the MGMT tunnel.
     pub async fn ui_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
-        self.write_tlv_ui(MgmtToUi::Ping, data).await?;
+        self.write_tlv_ui(CtlToUi::Ping, data).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
-        if tlv.tlv_type != UiToMgmt::Pong {
+        if tlv.tlv_type != UiToCtl::Pong {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Pong",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -755,9 +693,9 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Get the version stored in UI chip EEPROM.
     pub async fn get_version(&mut self) -> Result<u32, CtlError> {
-        self.write_tlv_ui(MgmtToUi::GetVersion, &[]).await?;
+        self.write_tlv_ui(CtlToUi::GetVersion, &[]).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
-        if tlv.tlv_type != UiToMgmt::Version {
+        if tlv.tlv_type != UiToCtl::Version {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Version",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -779,10 +717,10 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Set the version stored in UI chip EEPROM.
     pub async fn set_version(&mut self, version: u32) -> Result<(), CtlError> {
-        self.write_tlv_ui(MgmtToUi::SetVersion, &version.to_be_bytes())
+        self.write_tlv_ui(CtlToUi::SetVersion, &version.to_be_bytes())
             .await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
-        if tlv.tlv_type != UiToMgmt::Ack {
+        if tlv.tlv_type != UiToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -793,9 +731,9 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Get the SFrame key stored in UI chip EEPROM.
     pub async fn get_sframe_key(&mut self) -> Result<[u8; 16], CtlError> {
-        self.write_tlv_ui(MgmtToUi::GetSFrameKey, &[]).await?;
+        self.write_tlv_ui(CtlToUi::GetSFrameKey, &[]).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
-        if tlv.tlv_type != UiToMgmt::SFrameKey {
+        if tlv.tlv_type != UiToCtl::SFrameKey {
             return Err(CtlError::UnexpectedResponse {
                 expected: "SFrameKey",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -814,9 +752,9 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Set the SFrame key stored in UI chip EEPROM.
     pub async fn set_sframe_key(&mut self, key: &[u8; 16]) -> Result<(), CtlError> {
-        self.write_tlv_ui(MgmtToUi::SetSFrameKey, key).await?;
+        self.write_tlv_ui(CtlToUi::SetSFrameKey, key).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
-        if tlv.tlv_type != UiToMgmt::Ack {
+        if tlv.tlv_type != UiToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -826,11 +764,11 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Set UI chip loopback mode.
-    pub async fn ui_set_loopback(&mut self, mode: LoopbackMode) -> Result<(), CtlError> {
-        self.write_tlv_ui(MgmtToUi::SetLoopback, &[mode as u8])
+    pub async fn ui_set_loopback(&mut self, mode: UiLoopbackMode) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::SetLoopback, &[mode as u8])
             .await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
-        if tlv.tlv_type != UiToMgmt::Ack {
+        if tlv.tlv_type != UiToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -840,71 +778,46 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Get UI chip loopback mode.
-    pub async fn ui_get_loopback(&mut self) -> Result<LoopbackMode, CtlError> {
-        self.write_tlv_ui(MgmtToUi::GetLoopback, &[]).await?;
+    pub async fn ui_get_loopback(&mut self) -> Result<UiLoopbackMode, CtlError> {
+        self.write_tlv_ui(CtlToUi::GetLoopback, &[]).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
-        if tlv.tlv_type != UiToMgmt::Loopback {
+        if tlv.tlv_type != UiToCtl::Loopback {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Loopback",
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
         let mode_byte = tlv.value.first().copied().unwrap_or(0);
-        Ok(LoopbackMode::try_from(mode_byte).unwrap_or(LoopbackMode::Off))
+        Ok(UiLoopbackMode::try_from(mode_byte).unwrap_or(UiLoopbackMode::Off))
     }
 
     /// Get UI chip stack usage information.
     pub async fn ui_get_stack_info(&mut self) -> Result<StackInfoResult, CtlError> {
-        self.write_tlv_ui(MgmtToUi::GetStackInfo, &[]).await?;
+        self.write_tlv_ui(CtlToUi::GetStackInfo, &[]).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
-        if tlv.tlv_type == UiToMgmt::Error {
+        if tlv.tlv_type == UiToCtl::Error {
             let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
             return Err(CtlError::DeviceError(msg.into()));
         }
-        if tlv.tlv_type != UiToMgmt::StackInfo {
+        if tlv.tlv_type != UiToCtl::StackInfo {
             return Err(CtlError::UnexpectedResponse {
                 expected: "StackInfo",
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        if tlv.value.len() != 16 {
-            return Err(CtlError::InvalidLength {
-                expected: 16,
-                actual: tlv.value.len(),
-            });
-        }
-        Ok(StackInfoResult {
-            stack_base: u32::from_le_bytes([
-                tlv.value[0],
-                tlv.value[1],
-                tlv.value[2],
-                tlv.value[3],
-            ]),
-            stack_top: u32::from_le_bytes([tlv.value[4], tlv.value[5], tlv.value[6], tlv.value[7]]),
-            stack_size: u32::from_le_bytes([
-                tlv.value[8],
-                tlv.value[9],
-                tlv.value[10],
-                tlv.value[11],
-            ]),
-            stack_used: u32::from_le_bytes([
-                tlv.value[12],
-                tlv.value[13],
-                tlv.value[14],
-                tlv.value[15],
-            ]),
-        })
+        let info: StackInfo = postcard::from_bytes(&tlv.value).map_err(|_| CtlError::InvalidData)?;
+        Ok(info)
     }
 
     /// Repaint the UI chip stack for future measurement.
     pub async fn ui_repaint_stack(&mut self) -> Result<(), CtlError> {
-        self.write_tlv_ui(MgmtToUi::RepaintStack, &[]).await?;
+        self.write_tlv_ui(CtlToUi::RepaintStack, &[]).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
-        if tlv.tlv_type == UiToMgmt::Error {
+        if tlv.tlv_type == UiToCtl::Error {
             let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
             return Err(CtlError::DeviceError(msg.into()));
         }
-        if tlv.tlv_type != UiToMgmt::Ack {
+        if tlv.tlv_type != UiToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -913,43 +826,43 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
-    /// Reset the UI chip into bootloader mode.
+    /// Set UI chip BOOT0 pin directly.
+    pub async fn set_ui_boot0(&mut self, high: bool) -> Result<(), CtlError> {
+        self.write_tlv(CtlToMgmt::SetUiBoot0, &[high as u8]).await
+    }
+
+    /// Set UI chip BOOT1 pin directly.
+    pub async fn set_ui_boot1(&mut self, high: bool) -> Result<(), CtlError> {
+        self.write_tlv(CtlToMgmt::SetUiBoot1, &[high as u8]).await
+    }
+
+    /// Set UI chip RST pin directly.
+    pub async fn set_ui_rst(&mut self, high: bool) -> Result<(), CtlError> {
+        self.write_tlv(CtlToMgmt::SetUiRst, &[high as u8]).await
+    }
+
+    /// Reset the UI chip into bootloader mode using pin control.
     pub async fn reset_ui_to_bootloader(&mut self) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::ResetUiToBootloader, &[]).await?;
-        let tlv = self.read_tlv_mgmt().await?;
-        if tlv.tlv_type != MgmtToCtl::Ack {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "Ack",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        Ok(())
+        // BOOT0=1, BOOT1=0, then RST cycle
+        self.set_ui_boot0(true).await?;
+        self.set_ui_boot1(false).await?;
+        self.set_ui_rst(false).await?;
+        // Small delay for reset to take effect (caller should provide)
+        self.set_ui_rst(true).await
     }
 
-    /// Reset the UI chip into user mode (normal operation).
+    /// Reset the UI chip into user mode using pin control.
     pub async fn reset_ui_to_user(&mut self) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::ResetUiToUser, &[]).await?;
-        let tlv = self.read_tlv_mgmt().await?;
-        if tlv.tlv_type != MgmtToCtl::Ack {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "Ack",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        Ok(())
+        // BOOT0=0, BOOT1=1, then RST cycle
+        self.set_ui_boot0(false).await?;
+        self.set_ui_boot1(true).await?;
+        self.set_ui_rst(false).await?;
+        self.set_ui_rst(true).await
     }
 
     /// Hold the UI chip in reset.
     pub async fn hold_ui_reset(&mut self) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::HoldUiReset, &[]).await?;
-        let tlv = self.read_tlv_mgmt().await?;
-        if tlv.tlv_type != MgmtToCtl::Ack {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "Ack",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        Ok(())
+        self.set_ui_rst(false).await
     }
 
     /// Read a log message from the UI chip.
@@ -959,7 +872,7 @@ impl<P: CtlPort> CtlCore<P> {
     /// or an error if reading failed.
     pub async fn read_ui_log(&mut self) -> Result<Option<String>, CtlError> {
         let tlv = self.read_tlv_ui().await?;
-        if tlv.tlv_type == UiToMgmt::Log {
+        if tlv.tlv_type == UiToCtl::Log {
             match core::str::from_utf8(&tlv.value) {
                 Ok(msg) => Ok(Some(msg.into())),
                 Err(_) => Ok(Some(format!("<invalid utf8: {:?}>", tlv.value.as_slice()))),
@@ -985,8 +898,8 @@ impl<P: CtlPort> CtlCore<P> {
 
         // Check if it's a FromUi containing a Log
         if tlv.tlv_type == MgmtToCtl::FromUi {
-            if let Ok(inner) = self.parse_inner_tlv::<UiToMgmt>(&tlv.value) {
-                if inner.tlv_type == UiToMgmt::Log {
+            if let Ok(inner) = self.parse_inner_tlv::<UiToCtl>(&tlv.value) {
+                if inner.tlv_type == UiToCtl::Log {
                     match core::str::from_utf8(&inner.value) {
                         Ok(msg) => return Ok(Some(msg.into())),
                         Err(_) => {
@@ -1016,9 +929,9 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Ping the NET chip through the MGMT tunnel.
     pub async fn net_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
-        self.write_tlv_net(MgmtToNet::Ping, data).await?;
+        self.write_tlv_net(CtlToNet::Ping, data).await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::Pong {
+        if tlv.tlv_type != NetToCtl::Pong {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Pong",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -1031,11 +944,11 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Set NET chip loopback mode.
-    pub async fn net_set_loopback(&mut self, mode: NetLoopback) -> Result<(), CtlError> {
-        self.write_tlv_net(MgmtToNet::SetLoopback, &[mode as u8])
+    pub async fn net_set_loopback(&mut self, mode: NetLoopbackMode) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetLoopback, &[mode as u8])
             .await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::Ack {
+        if tlv.tlv_type != NetToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -1045,21 +958,21 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Get NET chip loopback mode.
-    pub async fn net_get_loopback(&mut self) -> Result<NetLoopback, CtlError> {
-        self.write_tlv_net(MgmtToNet::GetLoopback, &[]).await?;
+    pub async fn net_get_loopback(&mut self) -> Result<NetLoopbackMode, CtlError> {
+        self.write_tlv_net(CtlToNet::GetLoopback, &[]).await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type == NetToMgmt::Error {
+        if tlv.tlv_type == NetToCtl::Error {
             let msg = core::str::from_utf8(&tlv.value).unwrap_or("<invalid utf8>");
             return Err(CtlError::DeviceError(format!("GetLoopback: {}", msg)));
         }
-        if tlv.tlv_type != NetToMgmt::Loopback {
+        if tlv.tlv_type != NetToCtl::Loopback {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Loopback",
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
         let mode_byte = tlv.value.first().copied().unwrap_or(0);
-        Ok(NetLoopback::try_from(mode_byte).unwrap_or(NetLoopback::Off))
+        Ok(NetLoopbackMode::try_from(mode_byte).unwrap_or(NetLoopbackMode::Off))
     }
 
     /// Add a WiFi SSID and password pair to NET chip storage.
@@ -1070,10 +983,10 @@ impl<P: CtlPort> CtlCore<P> {
         };
         let mut buf = [0u8; 128];
         let serialized = postcard::to_slice(&wifi, &mut buf).map_err(|_| CtlError::TooLong)?;
-        self.write_tlv_net(MgmtToNet::AddWifiSsid, serialized)
+        self.write_tlv_net(CtlToNet::AddWifiSsid, serialized)
             .await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::Ack {
+        if tlv.tlv_type != NetToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -1084,9 +997,9 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Get all WiFi SSIDs from NET chip storage.
     pub async fn get_wifi_ssids(&mut self) -> Result<Vec<WifiSsid>, CtlError> {
-        self.write_tlv_net(MgmtToNet::GetWifiSsids, &[]).await?;
+        self.write_tlv_net(CtlToNet::GetWifiSsids, &[]).await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::WifiSsids {
+        if tlv.tlv_type != NetToCtl::WifiSsids {
             return Err(CtlError::UnexpectedResponse {
                 expected: "WifiSsids",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -1097,9 +1010,9 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Clear all WiFi SSIDs from NET chip storage.
     pub async fn clear_wifi_ssids(&mut self) -> Result<(), CtlError> {
-        self.write_tlv_net(MgmtToNet::ClearWifiSsids, &[]).await?;
+        self.write_tlv_net(CtlToNet::ClearWifiSsids, &[]).await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::Ack {
+        if tlv.tlv_type != NetToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -1110,9 +1023,9 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Get the relay URL from NET chip storage.
     pub async fn get_relay_url(&mut self) -> Result<String, CtlError> {
-        self.write_tlv_net(MgmtToNet::GetRelayUrl, &[]).await?;
+        self.write_tlv_net(CtlToNet::GetRelayUrl, &[]).await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::RelayUrl {
+        if tlv.tlv_type != NetToCtl::RelayUrl {
             return Err(CtlError::UnexpectedResponse {
                 expected: "RelayUrl",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -1124,10 +1037,10 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Set the relay URL in NET chip storage.
     pub async fn set_relay_url(&mut self, url: &str) -> Result<(), CtlError> {
-        self.write_tlv_net(MgmtToNet::SetRelayUrl, url.as_bytes())
+        self.write_tlv_net(CtlToNet::SetRelayUrl, url.as_bytes())
             .await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::Ack {
+        if tlv.tlv_type != NetToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -1138,10 +1051,10 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Get configuration for a specific channel.
     pub async fn get_channel_config(&mut self, channel_id: u8) -> Result<ChannelConfig, CtlError> {
-        self.write_tlv_net(MgmtToNet::GetChannelConfig, &[channel_id])
+        self.write_tlv_net(CtlToNet::GetChannelConfig, &[channel_id])
             .await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::ChannelConfig {
+        if tlv.tlv_type != NetToCtl::ChannelConfig {
             return Err(CtlError::UnexpectedResponse {
                 expected: "ChannelConfig",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -1154,10 +1067,10 @@ impl<P: CtlPort> CtlCore<P> {
     pub async fn set_channel_config(&mut self, config: &ChannelConfig) -> Result<(), CtlError> {
         let mut buf = [0u8; 256];
         let serialized = postcard::to_slice(config, &mut buf).map_err(|_| CtlError::TooLong)?;
-        self.write_tlv_net(MgmtToNet::SetChannelConfig, serialized)
+        self.write_tlv_net(CtlToNet::SetChannelConfig, serialized)
             .await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::Ack {
+        if tlv.tlv_type != NetToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -1166,26 +1079,12 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
-    /// Get all channel configurations.
-    pub async fn get_all_channel_configs(&mut self) -> Result<Vec<ChannelConfig>, CtlError> {
-        self.write_tlv_net(MgmtToNet::GetAllChannelConfigs, &[])
-            .await?;
-        let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::AllChannelConfigs {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "AllChannelConfigs",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        postcard::from_bytes(&tlv.value).map_err(|_| CtlError::InvalidData)
-    }
-
     /// Clear all channel configurations.
     pub async fn clear_channel_configs(&mut self) -> Result<(), CtlError> {
-        self.write_tlv_net(MgmtToNet::ClearChannelConfigs, &[])
+        self.write_tlv_net(CtlToNet::ClearChannelConfigs, &[])
             .await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::Ack {
+        if tlv.tlv_type != NetToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -1199,113 +1098,41 @@ impl<P: CtlPort> CtlCore<P> {
         &mut self,
         channel_id: u8,
     ) -> Result<JitterStatsResult, CtlError> {
-        self.write_tlv_net(MgmtToNet::GetJitterStats, &[channel_id])
+        self.write_tlv_net(CtlToNet::GetJitterStats, &[channel_id])
             .await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::JitterStats {
+        if tlv.tlv_type != NetToCtl::JitterStats {
             return Err(CtlError::UnexpectedResponse {
                 expected: "JitterStats",
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        if tlv.value.len() < 19 {
-            return Err(CtlError::InvalidData);
-        }
-        Ok(JitterStatsResult {
-            received: u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]),
-            output: u32::from_le_bytes([tlv.value[4], tlv.value[5], tlv.value[6], tlv.value[7]]),
-            underruns: u32::from_le_bytes([
-                tlv.value[8],
-                tlv.value[9],
-                tlv.value[10],
-                tlv.value[11],
-            ]),
-            overruns: u32::from_le_bytes([
-                tlv.value[12],
-                tlv.value[13],
-                tlv.value[14],
-                tlv.value[15],
-            ]),
-            level: u16::from_le_bytes([tlv.value[16], tlv.value[17]]),
-            state: tlv.value[18],
-        })
+        let stats: JitterStatsInfo = postcard::from_bytes(&tlv.value).map_err(|_| CtlError::InvalidData)?;
+        Ok(stats)
     }
 
-    /// Reset the NET chip into bootloader mode.
+    /// Reset the NET chip into bootloader mode using pin control.
     pub async fn reset_net_to_bootloader(&mut self) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::ResetNetToBootloader, &[]).await?;
-        // Read TLVs, skipping any FromNet until we get Ack
-        for _ in 0..100 {
-            let tlv = self
-                .read_tlv::<MgmtToCtl>()
-                .await?
-                .ok_or(CtlError::UnexpectedEof)?;
-            match tlv.tlv_type {
-                MgmtToCtl::Ack => return Ok(()),
-                MgmtToCtl::FromNet => continue,
-                other => {
-                    return Err(CtlError::UnexpectedResponse {
-                        expected: "Ack",
-                        actual: format!("{:?}", other),
-                    });
-                }
-            }
-        }
-        Err(CtlError::Timeout)
+        // First power cycle (clean slate)
+        self.write_tlv(CtlToMgmt::SetNetRst, &[0]).await?;
+        self.write_tlv(CtlToMgmt::SetNetRst, &[1]).await?;
+        // Set BOOT low for bootloader mode
+        self.write_tlv(CtlToMgmt::SetNetBoot, &[0]).await?;
+        // Second power cycle
+        self.write_tlv(CtlToMgmt::SetNetRst, &[0]).await?;
+        self.write_tlv(CtlToMgmt::SetNetRst, &[1]).await
     }
 
-    /// Reset the NET chip into user mode (normal operation).
+    /// Reset the NET chip into user mode using pin control.
     pub async fn reset_net_to_user(&mut self) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::ResetNetToUser, &[]).await?;
-        // Read TLVs, skipping any FromNet until we get Ack
-        for _ in 0..100 {
-            let tlv = self
-                .read_tlv::<MgmtToCtl>()
-                .await?
-                .ok_or(CtlError::UnexpectedEof)?;
-            match tlv.tlv_type {
-                MgmtToCtl::Ack => return Ok(()),
-                MgmtToCtl::FromNet => continue,
-                other => {
-                    return Err(CtlError::UnexpectedResponse {
-                        expected: "Ack",
-                        actual: format!("{:?}", other),
-                    });
-                }
-            }
-        }
-        Err(CtlError::Timeout)
+        self.write_tlv(CtlToMgmt::SetNetBoot, &[1]).await?;
+        self.write_tlv(CtlToMgmt::SetNetRst, &[0]).await?;
+        self.write_tlv(CtlToMgmt::SetNetRst, &[1]).await
     }
 
     /// Hold the NET chip in reset.
     pub async fn hold_net_reset(&mut self) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::HoldNetReset, &[]).await?;
-        let tlv = self.read_tlv_mgmt().await?;
-        if tlv.tlv_type != MgmtToCtl::Ack {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "Ack",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        Ok(())
-    }
-
-    /// Send a chat message via MoQ.
-    pub async fn send_chat_message(&mut self, message: &str) -> Result<(), CtlError> {
-        self.write_tlv_net(MgmtToNet::SendChatMessage, message.as_bytes())
-            .await?;
-        let tlv = self.read_tlv_net().await?;
-        match tlv.tlv_type {
-            NetToMgmt::ChatMessageSent | NetToMgmt::Ack => Ok(()),
-            NetToMgmt::Error => {
-                let err = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
-                Err(CtlError::DeviceError(err.into()))
-            }
-            other => Err(CtlError::UnexpectedResponse {
-                expected: "ChatMessageSent",
-                actual: format!("{:?}", other),
-            }),
-        }
+        self.write_tlv(CtlToMgmt::SetNetRst, &[0]).await
     }
 
     // ========================================================================
@@ -1314,9 +1141,9 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Send a circular ping starting from UI (UI -> NET -> MGMT -> CTL).
     pub async fn ui_first_circular_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
-        self.write_tlv_ui(MgmtToUi::CircularPing, data).await?;
+        self.write_tlv_ui(CtlToUi::CircularPing, data).await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToMgmt::CircularPing {
+        if tlv.tlv_type != NetToCtl::CircularPing {
             return Err(CtlError::UnexpectedResponse {
                 expected: "CircularPing",
                 actual: format!("{:?}", tlv.tlv_type),
@@ -1330,9 +1157,9 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Send a circular ping starting from NET (NET -> UI -> MGMT -> CTL).
     pub async fn net_first_circular_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
-        self.write_tlv_net(MgmtToNet::CircularPing, data).await?;
+        self.write_tlv_net(CtlToNet::CircularPing, data).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
-        if tlv.tlv_type != UiToMgmt::CircularPing {
+        if tlv.tlv_type != UiToCtl::CircularPing {
             return Err(CtlError::UnexpectedResponse {
                 expected: "CircularPing",
                 actual: format!("{:?}", tlv.tlv_type),

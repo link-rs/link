@@ -2,7 +2,7 @@
 
 use crate::info;
 use crate::shared::{
-    Color, CtlToMgmt, Led, MgmtToCtl, MgmtToNet, MgmtToUi, ReadTlv, Tlv, Value, WriteTlv,
+    Color, CtlToMgmt, CtlToNet, CtlToUi, Led, MgmtToCtl, ReadTlv, Tlv, Value, WriteTlv,
     uart_config::SetBaudRate,
 };
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
@@ -338,8 +338,8 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
 ) -> BaudRateChange
 where
     C: WriteTlv<MgmtToCtl> + Write + SetBaudRate,
-    U: WriteTlv<MgmtToUi> + Write,
-    N: WriteTlv<MgmtToNet> + Write + SetBaudRate,
+    U: WriteTlv<CtlToUi> + Write,
+    N: WriteTlv<CtlToNet> + Write + SetBaudRate,
     UiBoot0: StatefulOutputPin,
     UiBoot1: StatefulOutputPin,
     UiRst: StatefulOutputPin,
@@ -367,30 +367,6 @@ where
             info!("ctl->net: {=[u8]:x}", &tlv.value);
             BaudRateChange::None
         }
-        CtlToMgmt::ResetUiToBootloader => {
-            info!("mgmt: resetting UI to bootloader mode");
-            ui_reset_pins.reset_to_bootloader(delay).await;
-            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
-            BaudRateChange::None
-        }
-        CtlToMgmt::ResetUiToUser => {
-            info!("mgmt: resetting UI to user mode");
-            ui_reset_pins.reset_to_user(delay).await;
-            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
-            BaudRateChange::None
-        }
-        CtlToMgmt::ResetNetToBootloader => {
-            info!("mgmt: resetting NET to bootloader mode");
-            net_reset_pins.reset_to_bootloader(delay).await;
-            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
-            BaudRateChange::None
-        }
-        CtlToMgmt::ResetNetToUser => {
-            info!("mgmt: resetting NET to user mode");
-            net_reset_pins.reset_to_user(delay).await;
-            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
-            BaudRateChange::None
-        }
         CtlToMgmt::Hello => {
             info!("mgmt: hello handshake");
             // XOR the 4-byte value with b"LINK" and send back
@@ -402,16 +378,34 @@ where
             to_ctl.must_write_tlv(MgmtToCtl::Hello, &response).await;
             BaudRateChange::None
         }
-        CtlToMgmt::HoldUiReset => {
-            info!("mgmt: holding UI in reset");
-            ui_reset_pins.hold_reset();
-            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
+        CtlToMgmt::SetUiBoot0 => {
+            let high = tlv.value.first().map(|&v| v != 0).unwrap_or(false);
+            info!("mgmt: set UI BOOT0 pin = {}", high);
+            if high {
+                let _ = ui_reset_pins.boot0.set_high();
+            } else {
+                let _ = ui_reset_pins.boot0.set_low();
+            }
             BaudRateChange::None
         }
-        CtlToMgmt::HoldNetReset => {
-            info!("mgmt: holding NET in reset");
-            net_reset_pins.hold_reset();
-            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
+        CtlToMgmt::SetUiBoot1 => {
+            let high = tlv.value.first().map(|&v| v != 0).unwrap_or(false);
+            info!("mgmt: set UI BOOT1 pin = {}", high);
+            if high {
+                let _ = ui_reset_pins.boot1.set_high();
+            } else {
+                let _ = ui_reset_pins.boot1.set_low();
+            }
+            BaudRateChange::None
+        }
+        CtlToMgmt::SetUiRst => {
+            let high = tlv.value.first().map(|&v| v != 0).unwrap_or(false);
+            info!("mgmt: set UI RST pin = {}", high);
+            if high {
+                let _ = ui_reset_pins.rst.set_high();
+            } else {
+                let _ = ui_reset_pins.rst.set_low();
+            }
             BaudRateChange::None
         }
         CtlToMgmt::SetNetBoot => {
@@ -431,8 +425,8 @@ where
             BaudRateChange::None
         }
         CtlToMgmt::SetNetBaudRate => {
-            // Parse 4-byte LE u32 baud rate
-            let baud_rate = u32::from_le_bytes([
+            // Parse 4-byte BE u32 baud rate
+            let baud_rate = u32::from_be_bytes([
                 tlv.value.get(0).copied().unwrap_or(0),
                 tlv.value.get(1).copied().unwrap_or(0),
                 tlv.value.get(2).copied().unwrap_or(0),
@@ -448,8 +442,8 @@ where
             BaudRateChange::Net(baud_rate)
         }
         CtlToMgmt::SetCtlBaudRate => {
-            // Parse 4-byte LE u32 baud rate
-            let baud_rate = u32::from_le_bytes([
+            // Parse 4-byte BE u32 baud rate
+            let baud_rate = u32::from_be_bytes([
                 tlv.value.get(0).copied().unwrap_or(0),
                 tlv.value.get(1).copied().unwrap_or(0),
                 tlv.value.get(2).copied().unwrap_or(0),
@@ -469,17 +463,22 @@ where
         CtlToMgmt::GetStackInfo => {
             info!("mgmt: get stack info");
             use cortex_m_stack::{stack, stack_size, stack_painted};
+            use crate::shared::StackInfo;
             let range = stack();
-            let base = range.end as u32;  // Stack grows down, so end is higher address (base)
-            let top = range.start as u32; // Start is lower address (top/limit)
+            let base = range.end as u32;
+            let top = range.start as u32;
             let size = stack_size() as u32;
             let used = size.saturating_sub(stack_painted() as u32);
-            let mut value = [0u8; 16];
-            value[0..4].copy_from_slice(&base.to_le_bytes());
-            value[4..8].copy_from_slice(&top.to_le_bytes());
-            value[8..12].copy_from_slice(&size.to_le_bytes());
-            value[12..16].copy_from_slice(&used.to_le_bytes());
-            to_ctl.must_write_tlv(MgmtToCtl::StackInfo, &value).await;
+            let info = StackInfo {
+                stack_base: base,
+                stack_top: top,
+                stack_size: size,
+                stack_used: used,
+            };
+            let mut buf = [0u8; 32];
+            if let Ok(serialized) = postcard::to_slice(&info, &mut buf) {
+                to_ctl.must_write_tlv(MgmtToCtl::StackInfo, serialized).await;
+            }
             BaudRateChange::None
         }
         CtlToMgmt::RepaintStack => {

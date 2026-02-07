@@ -5,7 +5,7 @@ use crate::{GetSetHex, GetSetU32, LoopbackAction, StackAction, UiAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::FlashPhase;
 use link::ctl::SetTimeout;
-use link::LoopbackMode;
+use link::UiLoopbackMode;
 use std::io::Write;
 use std::time::Duration;
 
@@ -174,22 +174,22 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                 Ok(())
             }
             LoopbackAction::Off => {
-                core.ui_set_loopback(LoopbackMode::Off).await?;
+                core.ui_set_loopback(UiLoopbackMode::Off).await?;
                 println!("UI loopback: off");
                 Ok(())
             }
             LoopbackAction::Raw => {
-                core.ui_set_loopback(LoopbackMode::Raw).await?;
+                core.ui_set_loopback(UiLoopbackMode::Raw).await?;
                 println!("UI loopback: raw");
                 Ok(())
             }
             LoopbackAction::Alaw => {
-                core.ui_set_loopback(LoopbackMode::Alaw).await?;
+                core.ui_set_loopback(UiLoopbackMode::Alaw).await?;
                 println!("UI loopback: alaw");
                 Ok(())
             }
             LoopbackAction::Sframe => {
-                core.ui_set_loopback(LoopbackMode::Sframe).await?;
+                core.ui_set_loopback(UiLoopbackMode::Sframe).await?;
                 println!("UI loopback: sframe");
                 Ok(())
             }

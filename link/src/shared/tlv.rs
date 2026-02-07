@@ -305,7 +305,7 @@ mod test {
         let mut writer = FromFutures::new(writer);
         let mut reader = FromFutures::new(reader);
 
-        let original_type = NetToMgmt::Pong;
+        let original_type = NetToCtl::Pong;
         let original_value = b"async roundtrip";
 
         // Write (includes sync word automatically via WriteTlv blanket impl)
@@ -315,7 +315,7 @@ mod test {
             .unwrap();
 
         // Read (scans for sync word automatically via ReadTlv blanket impl)
-        let tlv: Tlv<NetToMgmt> = reader.read_tlv().await.unwrap().unwrap();
+        let tlv: Tlv<NetToCtl> = reader.read_tlv().await.unwrap().unwrap();
 
         assert_eq!(tlv.tlv_type, original_type);
         assert_eq!(tlv.value.as_slice(), original_value);
@@ -334,12 +334,12 @@ mod test {
         writer.flush().await.unwrap();
 
         // Now write a valid TLV with sync word (via WriteTlv blanket impl)
-        writer.write_tlv(UiToMgmt::Pong, b"found me").await.unwrap();
+        writer.write_tlv(UiToCtl::Pong, b"found me").await.unwrap();
 
         // Reader should skip garbage and find the TLV
-        let tlv: Tlv<UiToMgmt> = reader.read_tlv().await.unwrap().unwrap();
+        let tlv: Tlv<UiToCtl> = reader.read_tlv().await.unwrap().unwrap();
 
-        assert_eq!(tlv.tlv_type, UiToMgmt::Pong);
+        assert_eq!(tlv.tlv_type, UiToCtl::Pong);
         assert_eq!(tlv.value.as_slice(), b"found me");
     }
 

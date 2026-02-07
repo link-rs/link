@@ -21,7 +21,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::console;
 
 use link::Color;
-use link::{CtlToMgmt, MgmtToCtl, MgmtToNet, MgmtToUi, NetToMgmt, NetToUi, UiToMgmt, UiToNet};
+use link::{NetToUi, UiToNet};
 
 mod channel_io;
 
@@ -792,7 +792,7 @@ async fn run_ui(
                         } else {
                             // Normal: send to NET chip
                             let mut bytes = Vec::with_capacity(frame.0.len() * 2 + 1);
-                            bytes.push(UiToNet::AudioFrameA as u8);
+                            bytes.push(UiToNet::AudioFrame as u8);
                             for sample in &frame.0 {
                                 bytes.extend_from_slice(&sample.to_le_bytes());
                             }
@@ -808,7 +808,7 @@ async fn run_ui(
                         } else {
                             // Normal: send to NET chip
                             let mut bytes = Vec::with_capacity(frame.0.len() * 2 + 1);
-                            bytes.push(UiToNet::AudioFrameB as u8);
+                            bytes.push(UiToNet::AudioFrame as u8);
                             for sample in &frame.0 {
                                 bytes.extend_from_slice(&sample.to_le_bytes());
                             }
@@ -832,8 +832,7 @@ async fn run_ui(
 
                 // Skip protocol prefix byte if present
                 // Note: WebSocket echo returns UiToNet prefixes, not NetToUi
-                let audio_data = if msg[0] == UiToNet::AudioFrameA as u8
-                    || msg[0] == UiToNet::AudioFrameB as u8
+                let audio_data = if msg[0] == UiToNet::AudioFrame as u8
                     || msg[0] == NetToUi::AudioFrame as u8
                 {
                     &msg[1..]

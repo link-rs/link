@@ -13,7 +13,7 @@ pub use storage::{
 
 use crate::info;
 use crate::shared::{
-    Channel, Color, CriticalSectionRawMutex, Led, MgmtToNet, NetToMgmt, NetToUi, RawMutex,
+    Channel, Color, CriticalSectionRawMutex, Led, CtlToNet, NetToCtl, NetToUi, RawMutex,
     Receiver, Sender, Tlv, UiToNet, WriteTlv, read_tlv_loop,
 };
 #[cfg(feature = "audio-buffer")]
@@ -72,7 +72,7 @@ pub enum WsEvent {
 }
 
 enum Event {
-    Mgmt(Tlv<MgmtToNet>),
+    Mgmt(Tlv<CtlToNet>),
     Ui(Tlv<UiToNet>),
     Ws(WsEvent),
 }
@@ -147,7 +147,7 @@ where
                 Either::First(event) => match event {
                     Event::Mgmt(tlv) => {
                         // Handle GetJitterStats specially since it needs buffer access
-                        if tlv.tlv_type == MgmtToNet::GetJitterStats {
+                        if tlv.tlv_type == CtlToNet::GetJitterStats {
                             let channel_id = tlv.value.first().copied().unwrap_or(0);
                             let stats = match ChannelId::try_from(channel_id) {
                                 Ok(ChannelId::Ptt) => Some(ptt_buffer.stats()),
@@ -155,17 +155,21 @@ where
                                 _ => None,
                             };
                             if let Some(s) = stats {
-                                // Serialize: received(4) + output(4) + underruns(4) + overruns(4) + level(2) + state(1) = 19 bytes
-                                let mut buf = [0u8; 19];
-                                buf[0..4].copy_from_slice(&s.received.to_le_bytes());
-                                buf[4..8].copy_from_slice(&s.output.to_le_bytes());
-                                buf[8..12].copy_from_slice(&s.underruns.to_le_bytes());
-                                buf[12..16].copy_from_slice(&s.overruns.to_le_bytes());
-                                buf[16..18].copy_from_slice(&(s.level as u16).to_le_bytes());
-                                buf[18] = s.state as u8;
-                                to_mgmt.must_write_tlv(NetToMgmt::JitterStats, &buf).await;
+                                use crate::shared::JitterStatsInfo;
+                                let info = JitterStatsInfo {
+                                    received: s.received,
+                                    output: s.output,
+                                    underruns: s.underruns,
+                                    overruns: s.overruns,
+                                    level: s.level as u16,
+                                    state: s.state as u8,
+                                };
+                                let mut buf = [0u8; 32];
+                                if let Ok(serialized) = postcard::to_slice(&info, &mut buf) {
+                                    to_mgmt.must_write_tlv(NetToCtl::JitterStats, serialized).await;
+                                }
                             } else {
-                                to_mgmt.must_write_tlv(NetToMgmt::Error, b"invalid channel").await;
+                                to_mgmt.must_write_tlv(NetToCtl::Error, b"invalid channel").await;
                             }
                         } else {
                             handle_mgmt(
@@ -267,7 +271,7 @@ where
 }
 
 async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
-    tlv: Tlv<MgmtToNet>,
+    tlv: Tlv<CtlToNet>,
     to_mgmt: &mut M,
     to_ui: &mut U,
     storage: &mut NetStorage<F>,
@@ -275,43 +279,43 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
     _ws_mode: &mut WsMode,
     loopback: &mut bool,
 ) where
-    M: WriteTlv<NetToMgmt>,
+    M: WriteTlv<NetToCtl>,
     U: WriteTlv<NetToUi>,
     F: ReadStorage + Storage,
 {
     match tlv.tlv_type {
-        MgmtToNet::Ping => {
+        CtlToNet::Ping => {
             info!("net: mgmt ping, sending pong");
-            to_mgmt.must_write_tlv(NetToMgmt::Pong, &tlv.value).await;
+            to_mgmt.must_write_tlv(NetToCtl::Pong, &tlv.value).await;
         }
-        MgmtToNet::CircularPing => {
+        CtlToNet::CircularPing => {
             info!("net: mgmt circular ping -> ui");
             to_ui
                 .must_write_tlv(NetToUi::CircularPing, &tlv.value)
                 .await;
         }
-        MgmtToNet::AddWifiSsid => {
+        CtlToNet::AddWifiSsid => {
             info!("net: add wifi ssid");
             let Ok(wifi): Result<WifiSsid, _> = postcard::from_bytes(&tlv.value) else {
                 info!("net: failed to deserialize wifi ssid");
                 to_mgmt
-                    .must_write_tlv(NetToMgmt::Error, b"deserialize")
+                    .must_write_tlv(NetToCtl::Error, b"deserialize")
                     .await;
                 return;
             };
             if storage.add_wifi_ssid(&wifi.ssid, &wifi.password).is_err() {
                 info!("net: failed to add wifi ssid");
-                to_mgmt.must_write_tlv(NetToMgmt::Error, b"add").await;
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"add").await;
                 return;
             }
             if storage.save().is_err() {
                 info!("net: failed to save storage");
-                to_mgmt.must_write_tlv(NetToMgmt::Error, b"save").await;
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
                 return;
             }
-            to_mgmt.must_write_tlv(NetToMgmt::Ack, &[]).await;
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
-        MgmtToNet::GetWifiSsids => {
+        CtlToNet::GetWifiSsids => {
             info!("net: get wifi ssids");
             let ssids = storage.get_wifi_ssids();
             let mut buf = [0u8; 256];
@@ -320,76 +324,76 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
                 return;
             };
             to_mgmt
-                .must_write_tlv(NetToMgmt::WifiSsids, serialized)
+                .must_write_tlv(NetToCtl::WifiSsids, serialized)
                 .await;
         }
-        MgmtToNet::ClearWifiSsids => {
+        CtlToNet::ClearWifiSsids => {
             info!("net: clear wifi ssids");
             storage.clear_wifi_ssids();
             if storage.save().is_err() {
                 info!("net: failed to save storage");
-                to_mgmt.must_write_tlv(NetToMgmt::Error, b"save").await;
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
                 return;
             }
-            to_mgmt.must_write_tlv(NetToMgmt::Ack, &[]).await;
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
-        MgmtToNet::GetRelayUrl => {
+        CtlToNet::GetRelayUrl => {
             info!("net: get relay url");
             to_mgmt
-                .must_write_tlv(NetToMgmt::RelayUrl, storage.get_relay_url().as_bytes())
+                .must_write_tlv(NetToCtl::RelayUrl, storage.get_relay_url().as_bytes())
                 .await;
         }
-        MgmtToNet::SetRelayUrl => {
+        CtlToNet::SetRelayUrl => {
             info!("net: set relay url");
             let Ok(url) = core::str::from_utf8(&tlv.value) else {
                 info!("net: invalid utf8 in relay url");
-                to_mgmt.must_write_tlv(NetToMgmt::Error, b"utf8").await;
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"utf8").await;
                 return;
             };
             if storage.set_relay_url(url).is_err() {
                 info!("net: failed to set relay url");
-                to_mgmt.must_write_tlv(NetToMgmt::Error, b"set").await;
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"set").await;
                 return;
             }
             if storage.save().is_err() {
                 info!("net: failed to save storage");
-                to_mgmt.must_write_tlv(NetToMgmt::Error, b"save").await;
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
                 return;
             }
             // Trigger WebSocket reconnect to new URL
             let Ok(url_string) = String::try_from(url) else {
                 info!("net: url too long for command");
-                to_mgmt.must_write_tlv(NetToMgmt::Error, b"url").await;
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"url").await;
                 return;
             };
             ws_cmd_tx.send(WsCommand::Connect(url_string)).await;
-            to_mgmt.must_write_tlv(NetToMgmt::Ack, &[]).await;
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
-        MgmtToNet::SetLoopback => {
+        CtlToNet::SetLoopback => {
             let enabled = tlv.value.first().copied().unwrap_or(0) != 0;
             info!("net: set loopback = {}", enabled);
             *loopback = enabled;
-            to_mgmt.must_write_tlv(NetToMgmt::Ack, &[]).await;
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
-        MgmtToNet::GetLoopback => {
+        CtlToNet::GetLoopback => {
             info!("net: get loopback = {}", *loopback);
             to_mgmt
-                .must_write_tlv(NetToMgmt::Loopback, &[*loopback as u8])
+                .must_write_tlv(NetToCtl::Loopback, &[*loopback as u8])
                 .await;
         }
         // Channel configuration commands
-        MgmtToNet::GetChannelConfig => {
+        CtlToNet::GetChannelConfig => {
             info!("net: get channel config");
             let channel_id = tlv.value.first().copied().unwrap_or(0);
             if let Some(config) = storage.get_channel_config(channel_id) {
                 let mut buf = [0u8; 256];
                 if let Ok(serialized) = postcard::to_slice(config, &mut buf) {
                     to_mgmt
-                        .must_write_tlv(NetToMgmt::ChannelConfig, serialized)
+                        .must_write_tlv(NetToCtl::ChannelConfig, serialized)
                         .await;
                 } else {
                     to_mgmt
-                        .must_write_tlv(NetToMgmt::Error, b"serialize")
+                        .must_write_tlv(NetToCtl::Error, b"serialize")
                         .await;
                 }
             } else {
@@ -402,73 +406,52 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
                 let mut buf = [0u8; 256];
                 if let Ok(serialized) = postcard::to_slice(&default_config, &mut buf) {
                     to_mgmt
-                        .must_write_tlv(NetToMgmt::ChannelConfig, serialized)
+                        .must_write_tlv(NetToCtl::ChannelConfig, serialized)
                         .await;
                 } else {
                     to_mgmt
-                        .must_write_tlv(NetToMgmt::Error, b"serialize")
+                        .must_write_tlv(NetToCtl::Error, b"serialize")
                         .await;
                 }
             }
         }
-        MgmtToNet::SetChannelConfig => {
+        CtlToNet::SetChannelConfig => {
             info!("net: set channel config");
             let Ok(config): Result<ChannelConfig, _> = postcard::from_bytes(&tlv.value) else {
                 info!("net: failed to deserialize channel config");
                 to_mgmt
-                    .must_write_tlv(NetToMgmt::Error, b"deserialize")
+                    .must_write_tlv(NetToCtl::Error, b"deserialize")
                     .await;
                 return;
             };
             if storage.set_channel_config(config).is_err() {
                 info!("net: failed to set channel config");
-                to_mgmt.must_write_tlv(NetToMgmt::Error, b"set").await;
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"set").await;
                 return;
             }
             if storage.save().is_err() {
                 info!("net: failed to save storage");
-                to_mgmt.must_write_tlv(NetToMgmt::Error, b"save").await;
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
                 return;
             }
-            to_mgmt.must_write_tlv(NetToMgmt::Ack, &[]).await;
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
-        MgmtToNet::GetAllChannelConfigs => {
-            info!("net: get all channel configs");
-            let configs = storage.get_all_channel_configs();
-            let mut buf = [0u8; 512];
-            if let Ok(serialized) = postcard::to_slice(configs, &mut buf) {
-                to_mgmt
-                    .must_write_tlv(NetToMgmt::AllChannelConfigs, serialized)
-                    .await;
-            } else {
-                to_mgmt
-                    .must_write_tlv(NetToMgmt::Error, b"serialize")
-                    .await;
-            }
-        }
-        MgmtToNet::ClearChannelConfigs => {
+        CtlToNet::ClearChannelConfigs => {
             info!("net: clear channel configs");
             storage.clear_channel_configs();
             if storage.save().is_err() {
                 info!("net: failed to save storage");
-                to_mgmt.must_write_tlv(NetToMgmt::Error, b"save").await;
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
                 return;
             }
-            to_mgmt.must_write_tlv(NetToMgmt::Ack, &[]).await;
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
-        MgmtToNet::GetJitterStats => {
+        CtlToNet::GetJitterStats => {
             // This is handled in the event loop for audio-buffer mode
             // In non-audio-buffer mode, return error
             info!("net: jitter stats not available (audio-buffer disabled)");
             to_mgmt
-                .must_write_tlv(NetToMgmt::Error, b"no audio-buffer")
-                .await;
-        }
-        // MoQ commands - not supported in bare-metal firmware (uses WebSocket, not MoQ)
-        MgmtToNet::SendChatMessage => {
-            info!("net: moq command not supported in bare-metal firmware");
-            to_mgmt
-                .must_write_tlv(NetToMgmt::Error, b"moq not supported")
+                .must_write_tlv(NetToCtl::Error, b"no audio-buffer")
                 .await;
         }
     }
@@ -481,30 +464,15 @@ async fn handle_ui<'a, M, RM: RawMutex, const N: usize>(
     loopback: bool,
 ) -> Option<heapless::Vec<u8, MAX_WS_PAYLOAD>>
 where
-    M: WriteTlv<NetToMgmt>,
+    M: WriteTlv<NetToCtl>,
 {
     match tlv.tlv_type {
         UiToNet::CircularPing => {
             info!("net: ui circular ping -> mgmt");
             to_mgmt
-                .must_write_tlv(NetToMgmt::CircularPing, &tlv.value)
+                .must_write_tlv(NetToCtl::CircularPing, &tlv.value)
                 .await;
             None
-        }
-        UiToNet::AudioFrameA | UiToNet::AudioFrameB => {
-            let Ok(payload) = heapless::Vec::try_from(tlv.value.as_slice()) else {
-                info!("net: audio payload too large");
-                return None;
-            };
-
-            if loopback {
-                // Return audio data for loopback to jitter buffer
-                Some(payload)
-            } else {
-                // Send to WebSocket
-                ws_cmd_tx.send(WsCommand::Send(payload)).await;
-                None
-            }
         }
         UiToNet::AudioFrame => {
             // New hactar format: channel_id (1 byte) + encrypted payload
@@ -670,7 +638,7 @@ mod tests {
 
     /// Mock writer that captures TLVs sent to MGMT
     struct MockMgmtWriter {
-        written: std::vec::Vec<(NetToMgmt, std::vec::Vec<u8>)>,
+        written: std::vec::Vec<(NetToCtl, std::vec::Vec<u8>)>,
     }
 
     impl MockMgmtWriter {
@@ -681,10 +649,10 @@ mod tests {
         }
     }
 
-    impl WriteTlv<NetToMgmt> for MockMgmtWriter {
+    impl WriteTlv<NetToCtl> for MockMgmtWriter {
         type Error = ();
 
-        async fn write_tlv(&mut self, tlv_type: NetToMgmt, value: &[u8]) -> Result<(), ()> {
+        async fn write_tlv(&mut self, tlv_type: NetToCtl, value: &[u8]) -> Result<(), ()> {
             self.written.push((tlv_type, value.to_vec()));
             Ok(())
         }
@@ -792,7 +760,7 @@ mod tests {
         let audio_data: heapless::Vec<u8, { crate::shared::MAX_VALUE_SIZE }> =
             heapless::Vec::from_slice(&[0xAA; 160]).unwrap();
         let tlv = Tlv {
-            tlv_type: UiToNet::AudioFrameA,
+            tlv_type: UiToNet::AudioFrame,
             value: audio_data,
         };
 
@@ -817,7 +785,7 @@ mod tests {
         let audio_data: heapless::Vec<u8, { crate::shared::MAX_VALUE_SIZE }> =
             heapless::Vec::from_slice(&[0xAA; 160]).unwrap();
         let tlv = Tlv {
-            tlv_type: UiToNet::AudioFrameA,
+            tlv_type: UiToNet::AudioFrame,
             value: audio_data,
         };
 
@@ -842,7 +810,7 @@ mod tests {
         let mut loopback = false;
 
         let tlv = Tlv {
-            tlv_type: MgmtToNet::Ping,
+            tlv_type: CtlToNet::Ping,
             value: heapless::Vec::from_slice(b"test").unwrap(),
         };
 
@@ -858,7 +826,7 @@ mod tests {
         .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
-        assert_eq!(to_mgmt.written[0].0, NetToMgmt::Pong);
+        assert_eq!(to_mgmt.written[0].0, NetToCtl::Pong);
         assert_eq!(to_mgmt.written[0].1, b"test");
     }
 
@@ -872,7 +840,7 @@ mod tests {
         let mut loopback = false;
 
         let tlv = Tlv {
-            tlv_type: MgmtToNet::SetRelayUrl,
+            tlv_type: CtlToNet::SetRelayUrl,
             value: heapless::Vec::from_slice(b"wss://relay.example.com").unwrap(),
         };
 
@@ -888,7 +856,7 @@ mod tests {
         .await;
 
         // Should have sent Ack
-        assert!(to_mgmt.written.iter().any(|(t, _)| *t == NetToMgmt::Ack));
+        assert!(to_mgmt.written.iter().any(|(t, _)| *t == NetToCtl::Ack));
 
         // Should have queued a Connect command
         let cmd = channel.receiver().try_receive().unwrap();
@@ -914,7 +882,7 @@ mod tests {
         let mut loopback = false;
 
         let tlv = Tlv {
-            tlv_type: MgmtToNet::GetRelayUrl,
+            tlv_type: CtlToNet::GetRelayUrl,
             value: heapless::Vec::new(),
         };
 
@@ -930,7 +898,7 @@ mod tests {
         .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
-        assert_eq!(to_mgmt.written[0].0, NetToMgmt::RelayUrl);
+        assert_eq!(to_mgmt.written[0].0, NetToCtl::RelayUrl);
         assert_eq!(to_mgmt.written[0].1, b"wss://test.relay");
     }
 
