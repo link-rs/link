@@ -594,6 +594,62 @@
         .modal .btn-group {
             justify-content: flex-end;
         }
+
+        /* Monitor modal styles */
+        .monitor-modal {
+            max-width: 800px;
+            width: 95%;
+            height: 80vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .monitor-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+        }
+
+        .monitor-header h3 {
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        .monitor-close-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            font-size: 1.2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .monitor-close-btn:hover {
+            background: var(--error);
+            color: white;
+        }
+
+        .monitor-log {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.875rem;
+            background: #0a0a0a;
+            color: #4ecca3;
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-y: auto;
+            min-height: 300px;
+            max-height: 60vh;
+            flex: 1;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
     </style>
 </head>
 <body>
@@ -612,6 +668,28 @@
                 <button class="btn-secondary" id="manualResetCancelBtn">Cancel</button>
                 <button class="btn-primary" id="manualResetContinueBtn">Continue</button>
             </div>
+        </div>
+    </div>
+
+    <!-- UI Monitor Modal -->
+    <div class="modal-overlay" id="uiMonitorModal">
+        <div class="modal monitor-modal">
+            <div class="monitor-header">
+                <h3>UI Monitor</h3>
+                <button class="monitor-close-btn" id="uiMonitorCloseBtn">&times;</button>
+            </div>
+            <div class="monitor-log" id="uiMonitorLog"></div>
+        </div>
+    </div>
+
+    <!-- NET Monitor Modal -->
+    <div class="modal-overlay" id="netMonitorModal">
+        <div class="modal monitor-modal">
+            <div class="monitor-header">
+                <h3>NET Monitor</h3>
+                <button class="monitor-close-btn" id="netMonitorCloseBtn">&times;</button>
+            </div>
+            <div class="monitor-log" id="netMonitorLog"></div>
         </div>
     </div>
 
@@ -725,6 +803,13 @@
                     <div class="btn-group">
                         <button class="btn-secondary" id="pingUiBtn">Send Ping</button>
                         <span class="status-icon" id="pingUiStatus"></span>
+                    </div>
+                </div>
+
+                <div class="card-section">
+                    <h3>Monitor</h3>
+                    <div class="btn-group">
+                        <button class="btn-secondary" id="monitorUiBtn">Monitor UI Log</button>
                     </div>
                 </div>
 
@@ -843,6 +928,13 @@
                     <div class="btn-group">
                         <button class="btn-secondary" id="pingNetBtn">Send Ping</button>
                         <span class="status-icon" id="pingNetStatus"></span>
+                    </div>
+                </div>
+
+                <div class="card-section">
+                    <h3>Monitor</h3>
+                    <div class="btn-group">
+                        <button class="btn-secondary" id="monitorNetBtn">Monitor NET Data</button>
                     </div>
                 </div>
 
@@ -1987,6 +2079,120 @@
             div.textContent = text;
             return div.innerHTML;
         }
+
+        // ==================== MONITOR ====================
+
+        let uiMonitorActive = false;
+        let netMonitorActive = false;
+
+        function openMonitor(type) {
+            const modal = document.getElementById(type === 'ui' ? 'uiMonitorModal' : 'netMonitorModal');
+            const logEl = document.getElementById(type === 'ui' ? 'uiMonitorLog' : 'netMonitorLog');
+            logEl.innerHTML = '';
+            try {
+                controller.set_monitor_timeout();
+            } catch (e) {
+                log(`Monitor timeout error: ${e}`, 'error');
+                return;
+            }
+            modal.classList.add('active');
+            if (type === 'ui') {
+                uiMonitorActive = true;
+                pollUiMonitor();
+            } else {
+                netMonitorActive = true;
+                pollNetMonitor();
+            }
+        }
+
+        function closeMonitor(type) {
+            if (type === 'ui') {
+                uiMonitorActive = false;
+            } else {
+                netMonitorActive = false;
+            }
+            const modal = document.getElementById(type === 'ui' ? 'uiMonitorModal' : 'netMonitorModal');
+            modal.classList.remove('active');
+            try {
+                controller.restore_timeout();
+            } catch (e) {
+                log(`Restore timeout error: ${e}`, 'error');
+            }
+        }
+
+        function appendMonitorLine(logEl, text) {
+            const line = document.createElement('div');
+            line.textContent = text;
+            logEl.appendChild(line);
+            logEl.scrollTop = logEl.scrollHeight;
+            // Cap at 1000 lines
+            while (logEl.childElementCount > 1000) {
+                logEl.removeChild(logEl.firstChild);
+            }
+        }
+
+        async function pollUiMonitor() {
+            if (!uiMonitorActive) return;
+            const logEl = document.getElementById('uiMonitorLog');
+            try {
+                const msg = await controller.monitor_read_ui_log();
+                if (msg !== null && msg !== undefined) {
+                    appendMonitorLine(logEl, msg);
+                }
+            } catch (e) {
+                appendMonitorLine(logEl, `[ERROR] ${e}`);
+                closeMonitor('ui');
+                return;
+            }
+            setTimeout(pollUiMonitor, 0);
+        }
+
+        async function pollNetMonitor() {
+            if (!netMonitorActive) return;
+            const logEl = document.getElementById('netMonitorLog');
+            try {
+                const msg = await controller.monitor_read_net_raw();
+                if (msg !== null && msg !== undefined) {
+                    appendMonitorLine(logEl, msg);
+                }
+            } catch (e) {
+                appendMonitorLine(logEl, `[ERROR] ${e}`);
+                closeMonitor('net');
+                return;
+            }
+            setTimeout(pollNetMonitor, 0);
+        }
+
+        // Monitor button listeners
+        document.getElementById('monitorUiBtn').addEventListener('click', () => {
+            if (!controller) return;
+            openMonitor('ui');
+        });
+
+        document.getElementById('monitorNetBtn').addEventListener('click', () => {
+            if (!controller) return;
+            openMonitor('net');
+        });
+
+        // Monitor close button listeners
+        document.getElementById('uiMonitorCloseBtn').addEventListener('click', () => closeMonitor('ui'));
+        document.getElementById('netMonitorCloseBtn').addEventListener('click', () => closeMonitor('net'));
+
+        // ESC key closes active monitor
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                if (uiMonitorActive) closeMonitor('ui');
+                if (netMonitorActive) closeMonitor('net');
+            }
+        });
+
+        // Click on overlay background closes monitor
+        document.getElementById('uiMonitorModal').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) closeMonitor('ui');
+        });
+        document.getElementById('netMonitorModal').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) closeMonitor('net');
+        });
 
         // Collapsible cards
         document.querySelectorAll('.card h2').forEach(header => {

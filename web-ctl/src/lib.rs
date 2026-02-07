@@ -10,7 +10,7 @@ use link::ctl::flash::{AsyncDelay, FlashPhase, MgmtBootloaderEntry};
 use link::ctl::stm;
 use link::ctl::{CtlCore, CtlError, SetTimeout};
 use wasm_bindgen_futures::JsFuture;
-use link::{LoopbackMode, NetLoopback};
+use link::{LoopbackMode, MgmtToCtl, NetLoopback};
 use serde::{Deserialize, Serialize};
 use serial::{WebSerial, WebSerialAdapter};
 use wasm_bindgen::prelude::*;
@@ -761,6 +761,60 @@ impl LinkController {
     pub async fn erase_net(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
         core.erase_net(JsDelay).await.map_err(|e| JsValue::from_str(&format!("Erase error: {:?}", e)))
+    }
+
+    // ==================== MONITOR ====================
+
+    /// Set port read timeout to 100ms for monitor polling.
+    #[wasm_bindgen]
+    pub fn set_monitor_timeout(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        let _ = core.port_mut().set_timeout(std::time::Duration::from_millis(100));
+        Ok(())
+    }
+
+    /// Restore port read timeout to 3s (normal operation).
+    #[wasm_bindgen]
+    pub fn restore_timeout(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        let _ = core.port_mut().set_timeout(std::time::Duration::from_secs(3));
+        Ok(())
+    }
+
+    /// Read one UI log message (non-blocking with short timeout).
+    /// Returns the message string or null if no data.
+    #[wasm_bindgen]
+    pub async fn monitor_read_ui_log(&mut self) -> Result<JsValue, JsValue> {
+        let core = self.core_mut()?;
+        match core.try_read_ui_log().await {
+            Ok(Some(msg)) => Ok(JsValue::from_str(&msg)),
+            Ok(None) => Ok(JsValue::NULL),
+            Err(e) => Err(JsValue::from_str(&format!("{}", e))),
+        }
+    }
+
+    /// Read one raw NET TLV (non-blocking with short timeout).
+    /// Filters for MgmtToCtl::FromNet, returns payload as string or null.
+    #[wasm_bindgen]
+    pub async fn monitor_read_net_raw(&mut self) -> Result<JsValue, JsValue> {
+        let core = self.core_mut()?;
+        match core.read_tlv_raw().await {
+            Ok(Some(tlv)) => {
+                if tlv.tlv_type == MgmtToCtl::FromNet {
+                    let bytes = tlv.value.as_slice();
+                    let text = match core::str::from_utf8(bytes) {
+                        Ok(s) => s.to_string(),
+                        Err(_) => bytes.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" "),
+                    };
+                    Ok(JsValue::from_str(&text))
+                } else {
+                    // Not a FromNet TLV, ignore
+                    Ok(JsValue::NULL)
+                }
+            }
+            Ok(None) => Ok(JsValue::NULL),
+            Err(e) => Err(JsValue::from_str(&format!("{}", e))),
+        }
     }
 }
 
