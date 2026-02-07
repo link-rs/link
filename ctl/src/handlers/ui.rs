@@ -22,7 +22,7 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             println!("==================\n");
             println!("Resetting UI chip to bootloader mode...");
 
-            let delay = |ms| std::thread::sleep(Duration::from_millis(ms));
+            let delay = |ms| tokio::time::sleep(Duration::from_millis(ms));
             let info = core.get_ui_bootloader_info(delay).await
                 .map_err(|_| "Failed to get bootloader info")?;
 
@@ -86,12 +86,6 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                 println!("Verification: skipped");
             }
 
-            // Hold NET chip in reset during UI flashing to avoid interference
-            println!("Holding NET chip in reset...");
-            if let Err(e) = core.hold_net_reset().await {
-                eprintln!("Warning: failed to hold NET in reset: {}", e);
-            }
-
             println!("Resetting UI chip to bootloader mode...\n");
 
             let pb = ProgressBar::new(firmware.len() as u64);
@@ -106,7 +100,7 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             pb.set_style(sectors_style.clone());
 
             let mut current_phase = None;
-            let delay = |ms| std::thread::sleep(Duration::from_millis(ms));
+            let delay = |ms| tokio::time::sleep(Duration::from_millis(ms));
             let verify = !no_verify;
             let result = core.flash_ui(&firmware, delay, verify, |phase, progress, total| {
                 if current_phase != Some(phase) {
@@ -133,12 +127,6 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             }).await;
 
             pb.finish_and_clear();
-
-            // Release NET chip from reset
-            println!("Releasing NET chip from reset...");
-            if let Err(e) = core.reset_net_to_user().await {
-                eprintln!("Warning: failed to release NET from reset: {}", e);
-            }
 
             match result {
                 Ok(()) => {
@@ -288,8 +276,8 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                 println!("Stack Base:  0x{:08X}", info.stack_base);
                 println!("Stack Top:   0x{:08X}", info.stack_top);
                 println!("Stack Size:  {} bytes ({:.1} KB)", info.stack_size, info.stack_size as f64 / 1024.0);
-                println!("Stack Used:  {} bytes ({:.1}%)", info.stack_used, info.stack_used as f64 / info.stack_size as f64 * 100.0);
-                println!("Stack Free:  {} bytes", info.stack_size.saturating_sub(info.stack_used));
+                println!("Stack Used:  {} bytes ({:.1}%)", info.stack_used, info.usage_percent());
+                println!("Stack Free:  {} bytes", info.stack_free());
                 Ok(())
             }
             StackAction::Repaint => {

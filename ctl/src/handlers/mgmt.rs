@@ -271,8 +271,8 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
                 println!("Stack Base:  0x{:08X}", info.stack_base);
                 println!("Stack Top:   0x{:08X}", info.stack_top);
                 println!("Stack Size:  {} bytes ({:.1} KB)", info.stack_size, info.stack_size as f64 / 1024.0);
-                println!("Stack Used:  {} bytes ({:.1}%)", info.stack_used, info.stack_used as f64 / info.stack_size as f64 * 100.0);
-                println!("Stack Free:  {} bytes", info.stack_size.saturating_sub(info.stack_used));
+                println!("Stack Used:  {} bytes ({:.1}%)", info.stack_used, info.usage_percent());
+                println!("Stack Free:  {} bytes", info.stack_free());
                 Ok(())
             }
             StackAction::Repaint => {

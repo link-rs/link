@@ -361,20 +361,13 @@ impl LinkController {
         let core = self.core_mut()?;
         let info = core.mgmt_get_stack_info().await.map_err(ctl_error_to_js)?;
 
-        let stack_free = info.stack_size.saturating_sub(info.stack_used);
-        let usage_percent = if info.stack_size > 0 {
-            (info.stack_used as f64 / info.stack_size as f64) * 100.0
-        } else {
-            0.0
-        };
-
         let obj = js_sys::Object::new();
         js_sys::Reflect::set(&obj, &"stackBase".into(), &info.stack_base.into())?;
         js_sys::Reflect::set(&obj, &"stackTop".into(), &info.stack_top.into())?;
         js_sys::Reflect::set(&obj, &"stackSize".into(), &info.stack_size.into())?;
         js_sys::Reflect::set(&obj, &"stackUsed".into(), &info.stack_used.into())?;
-        js_sys::Reflect::set(&obj, &"stackFree".into(), &stack_free.into())?;
-        js_sys::Reflect::set(&obj, &"usagePercent".into(), &usage_percent.into())?;
+        js_sys::Reflect::set(&obj, &"stackFree".into(), &info.stack_free().into())?;
+        js_sys::Reflect::set(&obj, &"usagePercent".into(), &info.usage_percent().into())?;
         Ok(obj.into())
     }
 
@@ -391,20 +384,13 @@ impl LinkController {
         let core = self.core_mut()?;
         let info = core.ui_get_stack_info().await.map_err(ctl_error_to_js)?;
 
-        let stack_free = info.stack_size.saturating_sub(info.stack_used);
-        let usage_percent = if info.stack_size > 0 {
-            (info.stack_used as f64 / info.stack_size as f64) * 100.0
-        } else {
-            0.0
-        };
-
         let obj = js_sys::Object::new();
         js_sys::Reflect::set(&obj, &"stackBase".into(), &info.stack_base.into())?;
         js_sys::Reflect::set(&obj, &"stackTop".into(), &info.stack_top.into())?;
         js_sys::Reflect::set(&obj, &"stackSize".into(), &info.stack_size.into())?;
         js_sys::Reflect::set(&obj, &"stackUsed".into(), &info.stack_used.into())?;
-        js_sys::Reflect::set(&obj, &"stackFree".into(), &stack_free.into())?;
-        js_sys::Reflect::set(&obj, &"usagePercent".into(), &usage_percent.into())?;
+        js_sys::Reflect::set(&obj, &"stackFree".into(), &info.stack_free().into())?;
+        js_sys::Reflect::set(&obj, &"usagePercent".into(), &info.usage_percent().into())?;
         Ok(obj.into())
     }
 
@@ -615,19 +601,8 @@ impl LinkController {
     pub async fn get_ui_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
         let core = self.core_mut()?;
 
-        // Reset UI chip into bootloader mode
-        let _ = core.reset_ui_to_bootloader().await;
-
-        // Wait for bootloader to be ready (use js_sleep instead of std::thread::sleep)
-        js_sleep(1000).await;
-
-        // Query bootloader info
-        let result = core.query_ui_bootloader().await;
-
-        // Always reset UI chip back to user mode
-        let _ = core.reset_ui_to_user().await;
-
-        let info = result.map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
+        let info = core.get_ui_bootloader_info(|ms| js_sleep(ms as u32)).await
+            .map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
 
         let obj = js_sys::Object::new();
         js_sys::Reflect::set(&obj, &"bootloaderVersion".into(), &info.bootloader_version.into())?;
@@ -665,17 +640,11 @@ impl LinkController {
         let firmware_data = firmware.to_vec();
         let core = self.core_mut()?;
 
-        // Reset UI chip into bootloader mode
-        let _ = core.reset_ui_to_bootloader().await;
-
-        // Wait for bootloader to be ready (use js_sleep instead of std::thread::sleep)
-        js_sleep(100).await;
-
-        // Flash the firmware
-        let result = core.flash_ui_in_bootloader_mode(
+        core.flash_ui(
             &firmware_data,
+            |ms| js_sleep(ms as u32),
             verify,
-            &mut |phase, current, total| {
+            |phase, current, total| {
                 let phase_str = match phase {
                     FlashPhase::Compressing => "compressing",
                     FlashPhase::Erasing => "erasing",
@@ -689,12 +658,7 @@ impl LinkController {
                     &JsValue::from(total as u32),
                 );
             },
-        ).await;
-
-        // Always reset UI chip back to user mode
-        let _ = core.reset_ui_to_user().await;
-
-        result.map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
+        ).await.map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
 
     /// Get NET chip (ESP32) bootloader information.

@@ -941,18 +941,19 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     /// and resets it back to user mode.
     ///
     /// The `delay_ms` callback should sleep for the given number of milliseconds.
-    pub async fn get_ui_bootloader_info<D>(
+    pub async fn get_ui_bootloader_info<D, F>(
         &mut self,
         delay_ms: D,
     ) -> Result<MgmtBootloaderInfo, stm::Error<std::io::Error>>
     where
-        D: FnOnce(u64),
+        D: Fn(u64) -> F,
+        F: core::future::Future<Output = ()>,
     {
         // Reset UI chip into bootloader mode
         let _ = self.reset_ui_to_bootloader().await;
 
         // Wait for bootloader to be ready
-        delay_ms(1000);
+        delay_ms(1000).await;
 
         // Query bootloader info
         let result = self.query_ui_bootloader().await;
@@ -1007,28 +1008,35 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     ///
     /// The `delay_ms` callback should sleep for the given number of milliseconds.
     /// The progress callback is called with (phase, bytes_processed, total_bytes).
-    pub async fn flash_ui<F, D>(
+    pub async fn flash_ui<Cb, D, Fut>(
         &mut self,
         firmware: &[u8],
         delay_ms: D,
         verify: bool,
-        mut progress: F,
+        mut progress: Cb,
     ) -> Result<(), FlashError<std::io::Error>>
     where
-        F: FnMut(FlashPhase, usize, usize),
-        D: FnOnce(u64),
+        Cb: FnMut(FlashPhase, usize, usize),
+        D: Fn(u64) -> Fut,
+        Fut: core::future::Future<Output = ()>,
     {
+        // Hold NET chip in reset during UI flashing to avoid interference
+        let _ = self.hold_net_reset().await;
+
         // Reset UI chip into bootloader mode
         let _ = self.reset_ui_to_bootloader().await;
 
         // Wait for bootloader to be ready
-        delay_ms(100);
+        delay_ms(100).await;
 
         // Flash the firmware
         let result = self.flash_ui_in_bootloader_mode(firmware, verify, &mut progress).await;
 
         // Always reset UI chip back to user mode
         let _ = self.reset_ui_to_user().await;
+
+        // Release NET chip from reset
+        let _ = self.reset_net_to_user().await;
 
         result
     }

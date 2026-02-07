@@ -101,6 +101,19 @@ pub struct StackInfoResult {
     pub stack_used: u32,
 }
 
+impl StackInfoResult {
+    pub fn stack_free(&self) -> u32 {
+        self.stack_size.saturating_sub(self.stack_used)
+    }
+    pub fn usage_percent(&self) -> f64 {
+        if self.stack_size > 0 {
+            (self.stack_used as f64 / self.stack_size as f64) * 100.0
+        } else {
+            0.0
+        }
+    }
+}
+
 /// Jitter buffer statistics from the NET chip.
 #[derive(Debug, Clone, Default)]
 pub struct JitterStatsResult {
