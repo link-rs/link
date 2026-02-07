@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_CHANNEL_URL_LEN: usize = 128;
 
 /// Maximum number of channels that can be configured.
+#[cfg(feature = "net")]
 pub const MAX_CHANNELS: usize = 4;
 
 /// Channel configuration for a single audio channel.

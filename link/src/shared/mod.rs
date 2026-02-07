@@ -3,7 +3,11 @@
 pub mod chunk;
 
 // Jitter buffer - for net firmware with audio-buffer, esp-idf, or tests
-#[cfg(any(all(feature = "net", feature = "audio-buffer"), feature = "esp-idf", test))]
+#[cfg(any(
+    all(feature = "net", feature = "audio-buffer"),
+    feature = "esp-idf",
+    test
+))]
 pub mod jitter_buffer;
 
 pub mod led;
@@ -24,7 +28,12 @@ pub mod uart_config;
 pub mod moq;
 
 // WiFi types - only used by ctl, ctl-core, net, and async-ctl
-#[cfg(any(feature = "ctl", feature = "ctl-core", feature = "net", feature = "async-ctl"))]
+#[cfg(any(
+    feature = "ctl",
+    feature = "ctl-core",
+    feature = "net",
+    feature = "async-ctl"
+))]
 pub mod wifi;
 
 // Channel configuration types - used by ctl, ctl-core, and net
@@ -36,9 +45,13 @@ pub mod channel;
 pub(crate) use logging::info;
 
 // Jitter buffer types - for net firmware with audio-buffer, esp-idf, or tests
-#[cfg(any(all(feature = "net", feature = "audio-buffer"), feature = "esp-idf", test))]
+#[cfg(any(
+    all(feature = "net", feature = "audio-buffer"),
+    feature = "esp-idf",
+    test
+))]
 #[allow(unused_imports)] // Re-exported for public API
-pub use jitter_buffer::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
+pub use jitter_buffer::{JitterBuffer, JitterState, JitterStats, BUFFER_FRAMES, MIN_START_LEVEL};
 
 // LED types - used by all
 pub use led::{Color, InvertedPin, Led};
@@ -47,7 +60,7 @@ pub use led::{Color, InvertedPin, Led};
 pub use protocol::*;
 
 // TLV types - core types used by all
-pub use tlv::{MAX_VALUE_SIZE, Tlv};
+pub use tlv::{Tlv, MAX_VALUE_SIZE};
 // Sync TLV constants - used by ctl, ctl-core, and esp-idf (bare-metal firmware uses async traits)
 #[cfg(any(feature = "ctl", feature = "ctl-core", feature = "esp-idf"))]
 pub use tlv::{HEADER_SIZE, SYNC_WORD};
@@ -59,17 +72,25 @@ pub use tlv::{ReadTlv, Value, WriteTlv};
 // MoQ types - used by net
 #[cfg(feature = "net")]
 #[allow(unused_imports)] // Re-exported for public API
-pub use moq::{MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampleType};
+pub use moq::{MoqError, MoqExampleType, MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN};
 
 // WiFi types - WifiSsid used by ctl, ctl-core, net, and async-ctl
-#[cfg(any(feature = "ctl", feature = "ctl-core", feature = "net", feature = "async-ctl"))]
+#[cfg(any(
+    feature = "ctl",
+    feature = "ctl-core",
+    feature = "net",
+    feature = "async-ctl"
+))]
 #[allow(unused_imports)] // Re-exported for public API
 pub use wifi::WifiSsid;
 
 // Channel configuration types - used by ctl, ctl-core, and net
 #[cfg(any(feature = "ctl", feature = "ctl-core", feature = "net"))]
 #[allow(unused_imports)] // Re-exported for public API
-pub use channel::{ChannelConfig, MAX_CHANNELS, MAX_CHANNEL_URL_LEN};
+pub use channel::{ChannelConfig, MAX_CHANNEL_URL_LEN};
+
+#[cfg(feature = "net")]
+pub use channel::MAX_CHANNELS;
 
 // Re-export embassy_sync types for use by firmware chip modules that need them
 #[cfg(any(feature = "net", feature = "ui"))]

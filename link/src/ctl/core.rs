@@ -9,8 +9,8 @@ use alloc::format;
 use alloc::string::String;
 
 use crate::shared::{
-    ChannelConfig, CtlToMgmt, LoopbackMode, MgmtToCtl, MgmtToNet, MgmtToUi, NetLoopback,
-    NetToMgmt, Tlv, UiToMgmt, WifiSsid, HEADER_SIZE, MAX_CHANNELS, MAX_VALUE_SIZE, SYNC_WORD,
+    ChannelConfig, CtlToMgmt, LoopbackMode, MgmtToCtl, MgmtToNet, MgmtToUi, NetLoopback, NetToMgmt,
+    Tlv, UiToMgmt, WifiSsid, HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD,
 };
 
 use super::port::CtlPort;
@@ -67,11 +67,19 @@ impl core::fmt::Display for CtlError {
             CtlError::TooLong => write!(f, "TLV value too long"),
             CtlError::UnexpectedEof => write!(f, "unexpected end of stream"),
             CtlError::UnexpectedResponse { expected, actual } => {
-                write!(f, "unexpected response: expected {}, got {}", expected, actual)
+                write!(
+                    f,
+                    "unexpected response: expected {}, got {}",
+                    expected, actual
+                )
             }
             CtlError::DataMismatch => write!(f, "data mismatch"),
             CtlError::InvalidLength { expected, actual } => {
-                write!(f, "invalid response length: expected {}, got {}", expected, actual)
+                write!(
+                    f,
+                    "invalid response length: expected {}, got {}",
+                    expected, actual
+                )
             }
             CtlError::DeviceError(e) => write!(f, "device error: {}", e),
             CtlError::InvalidUtf8 => write!(f, "invalid UTF-8 in response"),
@@ -141,8 +149,8 @@ pub struct JitterStatsResult {
 /// chips via the TLV protocol. It works with any type implementing `CtlPort`.
 pub struct CtlCore<P: CtlPort> {
     port: Option<P>,
-    ui_buffer: heapless::Vec<u8, MAX_VALUE_SIZE>,
-    net_buffer: heapless::Vec<u8, MAX_VALUE_SIZE>,
+    ui_buffer: Vec<u8>,
+    net_buffer: Vec<u8>,
 }
 
 impl<P: CtlPort> CtlCore<P> {
@@ -150,8 +158,8 @@ impl<P: CtlPort> CtlCore<P> {
     pub fn new(port: P) -> Self {
         Self {
             port: Some(port),
-            ui_buffer: heapless::Vec::new(),
-            net_buffer: heapless::Vec::new(),
+            ui_buffer: Vec::new(),
+            net_buffer: Vec::new(),
         }
     }
 
@@ -278,8 +286,7 @@ impl<P: CtlPort> CtlCore<P> {
 
         // Build the complete packet
         let total_len = SYNC_WORD.len() + HEADER_SIZE + value.len();
-        let mut buf = heapless::Vec::<u8, { SYNC_WORD.len() + HEADER_SIZE + MAX_VALUE_SIZE }>::new();
-
+        let mut buf = Vec::new();
         let _ = buf.extend_from_slice(&SYNC_WORD);
         let _ = buf.extend_from_slice(&type_val.to_be_bytes());
         let _ = buf.extend_from_slice(&(value.len() as u32).to_be_bytes());
@@ -303,7 +310,7 @@ impl<P: CtlPort> CtlCore<P> {
     async fn write_tlv_ui(&mut self, tlv_type: MgmtToUi, value: &[u8]) -> Result<(), CtlError> {
         // Create inner TLV (sync word + header + value)
         let inner_type: u16 = tlv_type.into();
-        let mut inner = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
+        let mut inner = Vec::<u8>::new();
         let _ = inner.extend_from_slice(&SYNC_WORD);
         let _ = inner.extend_from_slice(&inner_type.to_be_bytes());
         let _ = inner.extend_from_slice(&(value.len() as u32).to_be_bytes());
@@ -316,7 +323,7 @@ impl<P: CtlPort> CtlCore<P> {
     async fn write_tlv_net(&mut self, tlv_type: MgmtToNet, value: &[u8]) -> Result<(), CtlError> {
         // Create inner TLV (sync word + header + value)
         let inner_type: u16 = tlv_type.into();
-        let mut inner = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
+        let mut inner = Vec::<u8>::new();
         let _ = inner.extend_from_slice(&SYNC_WORD);
         let _ = inner.extend_from_slice(&inner_type.to_be_bytes());
         let _ = inner.extend_from_slice(&(value.len() as u32).to_be_bytes());
@@ -330,7 +337,10 @@ impl<P: CtlPort> CtlCore<P> {
     /// Tunneled data (FromUi/FromNet) is appended to stream buffers for later parsing.
     async fn read_tlv_mgmt(&mut self) -> Result<Tlv<MgmtToCtl>, CtlError> {
         loop {
-            let tlv = self.read_tlv::<MgmtToCtl>().await?.ok_or(CtlError::UnexpectedEof)?;
+            let tlv = self
+                .read_tlv::<MgmtToCtl>()
+                .await?
+                .ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
                 MgmtToCtl::FromUi => {
                     // Append to UI stream buffer
@@ -359,7 +369,10 @@ impl<P: CtlPort> CtlCore<P> {
             }
 
             // Need more data - read from wire
-            let tlv = self.read_tlv::<MgmtToCtl>().await?.ok_or(CtlError::UnexpectedEof)?;
+            let tlv = self
+                .read_tlv::<MgmtToCtl>()
+                .await?
+                .ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
                 MgmtToCtl::FromUi => {
                     // Append to UI stream buffer
@@ -399,7 +412,10 @@ impl<P: CtlPort> CtlCore<P> {
             }
 
             // Need more data - read from wire
-            let tlv = self.read_tlv::<MgmtToCtl>().await?.ok_or(CtlError::UnexpectedEof)?;
+            let tlv = self
+                .read_tlv::<MgmtToCtl>()
+                .await?
+                .ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
                 MgmtToCtl::FromNet => {
                     // Append to NET stream buffer
@@ -423,7 +439,7 @@ impl<P: CtlPort> CtlCore<P> {
     /// Returns `Ok(None)` if more data is needed.
     /// Returns `Err` on parse errors (invalid type, etc.).
     fn try_parse_tlv_from_buffer<T: TryFrom<u16>>(
-        buffer: &mut heapless::Vec<u8, MAX_VALUE_SIZE>,
+        buffer: &mut Vec<u8>,
     ) -> Result<Option<Tlv<T>>, CtlError> {
         // Scan for sync word, discarding non-TLV data
         let sync_pos = Self::find_sync_word(buffer);
@@ -473,18 +489,22 @@ impl<P: CtlPort> CtlCore<P> {
         }
 
         // Parse type
-        let tlv_type = T::try_from(tlv_type_raw).map_err(|_| CtlError::InvalidType(tlv_type_raw))?;
+        let tlv_type =
+            T::try_from(tlv_type_raw).map_err(|_| CtlError::InvalidType(tlv_type_raw))?;
 
         // Extract value
         let value_start = SYNC_WORD.len() + HEADER_SIZE;
-        let mut value = heapless::Vec::new();
+        let mut value = Vec::new();
         let _ = value.extend_from_slice(&buffer[value_start..value_start + length]);
 
         // Consume the TLV from buffer
         buffer.copy_within(total_len.., 0);
         buffer.truncate(buffer.len() - total_len);
 
-        Ok(Some(Tlv { tlv_type, value }))
+        Ok(Some(Tlv {
+            tlv_type,
+            value: heapless::Vec::try_from(value.as_slice()).unwrap(),
+        }))
     }
 
     /// Find the position of sync word in buffer.
@@ -527,11 +547,15 @@ impl<P: CtlPort> CtlCore<P> {
             });
         }
 
-        let tlv_type = T::try_from(tlv_type_raw).map_err(|_| CtlError::InvalidType(tlv_type_raw))?;
-        let mut value = heapless::Vec::new();
+        let tlv_type =
+            T::try_from(tlv_type_raw).map_err(|_| CtlError::InvalidType(tlv_type_raw))?;
+        let mut value = Vec::new();
         let _ = value.extend_from_slice(&data[value_start..value_start + length]);
 
-        Ok(Tlv { tlv_type, value })
+        Ok(Tlv {
+            tlv_type,
+            value: heapless::Vec::try_from(value.as_slice()).unwrap(),
+        })
     }
 
     // ========================================================================
@@ -624,10 +648,25 @@ impl<P: CtlPort> CtlCore<P> {
             });
         }
         Ok(StackInfoResult {
-            stack_base: u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]),
+            stack_base: u32::from_le_bytes([
+                tlv.value[0],
+                tlv.value[1],
+                tlv.value[2],
+                tlv.value[3],
+            ]),
             stack_top: u32::from_le_bytes([tlv.value[4], tlv.value[5], tlv.value[6], tlv.value[7]]),
-            stack_size: u32::from_le_bytes([tlv.value[8], tlv.value[9], tlv.value[10], tlv.value[11]]),
-            stack_used: u32::from_le_bytes([tlv.value[12], tlv.value[13], tlv.value[14], tlv.value[15]]),
+            stack_size: u32::from_le_bytes([
+                tlv.value[8],
+                tlv.value[9],
+                tlv.value[10],
+                tlv.value[11],
+            ]),
+            stack_used: u32::from_le_bytes([
+                tlv.value[12],
+                tlv.value[13],
+                tlv.value[14],
+                tlv.value[15],
+            ]),
         })
     }
 
@@ -681,7 +720,11 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Write a raw TLV to the MGMT connection.
-    pub async fn write_tlv_raw(&mut self, tlv_type: CtlToMgmt, value: &[u8]) -> Result<(), CtlError> {
+    pub async fn write_tlv_raw(
+        &mut self,
+        tlv_type: CtlToMgmt,
+        value: &[u8],
+    ) -> Result<(), CtlError> {
         self.write_tlv(tlv_type, value).await
     }
 
@@ -831,10 +874,25 @@ impl<P: CtlPort> CtlCore<P> {
             });
         }
         Ok(StackInfoResult {
-            stack_base: u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]),
+            stack_base: u32::from_le_bytes([
+                tlv.value[0],
+                tlv.value[1],
+                tlv.value[2],
+                tlv.value[3],
+            ]),
             stack_top: u32::from_le_bytes([tlv.value[4], tlv.value[5], tlv.value[6], tlv.value[7]]),
-            stack_size: u32::from_le_bytes([tlv.value[8], tlv.value[9], tlv.value[10], tlv.value[11]]),
-            stack_used: u32::from_le_bytes([tlv.value[12], tlv.value[13], tlv.value[14], tlv.value[15]]),
+            stack_size: u32::from_le_bytes([
+                tlv.value[8],
+                tlv.value[9],
+                tlv.value[10],
+                tlv.value[11],
+            ]),
+            stack_used: u32::from_le_bytes([
+                tlv.value[12],
+                tlv.value[13],
+                tlv.value[14],
+                tlv.value[15],
+            ]),
         })
     }
 
@@ -932,7 +990,10 @@ impl<P: CtlPort> CtlCore<P> {
                     match core::str::from_utf8(&inner.value) {
                         Ok(msg) => return Ok(Some(msg.into())),
                         Err(_) => {
-                            return Ok(Some(format!("<invalid utf8: {:?}>", inner.value.as_slice())))
+                            return Ok(Some(format!(
+                                "<invalid utf8: {:?}>",
+                                inner.value.as_slice()
+                            )))
                         }
                     }
                 }
@@ -1022,7 +1083,7 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Get all WiFi SSIDs from NET chip storage.
-    pub async fn get_wifi_ssids(&mut self) -> Result<heapless::Vec<WifiSsid, 8>, CtlError> {
+    pub async fn get_wifi_ssids(&mut self) -> Result<Vec<WifiSsid>, CtlError> {
         self.write_tlv_net(MgmtToNet::GetWifiSsids, &[]).await?;
         let tlv = self.read_tlv_net().await?;
         if tlv.tlv_type != NetToMgmt::WifiSsids {
@@ -1048,7 +1109,7 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Get the relay URL from NET chip storage.
-    pub async fn get_relay_url(&mut self) -> Result<heapless::String<128>, CtlError> {
+    pub async fn get_relay_url(&mut self) -> Result<String, CtlError> {
         self.write_tlv_net(MgmtToNet::GetRelayUrl, &[]).await?;
         let tlv = self.read_tlv_net().await?;
         if tlv.tlv_type != NetToMgmt::RelayUrl {
@@ -1106,9 +1167,7 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Get all channel configurations.
-    pub async fn get_all_channel_configs(
-        &mut self,
-    ) -> Result<heapless::Vec<ChannelConfig, MAX_CHANNELS>, CtlError> {
+    pub async fn get_all_channel_configs(&mut self) -> Result<Vec<ChannelConfig>, CtlError> {
         self.write_tlv_net(MgmtToNet::GetAllChannelConfigs, &[])
             .await?;
         let tlv = self.read_tlv_net().await?;
@@ -1136,7 +1195,10 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Get jitter buffer statistics for a channel.
-    pub async fn get_jitter_stats(&mut self, channel_id: u8) -> Result<JitterStatsResult, CtlError> {
+    pub async fn get_jitter_stats(
+        &mut self,
+        channel_id: u8,
+    ) -> Result<JitterStatsResult, CtlError> {
         self.write_tlv_net(MgmtToNet::GetJitterStats, &[channel_id])
             .await?;
         let tlv = self.read_tlv_net().await?;
@@ -1152,8 +1214,18 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(JitterStatsResult {
             received: u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]),
             output: u32::from_le_bytes([tlv.value[4], tlv.value[5], tlv.value[6], tlv.value[7]]),
-            underruns: u32::from_le_bytes([tlv.value[8], tlv.value[9], tlv.value[10], tlv.value[11]]),
-            overruns: u32::from_le_bytes([tlv.value[12], tlv.value[13], tlv.value[14], tlv.value[15]]),
+            underruns: u32::from_le_bytes([
+                tlv.value[8],
+                tlv.value[9],
+                tlv.value[10],
+                tlv.value[11],
+            ]),
+            overruns: u32::from_le_bytes([
+                tlv.value[12],
+                tlv.value[13],
+                tlv.value[14],
+                tlv.value[15],
+            ]),
             level: u16::from_le_bytes([tlv.value[16], tlv.value[17]]),
             state: tlv.value[18],
         })
@@ -1164,7 +1236,10 @@ impl<P: CtlPort> CtlCore<P> {
         self.write_tlv(CtlToMgmt::ResetNetToBootloader, &[]).await?;
         // Read TLVs, skipping any FromNet until we get Ack
         for _ in 0..100 {
-            let tlv = self.read_tlv::<MgmtToCtl>().await?.ok_or(CtlError::UnexpectedEof)?;
+            let tlv = self
+                .read_tlv::<MgmtToCtl>()
+                .await?
+                .ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
                 MgmtToCtl::Ack => return Ok(()),
                 MgmtToCtl::FromNet => continue,
@@ -1184,7 +1259,10 @@ impl<P: CtlPort> CtlCore<P> {
         self.write_tlv(CtlToMgmt::ResetNetToUser, &[]).await?;
         // Read TLVs, skipping any FromNet until we get Ack
         for _ in 0..100 {
-            let tlv = self.read_tlv::<MgmtToCtl>().await?.ok_or(CtlError::UnexpectedEof)?;
+            let tlv = self
+                .read_tlv::<MgmtToCtl>()
+                .await?
+                .ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
                 MgmtToCtl::Ack => return Ok(()),
                 MgmtToCtl::FromNet => continue,
