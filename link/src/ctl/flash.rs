@@ -941,6 +941,10 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     /// and resets it back to user mode.
     ///
     /// The `delay_ms` callback should sleep for the given number of milliseconds.
+    ///
+    /// Note: If MGMT was recently flashed, disconnect/reconnect the serial port
+    /// to clear all buffers and allow MGMT firmware to fully boot before calling
+    /// this method.
     pub async fn get_ui_bootloader_info<D, F>(
         &mut self,
         delay_ms: D,
@@ -949,6 +953,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         D: Fn(u64) -> F,
         F: core::future::Future<Output = ()>,
     {
+        // Drain any stale data from buffers
+        self.drain();
+
         // Reset UI chip into bootloader mode
         let _ = self.reset_ui_to_bootloader().await;
 
@@ -1008,6 +1015,10 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     ///
     /// The `delay_ms` callback should sleep for the given number of milliseconds.
     /// The progress callback is called with (phase, bytes_processed, total_bytes).
+    ///
+    /// Note: If MGMT was recently flashed, disconnect/reconnect the serial port
+    /// to clear all buffers and allow MGMT firmware to fully boot before calling
+    /// this method. This ensures reliable UI tunneling through MGMT.
     pub async fn flash_ui<Cb, D, Fut>(
         &mut self,
         firmware: &[u8],
@@ -1020,6 +1031,10 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         D: Fn(u64) -> Fut,
         Fut: core::future::Future<Output = ()>,
     {
+        // Drain any stale data from buffers to prevent contamination
+        // when tunneling UI bootloader commands through MGMT.
+        self.drain();
+
         // Hold NET chip in reset during UI flashing to avoid interference
         let _ = self.hold_net_reset().await;
 

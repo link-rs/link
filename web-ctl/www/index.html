@@ -280,14 +280,22 @@
 
         .btn-group {
             display: flex;
-            gap: 0.5rem;
+            gap: 0;
             flex-wrap: wrap;
             align-items: center;
         }
 
+        .btn-group button {
+            margin-right: 0.35rem;
+        }
+
+        .btn-group button:first-child {
+            margin-right: 0.35rem;
+        }
+
         .status-icon {
             font-size: 1.2rem;
-            margin-left: 0.25rem;
+            margin-right: 1.5rem;
             min-width: 1.5rem;
             text-align: center;
         }
@@ -470,6 +478,55 @@
             width: 18px;
             height: 18px;
             accent-color: var(--accent);
+        }
+
+        .flash-task-progress {
+            display: none;
+            gap: 1rem;
+            margin-bottom: 1rem;
+            padding: 0.75rem;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+        }
+
+        .flash-task-progress.active {
+            display: flex;
+        }
+
+        .flash-task-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .task-badge {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+        }
+
+        .task-status {
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .task-status[data-status="pending"] {
+            color: var(--text-secondary);
+            opacity: 0.3;
+        }
+
+        .task-status[data-status="active"] {
+            color: var(--text-secondary);
+            animation: spin 1s linear infinite;
+        }
+
+        .task-status[data-status="success"] {
+            color: var(--success);
+        }
+
+        .task-status[data-status="error"] {
+            color: var(--error);
         }
 
         .warning-box {
@@ -734,46 +791,47 @@
             <h2>Firmware Flashing<span class="collapse-icon">&#9662;</span></h2>
             <div class="card-content">
                 <div class="card-section">
-                    <div class="btn-group" style="margin-bottom: 0.5rem;">
-                        <button class="btn-primary" id="flashMgmtLatestBtn">Flash MGMT</button>
+                    <div class="btn-group" style="margin-bottom: 1rem;">
+                        <button class="btn-success" id="flashAllBtn">All</button>
+                        <span class="status-icon" id="flashAllStatus"></span>
+                        <button class="btn-primary" id="flashMgmtLatestBtn">MGMT</button>
                         <span class="status-icon" id="flashMgmtStatus"></span>
+                        <button class="btn-primary" id="flashUiLatestBtn">UI</button>
+                        <span class="status-icon" id="flashUiStatus"></span>
+                        <button class="btn-primary" id="flashNetLatestBtn">NET</button>
+                        <span class="status-icon" id="flashNetStatus"></span>
                     </div>
+
+                    <!-- Overall task progress for "All" -->
+                    <div class="flash-task-progress" id="flashTaskProgress">
+                        <div class="flash-task-item" id="taskMgmt">
+                            <span class="task-badge">MGMT</span>
+                            <span class="task-status" data-status="pending">⬤</span>
+                        </div>
+                        <div class="flash-task-item" id="taskUi">
+                            <span class="task-badge">UI</span>
+                            <span class="task-status" data-status="pending">⬤</span>
+                        </div>
+                        <div class="flash-task-item" id="taskNet">
+                            <span class="task-badge">NET</span>
+                            <span class="task-status" data-status="pending">⬤</span>
+                        </div>
+                    </div>
+
                     <div class="progress-container" id="mgmtProgress">
                         <div class="progress-bar">
                             <div class="progress-fill" id="mgmtProgressFill"></div>
                         </div>
                         <div class="progress-text" id="mgmtProgressText">Ready</div>
                     </div>
-                </div>
 
-                <div class="card-section">
-                    <div class="btn-group" style="margin-bottom: 0.5rem;">
-                        <button class="btn-primary" id="flashUiLatestBtn">Flash UI</button>
-                        <span class="status-icon" id="flashUiStatus"></span>
-                    </div>
                     <div class="progress-container" id="uiProgress">
                         <div class="progress-bar">
                             <div class="progress-fill" id="uiProgressFill"></div>
                         </div>
                         <div class="progress-text" id="uiProgressText">Ready</div>
                     </div>
-                </div>
 
-                <div class="card-section">
-                    <div class="btn-group" style="margin-bottom: 0.5rem;">
-                        <button class="btn-primary" id="flashNetLatestBtn">Flash NET</button>
-                        <span class="status-icon" id="flashNetStatus"></span>
-                    </div>
-                    <div class="flash-options">
-                        <label>
-                            <input type="checkbox" id="netCompress" checked>
-                            Compress transfer
-                        </label>
-                        <label>
-                            <input type="checkbox" id="netVerify" checked>
-                            Verify after write
-                        </label>
-                    </div>
                     <div class="progress-container" id="netProgress">
                         <div class="progress-bar">
                             <div class="progress-fill" id="netProgressFill"></div>
@@ -1296,6 +1354,46 @@
             }
         }
 
+        // Reset flash UI state
+        function resetFlashUI() {
+            // Reset status icons
+            document.getElementById('flashMgmtStatus').textContent = '';
+            document.getElementById('flashMgmtStatus').className = 'status-icon';
+            document.getElementById('flashUiStatus').textContent = '';
+            document.getElementById('flashUiStatus').className = 'status-icon';
+            document.getElementById('flashNetStatus').textContent = '';
+            document.getElementById('flashNetStatus').className = 'status-icon';
+            document.getElementById('flashAllStatus').textContent = '';
+            document.getElementById('flashAllStatus').className = 'status-icon';
+
+            // Hide and reset progress bars
+            const mgmtProgress = document.getElementById('mgmtProgress');
+            const uiProgress = document.getElementById('uiProgress');
+            const netProgress = document.getElementById('netProgress');
+            const taskProgress = document.getElementById('flashTaskProgress');
+
+            mgmtProgress.classList.remove('active');
+            uiProgress.classList.remove('active');
+            netProgress.classList.remove('active');
+            taskProgress.classList.remove('active');
+
+            document.getElementById('mgmtProgressFill').style.width = '0%';
+            document.getElementById('uiProgressFill').style.width = '0%';
+            document.getElementById('netProgressFill').style.width = '0%';
+
+            document.getElementById('mgmtProgressText').textContent = 'Ready';
+            document.getElementById('uiProgressText').textContent = 'Ready';
+            document.getElementById('netProgressText').textContent = 'Ready';
+
+            // Reset task statuses
+            document.querySelector('#taskMgmt .task-status').setAttribute('data-status', 'pending');
+            document.querySelector('#taskMgmt .task-status').textContent = '⬤';
+            document.querySelector('#taskUi .task-status').setAttribute('data-status', 'pending');
+            document.querySelector('#taskUi .task-status').textContent = '⬤';
+            document.querySelector('#taskNet .task-status').setAttribute('data-status', 'pending');
+            document.querySelector('#taskNet .task-status').textContent = '⬤';
+        }
+
         // Update connection status
         function updateStatus(connected, showCards = false) {
             statusIndicator.classList.toggle('connected', connected);
@@ -1309,6 +1407,11 @@
                 mgmtCard.classList.toggle('hidden', !connected);
                 uiCard.classList.toggle('hidden', !connected);
                 netCard.classList.toggle('hidden', !connected);
+            }
+
+            // Reset flash UI on disconnect
+            if (!connected) {
+                resetFlashUI();
             }
         }
 
@@ -1557,15 +1660,38 @@
                 // Reset MGMT chip back to user mode
                 await controller.exit_mgmt_bootloader();
 
+                // Disconnect and reconnect to clear buffers and allow MGMT to fully boot
+                // (mimics the behavior of make flash-all which works reliably)
+                progressText.textContent = 'Reconnecting...';
+                log('Disconnecting to clear buffers and allow MGMT to boot...', 'info');
+                await controller.disconnect();
+
+                // Wait for MGMT to fully boot
+                await new Promise(r => setTimeout(r, 1000));
+
+                // Reconnect
+                await controller.connect(115200);
+                log('Reconnected to device', 'info');
+
                 statusIcon.textContent = '\u2713';
                 statusIcon.className = 'status-icon success';
                 log('MGMT firmware flashed successfully!', 'success');
                 progressText.textContent = 'Complete!';
+
+                // Hide progress bar after 2 seconds
+                setTimeout(() => {
+                    progressContainer.classList.remove('active');
+                }, 2000);
             } catch (e) {
                 statusIcon.textContent = '\u2717';
                 statusIcon.className = 'status-icon error';
                 log(`MGMT flash error: ${e}`, 'error');
                 progressText.textContent = 'Failed';
+
+                // Hide progress bar after 2 seconds
+                setTimeout(() => {
+                    progressContainer.classList.remove('active');
+                }, 2000);
             } finally {
                 btn.disabled = false;
             }
@@ -1756,22 +1882,58 @@
                 const firmware = new Uint8Array(await response.arrayBuffer());
                 log(`Fetched ui.bin (${firmware.length} bytes)`, 'info');
 
-                progressText.textContent = 'Flashing...';
-                await controller.flash_ui(firmware, true, (phase, current, total) => {
-                    const percent = total > 0 ? (current / total) * 100 : 0;
-                    progressFill.style.width = `${percent}%`;
-                    progressText.textContent = `${phase}: ${current} / ${total}`;
-                });
+                // Retry UI flash up to 3 times if it fails
+                const maxRetries = 3;
+                let lastError;
+                let success = false;
+
+                for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                    try {
+                        if (attempt > 1) {
+                            log(`Retry attempt ${attempt}/${maxRetries}...`, 'info');
+                            progressText.textContent = `Retry ${attempt}/${maxRetries}...`;
+                            // Small delay before retry
+                            await new Promise(r => setTimeout(r, 500));
+                        } else {
+                            progressText.textContent = 'Flashing...';
+                        }
+
+                        await controller.flash_ui(firmware, true, (phase, current, total) => {
+                            const percent = total > 0 ? (current / total) * 100 : 0;
+                            progressFill.style.width = `${percent}%`;
+                            progressText.textContent = `${phase}: ${current} / ${total}`;
+                        });
+
+                        success = true;
+                        break; // Success, exit retry loop
+                    } catch (e) {
+                        lastError = e;
+                        log(`UI flash attempt ${attempt} failed: ${e}`, 'warning');
+                        if (attempt === maxRetries) {
+                            throw e; // Last attempt failed, re-throw
+                        }
+                    }
+                }
 
                 statusIcon.textContent = '\u2713';
                 statusIcon.className = 'status-icon success';
                 log('UI firmware flashed successfully!', 'success');
                 progressText.textContent = 'Complete!';
+
+                // Hide progress bar after 2 seconds
+                setTimeout(() => {
+                    progressContainer.classList.remove('active');
+                }, 2000);
             } catch (e) {
                 statusIcon.textContent = '\u2717';
                 statusIcon.className = 'status-icon error';
                 log(`UI flash error: ${e}`, 'error');
                 progressText.textContent = 'Failed';
+
+                // Hide progress bar after 2 seconds
+                setTimeout(() => {
+                    progressContainer.classList.remove('active');
+                }, 2000);
             } finally {
                 btn.disabled = false;
             }
@@ -1864,6 +2026,239 @@
                 log(`NET relay URL updated to: ${url}`, 'success');
             } catch (e) {
                 log(`Write relay URL error: ${e}`, 'error');
+            }
+        });
+
+        // Flash All
+        document.getElementById('flashAllBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('flashAllBtn');
+            const statusIcon = document.getElementById('flashAllStatus');
+            const taskProgress = document.getElementById('flashTaskProgress');
+            const mgmtBtn = document.getElementById('flashMgmtLatestBtn');
+            const uiBtn = document.getElementById('flashUiLatestBtn');
+            const netBtn = document.getElementById('flashNetLatestBtn');
+
+            // Disable all flash buttons
+            btn.disabled = true;
+            mgmtBtn.disabled = true;
+            uiBtn.disabled = true;
+            netBtn.disabled = true;
+
+            statusIcon.textContent = '\u21BB';
+            statusIcon.className = 'status-icon pending';
+            taskProgress.classList.add('active');
+
+            let allSuccess = true;
+
+            // Helper function to update task status
+            const updateTaskStatus = (taskId, status) => {
+                const taskStatus = document.querySelector(`#${taskId} .task-status`);
+                taskStatus.setAttribute('data-status', status);
+                if (status === 'active') {
+                    taskStatus.textContent = '\u21BB'; // Spinner
+                } else if (status === 'success') {
+                    taskStatus.textContent = '\u2713'; // Checkmark
+                } else if (status === 'error') {
+                    taskStatus.textContent = '\u2717'; // X mark
+                }
+            };
+
+            try {
+                // Flash MGMT
+                updateTaskStatus('taskMgmt', 'active');
+                log('Starting MGMT flash...', 'info');
+                try {
+                    const mgmtProgressContainer = document.getElementById('mgmtProgress');
+                    const mgmtProgressFill = document.getElementById('mgmtProgressFill');
+                    const mgmtProgressText = document.getElementById('mgmtProgressText');
+
+                    mgmtProgressContainer.classList.add('active');
+                    mgmtProgressText.textContent = 'Fetching firmware...';
+
+                    const response = await fetch('firmware/mgmt.bin');
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch firmware: ${response.status} ${response.statusText}`);
+                    }
+                    const firmware = new Uint8Array(await response.arrayBuffer());
+                    log(`Fetched mgmt.bin (${firmware.length} bytes)`, 'info');
+
+                    mgmtProgressText.textContent = 'Entering bootloader...';
+                    let gotProgress = false;
+                    const progressCallback = (phase, current, total) => {
+                        gotProgress = true;
+                        const percent = total > 0 ? (current / total) * 100 : 0;
+                        mgmtProgressFill.style.width = `${percent}%`;
+                        mgmtProgressText.textContent = `${phase}: ${current} / ${total}`;
+                    };
+
+                    try {
+                        await controller.flash_mgmt(firmware, progressCallback);
+                        log('Auto-reset to bootloader succeeded (EV16 detected)', 'info');
+                    } catch (e) {
+                        if (gotProgress) {
+                            throw e;
+                        }
+                        log('Auto-reset failed, manual bootloader entry required', 'info');
+                        mgmtProgressText.textContent = 'Manual reset required...';
+                        await showManualResetModal();
+                        log('User confirmed manual reset, flashing...', 'info');
+                        await new Promise(r => setTimeout(r, 100));
+                        await controller.drain_buffer();
+                        mgmtProgressText.textContent = 'Flashing...';
+                        gotProgress = false;
+                        await controller.flash_mgmt_manual(firmware, progressCallback);
+                    }
+
+                    await controller.exit_mgmt_bootloader();
+                    mgmtProgressText.textContent = 'Complete!';
+                    updateTaskStatus('taskMgmt', 'success');
+                    log('MGMT firmware flashed successfully!', 'success');
+                } catch (e) {
+                    const mgmtProgressText = document.getElementById('mgmtProgressText');
+                    mgmtProgressText.textContent = 'Failed';
+                    updateTaskStatus('taskMgmt', 'error');
+                    log(`MGMT flash error: ${e}`, 'error');
+                    allSuccess = false;
+                    throw e;
+                }
+
+                // Flash UI
+                updateTaskStatus('taskUi', 'active');
+                log('Starting UI flash...', 'info');
+                try {
+                    const uiProgressContainer = document.getElementById('uiProgress');
+                    const uiProgressFill = document.getElementById('uiProgressFill');
+                    const uiProgressText = document.getElementById('uiProgressText');
+
+                    uiProgressContainer.classList.add('active');
+                    uiProgressText.textContent = 'Fetching firmware...';
+
+                    const response = await fetch('firmware/ui.bin');
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch firmware: ${response.status} ${response.statusText}`);
+                    }
+                    const firmware = new Uint8Array(await response.arrayBuffer());
+                    log(`Fetched ui.bin (${firmware.length} bytes)`, 'info');
+
+                    // Retry UI flash up to 3 times if it fails
+                    const maxRetries = 3;
+                    let lastError;
+                    let success = false;
+
+                    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                        try {
+                            if (attempt > 1) {
+                                log(`UI flash retry attempt ${attempt}/${maxRetries}...`, 'info');
+                                uiProgressText.textContent = `Retry ${attempt}/${maxRetries}...`;
+                                await new Promise(r => setTimeout(r, 500));
+                            } else {
+                                uiProgressText.textContent = 'Flashing...';
+                            }
+
+                            await controller.flash_ui(firmware, true, (phase, current, total) => {
+                                const percent = total > 0 ? (current / total) * 100 : 0;
+                                uiProgressFill.style.width = `${percent}%`;
+                                uiProgressText.textContent = `${phase}: ${current} / ${total}`;
+                            });
+
+                            success = true;
+                            break; // Success, exit retry loop
+                        } catch (e) {
+                            lastError = e;
+                            log(`UI flash attempt ${attempt} failed: ${e}`, 'warning');
+                            if (attempt === maxRetries) {
+                                throw e; // Last attempt failed, re-throw
+                            }
+                        }
+                    }
+
+                    uiProgressText.textContent = 'Complete!';
+                    updateTaskStatus('taskUi', 'success');
+                    log('UI firmware flashed successfully!', 'success');
+                } catch (e) {
+                    const uiProgressText = document.getElementById('uiProgressText');
+                    uiProgressText.textContent = 'Failed';
+                    updateTaskStatus('taskUi', 'error');
+                    log(`UI flash error: ${e}`, 'error');
+                    allSuccess = false;
+                    throw e;
+                }
+
+                // Flash NET
+                updateTaskStatus('taskNet', 'active');
+                log('Starting NET flash...', 'info');
+                try {
+                    const netProgressContainer = document.getElementById('netProgress');
+                    const netProgressFill = document.getElementById('netProgressFill');
+                    const netProgressText = document.getElementById('netProgressText');
+
+                    netProgressContainer.classList.add('active');
+                    netProgressText.textContent = 'Fetching firmware...';
+
+                    const response = await fetch('firmware/net');
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch firmware: ${response.status} ${response.statusText}`);
+                    }
+                    const firmware = new Uint8Array(await response.arrayBuffer());
+                    log(`Fetched net.bin (${firmware.length} bytes)`, 'info');
+
+                    netProgressText.textContent = 'Flashing...';
+                    log(`Flashing NET firmware...`, 'info');
+                    let wasSkipped = false;
+                    await controller.flash_net(firmware, (phase, current, total) => {
+                        if (phase === 'skipped') {
+                            wasSkipped = true;
+                            netProgressFill.style.width = '100%';
+                            netProgressText.textContent = 'Firmware unchanged, skipped';
+                        } else if (phase === 'done') {
+                            netProgressFill.style.width = '100%';
+                            netProgressText.textContent = 'Resetting...';
+                        } else {
+                            const percent = total > 0 ? (current / total) * 100 : 0;
+                            netProgressFill.style.width = `${percent}%`;
+                            netProgressText.textContent = `${phase}: ${current} / ${total}`;
+                        }
+                    });
+
+                    if (wasSkipped) {
+                        netProgressText.textContent = 'Unchanged';
+                        log('NET firmware unchanged, skipped', 'success');
+                    } else {
+                        netProgressText.textContent = 'Complete!';
+                        log('NET firmware flashed successfully!', 'success');
+                    }
+                    updateTaskStatus('taskNet', 'success');
+                } catch (e) {
+                    const netProgressText = document.getElementById('netProgressText');
+                    netProgressText.textContent = 'Failed';
+                    updateTaskStatus('taskNet', 'error');
+                    log(`NET flash error: ${e}`, 'error');
+                    allSuccess = false;
+                    throw e;
+                }
+
+                // All done
+                statusIcon.textContent = '\u2713';
+                statusIcon.className = 'status-icon success';
+                log('All firmware flashed successfully!', 'success');
+            } catch (e) {
+                statusIcon.textContent = '\u2717';
+                statusIcon.className = 'status-icon error';
+                log(`Flash all error: ${e}`, 'error');
+            } finally {
+                // Re-enable buttons
+                btn.disabled = false;
+                mgmtBtn.disabled = false;
+                uiBtn.disabled = false;
+                netBtn.disabled = false;
+
+                // Hide task progress and individual progress bars after 3 seconds
+                setTimeout(() => {
+                    taskProgress.classList.remove('active');
+                    document.getElementById('mgmtProgress').classList.remove('active');
+                    document.getElementById('uiProgress').classList.remove('active');
+                    document.getElementById('netProgress').classList.remove('active');
+                }, 3000);
             }
         });
 
@@ -1971,11 +2366,21 @@
                     log('NET firmware flashed successfully!', 'success');
                     progressText.textContent = 'Complete!';
                 }
+
+                // Hide progress bar after 2 seconds
+                setTimeout(() => {
+                    progressContainer.classList.remove('active');
+                }, 2000);
             } catch (e) {
                 statusIcon.textContent = '\u2717';
                 statusIcon.className = 'status-icon error';
                 log(`NET flash error: ${e}`, 'error');
                 progressText.textContent = 'Failed';
+
+                // Hide progress bar after 2 seconds
+                setTimeout(() => {
+                    progressContainer.classList.remove('active');
+                }, 2000);
             } finally {
                 btn.disabled = false;
             }
