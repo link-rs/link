@@ -1,7 +1,7 @@
 //! NET chip command handlers.
 
 use super::Core;
-use crate::{ChannelAction, GetSetString, NetAction, NetLoopbackAction, WifiAction};
+use crate::{ChannelAction, GetSetString, NetAction, NetLoopbackAction, PinAction, PinLevel, ResetAction, WifiAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::StdDelay;
 use link::ctl::{ChannelConfig, ProgressCallbacks, SetTimeout};
@@ -52,8 +52,11 @@ impl ProgressCallbacks for FlashProgress {
         self.pb.set_position(0);
     }
 
-    fn finish(&mut self, _skipped: bool) {
-        // Progress bar will be cleared by FlashProgress::finish()
+    fn finish(&mut self, skipped: bool) {
+        if skipped {
+            self.pb.set_prefix("Skipped");
+            self.pb.set_position(self.pb.length().unwrap_or(0));
+        }
     }
 }
 
@@ -211,17 +214,39 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
                 Ok(())
             }
         },
-        NetAction::Reset { action } => match action.as_deref() {
-            Some("bootloader") => {
-                core.reset_net_to_bootloader().await?;
-                println!("NET chip reset to bootloader mode");
-                Ok(())
+        NetAction::Boot { action: PinAction::Set { level } } => {
+            let high = matches!(level, PinLevel::High);
+            core.write_tlv_raw(link::CtlToMgmt::SetNetBoot, &[high as u8]).await?;
+            println!("NET BOOT: {}", if high { "high" } else { "low" });
+            Ok(())
+        }
+        NetAction::Rst { action: PinAction::Set { level } } => {
+            let high = matches!(level, PinLevel::High);
+            core.write_tlv_raw(link::CtlToMgmt::SetNetRst, &[high as u8]).await?;
+            println!("NET RST: {}", if high { "high" } else { "low" });
+            Ok(())
+        }
+        NetAction::Reset { action } => {
+            let delay = |ms| tokio::time::sleep(std::time::Duration::from_millis(ms));
+            match action.unwrap_or_default() {
+                ResetAction::User => {
+                    core.reset_net_to_user(delay).await?;
+                    println!("NET chip reset to user mode");
+                }
+                ResetAction::Bootloader => {
+                    core.reset_net_to_bootloader(delay).await?;
+                    println!("NET chip reset to bootloader mode");
+                }
+                ResetAction::Hold => {
+                    core.hold_net_reset().await?;
+                    println!("NET chip held in reset");
+                }
+                ResetAction::Release => {
+                    core.write_tlv_raw(link::CtlToMgmt::SetNetRst, &[1]).await?;
+                    println!("NET chip released from reset");
+                }
             }
-            _ => {
-                core.reset_net_to_user().await?;
-                println!("NET chip reset");
-                Ok(())
-            }
+            Ok(())
         },
         NetAction::Erase => {
             println!("Erasing NET chip flash...");
@@ -236,7 +261,8 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
         NetAction::Monitor { reset } => {
             if reset {
                 println!("Resetting NET chip...");
-                core.reset_net_to_user().await?;
+                let delay = |ms| tokio::time::sleep(std::time::Duration::from_millis(ms));
+                core.reset_net_to_user(delay).await?;
             }
             println!("Monitoring NET chip (ESC to stop)...\n");
 

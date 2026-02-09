@@ -235,6 +235,29 @@ impl LinkController {
         core.clear_wifi_ssids().await.map_err(ctl_error_to_js)
     }
 
+    // ==================== UI PIN CONTROL ====================
+
+    /// Set UI BOOT0 pin. 1 = high, 0 = low.
+    #[wasm_bindgen]
+    pub async fn set_ui_boot0(&mut self, high: bool) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.set_ui_boot0(high).await.map_err(ctl_error_to_js)
+    }
+
+    /// Set UI BOOT1 pin. 1 = high, 0 = low.
+    #[wasm_bindgen]
+    pub async fn set_ui_boot1(&mut self, high: bool) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.set_ui_boot1(high).await.map_err(ctl_error_to_js)
+    }
+
+    /// Set UI RST pin. 1 = high, 0 = low.
+    #[wasm_bindgen]
+    pub async fn set_ui_rst(&mut self, high: bool) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.set_ui_rst(high).await.map_err(ctl_error_to_js)
+    }
+
     /// Reset the UI chip into bootloader mode.
     #[wasm_bindgen]
     pub async fn reset_ui_to_bootloader(&mut self) -> Result<(), JsValue> {
@@ -249,18 +272,36 @@ impl LinkController {
         core.reset_ui_to_user().await.map_err(ctl_error_to_js)
     }
 
+    // ==================== NET PIN CONTROL ====================
+
+    /// Set NET BOOT pin (GPIO0). 1 = high, 0 = low.
+    #[wasm_bindgen]
+    pub async fn set_net_boot(&mut self, high: bool) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        use link::CtlToMgmt;
+        core.write_tlv_raw(CtlToMgmt::SetNetBoot, &[high as u8]).await.map_err(ctl_error_to_js)
+    }
+
+    /// Set NET RST pin (EN). 1 = high, 0 = low.
+    #[wasm_bindgen]
+    pub async fn set_net_rst(&mut self, high: bool) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        use link::CtlToMgmt;
+        core.write_tlv_raw(CtlToMgmt::SetNetRst, &[high as u8]).await.map_err(ctl_error_to_js)
+    }
+
     /// Reset the NET chip into bootloader mode.
     #[wasm_bindgen]
     pub async fn reset_net_to_bootloader(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        core.reset_net_to_bootloader().await.map_err(ctl_error_to_js)
+        core.reset_net_to_bootloader(|ms| js_sleep(ms as u32)).await.map_err(ctl_error_to_js)
     }
 
     /// Reset the NET chip into user mode.
     #[wasm_bindgen]
     pub async fn reset_net_to_user(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        core.reset_net_to_user().await.map_err(ctl_error_to_js)
+        core.reset_net_to_user(|ms| js_sleep(ms as u32)).await.map_err(ctl_error_to_js)
     }
 
     /// Get UI chip loopback mode as string.
@@ -729,7 +770,15 @@ impl LinkController {
                     &JsValue::from(self.total as u32),
                 );
             }
-            fn finish(&mut self, _skipped: bool) {}
+            fn finish(&mut self, skipped: bool) {
+                let phase = if skipped { "skipped" } else { "done" };
+                let _ = self.callback.call3(
+                    &JsValue::NULL,
+                    &JsValue::from_str(phase),
+                    &JsValue::from(self.total as u32),
+                    &JsValue::from(self.total as u32),
+                );
+            }
             fn verifying(&mut self) {
                 self.verifying = true;
                 // Reset position for verification phase

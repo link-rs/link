@@ -12,7 +12,7 @@ pub mod port;
 pub mod core;
 
 // Re-export core types
-pub use self::core::{CtlCore, CtlError, JitterStatsResult, StackInfoResult};
+pub use self::core::{CtlCore, CtlError};
 pub use self::port::CtlPort;
 
 #[cfg(feature = "std")]

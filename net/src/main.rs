@@ -686,7 +686,7 @@ fn main() {
         esp_pthread_set_cfg(&cfg);
     }
 
-    // XXX info!("net: initializing");
+    info!("net: initializing");
 
     let peripherals = Peripherals::take().unwrap();
     let sys_loop = EspSystemEventLoop::take().unwrap();
@@ -1252,36 +1252,16 @@ fn handle_ui_message(
         UiToNet::CircularPing => {
             write_tlv(mgmt_uart, NetToCtl::CircularPing, value);
         }
-        UiToNet::AudioFrameA => {
-            // Button A = PTT channel
-            let _ = moq_cmd_tx.send(MoqCommand::SetPttChannel(PttChannel::Ptt));
-            if loopback == NetLoopbackMode::Raw {
-                // Raw loopback - forward directly to UI without MoQ
-                write_tlv(ui_uart, NetToUi::AudioFrame, value);
-            } else {
-                // Send to MoQ task with channel_id prefix (Off or Moq loopback)
-                let mut data = Vec::with_capacity(1 + value.len());
-                data.push(ChannelId::Ptt as u8);
-                data.extend_from_slice(value);
-                let _ = moq_cmd_tx.send(MoqCommand::AudioFrame { data });
-            }
-        }
-        UiToNet::AudioFrameB => {
-            // Button B = AI channel
-            let _ = moq_cmd_tx.send(MoqCommand::SetPttChannel(PttChannel::Ai));
-            if loopback == NetLoopbackMode::Raw {
-                // Raw loopback - forward directly to UI without MoQ
-                write_tlv(ui_uart, NetToUi::AudioFrame, value);
-            } else {
-                // Send to MoQ task with channel_id prefix (Off or Moq loopback)
-                let mut data = Vec::with_capacity(1 + value.len());
-                data.push(ChannelId::PttAi as u8);
-                data.extend_from_slice(value);
-                let _ = moq_cmd_tx.send(MoqCommand::AudioFrame { data });
-            }
-        }
         UiToNet::AudioFrame => {
-            // New hactar format: channel_id (1 byte) + encrypted payload
+            // channel_id (1 byte) + encrypted payload
+            // Set PTT channel based on channel_id prefix
+            if let Some(&ch) = value.first() {
+                if ch == ChannelId::Ptt as u8 {
+                    let _ = moq_cmd_tx.send(MoqCommand::SetPttChannel(PttChannel::Ptt));
+                } else if ch == ChannelId::PttAi as u8 {
+                    let _ = moq_cmd_tx.send(MoqCommand::SetPttChannel(PttChannel::Ai));
+                }
+            }
             if loopback == NetLoopbackMode::Raw {
                 // Raw loopback - forward directly to UI without MoQ
                 write_tlv(ui_uart, NetToUi::AudioFrame, value);

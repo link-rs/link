@@ -224,6 +224,14 @@ impl StackInfo {
             0.0
         }
     }
+    /// Serialize to postcard into the provided buffer.
+    pub fn to_bytes<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
+        postcard::to_slice(self, buf).ok().map(|s| &*s)
+    }
+    /// Deserialize from postcard bytes.
+    pub fn from_bytes(data: &[u8]) -> Option<Self> {
+        postcard::from_bytes(data).ok()
+    }
 }
 
 /// Jitter buffer statistics (wire format, postcard-serialized).
@@ -246,4 +254,15 @@ pub struct JitterStatsInfo {
     pub level: u16,
     /// Current state (0=Buffering, 1=Playing).
     pub state: u8,
+}
+
+impl JitterStatsInfo {
+    /// Serialize to postcard into the provided buffer.
+    pub fn to_bytes<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
+        postcard::to_slice(self, buf).ok().map(|s| &*s)
+    }
+    /// Deserialize from postcard bytes.
+    pub fn from_bytes(data: &[u8]) -> Option<Self> {
+        postcard::from_bytes(data).ok()
+    }
 }

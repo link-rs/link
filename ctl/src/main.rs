@@ -134,8 +134,28 @@ enum UiAction {
         action: Option<LoopbackAction>,
     },
 
+    /// Set UI BOOT0 pin
+    Boot0 {
+        #[command(subcommand)]
+        action: PinAction,
+    },
+
+    /// Set UI BOOT1 pin
+    Boot1 {
+        #[command(subcommand)]
+        action: PinAction,
+    },
+
+    /// Set UI RST pin
+    Rst {
+        #[command(subcommand)]
+        action: PinAction,
+    },
+
+    /// Reset the UI chip
     Reset {
-        action: Option<String>,
+        #[command(subcommand)]
+        action: Option<ResetAction>,
     },
 
     /// Monitor log messages from UI chip
@@ -159,6 +179,34 @@ enum StackAction {
     Info,
     /// Repaint the stack with the known pattern
     Repaint,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum PinAction {
+    /// Set pin level
+    Set {
+        #[arg(value_enum)]
+        level: PinLevel,
+    },
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum PinLevel {
+    High,
+    Low,
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+enum ResetAction {
+    /// Reset to user mode (normal operation)
+    #[default]
+    User,
+    /// Reset to bootloader mode
+    Bootloader,
+    /// Hold in reset (RST low)
+    Hold,
+    /// Release from reset (RST high)
+    Release,
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
@@ -245,13 +293,25 @@ enum NetAction {
         mode: Option<NetLoopbackAction>,
     },
 
-    /// Reset the NET chip
-    Reset {
-        /// Reset action: "bootloader" to enter bootloader mode, or nothing/anything else for user mode
-        action: Option<String>,
+    /// Set NET BOOT pin (GPIO0)
+    Boot {
+        #[command(subcommand)]
+        action: PinAction,
     },
 
-    /// Erase the NET chip's flash via OpenOCD
+    /// Set NET RST pin (EN)
+    Rst {
+        #[command(subcommand)]
+        action: PinAction,
+    },
+
+    /// Reset the NET chip
+    Reset {
+        #[command(subcommand)]
+        action: Option<ResetAction>,
+    },
+
+    /// Erase the NET chip's flash
     Erase,
 
     /// Monitor data from NET chip (prints FromNet TLVs)

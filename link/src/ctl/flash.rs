@@ -545,7 +545,7 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
 
     /// Change baud rate on both CTL-MGMT and MGMT-NET links.
     pub async fn change_baud_rate(&mut self, baud_rate: u32) -> Result<(), std::io::Error> {
-        let baud_bytes = baud_rate.to_le_bytes();
+        let baud_bytes = baud_rate.to_be_bytes();
 
         // Set NET baud rate
         self.send_mgmt_command(CtlToMgmt::SetNetBaudRate, &baud_bytes).await?;
@@ -1036,7 +1036,7 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         let _ = self.reset_ui_to_user().await;
 
         // Release NET chip from reset
-        let _ = self.reset_net_to_user().await;
+        let _ = self.reset_net_to_user(&delay_ms).await;
 
         result
     }
@@ -1253,13 +1253,10 @@ where
             return Err(EspflashError::Espflash(format!("{:?}", e)));
         }
 
-        if let Err(e) = flasher.connection().reset().await {
-            self.recover_port_from_connection(flasher.into_connection()).await;
-            let _ = self.reset_ui_to_user().await;
-            return Err(EspflashError::Espflash(format!("reset: {:?}", e)));
-        }
+        // load_image_to_flash already calls target.finish(connection, true) which
+        // resets the chip via reset_after_flash. No need to reset again here.
 
-        // Success path: recover port and release UI
+        // Recover port and release UI
         self.recover_port_from_connection(flasher.into_connection()).await;
         let _ = self.reset_ui_to_user().await;
 

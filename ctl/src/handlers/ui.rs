@@ -1,7 +1,7 @@
 //! UI chip command handlers.
 
 use super::Core;
-use crate::{GetSetHex, GetSetU32, LoopbackAction, StackAction, UiAction};
+use crate::{GetSetHex, GetSetU32, LoopbackAction, PinAction, PinLevel, ResetAction, StackAction, UiAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::FlashPhase;
 use link::ctl::SetTimeout;
@@ -194,20 +194,43 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                 Ok(())
             }
         },
-        UiAction::Reset { action } => match action.as_deref() {
-            Some("hold") => {
+        UiAction::Boot0 { action: PinAction::Set { level } } => {
+            let high = matches!(level, PinLevel::High);
+            core.set_ui_boot0(high).await?;
+            println!("UI BOOT0: {}", if high { "high" } else { "low" });
+            Ok(())
+        }
+        UiAction::Boot1 { action: PinAction::Set { level } } => {
+            let high = matches!(level, PinLevel::High);
+            core.set_ui_boot1(high).await?;
+            println!("UI BOOT1: {}", if high { "high" } else { "low" });
+            Ok(())
+        }
+        UiAction::Rst { action: PinAction::Set { level } } => {
+            let high = matches!(level, PinLevel::High);
+            core.set_ui_rst(high).await?;
+            println!("UI RST: {}", if high { "high" } else { "low" });
+            Ok(())
+        }
+        UiAction::Reset { action } => match action.unwrap_or_default() {
+            ResetAction::User => {
+                core.reset_ui_to_user().await?;
+                println!("UI chip reset to user mode");
+                Ok(())
+            }
+            ResetAction::Bootloader => {
+                core.reset_ui_to_bootloader().await?;
+                println!("UI chip reset to bootloader mode");
+                Ok(())
+            }
+            ResetAction::Hold => {
                 core.hold_ui_reset().await?;
                 println!("UI chip held in reset");
                 Ok(())
             }
-            Some("release") => {
-                core.reset_ui_to_user().await?;
+            ResetAction::Release => {
+                core.set_ui_rst(true).await?;
                 println!("UI chip released from reset");
-                Ok(())
-            }
-            _ => {
-                core.reset_ui_to_user().await?;
-                println!("UI chip reset");
                 Ok(())
             }
         },

@@ -286,11 +286,11 @@ where
             }
 
             // Get mutable access to to_ctl for the handler
-            let mut to_ctl = to_ctl.lock().await;
+            let mut to_ctl_guard = to_ctl.lock().await;
 
             let baud_change = handle_ctl(
                 tlv,
-                &mut *to_ctl,
+                &mut *to_ctl_guard,
                 &mut to_ui,
                 &mut to_net,
                 &mut ui_reset_pins,
@@ -300,12 +300,13 @@ where
             .await;
 
             // Apply any baud rate changes after releasing to_ctl lock
-            drop(to_ctl);
+            drop(to_ctl_guard);
 
             match baud_change {
                 BaudRateChange::None => {}
                 BaudRateChange::Ctl(baud) => {
                     from_ctl.set_baud_rate(baud).await;
+                    to_ctl.lock().await.set_baud_rate(baud).await;
                 }
                 BaudRateChange::Net(baud) => {
                     // Signal net_task to apply this baud rate change
@@ -476,7 +477,7 @@ where
                 stack_used: used,
             };
             let mut buf = [0u8; 32];
-            if let Ok(serialized) = postcard::to_slice(&info, &mut buf) {
+            if let Some(serialized) = info.to_bytes(&mut buf) {
                 to_ctl.must_write_tlv(MgmtToCtl::StackInfo, serialized).await;
             }
             BaudRateChange::None

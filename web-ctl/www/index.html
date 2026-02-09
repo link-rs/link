@@ -256,6 +256,28 @@
             filter: brightness(1.1);
         }
 
+        .btn-pin {
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+            font-family: monospace;
+            min-width: 120px;
+        }
+
+        .btn-pin:hover {
+            background: var(--border);
+        }
+
+        .btn-pin.pin-high {
+            color: var(--success);
+            border-color: var(--success);
+        }
+
+        .btn-pin.pin-low {
+            color: var(--error);
+            border-color: var(--error);
+        }
+
         .btn-group {
             display: flex;
             gap: 0.5rem;
@@ -837,6 +859,11 @@
                 <div class="card-section">
                     <h3>UI Chip Control</h3>
                     <div class="btn-group">
+                        <button class="btn-pin" id="uiBoot0Btn" data-pin="boot0" data-state="low">BOOT0: LOW</button>
+                        <button class="btn-pin" id="uiBoot1Btn" data-pin="boot1" data-state="high">BOOT1: HIGH</button>
+                        <button class="btn-pin" id="uiRstBtn" data-pin="rst" data-state="high">RST: HIGH</button>
+                    </div>
+                    <div class="btn-group" style="margin-top: 0.5rem;">
                         <button class="btn-secondary" id="resetUiBootloaderBtn">Reset to Bootloader</button>
                         <button class="btn-secondary" id="resetUiUserBtn">Reset to User Mode</button>
                     </div>
@@ -845,6 +872,10 @@
                 <div class="card-section">
                     <h3>NET Chip Control</h3>
                     <div class="btn-group">
+                        <button class="btn-pin" id="netBootBtn" data-pin="boot" data-state="high">BOOT: HIGH</button>
+                        <button class="btn-pin" id="netRstBtn" data-pin="rst" data-state="high">RST: HIGH</button>
+                    </div>
+                    <div class="btn-group" style="margin-top: 0.5rem;">
                         <button class="btn-secondary" id="resetNetBootloaderBtn">Reset to Bootloader</button>
                         <button class="btn-secondary" id="resetNetUserBtn">Reset to User Mode</button>
                     </div>
@@ -1072,18 +1103,6 @@
                             <span class="info-label">State</span>
                             <span class="info-value" id="jitterState">-</span>
                         </div>
-                    </div>
-                </div>
-
-                <div class="card-section">
-                    <h3>Chat Message</h3>
-                    <div class="inline-form">
-                        <div class="form-group">
-                            <label>Message</label>
-                            <input type="text" id="chatMessageInput" placeholder="Type a message...">
-                        </div>
-                        <button class="btn-primary" id="sendChatBtn">Send</button>
-                        <span class="status-icon" id="chatStatus"></span>
                     </div>
                 </div>
 
@@ -1614,10 +1633,40 @@
             }
         });
 
-        // UI Reset controls
+        // ==================== PIN TOGGLE HELPER ====================
+
+        function setupPinToggle(btnId, setFn, label) {
+            const btn = document.getElementById(btnId);
+            btn.classList.add(btn.dataset.state === 'high' ? 'pin-high' : 'pin-low');
+            btn.addEventListener('click', async () => {
+                const currentHigh = btn.dataset.state === 'high';
+                const newHigh = !currentHigh;
+                try {
+                    await setFn(newHigh);
+                    btn.dataset.state = newHigh ? 'high' : 'low';
+                    btn.textContent = `${label}: ${newHigh ? 'HIGH' : 'LOW'}`;
+                    btn.classList.toggle('pin-high', newHigh);
+                    btn.classList.toggle('pin-low', !newHigh);
+                    log(`${label} set to ${newHigh ? 'HIGH' : 'LOW'}`, 'success');
+                } catch (e) {
+                    log(`${label} pin error: ${e}`, 'error');
+                }
+            });
+        }
+
+        // UI pin toggles
+        setupPinToggle('uiBoot0Btn', (high) => controller.set_ui_boot0(high), 'UI BOOT0');
+        setupPinToggle('uiBoot1Btn', (high) => controller.set_ui_boot1(high), 'UI BOOT1');
+        setupPinToggle('uiRstBtn', (high) => controller.set_ui_rst(high), 'UI RST');
+
+        // UI Reset controls (compound operations update pin state)
         document.getElementById('resetUiBootloaderBtn').addEventListener('click', async () => {
             try {
                 await controller.reset_ui_to_bootloader();
+                // Update pin button states to match: BOOT0=high, BOOT1=low, RST=high
+                updatePinBtn('uiBoot0Btn', 'BOOT0', true);
+                updatePinBtn('uiBoot1Btn', 'BOOT1', false);
+                updatePinBtn('uiRstBtn', 'RST', true);
                 log('UI chip reset to bootloader mode', 'success');
             } catch (e) {
                 log(`UI reset error: ${e}`, 'error');
@@ -1627,11 +1676,23 @@
         document.getElementById('resetUiUserBtn').addEventListener('click', async () => {
             try {
                 await controller.reset_ui_to_user();
+                // Update pin button states to match: BOOT0=low, BOOT1=high, RST=high
+                updatePinBtn('uiBoot0Btn', 'BOOT0', false);
+                updatePinBtn('uiBoot1Btn', 'BOOT1', true);
+                updatePinBtn('uiRstBtn', 'RST', true);
                 log('UI chip reset to user mode', 'success');
             } catch (e) {
                 log(`UI reset error: ${e}`, 'error');
             }
         });
+
+        function updatePinBtn(btnId, label, high) {
+            const btn = document.getElementById(btnId);
+            btn.dataset.state = high ? 'high' : 'low';
+            btn.textContent = `${label}: ${high ? 'HIGH' : 'LOW'}`;
+            btn.classList.toggle('pin-high', high);
+            btn.classList.toggle('pin-low', !high);
+        }
 
         document.getElementById('getUiInfoBtn').addEventListener('click', async () => {
             const btn = document.getElementById('getUiInfoBtn');
@@ -1806,10 +1867,17 @@
             }
         });
 
-        // NET Reset controls
+        // NET pin toggles
+        setupPinToggle('netBootBtn', (high) => controller.set_net_boot(high), 'NET BOOT');
+        setupPinToggle('netRstBtn', (high) => controller.set_net_rst(high), 'NET RST');
+
+        // NET Reset controls (compound operations update pin state)
         document.getElementById('resetNetBootloaderBtn').addEventListener('click', async () => {
             try {
                 await controller.reset_net_to_bootloader();
+                // Update pin button states: BOOT=low (bootloader), RST=high
+                updatePinBtn('netBootBtn', 'BOOT', false);
+                updatePinBtn('netRstBtn', 'RST', true);
                 log('NET chip reset to bootloader mode', 'success');
             } catch (e) {
                 log(`NET reset error: ${e}`, 'error');
@@ -1819,6 +1887,9 @@
         document.getElementById('resetNetUserBtn').addEventListener('click', async () => {
             try {
                 await controller.reset_net_to_user();
+                // Update pin button states: BOOT=high (user), RST=high
+                updatePinBtn('netBootBtn', 'BOOT', true);
+                updatePinBtn('netRstBtn', 'RST', true);
                 log('NET chip reset to user mode', 'success');
             } catch (e) {
                 log(`NET reset error: ${e}`, 'error');
@@ -1875,16 +1946,31 @@
 
                 progressText.textContent = 'Flashing...';
                 log(`Flashing NET firmware...`, 'info');
+                let wasSkipped = false;
                 await controller.flash_net(firmware, (phase, current, total) => {
-                    const percent = total > 0 ? (current / total) * 100 : 0;
-                    progressFill.style.width = `${percent}%`;
-                    progressText.textContent = `${phase}: ${current} / ${total}`;
+                    if (phase === 'skipped') {
+                        wasSkipped = true;
+                        progressFill.style.width = '100%';
+                        progressText.textContent = 'Firmware unchanged, skipped';
+                    } else if (phase === 'done') {
+                        progressFill.style.width = '100%';
+                        progressText.textContent = 'Resetting...';
+                    } else {
+                        const percent = total > 0 ? (current / total) * 100 : 0;
+                        progressFill.style.width = `${percent}%`;
+                        progressText.textContent = `${phase}: ${current} / ${total}`;
+                    }
                 });
 
                 statusIcon.textContent = '\u2713';
                 statusIcon.className = 'status-icon success';
-                log('NET firmware flashed successfully!', 'success');
-                progressText.textContent = 'Complete!';
+                if (wasSkipped) {
+                    log('NET firmware unchanged, skipped', 'success');
+                    progressText.textContent = 'Unchanged';
+                } else {
+                    log('NET firmware flashed successfully!', 'success');
+                    progressText.textContent = 'Complete!';
+                }
             } catch (e) {
                 statusIcon.textContent = '\u2717';
                 statusIcon.className = 'status-icon error';
@@ -2027,28 +2113,6 @@
             } catch (e) {
                 display.classList.remove('visible');
                 log(`Get jitter stats error: ${e}`, 'error');
-            }
-        });
-
-        // ==================== CHAT ====================
-
-        document.getElementById('sendChatBtn').addEventListener('click', async () => {
-            const btn = document.getElementById('sendChatBtn');
-            const statusIcon = document.getElementById('chatStatus');
-            const input = document.getElementById('chatMessageInput');
-            const message = input.value.trim();
-            if (!message) {
-                log('Chat message cannot be empty', 'error');
-                return;
-            }
-            try {
-                await runWithStatus(btn, statusIcon, async () => {
-                    return await controller.send_chat_message(message);
-                });
-                input.value = '';
-                log(`Chat message sent: "${message}"`, 'success');
-            } catch (e) {
-                log(`Send chat error: ${e}`, 'error');
             }
         });
 

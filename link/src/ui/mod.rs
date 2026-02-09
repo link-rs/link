@@ -473,7 +473,7 @@ async fn handle_mgmt<M, N, I, D>(
                     stack_used: used,
                 };
                 let mut buf = [0u8; 32];
-                if let Ok(serialized) = postcard::to_slice(&info, &mut buf) {
+                if let Some(serialized) = info.to_bytes(&mut buf) {
                     to_mgmt.must_write_tlv(UiToCtl::StackInfo, serialized).await;
                 }
             }

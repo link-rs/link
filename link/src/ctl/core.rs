@@ -94,16 +94,6 @@ impl core::fmt::Display for CtlError {
 impl std::error::Error for CtlError {}
 
 // ============================================================================
-// Result Types
-// ============================================================================
-
-/// Stack usage information (re-exported from shared protocol).
-pub type StackInfoResult = StackInfo;
-
-/// Jitter buffer statistics (re-exported from shared protocol).
-pub type JitterStatsResult = JitterStatsInfo;
-
-// ============================================================================
 // CtlCore
 // ============================================================================
 
@@ -596,7 +586,7 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Get MGMT chip stack usage information.
-    pub async fn mgmt_get_stack_info(&mut self) -> Result<StackInfoResult, CtlError> {
+    pub async fn mgmt_get_stack_info(&mut self) -> Result<StackInfo, CtlError> {
         self.write_tlv(CtlToMgmt::GetStackInfo, &[]).await?;
         let tlv = self.read_tlv_mgmt().await?;
         if tlv.tlv_type != MgmtToCtl::StackInfo {
@@ -605,8 +595,7 @@ impl<P: CtlPort> CtlCore<P> {
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        let info: StackInfo = postcard::from_bytes(&tlv.value).map_err(|_| CtlError::InvalidData)?;
-        Ok(info)
+        StackInfo::from_bytes(&tlv.value).ok_or(CtlError::InvalidData)
     }
 
     /// Repaint the MGMT chip stack for future measurement.
@@ -792,7 +781,7 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Get UI chip stack usage information.
-    pub async fn ui_get_stack_info(&mut self) -> Result<StackInfoResult, CtlError> {
+    pub async fn ui_get_stack_info(&mut self) -> Result<StackInfo, CtlError> {
         self.write_tlv_ui(CtlToUi::GetStackInfo, &[]).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
         if tlv.tlv_type == UiToCtl::Error {
@@ -805,8 +794,7 @@ impl<P: CtlPort> CtlCore<P> {
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        let info: StackInfo = postcard::from_bytes(&tlv.value).map_err(|_| CtlError::InvalidData)?;
-        Ok(info)
+        StackInfo::from_bytes(&tlv.value).ok_or(CtlError::InvalidData)
     }
 
     /// Repaint the UI chip stack for future measurement.
@@ -1097,7 +1085,7 @@ impl<P: CtlPort> CtlCore<P> {
     pub async fn get_jitter_stats(
         &mut self,
         channel_id: u8,
-    ) -> Result<JitterStatsResult, CtlError> {
+    ) -> Result<JitterStatsInfo, CtlError> {
         self.write_tlv_net(CtlToNet::GetJitterStats, &[channel_id])
             .await?;
         let tlv = self.read_tlv_net().await?;
@@ -1107,26 +1095,42 @@ impl<P: CtlPort> CtlCore<P> {
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        let stats: JitterStatsInfo = postcard::from_bytes(&tlv.value).map_err(|_| CtlError::InvalidData)?;
+        let stats = JitterStatsInfo::from_bytes(&tlv.value).ok_or(CtlError::InvalidData)?;
         Ok(stats)
     }
 
     /// Reset the NET chip into bootloader mode using pin control.
-    pub async fn reset_net_to_bootloader(&mut self) -> Result<(), CtlError> {
+    ///
+    /// Includes 10ms delays between RST transitions to match the ESP32's
+    /// reset timing requirements (same delays as the old MGMT-side handler).
+    pub async fn reset_net_to_bootloader<D, F>(&mut self, delay_ms: D) -> Result<(), CtlError>
+    where
+        D: Fn(u64) -> F,
+        F: core::future::Future<Output = ()>,
+    {
         // First power cycle (clean slate)
         self.write_tlv(CtlToMgmt::SetNetRst, &[0]).await?;
+        delay_ms(10).await;
         self.write_tlv(CtlToMgmt::SetNetRst, &[1]).await?;
         // Set BOOT low for bootloader mode
         self.write_tlv(CtlToMgmt::SetNetBoot, &[0]).await?;
-        // Second power cycle
+        // Second power cycle - ESP32 samples BOOT when RST goes high
         self.write_tlv(CtlToMgmt::SetNetRst, &[0]).await?;
+        delay_ms(10).await;
         self.write_tlv(CtlToMgmt::SetNetRst, &[1]).await
     }
 
     /// Reset the NET chip into user mode using pin control.
-    pub async fn reset_net_to_user(&mut self) -> Result<(), CtlError> {
+    ///
+    /// Includes a 10ms delay between RST transitions.
+    pub async fn reset_net_to_user<D, F>(&mut self, delay_ms: D) -> Result<(), CtlError>
+    where
+        D: Fn(u64) -> F,
+        F: core::future::Future<Output = ()>,
+    {
         self.write_tlv(CtlToMgmt::SetNetBoot, &[1]).await?;
         self.write_tlv(CtlToMgmt::SetNetRst, &[0]).await?;
+        delay_ms(10).await;
         self.write_tlv(CtlToMgmt::SetNetRst, &[1]).await
     }
 
