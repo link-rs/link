@@ -792,7 +792,7 @@ impl LinkController {
         }
 
         let mut progress = JsProgressCallbacks { callback: progress_callback, total: 0, verifying: false };
-        core.flash_net(&elf_bytes, None, &mut progress, JsDelay).await
+        core.flash_net(&elf_bytes, None, &mut progress, JsDelay, 115_200).await
             .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
 

@@ -138,6 +138,10 @@ impl WebSerial {
     ///
     /// This preserves any buffered read data across the reconnection.
     pub async fn change_baud_rate(&self, baud_rate: u32) -> Result<(), WebSerialError> {
+        // Log baud rate change
+        let msg = format!("[WebSerial] Changing baud rate to {}", baud_rate);
+        web_sys::console::log_1(&JsValue::from_str(&msg));
+
         // Take the current state
         let old_state = self.state.borrow_mut().take();
         let old_state = old_state.ok_or(WebSerialError::NotConnected)?;
@@ -151,11 +155,13 @@ impl WebSerial {
         old_state.reader.release_lock();
         old_state.writer.release_lock();
 
+        web_sys::console::log_1(&JsValue::from_str("[WebSerial] Closing port for baud rate change..."));
         JsFuture::from(port.close())
             .await
             .map_err(|e| WebSerialError::JsError(format!("Failed to close port: {:?}", e)))?;
 
         // Reopen with new baud rate
+        web_sys::console::log_1(&JsValue::from_str("[WebSerial] Reopening port at new baud rate..."));
         let options = web_sys::SerialOptions::new(baud_rate);
         options.set_parity(web_sys::ParityType::Even);
         JsFuture::from(port.open(&options))
@@ -179,6 +185,9 @@ impl WebSerial {
             read_buffer,
             read_timeout_ms,
         });
+
+        let msg = format!("[WebSerial] Baud rate changed to {} successfully", baud_rate);
+        web_sys::console::log_1(&JsValue::from_str(&msg));
 
         Ok(())
     }

@@ -175,7 +175,7 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
             println!("Flashing NET chip...\n");
 
             let mut progress = FlashProgress::new();
-            let result = core.flash_net(&firmware, partition_table_data.as_deref(), &mut progress, StdDelay).await;
+            let result = core.flash_net(&firmware, partition_table_data.as_deref(), &mut progress, StdDelay, 460_800).await;
 
             progress.finish();
 

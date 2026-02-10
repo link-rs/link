@@ -575,6 +575,7 @@ impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static, D:
 
     async fn set_baud_rate(&mut self, baud_rate: u32) -> Result<(), SerialPortError> {
         // Change baud rate on both links and local port
+        // (WebSerial will log the port baud rate change in serial.rs)
         self.change_baud_rate(baud_rate).await.map_err(Self::io_to_serial)?;
         self.port.set_baud_rate(baud_rate).await.map_err(Self::io_to_serial)?;
         Ok(())
@@ -1199,6 +1200,7 @@ where
         partition_table: Option<&[u8]>,
         progress: &mut dyn ProgressCallbacks,
         delay: D,
+        max_baud: u32,
     ) -> Result<(), EspflashError> {
         const INITIAL_BAUD: u32 = 115_200;
 
@@ -1228,8 +1230,8 @@ where
             INITIAL_BAUD,
         );
 
-        // Connect to ESP32 bootloader (allow baud rate negotiation up to 460800)
-        let mut flasher = match Flasher::connect(connection, false, false, true, None, Some(460_800)).await {
+        // Connect to ESP32 bootloader with max baud rate
+        let mut flasher = match Flasher::connect(connection, false, false, true, None, Some(max_baud)).await {
             Ok(f) => f,
             Err((connection, e)) => {
                 // Recover port from the returned connection
