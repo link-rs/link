@@ -434,7 +434,11 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
     }
 
     /// Write a command TLV to MGMT without waiting for Ack.
-    async fn write_mgmt_command(&mut self, cmd: CtlToMgmt, value: &[u8]) -> Result<(), std::io::Error> {
+    async fn write_mgmt_command(
+        &mut self,
+        cmd: CtlToMgmt,
+        value: &[u8],
+    ) -> Result<(), std::io::Error> {
         let tlv_type: u16 = cmd.into();
 
         // Build complete packet
@@ -451,7 +455,10 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
     /// Try to parse TLVs from raw buffer, looking for a specific type.
     /// Returns Some(value) if found, None if not enough data yet.
     /// Removes the found TLV from raw_buffer; buffers FromNet values along the way.
-    fn try_parse_tlv_of_type(&mut self, target_type: MgmtToCtl) -> Option<heapless::Vec<u8, MAX_VALUE_SIZE>> {
+    fn try_parse_tlv_of_type(
+        &mut self,
+        target_type: MgmtToCtl,
+    ) -> Option<heapless::Vec<u8, MAX_VALUE_SIZE>> {
         loop {
             // Find LINK sync word
             let sync_pos = self.find_sync_word()?;
@@ -527,7 +534,11 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
     }
 
     /// Send a command TLV to MGMT and wait for Ack.
-    async fn send_mgmt_command(&mut self, cmd: CtlToMgmt, value: &[u8]) -> Result<(), std::io::Error> {
+    async fn send_mgmt_command(
+        &mut self,
+        cmd: CtlToMgmt,
+        value: &[u8],
+    ) -> Result<(), std::io::Error> {
         // Write command
         self.write_mgmt_command(cmd, value).await?;
 
@@ -548,10 +559,12 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
         let baud_bytes = baud_rate.to_be_bytes();
 
         // Set NET baud rate
-        self.send_mgmt_command(CtlToMgmt::SetNetBaudRate, &baud_bytes).await?;
+        self.send_mgmt_command(CtlToMgmt::SetNetBaudRate, &baud_bytes)
+            .await?;
 
         // Set CTL baud rate (ACK comes at old rate, then MGMT switches)
-        self.send_mgmt_command(CtlToMgmt::SetCtlBaudRate, &baud_bytes).await?;
+        self.send_mgmt_command(CtlToMgmt::SetCtlBaudRate, &baud_bytes)
+            .await?;
 
         // Small delay for MGMT to complete the baud rate switch
         self.delay.delay_ms(10).await;
@@ -563,8 +576,9 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
     }
 }
 
-
-impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static, D: AsyncDelay> SerialInterface for TunnelSerialInterface<P, D> {
+impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static, D: AsyncDelay>
+    SerialInterface for TunnelSerialInterface<P, D>
+{
     fn name(&self) -> Option<String> {
         Some("tunnel-net".to_string())
     }
@@ -574,11 +588,22 @@ impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static, D:
     }
 
     async fn set_baud_rate(&mut self, baud_rate: u32) -> Result<(), SerialPortError> {
-        // Change baud rate on both links and local port
-        // (WebSerial will log the port baud rate change in serial.rs)
-        self.change_baud_rate(baud_rate).await.map_err(Self::io_to_serial)?;
-        self.port.set_baud_rate(baud_rate).await.map_err(Self::io_to_serial)?;
-        Ok(())
+        // If already at target baud rate, this is a no-op (ignore the request)
+        if baud_rate == self.baud_rate {
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "XXX TunnelSerialInterface::set_baud_rate({}) - already at target, ignoring",
+                baud_rate
+            )));
+            return Ok(());
+        }
+
+        // If trying to change to a different baud rate, this is unexpected - panic
+        panic!(
+            "Unexpected baud rate change request: current={}, requested={}. \
+            Baud rate should be set before Flasher::connect, not during it.",
+            self.baud_rate, baud_rate
+        );
     }
 
     fn timeout(&self) -> Duration {
@@ -634,7 +659,9 @@ impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static, D:
 
     async fn write(&mut self, buf: &[u8]) -> Result<usize, SerialPortError> {
         let to_write = core::cmp::min(MAX_VALUE_SIZE, buf.len());
-        self.write_net_tlv(&buf[..to_write]).await.map_err(Self::io_to_serial)?;
+        self.write_net_tlv(&buf[..to_write])
+            .await
+            .map_err(Self::io_to_serial)?;
         Ok(to_write)
     }
 
@@ -685,7 +712,6 @@ impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static, D:
         self.delay.delay_ms(ms).await;
     }
 }
-
 
 // ============================================================================
 // Flashing implementation for CtlCore
@@ -918,7 +944,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
 
         for chunk in firmware.chunks(256) {
             let address = base_address + verified as u32;
-            let len = bl.read_memory(address, &mut read_buf[..chunk.len()]).await?;
+            let len = bl
+                .read_memory(address, &mut read_buf[..chunk.len()])
+                .await?;
             if &read_buf[..len] != chunk {
                 return Err(FlashError::VerifyFailed {
                     address,
@@ -976,7 +1004,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     ///
     /// This is useful for platforms like WASM where you need to handle the
     /// reset and delay asynchronously before calling this method.
-    pub async fn query_ui_bootloader(&mut self) -> Result<MgmtBootloaderInfo, stm::Error<std::io::Error>> {
+    pub async fn query_ui_bootloader(
+        &mut self,
+    ) -> Result<MgmtBootloaderInfo, stm::Error<std::io::Error>> {
         let ui_tunnel = TunnelPort::new(self.port_mut());
         let mut bl = Bootloader::new(ui_tunnel);
 
@@ -1046,7 +1076,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         delay_ms(100).await;
 
         // Flash the firmware
-        let result = self.flash_ui_in_bootloader_mode(firmware, verify, &mut progress).await;
+        let result = self
+            .flash_ui_in_bootloader_mode(firmware, verify, &mut progress)
+            .await;
 
         // Always reset UI chip back to user mode
         let _ = self.reset_ui_to_user().await;
@@ -1110,7 +1142,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
 
             for chunk in firmware.chunks(256) {
                 let address = base_address + verified as u32;
-                let len = bl.read_memory(address, &mut read_buf[..chunk.len()]).await?;
+                let len = bl
+                    .read_memory(address, &mut read_buf[..chunk.len()])
+                    .await?;
                 if &read_buf[..len] != chunk {
                     return Err(FlashError::VerifyFailed {
                         address,
@@ -1131,7 +1165,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
 // NET chip (ESP32) flashing implementation
 // ============================================================================
 
-use super::espflash::connection::{Connection, PortInfo, ResetAfterOperation, ResetBeforeOperation};
+use super::espflash::connection::{
+    Connection, PortInfo, ResetAfterOperation, ResetBeforeOperation,
+};
 use super::espflash::flasher::{FlashData, FlashSettings, Flasher};
 use super::espflash::image_format::idf::IdfBootloaderFormat;
 use super::espflash::target::{Chip, ProgressCallbacks};
@@ -1194,7 +1230,7 @@ where
     ///
     /// This method automatically holds the UI chip in reset during flashing
     /// to avoid interference, and releases it afterward.
-    pub async fn flash_net<D: AsyncDelay>(
+    pub async fn flash_net<D: AsyncDelay + Clone>(
         &mut self,
         elf_data: &[u8],
         partition_table: Option<&[u8]>,
@@ -1210,9 +1246,30 @@ where
 
         self.drain();
 
-        // Take the port out of CtlCore for exclusive use by espflash
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "XXX Upgrading baud rate from {} to {} before Flasher::connect",
+            INITIAL_BAUD, max_baud
+        )));
+
+        // Take the port out of CtlCore
         let port = self.take_port();
-        let serial_interface = TunnelSerialInterface::new(port, INITIAL_BAUD, delay);
+
+        // Create a temporary TunnelSerialInterface to upgrade baud rate
+        let mut temp_tunnel = TunnelSerialInterface::new(port, INITIAL_BAUD, delay.clone());
+        let _ = temp_tunnel.change_baud_rate(max_baud).await;
+
+        // Change the local port baud rate
+        let mut port = temp_tunnel.into_port();
+        let _ = port.set_baud_rate(max_baud).await;
+
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "XXX Baud rate upgraded to {}, creating TunnelSerialInterface",
+            max_baud
+        )));
+
+        let serial_interface = TunnelSerialInterface::new(port, max_baud, delay);
 
         let port_info = PortInfo {
             vid: 0x303A,
@@ -1227,55 +1284,130 @@ where
             port_info,
             ResetAfterOperation::HardReset,
             ResetBeforeOperation::DefaultReset,
-            INITIAL_BAUD,
+            max_baud,  // Already at max_baud
         );
 
-        // Connect to ESP32 bootloader with max baud rate
-        let mut flasher = match Flasher::connect(connection, false, false, true, None, Some(max_baud)).await {
-            Ok(f) => f,
-            Err((connection, e)) => {
-                // Recover port from the returned connection
-                self.recover_port_from_connection(connection).await;
-                let _ = self.reset_ui_to_user().await;
-                return Err(EspflashError::Espflash(format!("{:?}", e)));
-            }
-        };
+        // Connect to ESP32 bootloader (already at max baud rate)
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+            "XXX About to call Flasher::connect() (already at target baud)",
+        ));
+
+        // Pass None for baud rate since we're already at max_baud
+        let mut flasher =
+            match Flasher::connect(connection, false, false, true, None, None).await {
+                Ok(f) => {
+                    #[cfg(target_arch = "wasm32")]
+                    web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                        "XXX Flasher::connect() succeeded at {} baud",
+                        max_baud
+                    )));
+                    f
+                }
+                Err((connection, e)) => {
+                    #[cfg(target_arch = "wasm32")]
+                    web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                        "XXX Flasher::connect() FAILED: {:?}",
+                        e
+                    )));
+                    // Recover port from the returned connection
+                    self.recover_port_from_connection(connection).await;
+                    let _ = self.reset_ui_to_user().await;
+                    return Err(EspflashError::Espflash(format!(
+                        "connect (after baud change to {}): {:?}",
+                        max_baud, e
+                    )));
+                }
+            };
 
         // Get device info for flash settings
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "XXX About to call device_info() at {} baud",
+            max_baud
+        )));
+
         let info = match flasher.device_info().await {
-            Ok(info) => info,
+            Ok(info) => {
+                #[cfg(target_arch = "wasm32")]
+                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+                    "XXX device_info() succeeded",
+                ));
+                info
+            }
             Err(e) => {
-                self.recover_port_from_connection(flasher.into_connection()).await;
+                #[cfg(target_arch = "wasm32")]
+                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "XXX device_info() FAILED: {:?}",
+                    e
+                )));
+                self.recover_port_from_connection(flasher.into_connection())
+                    .await;
                 let _ = self.reset_ui_to_user().await;
-                return Err(EspflashError::Espflash(format!("device_info: {:?}", e)));
+                return Err(EspflashError::Espflash(format!(
+                    "device_info (connect succeeded, now at {} baud): {:?}",
+                    max_baud, e
+                )));
             }
         };
         let chip = flasher.chip();
 
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "XXX Peparing flash"
+        )));
+
         let flash_settings = FlashSettings::new(None, Some(info.flash_size), None);
         let flash_data = FlashData::new(flash_settings, 0, None, chip, info.crystal_frequency);
 
-        let image_format = match IdfBootloaderFormat::new(elf_data, &flash_data, partition_table, None, None, None) {
+        let image_format = match IdfBootloaderFormat::new(
+            elf_data,
+            &flash_data,
+            partition_table,
+            None,
+            None,
+            None,
+        ) {
             Ok(fmt) => fmt,
             Err(e) => {
-                self.recover_port_from_connection(flasher.into_connection()).await;
+                self.recover_port_from_connection(flasher.into_connection())
+                    .await;
                 let _ = self.reset_ui_to_user().await;
-                return Err(EspflashError::Espflash(format!("IdfBootloaderFormat: {:?}", e)));
+                return Err(EspflashError::Espflash(format!(
+                    "IdfBootloaderFormat: {:?}",
+                    e
+                )));
             }
         };
 
-        if let Err(e) = flasher.load_image_to_flash(progress, image_format.into()).await {
-            self.recover_port_from_connection(flasher.into_connection()).await;
+        if let Err(e) = flasher
+            .load_image_to_flash(progress, image_format.into())
+            .await
+        {
+            self.recover_port_from_connection(flasher.into_connection())
+                .await;
             let _ = self.reset_ui_to_user().await;
-            return Err(EspflashError::Espflash(format!("{:?}", e)));
+            return Err(EspflashError::Espflash(format!(
+                "load_image_to_flash: {:?}",
+                e
+            )));
         }
 
         // load_image_to_flash already calls target.finish(connection, true) which
         // resets the chip via reset_after_flash. No need to reset again here.
 
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "XXX Flash complete, recovering"
+        )));
+
         // Recover port and release UI
-        self.recover_port_from_connection(flasher.into_connection()).await;
+        self.recover_port_from_connection(flasher.into_connection())
+            .await;
         let _ = self.reset_ui_to_user().await;
+
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!("XXX Done")));
 
         Ok(())
     }
@@ -1286,11 +1418,16 @@ where
         connection: Connection<TunnelSerialInterface<P, D>>,
     ) {
         const INITIAL_BAUD: u32 = 115_200;
+        const MAX_HELLO_ATTEMPTS: usize = 50;
+
         let mut tunnel = connection.into_serial();
         let _ = tunnel.change_baud_rate(INITIAL_BAUD).await;
         let mut port = tunnel.into_port();
         let _ = port.set_baud_rate(INITIAL_BAUD).await;
         self.put_port(port);
+
+        // Wait for MGMT to be ready after the reset caused by baud rate change
+        let _ = self.wait_for_mgmt_ready(MAX_HELLO_ATTEMPTS).await;
     }
 
     /// Get NET chip bootloader info.
@@ -1326,7 +1463,16 @@ where
             115_200,
         );
 
-        let mut flasher = match Flasher::connect(connection, false, false, false, Some(Chip::Esp32s3), None).await {
+        let mut flasher = match Flasher::connect(
+            connection,
+            false,
+            false,
+            false,
+            Some(Chip::Esp32s3),
+            None,
+        )
+        .await
+        {
             Ok(f) => f,
             Err((connection, e)) => {
                 self.recover_port_from_connection(connection).await;
@@ -1337,7 +1483,8 @@ where
         let device_info = match flasher.device_info().await {
             Ok(info) => info,
             Err(e) => {
-                self.recover_port_from_connection(flasher.into_connection()).await;
+                self.recover_port_from_connection(flasher.into_connection())
+                    .await;
                 return Err(EspflashError::Espflash(format!("device_info: {:?}", e)));
             }
         };
@@ -1345,13 +1492,15 @@ where
         let security_info = match flasher.security_info().await {
             Ok(info) => info,
             Err(e) => {
-                self.recover_port_from_connection(flasher.into_connection()).await;
+                self.recover_port_from_connection(flasher.into_connection())
+                    .await;
                 return Err(EspflashError::Espflash(format!("security_info: {:?}", e)));
             }
         };
 
         // Get the port back and return it to CtlCore
-        self.recover_port_from_connection(flasher.into_connection()).await;
+        self.recover_port_from_connection(flasher.into_connection())
+            .await;
 
         Ok(EspflashDeviceInfo {
             device_info,
@@ -1386,26 +1535,31 @@ where
             115_200,
         );
 
-        let mut flasher = match Flasher::connect(connection, false, false, true, Some(Chip::Esp32s3), None).await {
-            Ok(f) => f,
-            Err((connection, e)) => {
-                self.recover_port_from_connection(connection).await;
-                return Err(EspflashError::Espflash(format!("{:?}", e)));
-            }
-        };
+        let mut flasher =
+            match Flasher::connect(connection, false, false, true, Some(Chip::Esp32s3), None).await
+            {
+                Ok(f) => f,
+                Err((connection, e)) => {
+                    self.recover_port_from_connection(connection).await;
+                    return Err(EspflashError::Espflash(format!("{:?}", e)));
+                }
+            };
 
         if let Err(e) = flasher.erase_flash().await {
-            self.recover_port_from_connection(flasher.into_connection()).await;
+            self.recover_port_from_connection(flasher.into_connection())
+                .await;
             return Err(EspflashError::Espflash(format!("{:?}", e)));
         }
 
         if let Err(e) = flasher.connection().reset().await {
-            self.recover_port_from_connection(flasher.into_connection()).await;
+            self.recover_port_from_connection(flasher.into_connection())
+                .await;
             return Err(EspflashError::Espflash(format!("reset: {:?}", e)));
         }
 
         // Get the port back and return it to CtlCore
-        self.recover_port_from_connection(flasher.into_connection()).await;
+        self.recover_port_from_connection(flasher.into_connection())
+            .await;
 
         Ok(())
     }

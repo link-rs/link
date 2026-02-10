@@ -1660,17 +1660,15 @@
                 // Reset MGMT chip back to user mode
                 await controller.exit_mgmt_bootloader();
 
-                // Disconnect and reconnect to clear buffers and allow MGMT to fully boot
-                // (mimics the behavior of make flash-all which works reliably)
+                // Reconnect port to clear buffers and allow MGMT to fully boot
+                // (close and reopen port to trigger reset without losing port reference)
                 progressText.textContent = 'Reconnecting...';
-                log('Disconnecting to clear buffers and allow MGMT to boot...', 'info');
-                await controller.disconnect();
+                log('Reconnecting port to clear buffers and allow MGMT to boot...', 'info');
+                await controller.reconnect(115200);
 
                 // Wait for MGMT to fully boot
                 await new Promise(r => setTimeout(r, 1000));
 
-                // Reconnect
-                await controller.connect(115200);
                 log('Reconnected to device', 'info');
 
                 statusIcon.textContent = '\u2713';

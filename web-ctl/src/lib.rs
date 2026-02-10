@@ -38,6 +38,7 @@ async fn js_sleep(ms: u32) {
 /// JavaScript-based async delay implementation.
 ///
 /// This is WASM-compatible and uses `setTimeout` instead of `std::thread::sleep`.
+#[derive(Clone, Copy)]
 struct JsDelay;
 
 impl AsyncDelay for JsDelay {
@@ -119,6 +120,21 @@ impl LinkController {
                 .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
         }
         log("Disconnected from Link device");
+        Ok(())
+    }
+
+    /// Reconnect the port (close and reopen) to reset the MGMT chip.
+    ///
+    /// This preserves the port reference (no user gesture needed) while
+    /// resetting the MGMT chip and clearing buffers. Use after MGMT flashing.
+    #[wasm_bindgen]
+    pub async fn reconnect(&mut self, baud_rate: u32) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.port_mut()
+            .reconnect(baud_rate)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        log("Reconnected to Link device");
         Ok(())
     }
 
@@ -792,8 +808,18 @@ impl LinkController {
         }
 
         let mut progress = JsProgressCallbacks { callback: progress_callback, total: 0, verifying: false };
-        core.flash_net(&elf_bytes, None, &mut progress, JsDelay, 115_200).await
-            .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
+        log("[flash_net] Starting flash operation...");
+        match core.flash_net(&elf_bytes, None, &mut progress, JsDelay, 460_800).await {
+            Ok(()) => {
+                log("[flash_net] Flash operation completed successfully");
+                Ok(())
+            }
+            Err(e) => {
+                let msg = format!("[flash_net] Flash operation failed: {:?}", e);
+                log(&msg);
+                Err(JsValue::from_str(&format!("Flash error: {:?}", e)))
+            }
+        }
     }
 
     /// Erase the entire NET chip (ESP32) flash.

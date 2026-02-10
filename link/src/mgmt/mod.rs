@@ -387,6 +387,7 @@ where
             } else {
                 let _ = ui_reset_pins.boot0.set_low();
             }
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
             BaudRateChange::None
         }
         CtlToMgmt::SetUiBoot1 => {
@@ -397,6 +398,7 @@ where
             } else {
                 let _ = ui_reset_pins.boot1.set_low();
             }
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
             BaudRateChange::None
         }
         CtlToMgmt::SetUiRst => {
@@ -407,6 +409,7 @@ where
             } else {
                 let _ = ui_reset_pins.rst.set_low();
             }
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
             BaudRateChange::None
         }
         CtlToMgmt::SetNetBoot => {
@@ -414,7 +417,7 @@ where
             let high = tlv.value.first().map(|&v| v != 0).unwrap_or(false);
             info!("mgmt: set NET BOOT pin = {}", high);
             net_reset_pins.set_boot(high);
-            // No ack - these come in rapid succession during reset sequence
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
             BaudRateChange::None
         }
         CtlToMgmt::SetNetRst => {
@@ -422,7 +425,7 @@ where
             let high = tlv.value.first().map(|&v| v != 0).unwrap_or(false);
             info!("mgmt: set NET RST pin = {}", high);
             net_reset_pins.set_rst(high);
-            // No ack - these come in rapid succession during reset sequence
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
             BaudRateChange::None
         }
         CtlToMgmt::SetNetBaudRate => {

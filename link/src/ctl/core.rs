@@ -569,6 +569,45 @@ impl<P: CtlPort> CtlCore<P> {
         false // Too many non-Hello TLVs
     }
 
+    /// Wait for MGMT to be ready by repeatedly trying hello() with short timeouts.
+    ///
+    /// This is useful after resetting MGMT (e.g., after a baud rate change that
+    /// reopens the serial port). Instead of blindly waiting, we actively probe
+    /// until MGMT responds or we hit the retry limit.
+    ///
+    /// Returns true if MGMT responded, false if all retries exhausted.
+    pub async fn wait_for_mgmt_ready(&mut self, max_attempts: usize) -> bool
+    where
+        P: crate::ctl::SetTimeout,
+    {
+        const HELLO_TIMEOUT_MS: u64 = 100;
+
+        // Set short timeout for hello attempts
+        if let Some(port) = &mut self.port {
+            let _ = port.set_timeout(std::time::Duration::from_millis(HELLO_TIMEOUT_MS));
+        }
+
+        for _attempt in 1..=max_attempts {
+            let challenge = [0x12, 0x34, 0x56, 0x78];
+
+            if self.hello(&challenge).await {
+                // Success! Restore normal timeout and return
+                if let Some(port) = &mut self.port {
+                    let _ = port.set_timeout(std::time::Duration::from_millis(1000));
+                }
+                return true;
+            }
+
+            // hello() already has timeout built in, no need for additional delay
+        }
+
+        // All attempts failed, restore normal timeout
+        if let Some(port) = &mut self.port {
+            let _ = port.set_timeout(std::time::Duration::from_millis(1000));
+        }
+        false
+    }
+
     /// Ping the MGMT chip.
     pub async fn mgmt_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
         self.write_tlv(CtlToMgmt::Ping, data).await?;
@@ -816,17 +855,41 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Set UI chip BOOT0 pin directly.
     pub async fn set_ui_boot0(&mut self, high: bool) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::SetUiBoot0, &[high as u8]).await
+        self.write_tlv(CtlToMgmt::SetUiBoot0, &[high as u8]).await?;
+        let tlv = self.read_tlv_mgmt().await?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Set UI chip BOOT1 pin directly.
     pub async fn set_ui_boot1(&mut self, high: bool) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::SetUiBoot1, &[high as u8]).await
+        self.write_tlv(CtlToMgmt::SetUiBoot1, &[high as u8]).await?;
+        let tlv = self.read_tlv_mgmt().await?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Set UI chip RST pin directly.
     pub async fn set_ui_rst(&mut self, high: bool) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::SetUiRst, &[high as u8]).await
+        self.write_tlv(CtlToMgmt::SetUiRst, &[high as u8]).await?;
+        let tlv = self.read_tlv_mgmt().await?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Reset the UI chip into bootloader mode using pin control.

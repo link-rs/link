@@ -1,14 +1,14 @@
 //! WebSerial transport for embedded-io-async.
 
 use embedded_io_async::{ErrorType, Read, Write};
+use futures::future::{select, Either};
+use futures::pin_mut;
 use js_sys::{Object, Reflect, Uint8Array};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use futures::future::{select, Either};
-use futures::pin_mut;
+use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{ReadableStreamDefaultReader, SerialPort, WritableStreamDefaultWriter};
 
@@ -146,22 +146,25 @@ impl WebSerial {
         let old_state = self.state.borrow_mut().take();
         let old_state = old_state.ok_or(WebSerialError::NotConnected)?;
 
-        // Preserve the port and read buffer
+        // Preserve the port (but we'll clear the read buffer after reset)
         let port = old_state.port;
-        let read_buffer = old_state.read_buffer;
         let read_timeout_ms = old_state.read_timeout_ms;
 
         // Release locks and close the port
         old_state.reader.release_lock();
         old_state.writer.release_lock();
 
-        web_sys::console::log_1(&JsValue::from_str("[WebSerial] Closing port for baud rate change..."));
+        web_sys::console::log_1(&JsValue::from_str(
+            "[WebSerial] Closing port for baud rate change...",
+        ));
         JsFuture::from(port.close())
             .await
             .map_err(|e| WebSerialError::JsError(format!("Failed to close port: {:?}", e)))?;
 
         // Reopen with new baud rate
-        web_sys::console::log_1(&JsValue::from_str("[WebSerial] Reopening port at new baud rate..."));
+        web_sys::console::log_1(&JsValue::from_str(
+            "[WebSerial] Reopening port at new baud rate...",
+        ));
         let options = web_sys::SerialOptions::new(baud_rate);
         options.set_parity(web_sys::ParityType::Even);
         JsFuture::from(port.open(&options))
@@ -177,17 +180,77 @@ impl WebSerial {
             .get_writer()
             .map_err(|e| WebSerialError::JsError(format!("Failed to get writer: {:?}", e)))?;
 
-        // Restore state with new reader/writer but preserved buffer
+        // Restore state with new reader/writer, clearing buffer (fresh start after reset)
         *self.state.borrow_mut() = Some(WebSerialState {
             port,
             reader,
             writer,
-            read_buffer,
+            read_buffer: VecDeque::new(),  // Clear buffer - MGMT has reset
             read_timeout_ms,
         });
 
-        let msg = format!("[WebSerial] Baud rate changed to {} successfully", baud_rate);
+        let msg = format!(
+            "[WebSerial] Baud rate changed to {} successfully (port reopened, MGMT reset)",
+            baud_rate
+        );
         web_sys::console::log_1(&JsValue::from_str(&msg));
+
+        Ok(())
+    }
+
+    /// Reconnect the port (close and reopen) at the specified baud rate.
+    ///
+    /// This triggers a reset of the MGMT chip without losing the port reference.
+    /// Useful after MGMT flashing where we need to reset the chip and clear buffers.
+    pub async fn reconnect(&self, baud_rate: u32) -> Result<(), WebSerialError> {
+        web_sys::console::log_1(&JsValue::from_str(
+            "[WebSerial] Reconnecting port to reset MGMT chip...",
+        ));
+
+        // Take the current state
+        let old_state = self.state.borrow_mut().take();
+        let old_state = old_state.ok_or(WebSerialError::NotConnected)?;
+
+        // Preserve the port
+        let port = old_state.port;
+        let read_timeout_ms = old_state.read_timeout_ms;
+
+        // Release locks and close the port
+        old_state.reader.release_lock();
+        old_state.writer.release_lock();
+
+        JsFuture::from(port.close())
+            .await
+            .map_err(|e| WebSerialError::JsError(format!("Failed to close port: {:?}", e)))?;
+
+        // Reopen at the same baud rate
+        let options = web_sys::SerialOptions::new(baud_rate);
+        options.set_parity(web_sys::ParityType::Even);
+        JsFuture::from(port.open(&options))
+            .await
+            .map_err(|e| WebSerialError::JsError(format!("Failed to reopen port: {:?}", e)))?;
+
+        // Get new reader and writer
+        let readable = port.readable();
+        let writable = port.writable();
+
+        let reader: ReadableStreamDefaultReader = readable.get_reader().unchecked_into();
+        let writer: WritableStreamDefaultWriter = writable
+            .get_writer()
+            .map_err(|e| WebSerialError::JsError(format!("Failed to get writer: {:?}", e)))?;
+
+        // Restore state with new reader/writer, clearing buffer (fresh start after reset)
+        *self.state.borrow_mut() = Some(WebSerialState {
+            port,
+            reader,
+            writer,
+            read_buffer: VecDeque::new(),  // Clear buffer - MGMT has reset
+            read_timeout_ms,
+        });
+
+        web_sys::console::log_1(&JsValue::from_str(
+            "[WebSerial] Reconnected successfully (MGMT chip reset)",
+        ));
 
         Ok(())
     }
@@ -234,7 +297,8 @@ impl WebSerial {
 
             match select(read_fut, timeout_fut).await {
                 Either::Left((read_result, _)) => {
-                    let result = read_result.map_err(|e| WebSerialError::ReadError(format!("{:?}", e)))?;
+                    let result =
+                        read_result.map_err(|e| WebSerialError::ReadError(format!("{:?}", e)))?;
                     let result: Object = result.into();
                     let done = Reflect::get(&result, &JsValue::from_str("done"))
                         .map_err(|e| WebSerialError::ReadError(format!("{:?}", e)))?;
@@ -302,8 +366,12 @@ impl WebSerial {
 
         // Create signals object with dataTerminalReady
         let signals = Object::new();
-        Reflect::set(&signals, &JsValue::from_str("dataTerminalReady"), &JsValue::from_bool(level))
-            .map_err(|e| WebSerialError::JsError(format!("{:?}", e)))?;
+        Reflect::set(
+            &signals,
+            &JsValue::from_str("dataTerminalReady"),
+            &JsValue::from_bool(level),
+        )
+        .map_err(|e| WebSerialError::JsError(format!("{:?}", e)))?;
 
         // Call setSignals
         let set_signals = Reflect::get(&port, &JsValue::from_str("setSignals"))
@@ -332,8 +400,12 @@ impl WebSerial {
 
         // Create signals object with requestToSend
         let signals = Object::new();
-        Reflect::set(&signals, &JsValue::from_str("requestToSend"), &JsValue::from_bool(level))
-            .map_err(|e| WebSerialError::JsError(format!("{:?}", e)))?;
+        Reflect::set(
+            &signals,
+            &JsValue::from_str("requestToSend"),
+            &JsValue::from_bool(level),
+        )
+        .map_err(|e| WebSerialError::JsError(format!("{:?}", e)))?;
 
         // Call setSignals
         let set_signals = Reflect::get(&port, &JsValue::from_str("setSignals"))
@@ -422,8 +494,16 @@ impl WebSerial {
         let data = array.to_vec();
 
         // Log every chunk that arrives from the browser
-        let hex: String = data.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
-        let msg = format!("[WebSerial] fill_buffer: received {} bytes: {}", data.len(), hex);
+        let hex: String = data
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let msg = format!(
+            "[WebSerial] fill_buffer: received {} bytes: {}",
+            data.len(),
+            hex
+        );
         web_sys::console::log_1(&JsValue::from_str(&msg));
 
         let mut state = self.state.borrow_mut();
@@ -454,6 +534,10 @@ impl ErrorType for WebSerial {
 
 impl Read for WebSerial {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        // Log application request for data
+        let msg = format!("[WebSerial] read: application requesting {} bytes", buf.len());
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&msg));
+
         // First try to read from buffer
         {
             let mut state = self.state.borrow_mut();
@@ -464,8 +548,15 @@ impl Read for WebSerial {
                 for (i, byte) in state.read_buffer.drain(..to_read).enumerate() {
                     buf[i] = byte;
                 }
-                let hex: String = buf[..to_read].iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
-                let msg = format!("[WebSerial] read: returning {} bytes from buffer: {}", to_read, hex);
+                let hex: String = buf[..to_read]
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let msg = format!(
+                    "[WebSerial] read: returning {} bytes from buffer: {}",
+                    to_read, hex
+                );
                 web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&msg));
                 return Ok(to_read);
             }
@@ -482,8 +573,15 @@ impl Read for WebSerial {
         for (i, byte) in state.read_buffer.drain(..to_read).enumerate() {
             buf[i] = byte;
         }
-        let hex: String = buf[..to_read].iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
-        let msg = format!("[WebSerial] read: returning {} bytes after fill: {}", to_read, hex);
+        let hex: String = buf[..to_read]
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let msg = format!(
+            "[WebSerial] read: returning {} bytes after fill: {}",
+            to_read, hex
+        );
         web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&msg));
         Ok(to_read)
     }
@@ -491,7 +589,11 @@ impl Read for WebSerial {
 
 impl Write for WebSerial {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        let hex: String = buf.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+        let hex: String = buf
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
         let msg = format!("[WebSerial] write: sending {} bytes: {}", buf.len(), hex);
         web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&msg));
 
@@ -587,14 +689,20 @@ impl WebSerialAdapter {
     pub async fn drain(&self) -> Result<(), std::io::Error> {
         self.inner.drain().await.map_err(Into::into)
     }
+
+    /// Reconnect the port (close and reopen) to reset the MGMT chip.
+    ///
+    /// This preserves the port reference while resetting the MGMT chip
+    /// and clearing buffers. No user gesture required.
+    pub async fn reconnect(&self, baud_rate: u32) -> Result<(), std::io::Error> {
+        self.inner.reconnect(baud_rate).await.map_err(Into::into)
+    }
 }
 
 impl From<WebSerialError> for std::io::Error {
     fn from(e: WebSerialError) -> Self {
         let kind = match &e {
-            WebSerialError::ReadError(msg) if msg == "Read timeout" => {
-                std::io::ErrorKind::TimedOut
-            }
+            WebSerialError::ReadError(msg) if msg == "Read timeout" => std::io::ErrorKind::TimedOut,
             _ => std::io::ErrorKind::Other,
         };
         std::io::Error::new(kind, e.to_string())
@@ -605,19 +713,27 @@ impl link::ctl::CtlPort for WebSerialAdapter {
     type Error = std::io::Error;
 
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        <WebSerial as link::ctl::CtlPort>::read(&mut self.inner, buf).await.map_err(Into::into)
+        <WebSerial as link::ctl::CtlPort>::read(&mut self.inner, buf)
+            .await
+            .map_err(Into::into)
     }
 
     async fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
-        link::ctl::CtlPort::write_all(&mut self.inner, buf).await.map_err(Into::into)
+        link::ctl::CtlPort::write_all(&mut self.inner, buf)
+            .await
+            .map_err(Into::into)
     }
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
-        link::ctl::CtlPort::flush(&mut self.inner).await.map_err(Into::into)
+        link::ctl::CtlPort::flush(&mut self.inner)
+            .await
+            .map_err(Into::into)
     }
 
     async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
-        link::ctl::CtlPort::read_exact(&mut self.inner, buf).await.map_err(Into::into)
+        link::ctl::CtlPort::read_exact(&mut self.inner, buf)
+            .await
+            .map_err(Into::into)
     }
 
     fn clear_buffer(&mut self) {

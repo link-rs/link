@@ -36,6 +36,7 @@ web-sys = { version = "0.3", features = [
 
 # Async
 futures = "0.3"
+gloo-timers = { version = "0.3", features = ["futures"] }
 
 # Embedded IO traits
 embedded-io-async = "0.6"
