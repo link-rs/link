@@ -379,52 +379,54 @@ where
             to_ctl.must_write_tlv(MgmtToCtl::Hello, &response).await;
             BaudRateChange::None
         }
-        CtlToMgmt::SetUiBoot0 => {
-            let high = tlv.value.first().map(|&v| v != 0).unwrap_or(false);
-            info!("mgmt: set UI BOOT0 pin = {}", high);
-            if high {
-                let _ = ui_reset_pins.boot0.set_high();
-            } else {
-                let _ = ui_reset_pins.boot0.set_low();
+        CtlToMgmt::SetPin => {
+            use crate::shared::{Pin, PinValue};
+            use num_enum::TryFromPrimitive;
+
+            // Parse pin ID (byte 0) and value (byte 1)
+            let pin_id = tlv.value.first().copied().unwrap_or(0);
+            let value_id = tlv.value.get(1).copied().unwrap_or(0);
+
+            if let (Ok(pin), Ok(value)) = (
+                Pin::try_from_primitive(pin_id),
+                PinValue::try_from_primitive(value_id),
+            ) {
+                let high = value == PinValue::High;
+                match pin {
+                    Pin::UiBoot0 => {
+                        info!("mgmt: set UI BOOT0 pin = {:?}", value);
+                        if high {
+                            let _ = ui_reset_pins.boot0.set_high();
+                        } else {
+                            let _ = ui_reset_pins.boot0.set_low();
+                        }
+                    }
+                    Pin::UiBoot1 => {
+                        info!("mgmt: set UI BOOT1 pin = {:?}", value);
+                        if high {
+                            let _ = ui_reset_pins.boot1.set_high();
+                        } else {
+                            let _ = ui_reset_pins.boot1.set_low();
+                        }
+                    }
+                    Pin::UiRst => {
+                        info!("mgmt: set UI RST pin = {:?}", value);
+                        if high {
+                            let _ = ui_reset_pins.rst.set_high();
+                        } else {
+                            let _ = ui_reset_pins.rst.set_low();
+                        }
+                    }
+                    Pin::NetBoot => {
+                        info!("mgmt: set NET BOOT pin = {:?}", value);
+                        net_reset_pins.set_boot(high);
+                    }
+                    Pin::NetRst => {
+                        info!("mgmt: set NET RST pin = {:?}", value);
+                        net_reset_pins.set_rst(high);
+                    }
+                }
             }
-            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
-            BaudRateChange::None
-        }
-        CtlToMgmt::SetUiBoot1 => {
-            let high = tlv.value.first().map(|&v| v != 0).unwrap_or(false);
-            info!("mgmt: set UI BOOT1 pin = {}", high);
-            if high {
-                let _ = ui_reset_pins.boot1.set_high();
-            } else {
-                let _ = ui_reset_pins.boot1.set_low();
-            }
-            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
-            BaudRateChange::None
-        }
-        CtlToMgmt::SetUiRst => {
-            let high = tlv.value.first().map(|&v| v != 0).unwrap_or(false);
-            info!("mgmt: set UI RST pin = {}", high);
-            if high {
-                let _ = ui_reset_pins.rst.set_high();
-            } else {
-                let _ = ui_reset_pins.rst.set_low();
-            }
-            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
-            BaudRateChange::None
-        }
-        CtlToMgmt::SetNetBoot => {
-            // Set GPIO0/BOOT pin directly (0=low/bootloader, 1=high/normal)
-            let high = tlv.value.first().map(|&v| v != 0).unwrap_or(false);
-            info!("mgmt: set NET BOOT pin = {}", high);
-            net_reset_pins.set_boot(high);
-            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
-            BaudRateChange::None
-        }
-        CtlToMgmt::SetNetRst => {
-            // Set EN/RST pin directly (0=low/reset, 1=high/run)
-            let high = tlv.value.first().map(|&v| v != 0).unwrap_or(false);
-            info!("mgmt: set NET RST pin = {}", high);
-            net_reset_pins.set_rst(high);
             to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
             BaudRateChange::None
         }

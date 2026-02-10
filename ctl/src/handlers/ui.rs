@@ -195,21 +195,30 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             }
         },
         UiAction::Boot0 { action: PinAction::Set { level } } => {
-            let high = matches!(level, PinLevel::High);
-            core.set_ui_boot0(high).await?;
-            println!("UI BOOT0: {}", if high { "high" } else { "low" });
+            let value = match level {
+                PinLevel::High => link::PinValue::High,
+                PinLevel::Low => link::PinValue::Low,
+            };
+            core.set_ui_boot0(value).await?;
+            println!("UI BOOT0: {:?}", value);
             Ok(())
         }
         UiAction::Boot1 { action: PinAction::Set { level } } => {
-            let high = matches!(level, PinLevel::High);
-            core.set_ui_boot1(high).await?;
-            println!("UI BOOT1: {}", if high { "high" } else { "low" });
+            let value = match level {
+                PinLevel::High => link::PinValue::High,
+                PinLevel::Low => link::PinValue::Low,
+            };
+            core.set_ui_boot1(value).await?;
+            println!("UI BOOT1: {:?}", value);
             Ok(())
         }
         UiAction::Rst { action: PinAction::Set { level } } => {
-            let high = matches!(level, PinLevel::High);
-            core.set_ui_rst(high).await?;
-            println!("UI RST: {}", if high { "high" } else { "low" });
+            let value = match level {
+                PinLevel::High => link::PinValue::High,
+                PinLevel::Low => link::PinValue::Low,
+            };
+            core.set_ui_rst(value).await?;
+            println!("UI RST: {:?}", value);
             Ok(())
         }
         UiAction::Reset { action } => match action.unwrap_or_default() {
@@ -229,7 +238,7 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                 Ok(())
             }
             ResetAction::Release => {
-                core.set_ui_rst(true).await?;
+                core.set_ui_rst(link::PinValue::High).await?;
                 println!("UI chip released from reset");
                 Ok(())
             }

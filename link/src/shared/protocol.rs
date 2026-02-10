@@ -61,6 +61,34 @@ pub enum NetLoopbackMode {
     Moq = 2,
 }
 
+/// Pin identifiers for SetPin command.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum Pin {
+    /// UI chip BOOT0 pin
+    UiBoot0 = 0,
+    /// UI chip BOOT1 pin
+    UiBoot1 = 1,
+    /// UI chip RST pin
+    UiRst = 2,
+    /// NET chip GPIO0/BOOT pin
+    NetBoot = 3,
+    /// NET chip EN/RST pin
+    NetRst = 4,
+}
+
+/// Pin value for SetPin command.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum PinValue {
+    /// Pin low (for BOOT: normal mode; for RST: hold in reset)
+    Low = 0,
+    /// Pin high (for BOOT: bootloader mode; for RST: run)
+    High = 1,
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum CtlToMgmt {
@@ -69,16 +97,8 @@ pub enum CtlToMgmt {
     ToNet,
     /// Hello handshake for device detection (4 bytes, XOR'd with b"LINK")
     Hello,
-    /// Set UI chip BOOT0 pin directly (1 byte: 0=low, 1=high)
-    SetUiBoot0,
-    /// Set UI chip BOOT1 pin directly (1 byte: 0=low, 1=high)
-    SetUiBoot1,
-    /// Set UI chip RST pin directly (1 byte: 0=low/reset, 1=high/run)
-    SetUiRst,
-    /// Set NET chip GPIO0/BOOT pin directly (1 byte: 0=low, 1=high)
-    SetNetBoot,
-    /// Set NET chip EN/RST pin directly (1 byte: 0=low/reset, 1=high/run)
-    SetNetRst,
+    /// Set a pin (2 bytes: pin enum, value 0=low/1=high)
+    SetPin,
     /// Set NET UART baud rate (4 bytes: u32 big-endian)
     SetNetBaudRate,
     /// Set CTL UART baud rate (4 bytes: u32 big-endian)

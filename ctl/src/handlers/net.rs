@@ -215,15 +215,21 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
             }
         },
         NetAction::Boot { action: PinAction::Set { level } } => {
-            let high = matches!(level, PinLevel::High);
-            core.write_tlv_raw(link::CtlToMgmt::SetNetBoot, &[high as u8]).await?;
-            println!("NET BOOT: {}", if high { "high" } else { "low" });
+            let value = match level {
+                PinLevel::High => link::PinValue::High,
+                PinLevel::Low => link::PinValue::Low,
+            };
+            core.write_tlv_raw(link::CtlToMgmt::SetPin, &[link::Pin::NetBoot as u8, value as u8]).await?;
+            println!("NET BOOT: {:?}", value);
             Ok(())
         }
         NetAction::Rst { action: PinAction::Set { level } } => {
-            let high = matches!(level, PinLevel::High);
-            core.write_tlv_raw(link::CtlToMgmt::SetNetRst, &[high as u8]).await?;
-            println!("NET RST: {}", if high { "high" } else { "low" });
+            let value = match level {
+                PinLevel::High => link::PinValue::High,
+                PinLevel::Low => link::PinValue::Low,
+            };
+            core.write_tlv_raw(link::CtlToMgmt::SetPin, &[link::Pin::NetRst as u8, value as u8]).await?;
+            println!("NET RST: {:?}", value);
             Ok(())
         }
         NetAction::Reset { action } => {
@@ -242,7 +248,7 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
                     println!("NET chip held in reset");
                 }
                 ResetAction::Release => {
-                    core.write_tlv_raw(link::CtlToMgmt::SetNetRst, &[1]).await?;
+                    core.write_tlv_raw(link::CtlToMgmt::SetPin, &[link::Pin::NetRst as u8, link::PinValue::High as u8]).await?;
                     println!("NET chip released from reset");
                 }
             }

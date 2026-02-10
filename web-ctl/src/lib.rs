@@ -256,22 +256,28 @@ impl LinkController {
     /// Set UI BOOT0 pin. 1 = high, 0 = low.
     #[wasm_bindgen]
     pub async fn set_ui_boot0(&mut self, high: bool) -> Result<(), JsValue> {
+        use link::PinValue;
         let core = self.core_mut()?;
-        core.set_ui_boot0(high).await.map_err(ctl_error_to_js)
+        let value = if high { PinValue::High } else { PinValue::Low };
+        core.set_ui_boot0(value).await.map_err(ctl_error_to_js)
     }
 
     /// Set UI BOOT1 pin. 1 = high, 0 = low.
     #[wasm_bindgen]
     pub async fn set_ui_boot1(&mut self, high: bool) -> Result<(), JsValue> {
+        use link::PinValue;
         let core = self.core_mut()?;
-        core.set_ui_boot1(high).await.map_err(ctl_error_to_js)
+        let value = if high { PinValue::High } else { PinValue::Low };
+        core.set_ui_boot1(value).await.map_err(ctl_error_to_js)
     }
 
     /// Set UI RST pin. 1 = high, 0 = low.
     #[wasm_bindgen]
     pub async fn set_ui_rst(&mut self, high: bool) -> Result<(), JsValue> {
+        use link::PinValue;
         let core = self.core_mut()?;
-        core.set_ui_rst(high).await.map_err(ctl_error_to_js)
+        let value = if high { PinValue::High } else { PinValue::Low };
+        core.set_ui_rst(value).await.map_err(ctl_error_to_js)
     }
 
     /// Reset the UI chip into bootloader mode.
@@ -293,17 +299,19 @@ impl LinkController {
     /// Set NET BOOT pin (GPIO0). 1 = high, 0 = low.
     #[wasm_bindgen]
     pub async fn set_net_boot(&mut self, high: bool) -> Result<(), JsValue> {
+        use link::{CtlToMgmt, Pin, PinValue};
         let core = self.core_mut()?;
-        use link::CtlToMgmt;
-        core.write_tlv_raw(CtlToMgmt::SetNetBoot, &[high as u8]).await.map_err(ctl_error_to_js)
+        let value = if high { PinValue::High } else { PinValue::Low };
+        core.write_tlv_raw(CtlToMgmt::SetPin, &[Pin::NetBoot as u8, value as u8]).await.map_err(ctl_error_to_js)
     }
 
     /// Set NET RST pin (EN). 1 = high, 0 = low.
     #[wasm_bindgen]
     pub async fn set_net_rst(&mut self, high: bool) -> Result<(), JsValue> {
+        use link::{CtlToMgmt, Pin, PinValue};
         let core = self.core_mut()?;
-        use link::CtlToMgmt;
-        core.write_tlv_raw(CtlToMgmt::SetNetRst, &[high as u8]).await.map_err(ctl_error_to_js)
+        let value = if high { PinValue::High } else { PinValue::Low };
+        core.write_tlv_raw(CtlToMgmt::SetPin, &[Pin::NetRst as u8, value as u8]).await.map_err(ctl_error_to_js)
     }
 
     /// Reset the NET chip into bootloader mode.

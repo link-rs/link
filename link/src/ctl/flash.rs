@@ -691,19 +691,21 @@ impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static, D:
     }
 
     async fn write_data_terminal_ready(&mut self, level: bool) -> Result<(), SerialPortError> {
+        use crate::shared::{Pin, PinValue};
         // DTR HIGH → BOOT LOW (bootloader mode), DTR LOW → BOOT HIGH (normal)
         // Note: Don't wait for Ack - just send the command (matches legacy behavior)
-        let boot = !level;
-        self.write_mgmt_command(CtlToMgmt::SetNetBoot, &[boot as u8])
+        let boot = if level { PinValue::Low } else { PinValue::High };
+        self.write_mgmt_command(CtlToMgmt::SetPin, &[Pin::NetBoot as u8, boot as u8])
             .await
             .map_err(Self::io_to_serial)
     }
 
     async fn write_request_to_send(&mut self, level: bool) -> Result<(), SerialPortError> {
+        use crate::shared::{Pin, PinValue};
         // RTS HIGH → RST LOW (chip in reset), RTS LOW → RST HIGH (chip running)
         // Note: Don't wait for Ack - just send the command (matches legacy behavior)
-        let rst = !level;
-        self.write_mgmt_command(CtlToMgmt::SetNetRst, &[rst as u8])
+        let rst = if level { PinValue::Low } else { PinValue::High };
+        self.write_mgmt_command(CtlToMgmt::SetPin, &[Pin::NetRst as u8, rst as u8])
             .await
             .map_err(Self::io_to_serial)
     }

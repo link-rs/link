@@ -854,8 +854,9 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Set UI chip BOOT0 pin directly.
-    pub async fn set_ui_boot0(&mut self, high: bool) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::SetUiBoot0, &[high as u8]).await?;
+    pub async fn set_ui_boot0(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
+        use crate::shared::Pin;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::UiBoot0 as u8, value as u8]).await?;
         let tlv = self.read_tlv_mgmt().await?;
         if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
@@ -867,8 +868,9 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Set UI chip BOOT1 pin directly.
-    pub async fn set_ui_boot1(&mut self, high: bool) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::SetUiBoot1, &[high as u8]).await?;
+    pub async fn set_ui_boot1(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
+        use crate::shared::Pin;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::UiBoot1 as u8, value as u8]).await?;
         let tlv = self.read_tlv_mgmt().await?;
         if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
@@ -880,8 +882,9 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Set UI chip RST pin directly.
-    pub async fn set_ui_rst(&mut self, high: bool) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::SetUiRst, &[high as u8]).await?;
+    pub async fn set_ui_rst(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
+        use crate::shared::Pin;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::UiRst as u8, value as u8]).await?;
         let tlv = self.read_tlv_mgmt().await?;
         if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
@@ -894,26 +897,29 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Reset the UI chip into bootloader mode using pin control.
     pub async fn reset_ui_to_bootloader(&mut self) -> Result<(), CtlError> {
+        use crate::shared::PinValue;
         // BOOT0=1, BOOT1=0, then RST cycle
-        self.set_ui_boot0(true).await?;
-        self.set_ui_boot1(false).await?;
-        self.set_ui_rst(false).await?;
+        self.set_ui_boot0(PinValue::High).await?;
+        self.set_ui_boot1(PinValue::Low).await?;
+        self.set_ui_rst(PinValue::Low).await?;
         // Small delay for reset to take effect (caller should provide)
-        self.set_ui_rst(true).await
+        self.set_ui_rst(PinValue::High).await
     }
 
     /// Reset the UI chip into user mode using pin control.
     pub async fn reset_ui_to_user(&mut self) -> Result<(), CtlError> {
+        use crate::shared::PinValue;
         // BOOT0=0, BOOT1=1, then RST cycle
-        self.set_ui_boot0(false).await?;
-        self.set_ui_boot1(true).await?;
-        self.set_ui_rst(false).await?;
-        self.set_ui_rst(true).await
+        self.set_ui_boot0(PinValue::Low).await?;
+        self.set_ui_boot1(PinValue::High).await?;
+        self.set_ui_rst(PinValue::Low).await?;
+        self.set_ui_rst(PinValue::High).await
     }
 
     /// Hold the UI chip in reset.
     pub async fn hold_ui_reset(&mut self) -> Result<(), CtlError> {
-        self.set_ui_rst(false).await
+        use crate::shared::PinValue;
+        self.set_ui_rst(PinValue::Low).await
     }
 
     /// Read a log message from the UI chip.
@@ -1171,16 +1177,17 @@ impl<P: CtlPort> CtlCore<P> {
         D: Fn(u64) -> F,
         F: core::future::Future<Output = ()>,
     {
+        use crate::shared::{Pin, PinValue};
         // First power cycle (clean slate)
-        self.write_tlv(CtlToMgmt::SetNetRst, &[0]).await?;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::Low as u8]).await?;
         delay_ms(10).await;
-        self.write_tlv(CtlToMgmt::SetNetRst, &[1]).await?;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::High as u8]).await?;
         // Set BOOT low for bootloader mode
-        self.write_tlv(CtlToMgmt::SetNetBoot, &[0]).await?;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetBoot as u8, PinValue::Low as u8]).await?;
         // Second power cycle - ESP32 samples BOOT when RST goes high
-        self.write_tlv(CtlToMgmt::SetNetRst, &[0]).await?;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::Low as u8]).await?;
         delay_ms(10).await;
-        self.write_tlv(CtlToMgmt::SetNetRst, &[1]).await
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::High as u8]).await
     }
 
     /// Reset the NET chip into user mode using pin control.
@@ -1191,15 +1198,17 @@ impl<P: CtlPort> CtlCore<P> {
         D: Fn(u64) -> F,
         F: core::future::Future<Output = ()>,
     {
-        self.write_tlv(CtlToMgmt::SetNetBoot, &[1]).await?;
-        self.write_tlv(CtlToMgmt::SetNetRst, &[0]).await?;
+        use crate::shared::{Pin, PinValue};
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetBoot as u8, PinValue::High as u8]).await?;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::Low as u8]).await?;
         delay_ms(10).await;
-        self.write_tlv(CtlToMgmt::SetNetRst, &[1]).await
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::High as u8]).await
     }
 
     /// Hold the NET chip in reset.
     pub async fn hold_net_reset(&mut self) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::SetNetRst, &[0]).await
+        use crate::shared::{Pin, PinValue};
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::Low as u8]).await
     }
 
     // ========================================================================
