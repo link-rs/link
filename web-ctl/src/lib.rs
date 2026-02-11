@@ -21,11 +21,6 @@ pub fn init() {
     console_error_panic_hook::set_once();
 }
 
-/// Log a message to the browser console.
-fn log(msg: &str) {
-    web_sys::console::log_1(&JsValue::from_str(msg));
-}
-
 /// Async sleep using JavaScript setTimeout.
 async fn js_sleep(ms: u32) {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
@@ -97,7 +92,6 @@ impl LinkController {
         let core = self.core.as_mut().unwrap();
         core.init_port(|ms| js_sleep(ms as u32)).await;
 
-        log("Connected to Link device");
         Ok(())
     }
 
@@ -119,7 +113,6 @@ impl LinkController {
                 .await
                 .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
         }
-        log("Disconnected from Link device");
         Ok(())
     }
 
@@ -134,7 +127,6 @@ impl LinkController {
             .reconnect(baud_rate)
             .await
             .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
-        log("Reconnected to Link device");
         Ok(())
     }
 
@@ -816,18 +808,8 @@ impl LinkController {
         }
 
         let mut progress = JsProgressCallbacks { callback: progress_callback, total: 0, verifying: false };
-        log("[flash_net] Starting flash operation...");
-        match core.flash_net(&elf_bytes, None, &mut progress, JsDelay, 460_800).await {
-            Ok(()) => {
-                log("[flash_net] Flash operation completed successfully");
-                Ok(())
-            }
-            Err(e) => {
-                let msg = format!("[flash_net] Flash operation failed: {:?}", e);
-                log(&msg);
-                Err(JsValue::from_str(&format!("Flash error: {:?}", e)))
-            }
-        }
+        core.flash_net(&elf_bytes, None, &mut progress, JsDelay, 460_800).await
+            .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
 
     /// Erase the entire NET chip (ESP32) flash.
