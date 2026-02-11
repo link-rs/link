@@ -89,8 +89,6 @@ pub use wifi::WifiSsid;
 #[allow(unused_imports)] // Re-exported for public API
 pub use channel::{ChannelConfig, MAX_CHANNEL_URL_LEN};
 
-#[cfg(feature = "net")]
-pub use channel::MAX_CHANNELS;
 
 // Re-export embassy_sync types for use by firmware chip modules that need them
 #[cfg(any(feature = "net", feature = "ui"))]

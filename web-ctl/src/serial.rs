@@ -129,11 +129,6 @@ impl WebSerial {
         Ok(())
     }
 
-    /// Check if connected to a serial port.
-    pub fn is_connected(&self) -> bool {
-        self.state.borrow().is_some()
-    }
-
     /// Change the baud rate by closing and reopening the port.
     ///
     /// This preserves any buffered read data across the reconnection.

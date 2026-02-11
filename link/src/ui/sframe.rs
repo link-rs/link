@@ -222,6 +222,7 @@ impl KeyMaterial {
     ///
     /// This is the non-MLS version for direct key derivation.
     /// For hactar compatibility, use `derive_mls` instead.
+    #[cfg(test)]
     pub fn derive(base_key: &[u8; KEY_SIZE], kid: u64) -> Self {
         Self::derive_from_base(base_key, kid)
     }
