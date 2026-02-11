@@ -1,5 +1,8 @@
 //! MGMT (Management) chip - coordinates communication between all chips.
 
+pub mod storage;
+pub use storage::BaudRateStorage;
+
 use crate::info;
 use crate::shared::{
     Color, CtlToMgmt, CtlToNet, CtlToUi, Led, MgmtToCtl, ReadTlv, Tlv, Value, WriteTlv,
@@ -156,7 +159,7 @@ enum BaudRateChange {
 }
 
 #[allow(unreachable_code)]
-pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
+pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, S>(
     to_ctl: W,
     mut from_ctl: R,
     mut to_ui: W,
@@ -168,6 +171,7 @@ pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot,
     mut ui_reset_pins: UiResetPins<UiBoot0, UiBoot1, UiRst>,
     mut net_reset_pins: NetResetPins<NetBoot, NetRst>,
     mut delay: D,
+    mut storage: Option<&mut S>,
 ) -> !
 where
     W: Write + SetBaudRate,
@@ -184,6 +188,7 @@ where
     NetBoot: OutputPin,
     NetRst: OutputPin,
     D: DelayNs,
+    S: BaudRateStorage,
 {
     use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 
@@ -296,6 +301,7 @@ where
                 &mut ui_reset_pins,
                 &mut net_reset_pins,
                 &mut delay,
+                storage.as_deref_mut(),
             )
             .await;
 
@@ -328,7 +334,7 @@ where
     unreachable!()
 }
 
-async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
+async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, S>(
     tlv: Tlv<CtlToMgmt>,
     to_ctl: &mut C,
     to_ui: &mut U,
@@ -336,6 +342,7 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
     ui_reset_pins: &mut UiResetPins<UiBoot0, UiBoot1, UiRst>,
     net_reset_pins: &mut NetResetPins<NetBoot, NetRst>,
     delay: &mut D,
+    storage: Option<&mut S>,
 ) -> BaudRateChange
 where
     C: WriteTlv<MgmtToCtl> + Write + SetBaudRate,
@@ -344,6 +351,7 @@ where
     UiBoot0: StatefulOutputPin,
     UiBoot1: StatefulOutputPin,
     UiRst: StatefulOutputPin,
+    S: BaudRateStorage,
     NetBoot: OutputPin,
     NetRst: OutputPin,
     D: DelayNs,
@@ -456,6 +464,16 @@ where
                 tlv.value.get(3).copied().unwrap_or(0),
             ]);
             info!("mgmt: setting CTL baud rate to {}", baud_rate);
+
+            // Store the baud rate persistently
+            if let Some(storage) = storage {
+                if storage.set(baud_rate) {
+                    info!("mgmt: baud rate stored in flash");
+                } else {
+                    info!("mgmt: failed to store baud rate");
+                }
+            }
+
             // CRITICAL: Send ACK FIRST at old baud rate
             to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
             // Flush to ensure ACK is transmitted before rate change
