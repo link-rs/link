@@ -162,6 +162,63 @@
             letter-spacing: 0.05em;
         }
 
+        .advanced-divider {
+            margin: 2rem 0;
+            text-align: center;
+            position: relative;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .advanced-divider::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 50%;
+            height: 1px;
+            background: var(--border);
+        }
+
+        .advanced-divider-text {
+            display: inline-block;
+            background: var(--bg-primary);
+            padding: 0.5rem 1.5rem;
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            position: relative;
+            font-size: 0.875rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            color: var(--text-secondary);
+            transition: all 0.2s ease;
+        }
+
+        .advanced-divider:hover .advanced-divider-text {
+            border-color: var(--text-secondary);
+            color: var(--text-primary);
+        }
+
+        .advanced-divider-text::after {
+            content: '▼';
+            display: inline-block;
+            margin-left: 0.5rem;
+            font-size: 0.75rem;
+            transition: transform 0.2s ease;
+        }
+
+        .advanced-divider.expanded .advanced-divider-text::after {
+            transform: rotate(180deg);
+        }
+
+        .advanced-content {
+            display: none;
+        }
+
+        .advanced-content.visible {
+            display: block;
+        }
+
         .form-group {
             margin-bottom: 1rem;
         }
@@ -298,6 +355,7 @@
             margin-right: 1.5rem;
             min-width: 1.5rem;
             text-align: center;
+            vertical-align: middle;
         }
 
         .status-icon.success {
@@ -842,6 +900,13 @@
             </div>
         </div>
 
+        <!-- Advanced Section Divider -->
+        <div class="advanced-divider" id="advancedDivider">
+            <span class="advanced-divider-text">ADVANCED</span>
+        </div>
+
+        <div class="advanced-content" id="advancedContent">
+
         <!-- MGMT Chip Section -->
         <div class="card hidden collapsed" id="mgmtCard">
             <h2><span class="chip-badge chip-mgmt">MGMT</span> Management Chip<span class="collapse-icon">&#9662;</span></h2>
@@ -880,9 +945,9 @@
                 <div class="card-section">
                     <h3>Circular Ping</h3>
                     <div class="btn-group">
-                        <button class="btn-secondary" id="circularPingUiBtn">Via UI (UI→NET→MGMT→CTL)</button>
+                        <button class="btn-secondary" id="circularPingUiBtn">UI → NET</button>
                         <span class="status-icon" id="circularPingUiStatus"></span>
-                        <button class="btn-secondary" id="circularPingNetBtn">Via NET (NET→UI→MGMT→CTL)</button>
+                        <button class="btn-secondary" id="circularPingNetBtn">NET → UI</button>
                         <span class="status-icon" id="circularPingNetStatus"></span>
                     </div>
                 </div>
@@ -964,7 +1029,7 @@
                 <div class="card-section">
                     <h3>EEPROM Storage</h3>
                     <div class="form-group">
-                        <label>Firmware Version (stored in UI EEPROM)</label>
+                        <label>Hardware Version</label>
                         <div class="inline-form">
                             <input type="text" id="versionInput" placeholder="(click Read Version)" class="mono">
                             <button class="btn-secondary" id="getVersionBtn">Read Version</button>
@@ -972,7 +1037,7 @@
                         </div>
                     </div>
                     <div class="form-group">
-                        <label>SFrame Encryption Key (16 bytes, stored in UI EEPROM)</label>
+                        <label>SFrame Encryption Key</label>
                         <div class="inline-form">
                             <input type="text" id="sframeKeyInput" placeholder="(click Read Key)" class="mono" maxlength="32">
                             <button class="btn-secondary" id="getSframeKeyBtn">Read Key</button>
@@ -1174,19 +1239,22 @@
                         <div class="info-header">
                             <span class="chip-icon" style="color: var(--net-color);">&#9679;</span>
                             <h4 id="netChipType">ESP32 Bootloader</h4>
-                            <span class="version" id="netEcoVersion">ECO 0</span>
                         </div>
                         <div class="info-row">
-                            <span class="info-label">Chip ID</span>
-                            <span class="info-value" id="netChipId">-</span>
+                            <span class="info-label">Flash Size</span>
+                            <span class="info-value" id="netFlashSize">-</span>
                         </div>
                         <div class="info-row">
-                            <span class="info-label">Security Flags</span>
-                            <span class="info-value" id="netFlags">-</span>
+                            <span class="info-label">Crystal</span>
+                            <span class="info-value" id="netCrystal">-</span>
                         </div>
                         <div class="info-row">
-                            <span class="info-label">Flash Crypt Count</span>
-                            <span class="info-value" id="netFlashCryptCnt">-</span>
+                            <span class="info-label">MAC Address</span>
+                            <span class="info-value" id="netMacAddress">-</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Security</span>
+                            <span class="info-value" id="netSecurity">-</span>
                         </div>
                     </div>
                 </div>
@@ -1204,6 +1272,8 @@
                 <div class="log-output" id="logOutput"></div>
             </div>
         </div>
+
+        </div><!-- End advanced-content -->
 
     </div>
 
@@ -1714,8 +1784,8 @@
         document.getElementById('getVersionBtn').addEventListener('click', async () => {
             try {
                 const version = await controller.get_version();
-                document.getElementById('versionInput').value = '0x' + version.toString(16).padStart(8, '0');
-                log(`UI EEPROM version: 0x${version.toString(16).padStart(8, '0')} (${version})`, 'success');
+                document.getElementById('versionInput').value = version.toString();
+                log(`UI EEPROM version: ${version}`, 'success');
             } catch (e) {
                 log(`Read version error: ${e}`, 'error');
             }
@@ -1724,9 +1794,9 @@
         document.getElementById('setVersionBtn').addEventListener('click', async () => {
             try {
                 const input = document.getElementById('versionInput').value;
-                const version = parseInt(input, 16);
+                const version = parseInt(input, 10);
                 await controller.set_version(version);
-                log(`UI EEPROM version set to 0x${version.toString(16).padStart(8, '0')}`, 'success');
+                log(`UI EEPROM version set to ${version}`, 'success');
             } catch (e) {
                 log(`Write version error: ${e}`, 'error');
             }
@@ -2300,11 +2370,16 @@
                 }, 5000); // 5 second timeout for bootloader info
 
                 // Populate info display
-                document.getElementById('netChipType').textContent = info.chipType;
-                document.getElementById('netEcoVersion').textContent = `ECO ${info.ecoVersion}`;
-                document.getElementById('netChipId').textContent = info.chipId;
-                document.getElementById('netFlags').textContent = `0x${info.flags.toString(16).padStart(8, '0')}`;
-                document.getElementById('netFlashCryptCnt').textContent = info.flashCryptCnt;
+                document.getElementById('netChipType').textContent = info.chip || 'ESP32';
+                document.getElementById('netFlashSize').textContent = info.flashSize || '-';
+                document.getElementById('netCrystal').textContent = info.crystalFrequency || '-';
+                document.getElementById('netMacAddress').textContent = info.macAddress || '-';
+
+                // Security status
+                const securityParts = [];
+                if (info.secureBoot) securityParts.push('Secure Boot');
+                if (info.flashEncryption) securityParts.push('Flash Encryption');
+                document.getElementById('netSecurity').textContent = securityParts.length > 0 ? securityParts.join(', ') : 'None';
 
                 infoDisplay.classList.add('visible');
                 log('NET bootloader info retrieved successfully', 'success');
@@ -2680,6 +2755,14 @@
                 const card = header.closest('.card');
                 card.classList.toggle('collapsed');
             });
+        });
+
+        // Advanced section toggle
+        document.getElementById('advancedDivider').addEventListener('click', () => {
+            const divider = document.getElementById('advancedDivider');
+            const content = document.getElementById('advancedContent');
+            divider.classList.toggle('expanded');
+            content.classList.toggle('visible');
         });
 
         // Start

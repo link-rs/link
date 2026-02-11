@@ -731,8 +731,8 @@ impl LinkController {
         // Device info
         let device = &info.device_info;
         js_sys::Reflect::set(&obj, &"chip".into(), &format!("{:?}", device.chip).into())?;
-        js_sys::Reflect::set(&obj, &"flashSize".into(), &format!("{:?}", device.flash_size).into())?;
-        js_sys::Reflect::set(&obj, &"crystalFrequency".into(), &format!("{:?}", device.crystal_frequency).into())?;
+        js_sys::Reflect::set(&obj, &"flashSize".into(), &format!("{:?}", device.flash_size).trim_start_matches('_').into())?;
+        js_sys::Reflect::set(&obj, &"crystalFrequency".into(), &format!("{:?}", device.crystal_frequency).trim_start_matches('_').into())?;
 
         let features = js_sys::Array::new();
         for feature in &device.features {
