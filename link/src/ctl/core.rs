@@ -13,6 +13,7 @@ use crate::shared::{
     NetToCtl, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid, HEADER_SIZE, MAX_VALUE_SIZE,
     SYNC_WORD,
 };
+use crate::shared::tlv::{buffer, tunnel};
 
 use super::port::CtlPort;
 
@@ -262,27 +263,13 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Write a tunneled TLV to UI through MGMT.
     async fn write_tlv_ui(&mut self, tlv_type: CtlToUi, value: &[u8]) -> Result<(), CtlError> {
-        // Create inner TLV (sync word + header + value)
-        let inner_type: u16 = tlv_type.into();
-        let mut inner = Vec::<u8>::new();
-        let _ = inner.extend_from_slice(&SYNC_WORD);
-        let _ = inner.extend_from_slice(&inner_type.to_be_bytes());
-        let _ = inner.extend_from_slice(&(value.len() as u32).to_be_bytes());
-        let _ = inner.extend_from_slice(value);
-
+        let inner = tunnel::encode_nested(tlv_type, value);
         self.write_tlv(CtlToMgmt::ToUi, &inner).await
     }
 
     /// Write a tunneled TLV to NET through MGMT.
     async fn write_tlv_net(&mut self, tlv_type: CtlToNet, value: &[u8]) -> Result<(), CtlError> {
-        // Create inner TLV (sync word + header + value)
-        let inner_type: u16 = tlv_type.into();
-        let mut inner = Vec::<u8>::new();
-        let _ = inner.extend_from_slice(&SYNC_WORD);
-        let _ = inner.extend_from_slice(&inner_type.to_be_bytes());
-        let _ = inner.extend_from_slice(&(value.len() as u32).to_be_bytes());
-        let _ = inner.extend_from_slice(value);
-
+        let inner = tunnel::encode_nested(tlv_type, value);
         self.write_tlv(CtlToMgmt::ToNet, &inner).await
     }
 
@@ -395,120 +382,57 @@ impl<P: CtlPort> CtlCore<P> {
     fn try_parse_tlv_from_buffer<T: TryFrom<u16>>(
         buffer: &mut Vec<u8>,
     ) -> Result<Option<Tlv<T>>, CtlError> {
-        // Scan for sync word, discarding non-TLV data
-        let sync_pos = Self::find_sync_word(buffer);
-        if let Some(pos) = sync_pos {
-            // Discard data before sync word (garbage/log data)
-            if pos > 0 {
-                buffer.copy_within(pos.., 0);
-                buffer.truncate(buffer.len() - pos);
+        // Try to parse using shared buffer utilities
+        match buffer::try_parse_from_buffer(buffer) {
+            Ok(Some((tlv, consumed))) => {
+                // Consume the parsed TLV from buffer
+                buffer.copy_within(consumed.., 0);
+                buffer.truncate(buffer.len() - consumed);
+                Ok(Some(tlv))
             }
-        } else {
-            // No sync word found - keep last 3 bytes (partial sync match possible)
-            let keep = buffer.len().min(SYNC_WORD.len() - 1);
-            let start = buffer.len() - keep;
-            buffer.copy_within(start.., 0);
-            buffer.truncate(keep);
-            return Ok(None);
-        }
-
-        // Check if we have enough data for header
-        if buffer.len() < SYNC_WORD.len() + HEADER_SIZE {
-            return Ok(None); // Need more data
-        }
-
-        // Parse header
-        let offset = SYNC_WORD.len();
-        let tlv_type_raw = u16::from_be_bytes([buffer[offset], buffer[offset + 1]]);
-        let length = u32::from_be_bytes([
-            buffer[offset + 2],
-            buffer[offset + 3],
-            buffer[offset + 4],
-            buffer[offset + 5],
-        ]) as usize;
-
-        // Sanity check length to avoid memory issues with garbage data
-        if length > MAX_VALUE_SIZE {
-            // Invalid length - probably garbage, discard sync word and retry
-            buffer.copy_within(1.., 0);
-            buffer.truncate(buffer.len() - 1);
-            return Ok(None);
-        }
-
-        let total_len = SYNC_WORD.len() + HEADER_SIZE + length;
-
-        // Check if we have the complete TLV
-        if buffer.len() < total_len {
-            return Ok(None); // Need more data
-        }
-
-        // Parse type
-        let tlv_type =
-            T::try_from(tlv_type_raw).map_err(|_| CtlError::InvalidType(tlv_type_raw))?;
-
-        // Extract value
-        let value_start = SYNC_WORD.len() + HEADER_SIZE;
-        let mut value = Vec::new();
-        let _ = value.extend_from_slice(&buffer[value_start..value_start + length]);
-
-        // Consume the TLV from buffer
-        buffer.copy_within(total_len.., 0);
-        buffer.truncate(buffer.len() - total_len);
-
-        Ok(Some(Tlv {
-            tlv_type,
-            value: heapless::Vec::try_from(value.as_slice()).unwrap(),
-        }))
-    }
-
-    /// Find the position of sync word in buffer.
-    fn find_sync_word(buffer: &[u8]) -> Option<usize> {
-        if buffer.len() < SYNC_WORD.len() {
-            return None;
-        }
-        for i in 0..=buffer.len() - SYNC_WORD.len() {
-            if buffer[i..i + SYNC_WORD.len()] == SYNC_WORD {
-                return Some(i);
+            Ok(None) => {
+                // No complete TLV yet - check if we should discard garbage
+                if let Some(sync_pos) = buffer::find_sync_word(buffer) {
+                    // Sync word found - discard garbage before it
+                    if sync_pos > 0 {
+                        buffer.copy_within(sync_pos.., 0);
+                        buffer.truncate(buffer.len() - sync_pos);
+                    }
+                } else {
+                    // No sync word - keep last 3 bytes (partial sync match possible)
+                    let keep = buffer.len().min(SYNC_WORD.len() - 1);
+                    let start = buffer.len() - keep;
+                    buffer.copy_within(start.., 0);
+                    buffer.truncate(keep);
+                }
+                Ok(None)
             }
+            Err(buffer::ParseError::InvalidType(raw_type)) => {
+                Err(CtlError::InvalidType(raw_type))
+            }
+            Err(buffer::ParseError::TooLong) => {
+                // Invalid length - discard one byte and retry next time
+                buffer.copy_within(1.., 0);
+                buffer.truncate(buffer.len() - 1);
+                Ok(None)
+            }
+            Err(_) => Ok(None),
         }
-        None
     }
 
     /// Parse an inner TLV from tunneled message data (legacy, for compatibility).
     fn parse_inner_tlv<T: TryFrom<u16>>(&self, data: &[u8]) -> Result<Tlv<T>, CtlError> {
-        // Data format: [sync_word (4)] [type (2)] [length (4)] [value...]
-        if data.len() < SYNC_WORD.len() + HEADER_SIZE {
-            return Err(CtlError::InvalidLength {
+        tunnel::decode_nested(data).map_err(|e| match e {
+            buffer::ParseError::InvalidType(raw_type) => CtlError::InvalidType(raw_type),
+            buffer::ParseError::TooLong => CtlError::TooLong,
+            buffer::ParseError::Incomplete => CtlError::InvalidLength {
                 expected: SYNC_WORD.len() + HEADER_SIZE,
                 actual: data.len(),
-            });
-        }
-
-        let offset = SYNC_WORD.len();
-        let tlv_type_raw = u16::from_be_bytes([data[offset], data[offset + 1]]);
-        let length = u32::from_be_bytes([
-            data[offset + 2],
-            data[offset + 3],
-            data[offset + 4],
-            data[offset + 5],
-        ]) as usize;
-
-        let value_start = offset + HEADER_SIZE;
-        if data.len() < value_start + length {
-            return Err(CtlError::InvalidLength {
-                expected: value_start + length,
+            },
+            buffer::ParseError::InvalidLength => CtlError::InvalidLength {
+                expected: 0,
                 actual: data.len(),
-            });
-        }
-
-        let tlv_type =
-            T::try_from(tlv_type_raw).map_err(|_| CtlError::InvalidType(tlv_type_raw))?;
-        let mut value = Vec::new();
-        let _ = value.extend_from_slice(&data[value_start..value_start + length]);
-
-        Ok(Tlv {
-            tlv_type,
-            value: heapless::Vec::try_from(value.as_slice()).unwrap(),
+            },
         })
     }
 

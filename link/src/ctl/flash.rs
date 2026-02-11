@@ -7,6 +7,7 @@ use super::espflash::connection::{ClearBufferType, SerialInterface, SerialPortEr
 use super::port::{CtlPort, SetBaudRate, SetTimeout};
 use super::stm::{self, Bootloader};
 use crate::shared::{CtlToMgmt, MgmtToCtl, HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD};
+use crate::shared::tlv::buffer;
 use std::time::Duration;
 
 /// Information retrieved from the MGMT chip when it's in bootloader mode.
@@ -116,16 +117,24 @@ impl<P: CtlPort<Error = std::io::Error>> CtlPort for TunnelPort<'_, P> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         // Return buffered data first
         while self.buffer.is_empty() {
+            // Read a complete TLV from the port
+            // We need to accumulate bytes into a temporary buffer for parsing
+            let mut temp_buf = heapless::Vec::<u8, { SYNC_WORD.len() + HEADER_SIZE + MAX_VALUE_SIZE }>::new();
+
             // Scan for sync word
             let mut matched = 0usize;
             while matched < SYNC_WORD.len() {
                 let mut byte = [0u8; 1];
                 self.port.read_exact(&mut byte).await?;
+                let _ = temp_buf.push(byte[0]);
                 if byte[0] == SYNC_WORD[matched] {
                     matched += 1;
                 } else {
+                    // Restart sync search - discard accumulated bytes
+                    temp_buf.clear();
                     matched = 0;
                     if byte[0] == SYNC_WORD[0] {
+                        let _ = temp_buf.push(byte[0]);
                         matched = 1;
                     }
                 }
@@ -134,10 +143,18 @@ impl<P: CtlPort<Error = std::io::Error>> CtlPort for TunnelPort<'_, P> {
             // Read header
             let mut header = [0u8; HEADER_SIZE];
             self.port.read_exact(&mut header).await?;
+            let _ = temp_buf.extend_from_slice(&header);
 
-            // Decode header
+            // Parse header to get length
             let raw_type = u16::from_be_bytes([header[0], header[1]]);
             let length = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
+
+            if length > MAX_VALUE_SIZE {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "TLV too long",
+                ));
+            }
 
             // Read value
             let mut value = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
@@ -293,20 +310,6 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
         SerialPortError::io(e.to_string())
     }
 
-    /// Find the position of LINK sync word in the raw buffer.
-    /// Returns None if not found.
-    fn find_sync_word(&self) -> Option<usize> {
-        if self.raw_buffer.len() < SYNC_WORD.len() {
-            return None;
-        }
-        for i in 0..=self.raw_buffer.len() - SYNC_WORD.len() {
-            if &self.raw_buffer[i..i + SYNC_WORD.len()] == SYNC_WORD {
-                return Some(i);
-            }
-        }
-        None
-    }
-
     /// Try to parse complete TLVs from the raw buffer.
     ///
     /// This function scans the raw buffer for complete TLVs (LINK + header + value).
@@ -318,80 +321,58 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
         let mut parsed_count = 0;
 
         loop {
-            // Find LINK sync word
-            let sync_pos = match self.find_sync_word() {
-                Some(pos) => pos,
-                None => break,
-            };
+            // Try to parse a TLV using shared buffer utilities
+            match buffer::try_parse_from_buffer::<MgmtToCtl>(&self.raw_buffer) {
+                Ok(Some((tlv, consumed))) => {
+                    // Successfully parsed a TLV
+                    if tlv.tlv_type == MgmtToCtl::FromNet {
+                        // Append FromNet value to buffer
+                        let _ = self.buffer.extend_from_slice(&tlv.value);
+                    }
 
-            // Discard any bytes before the sync word
-            if sync_pos > 0 {
-                // Shift buffer to remove leading garbage
-                let new_len = self.raw_buffer.len() - sync_pos;
-                for i in 0..new_len {
-                    self.raw_buffer[i] = self.raw_buffer[i + sync_pos];
+                    // Remove consumed bytes from raw buffer
+                    let new_len = self.raw_buffer.len() - consumed;
+                    for i in 0..new_len {
+                        self.raw_buffer[i] = self.raw_buffer[i + consumed];
+                    }
+                    self.raw_buffer.truncate(new_len);
+
+                    parsed_count += 1;
                 }
-                self.raw_buffer.truncate(new_len);
-            }
-
-            // Check if we have enough bytes for header
-            let header_start = SYNC_WORD.len();
-            let header_end = header_start + TLV_HEADER_SIZE;
-            if self.raw_buffer.len() < header_end {
-                // Not enough data for header yet
-                break;
-            }
-
-            // Decode header
-            let raw_type = u16::from_be_bytes([
-                self.raw_buffer[header_start],
-                self.raw_buffer[header_start + 1],
-            ]);
-            let length = u32::from_be_bytes([
-                self.raw_buffer[header_start + 2],
-                self.raw_buffer[header_start + 3],
-                self.raw_buffer[header_start + 4],
-                self.raw_buffer[header_start + 5],
-            ]) as usize;
-
-            // Check if value length is reasonable
-            if length > MAX_VALUE_SIZE {
-                // Invalid TLV - skip this sync word and try to find another
-                // Remove just the LINK bytes and continue scanning
-                let new_len = self.raw_buffer.len() - SYNC_WORD.len();
-                for i in 0..new_len {
-                    self.raw_buffer[i] = self.raw_buffer[i + SYNC_WORD.len()];
+                Ok(None) => {
+                    // No complete TLV yet - check if we should discard garbage
+                    if let Some(sync_pos) = buffer::find_sync_word(&self.raw_buffer) {
+                        // Sync word found but TLV incomplete - keep from sync word
+                        if sync_pos > 0 {
+                            let new_len = self.raw_buffer.len() - sync_pos;
+                            for i in 0..new_len {
+                                self.raw_buffer[i] = self.raw_buffer[i + sync_pos];
+                            }
+                            self.raw_buffer.truncate(new_len);
+                        }
+                    }
+                    break;
                 }
-                self.raw_buffer.truncate(new_len);
-                continue;
-            }
-
-            // Check if we have the complete value
-            let value_end = header_end + length;
-            if self.raw_buffer.len() < value_end {
-                // Not enough data for complete TLV yet
-                break;
-            }
-
-            // Extract value
-            let value = &self.raw_buffer[header_end..value_end];
-
-            // Check if it's FromNet - append to buffer
-            if let Ok(tlv_type) = MgmtToCtl::try_from(raw_type) {
-                if tlv_type == MgmtToCtl::FromNet {
-                    // Append to buffer (don't clear - accumulate values)
-                    let _ = self.buffer.extend_from_slice(value);
+                Err(buffer::ParseError::TooLong) => {
+                    // Invalid length - skip one byte and retry
+                    let new_len = self.raw_buffer.len() - 1;
+                    for i in 0..new_len {
+                        self.raw_buffer[i] = self.raw_buffer[i + 1];
+                    }
+                    self.raw_buffer.truncate(new_len);
+                }
+                Err(_) => {
+                    // Other parse error - skip one byte and retry
+                    if self.raw_buffer.is_empty() {
+                        break;
+                    }
+                    let new_len = self.raw_buffer.len() - 1;
+                    for i in 0..new_len {
+                        self.raw_buffer[i] = self.raw_buffer[i + 1];
+                    }
+                    self.raw_buffer.truncate(new_len);
                 }
             }
-
-            // Remove the parsed TLV from raw buffer
-            let new_len = self.raw_buffer.len() - value_end;
-            for i in 0..new_len {
-                self.raw_buffer[i] = self.raw_buffer[i + value_end];
-            }
-            self.raw_buffer.truncate(new_len);
-
-            parsed_count += 1;
         }
 
         parsed_count
@@ -460,75 +441,63 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
         target_type: MgmtToCtl,
     ) -> Option<heapless::Vec<u8, MAX_VALUE_SIZE>> {
         loop {
-            // Find LINK sync word
-            let sync_pos = self.find_sync_word()?;
+            // Try to parse a TLV using shared buffer utilities
+            match buffer::try_parse_from_buffer::<MgmtToCtl>(&self.raw_buffer) {
+                Ok(Some((tlv, consumed))) => {
+                    // Remove consumed bytes from raw buffer
+                    let new_len = self.raw_buffer.len() - consumed;
+                    for i in 0..new_len {
+                        self.raw_buffer[i] = self.raw_buffer[i + consumed];
+                    }
+                    self.raw_buffer.truncate(new_len);
 
-            // Discard any bytes before the sync word
-            if sync_pos > 0 {
-                let new_len = self.raw_buffer.len() - sync_pos;
-                for i in 0..new_len {
-                    self.raw_buffer[i] = self.raw_buffer[i + sync_pos];
+                    // Check if this is the target type
+                    if tlv.tlv_type == target_type {
+                        return Some(tlv.value);
+                    }
+
+                    // Buffer FromNet values along the way
+                    if tlv.tlv_type == MgmtToCtl::FromNet {
+                        let _ = self.buffer.extend_from_slice(&tlv.value);
+                    }
+
+                    // Continue looking for target type
                 }
-                self.raw_buffer.truncate(new_len);
-            }
-
-            // Check if we have enough bytes for header
-            let header_start = SYNC_WORD.len();
-            let header_end = header_start + TLV_HEADER_SIZE;
-            if self.raw_buffer.len() < header_end {
-                return None;
-            }
-
-            // Decode header
-            let raw_type = u16::from_be_bytes([
-                self.raw_buffer[header_start],
-                self.raw_buffer[header_start + 1],
-            ]);
-            let length = u32::from_be_bytes([
-                self.raw_buffer[header_start + 2],
-                self.raw_buffer[header_start + 3],
-                self.raw_buffer[header_start + 4],
-                self.raw_buffer[header_start + 5],
-            ]) as usize;
-
-            // Check if value length is reasonable
-            if length > MAX_VALUE_SIZE {
-                // Invalid TLV - skip this sync word
-                let new_len = self.raw_buffer.len() - SYNC_WORD.len();
-                for i in 0..new_len {
-                    self.raw_buffer[i] = self.raw_buffer[i + SYNC_WORD.len()];
+                Ok(None) => {
+                    // No complete TLV yet - discard garbage before sync word if any
+                    if let Some(sync_pos) = buffer::find_sync_word(&self.raw_buffer) {
+                        if sync_pos > 0 {
+                            let new_len = self.raw_buffer.len() - sync_pos;
+                            for i in 0..new_len {
+                                self.raw_buffer[i] = self.raw_buffer[i + sync_pos];
+                            }
+                            self.raw_buffer.truncate(new_len);
+                        }
+                    }
+                    return None;
                 }
-                self.raw_buffer.truncate(new_len);
-                continue;
-            }
-
-            // Check if we have the complete value
-            let value_end = header_end + length;
-            if self.raw_buffer.len() < value_end {
-                return None;
-            }
-
-            // Extract value
-            let mut value = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
-            let _ = value.extend_from_slice(&self.raw_buffer[header_end..value_end]);
-
-            // Remove the parsed TLV from raw buffer
-            let new_len = self.raw_buffer.len() - value_end;
-            for i in 0..new_len {
-                self.raw_buffer[i] = self.raw_buffer[i + value_end];
-            }
-            self.raw_buffer.truncate(new_len);
-
-            // Check the TLV type
-            if let Ok(tlv_type) = MgmtToCtl::try_from(raw_type) {
-                if tlv_type == target_type {
-                    return Some(value);
+                Err(buffer::ParseError::TooLong) => {
+                    // Invalid length - skip one byte and retry
+                    if self.raw_buffer.is_empty() {
+                        return None;
+                    }
+                    let new_len = self.raw_buffer.len() - 1;
+                    for i in 0..new_len {
+                        self.raw_buffer[i] = self.raw_buffer[i + 1];
+                    }
+                    self.raw_buffer.truncate(new_len);
                 }
-                // Buffer FromNet values along the way
-                if tlv_type == MgmtToCtl::FromNet {
-                    let _ = self.buffer.extend_from_slice(&value);
+                Err(_) => {
+                    // Other parse error - skip one byte and retry
+                    if self.raw_buffer.is_empty() {
+                        return None;
+                    }
+                    let new_len = self.raw_buffer.len() - 1;
+                    for i in 0..new_len {
+                        self.raw_buffer[i] = self.raw_buffer[i + 1];
+                    }
+                    self.raw_buffer.truncate(new_len);
                 }
-                // Continue looking for target type
             }
         }
     }

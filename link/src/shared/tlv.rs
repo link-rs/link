@@ -38,22 +38,41 @@ pub const MAX_VALUE_SIZE: usize = 640;
 /// Spells "LINK" in ASCII.
 pub const SYNC_WORD: [u8; 4] = [0x4C, 0x49, 0x4E, 0x4B];
 
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
-fn decode_header<T: TryFrom<u16>>(header: &Header) -> Result<(T, usize), T::Error> {
-    let raw_type = Type::from_be_bytes([header[0], header[1]]);
-    let tlv_type = T::try_from(raw_type)?;
-    let length = Length::from_be_bytes([header[2], header[3], header[4], header[5]]);
-    Ok((tlv_type, length as usize))
+// ============================================================================
+// Universal header encoding/decoding (available to all modules)
+// ============================================================================
+
+/// Decode a TLV header into raw type and length.
+///
+/// This is the canonical header decoding function used by all modules.
+fn decode_header_bytes(header: &[u8; HEADER_SIZE]) -> (u16, usize) {
+    let raw_type = u16::from_be_bytes([header[0], header[1]]);
+    let length = u32::from_be_bytes([header[2], header[3], header[4], header[5]]);
+    (raw_type, length as usize)
 }
 
+/// Encode a TLV header from type and length.
+///
+/// This is the canonical header encoding function used by all modules.
+fn encode_header_bytes(tlv_type: u16, length: usize) -> [u8; HEADER_SIZE] {
+    let mut header = [0u8; HEADER_SIZE];
+    header[0..2].copy_from_slice(&tlv_type.to_be_bytes());
+    header[2..6].copy_from_slice(&(length as u32).to_be_bytes());
+    header
+}
+
+// Typed header decoding for async modules
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
+fn decode_header<T: TryFrom<u16>>(header: &Header) -> Result<(T, usize), T::Error> {
+    let (raw_type, length) = decode_header_bytes(header);
+    let tlv_type = T::try_from(raw_type)?;
+    Ok((tlv_type, length))
+}
+
+// Typed header encoding for async modules
 #[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
 fn encode_header(tlv_type: impl Into<u16>, length: usize) -> Header {
-    let mut header = Header::default();
-    let type_val: Type = tlv_type.into();
-    let length_val: Length = length as Length;
-    header[0..2].copy_from_slice(&type_val.to_be_bytes());
-    header[2..6].copy_from_slice(&length_val.to_be_bytes());
-    header
+    encode_header_bytes(tlv_type.into(), length)
 }
 
 /// TLV message structure.
@@ -277,6 +296,164 @@ mod async_tlv {
 #[allow(unused_imports)] // Re-exported for public API, may not be used internally
 pub use async_tlv::{ReadTlv, WriteTlv};
 
+// ============================================================================
+// Buffer-based parsing utilities (for ctl module)
+// ============================================================================
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+pub mod buffer {
+    //! Pure functions for parsing TLVs from byte buffers.
+    //!
+    //! These utilities are used by the ctl module for stream demultiplexing,
+    //! where TLV data may be fragmented across multiple transport messages.
+
+    use super::*;
+
+    /// Errors that can occur during buffer parsing.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ParseError {
+        /// Invalid TLV type.
+        InvalidType(u16),
+        /// TLV value length exceeds maximum.
+        TooLong,
+        /// Incomplete TLV (need more data).
+        Incomplete,
+        /// Invalid length field.
+        InvalidLength,
+    }
+
+    /// Find the position of SYNC_WORD in a slice.
+    ///
+    /// Returns the index of the first occurrence, or None if not found.
+    pub fn find_sync_word(data: &[u8]) -> Option<usize> {
+        if data.len() < SYNC_WORD.len() {
+            return None;
+        }
+        for i in 0..=data.len() - SYNC_WORD.len() {
+            if data[i..i + SYNC_WORD.len()] == SYNC_WORD {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Try to parse one complete TLV from buffer.
+    ///
+    /// On success, returns `Ok(Some((tlv, bytes_consumed)))` where `bytes_consumed`
+    /// is the total length including sync word, header, and value.
+    ///
+    /// Returns `Ok(None)` if the buffer doesn't contain a complete TLV yet.
+    ///
+    /// Returns `Err(ParseError)` if parsing fails due to invalid data.
+    ///
+    /// The buffer is not modified - the caller is responsible for removing
+    /// consumed bytes.
+    pub fn try_parse_from_buffer<T: TryFrom<u16>>(
+        buffer: &[u8],
+    ) -> Result<Option<(Tlv<T>, usize)>, ParseError> {
+        // Find sync word
+        let sync_pos = match find_sync_word(buffer) {
+            Some(pos) => pos,
+            None => return Ok(None),
+        };
+
+        // Check if we have enough data for header
+        let header_start = sync_pos + SYNC_WORD.len();
+        if buffer.len() < header_start + HEADER_SIZE {
+            return Ok(None); // Need more data
+        }
+
+        // Parse header using shared function
+        let header: [u8; HEADER_SIZE] = buffer[header_start..header_start + HEADER_SIZE]
+            .try_into()
+            .unwrap();
+        let (tlv_type_raw, length) = super::decode_header_bytes(&header);
+
+        // Sanity check length
+        if length > MAX_VALUE_SIZE {
+            return Err(ParseError::TooLong);
+        }
+
+        // Check if we have the complete value
+        let value_start = header_start + HEADER_SIZE;
+        let total_len = sync_pos + SYNC_WORD.len() + HEADER_SIZE + length;
+        if buffer.len() < total_len {
+            return Ok(None); // Need more data
+        }
+
+        // Parse type
+        let tlv_type = T::try_from(tlv_type_raw).map_err(|_| ParseError::InvalidType(tlv_type_raw))?;
+
+        // Extract value
+        let value_bytes = &buffer[value_start..value_start + length];
+        let value = heapless::Vec::try_from(value_bytes)
+            .map_err(|_| ParseError::TooLong)?;
+
+        Ok(Some((Tlv { tlv_type, value }, total_len)))
+    }
+
+    /// Parse a complete TLV from buffer (for tunneled TLVs).
+    ///
+    /// This expects the buffer to contain a complete TLV starting with SYNC_WORD at position 0.
+    /// Returns `Err(ParseError)` if the data is invalid or incomplete.
+    ///
+    /// This is a thin wrapper around `try_parse_from_buffer()` with stricter requirements.
+    pub fn parse_complete<T: TryFrom<u16>>(data: &[u8]) -> Result<Tlv<T>, ParseError> {
+        // Check minimum length
+        if data.len() < SYNC_WORD.len() + HEADER_SIZE {
+            return Err(ParseError::Incomplete);
+        }
+
+        // Verify sync word at position 0
+        if &data[0..SYNC_WORD.len()] != SYNC_WORD {
+            return Err(ParseError::Incomplete);
+        }
+
+        // Use try_parse_from_buffer (which will find sync at position 0)
+        match try_parse_from_buffer(data)? {
+            Some((tlv, _)) => Ok(tlv),
+            None => Err(ParseError::Incomplete),
+        }
+    }
+}
+
+// ============================================================================
+// Tunneling utilities (for ctl module)
+// ============================================================================
+
+#[cfg(feature = "std")]
+pub mod tunnel {
+    //! Utilities for encoding/decoding nested TLVs.
+    //!
+    //! Used for tunneling TLVs through wrapper TLVs (e.g., UI/NET through MGMT).
+
+    use super::*;
+
+    /// Encode a TLV as nested payload (sync_word + header + value).
+    ///
+    /// Returns a Vec containing the complete nested TLV ready to be used
+    /// as the value field of a wrapper TLV.
+    pub fn encode_nested<T: Into<u16>>(inner_type: T, inner_value: &[u8]) -> std::vec::Vec<u8> {
+        let type_val: u16 = inner_type.into();
+        let header = super::encode_header_bytes(type_val, inner_value.len());
+
+        let mut result = std::vec::Vec::new();
+        result.extend_from_slice(&SYNC_WORD);
+        result.extend_from_slice(&header);
+        result.extend_from_slice(inner_value);
+        result
+    }
+
+    /// Decode nested TLV from wrapper value field.
+    ///
+    /// The `wrapper_value` should contain a complete TLV (sync_word + header + value).
+    pub fn decode_nested<T: TryFrom<u16>>(
+        wrapper_value: &[u8],
+    ) -> Result<Tlv<T>, buffer::ParseError> {
+        buffer::parse_complete(wrapper_value)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::async_tlv::ReadError;
@@ -390,5 +567,143 @@ mod test {
         let result: Result<Option<Tlv<CtlToMgmt>>, _> = reader.read_tlv().await;
 
         assert!(matches!(result, Err(ReadError::TooLong)));
+    }
+
+    #[test]
+    fn buffer_find_sync_word() {
+        use buffer::find_sync_word;
+
+        // Sync word at beginning
+        let data = [0x4C, 0x49, 0x4E, 0x4B, 0x00, 0x01];
+        assert_eq!(find_sync_word(&data), Some(0));
+
+        // Sync word in middle
+        let data = [0x00, 0x01, 0x4C, 0x49, 0x4E, 0x4B, 0x02];
+        assert_eq!(find_sync_word(&data), Some(2));
+
+        // No sync word
+        let data = [0x00, 0x01, 0x02, 0x03];
+        assert_eq!(find_sync_word(&data), None);
+
+        // Partial sync word
+        let data = [0x4C, 0x49, 0x4E];
+        assert_eq!(find_sync_word(&data), None);
+
+        // Empty buffer
+        let data: [u8; 0] = [];
+        assert_eq!(find_sync_word(&data), None);
+    }
+
+    #[test]
+    fn buffer_try_parse_complete_tlv() {
+        use buffer::try_parse_from_buffer;
+
+        // Complete TLV
+        let mut data = Vec::new();
+        data.extend_from_slice(&SYNC_WORD);
+        data.extend_from_slice(&[0x00, 0x00]); // type: CtlToMgmt::Ping
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // length: 2
+        data.extend_from_slice(b"hi");
+
+        let result = try_parse_from_buffer::<CtlToMgmt>(&data).unwrap();
+        assert!(result.is_some());
+        let (tlv, consumed) = result.unwrap();
+        assert_eq!(tlv.tlv_type, CtlToMgmt::Ping);
+        assert_eq!(tlv.value.as_slice(), b"hi");
+        assert_eq!(consumed, data.len());
+
+        // Incomplete TLV (missing value)
+        let mut data = Vec::new();
+        data.extend_from_slice(&SYNC_WORD);
+        data.extend_from_slice(&[0x00, 0x00]);
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // length: 2
+        data.push(b'h'); // Only 1 byte of value
+
+        let result = try_parse_from_buffer::<CtlToMgmt>(&data).unwrap();
+        assert!(result.is_none());
+
+        // Invalid type
+        let mut data = Vec::new();
+        data.extend_from_slice(&SYNC_WORD);
+        data.extend_from_slice(&[0xFF, 0xFF]); // invalid type
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        data.push(0x42);
+
+        let result = try_parse_from_buffer::<CtlToMgmt>(&data);
+        assert!(matches!(result, Err(buffer::ParseError::InvalidType(0xFFFF))));
+
+        // TLV with garbage prefix
+        let mut data = Vec::new();
+        data.extend_from_slice(b"garbage");
+        data.extend_from_slice(&SYNC_WORD);
+        data.extend_from_slice(&[0x00, 0x00]);
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]);
+        data.extend_from_slice(b"hi");
+
+        let result = try_parse_from_buffer::<CtlToMgmt>(&data).unwrap();
+        assert!(result.is_some());
+        let (tlv, consumed) = result.unwrap();
+        assert_eq!(consumed, data.len()); // Should consume garbage too
+    }
+
+    #[test]
+    fn buffer_parse_complete() {
+        use buffer::parse_complete;
+
+        // Valid complete TLV
+        let mut data = Vec::new();
+        data.extend_from_slice(&SYNC_WORD);
+        data.extend_from_slice(&[0x00, 0x00]); // CtlToMgmt::Ping
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x03]);
+        data.extend_from_slice(b"foo");
+
+        let tlv = parse_complete::<CtlToMgmt>(&data).unwrap();
+        assert_eq!(tlv.tlv_type, CtlToMgmt::Ping);
+        assert_eq!(tlv.value.as_slice(), b"foo");
+
+        // Missing sync word
+        let data = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x42];
+        let result = parse_complete::<CtlToMgmt>(&data);
+        assert!(matches!(result, Err(buffer::ParseError::Incomplete)));
+
+        // Incomplete data
+        let mut data = Vec::new();
+        data.extend_from_slice(&SYNC_WORD);
+        data.extend_from_slice(&[0x00, 0x00]);
+        // Missing length and value
+
+        let result = parse_complete::<CtlToMgmt>(&data);
+        assert!(matches!(result, Err(buffer::ParseError::Incomplete)));
+    }
+
+    #[test]
+    fn tunnel_encode_decode_roundtrip() {
+        use tunnel::{decode_nested, encode_nested};
+
+        let original_type = CtlToUi::Ping;
+        let original_value = b"test data";
+
+        // Encode
+        let nested = encode_nested(original_type, original_value);
+
+        // Verify structure
+        assert_eq!(&nested[0..4], &SYNC_WORD);
+
+        // Decode
+        let decoded = decode_nested::<CtlToUi>(&nested).unwrap();
+        assert_eq!(decoded.tlv_type, original_type);
+        assert_eq!(decoded.value.as_slice(), original_value);
+    }
+
+    #[test]
+    fn tunnel_encode_empty_value() {
+        use tunnel::encode_nested;
+
+        let nested = encode_nested(CtlToNet::GetLoopback, &[]);
+
+        // Should be: sync_word(4) + type(2) + length(4) = 10 bytes
+        assert_eq!(nested.len(), 10);
+        assert_eq!(&nested[0..4], &SYNC_WORD);
+        assert_eq!(&nested[6..10], &[0x00, 0x00, 0x00, 0x00]); // length = 0
     }
 }
