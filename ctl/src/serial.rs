@@ -166,6 +166,10 @@ impl CtlPort for TokioSerialPort {
 }
 
 impl SetTimeout for TokioSerialPort {
+    fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
     fn set_timeout(&mut self, timeout: Duration) -> io::Result<()> {
         self.timeout = timeout;
         Ok(())

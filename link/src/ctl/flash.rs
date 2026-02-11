@@ -902,6 +902,7 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     ) -> Result<(), FlashError<P::Error>>
     where
         F: FnMut(FlashPhase, usize, usize),
+        P: crate::ctl::SetTimeout,
     {
         if !skip_init {
             self.drain();
@@ -962,6 +963,12 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
 
         // Jump to new firmware
         bl.go(0x0800_0000).await?;
+
+        // Wait for MGMT to come back online
+        // Try hello() every 100ms, up to 50 attempts (5 seconds total)
+        // This helps avoid the need for retries in UI flashing
+        drop(bl); // Drop bootloader to release port reference
+        let _ = self.wait_for_mgmt_ready(50).await;
 
         Ok(())
     }

@@ -17,9 +17,10 @@ impl<E: core::fmt::Debug> PortError for E {
     }
 }
 
-/// Trait for types that support setting a read timeout.
+/// Trait for types that support getting and setting a read timeout.
 #[cfg(feature = "std")]
 pub trait SetTimeout {
+    fn timeout(&self) -> Duration;
     fn set_timeout(&mut self, timeout: Duration) -> std::io::Result<()>;
 }
 

@@ -347,6 +347,12 @@ impl WebSerial {
         Ok(())
     }
 
+    /// Get the read timeout duration.
+    pub fn read_timeout(&self) -> std::time::Duration {
+        let ms = self.state.borrow().as_ref().map_or(3000, |s| s.read_timeout_ms);
+        std::time::Duration::from_millis(ms as u64)
+    }
+
     /// Set the read timeout duration.
     pub fn set_read_timeout(&self, timeout: std::time::Duration) {
         if let Some(state) = self.state.borrow_mut().as_mut() {
@@ -765,6 +771,10 @@ impl link::ctl::CtlPort for WebSerialAdapter {
 }
 
 impl link::ctl::SetTimeout for WebSerialAdapter {
+    fn timeout(&self) -> std::time::Duration {
+        self.inner.read_timeout()
+    }
+
     fn set_timeout(&mut self, timeout: std::time::Duration) -> std::io::Result<()> {
         self.inner.set_read_timeout(timeout);
         Ok(())

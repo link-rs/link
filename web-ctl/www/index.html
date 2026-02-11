@@ -1950,38 +1950,12 @@
                 const firmware = new Uint8Array(await response.arrayBuffer());
                 log(`Fetched ui.bin (${firmware.length} bytes)`, 'info');
 
-                // Retry UI flash up to 3 times if it fails
-                const maxRetries = 3;
-                let lastError;
-                let success = false;
-
-                for (let attempt = 1; attempt <= maxRetries; attempt++) {
-                    try {
-                        if (attempt > 1) {
-                            log(`Retry attempt ${attempt}/${maxRetries}...`, 'info');
-                            progressText.textContent = `Retry ${attempt}/${maxRetries}...`;
-                            // Small delay before retry
-                            await new Promise(r => setTimeout(r, 500));
-                        } else {
-                            progressText.textContent = 'Flashing...';
-                        }
-
-                        await controller.flash_ui(firmware, true, (phase, current, total) => {
-                            const percent = total > 0 ? (current / total) * 100 : 0;
-                            progressFill.style.width = `${percent}%`;
-                            progressText.textContent = `${phase}: ${current} / ${total}`;
-                        });
-
-                        success = true;
-                        break; // Success, exit retry loop
-                    } catch (e) {
-                        lastError = e;
-                        log(`UI flash attempt ${attempt} failed: ${e}`, 'warning');
-                        if (attempt === maxRetries) {
-                            throw e; // Last attempt failed, re-throw
-                        }
-                    }
-                }
+                progressText.textContent = 'Flashing...';
+                await controller.flash_ui(firmware, true, (phase, current, total) => {
+                    const percent = total > 0 ? (current / total) * 100 : 0;
+                    progressFill.style.width = `${percent}%`;
+                    progressText.textContent = `${phase}: ${current} / ${total}`;
+                });
 
                 statusIcon.textContent = '\u2713';
                 statusIcon.className = 'status-icon success';
@@ -2208,37 +2182,12 @@
                     const firmware = new Uint8Array(await response.arrayBuffer());
                     log(`Fetched ui.bin (${firmware.length} bytes)`, 'info');
 
-                    // Retry UI flash up to 3 times if it fails
-                    const maxRetries = 3;
-                    let lastError;
-                    let success = false;
-
-                    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-                        try {
-                            if (attempt > 1) {
-                                log(`UI flash retry attempt ${attempt}/${maxRetries}...`, 'info');
-                                uiProgressText.textContent = `Retry ${attempt}/${maxRetries}...`;
-                                await new Promise(r => setTimeout(r, 500));
-                            } else {
-                                uiProgressText.textContent = 'Flashing...';
-                            }
-
-                            await controller.flash_ui(firmware, true, (phase, current, total) => {
-                                const percent = total > 0 ? (current / total) * 100 : 0;
-                                uiProgressFill.style.width = `${percent}%`;
-                                uiProgressText.textContent = `${phase}: ${current} / ${total}`;
-                            });
-
-                            success = true;
-                            break; // Success, exit retry loop
-                        } catch (e) {
-                            lastError = e;
-                            log(`UI flash attempt ${attempt} failed: ${e}`, 'warning');
-                            if (attempt === maxRetries) {
-                                throw e; // Last attempt failed, re-throw
-                            }
-                        }
-                    }
+                    uiProgressText.textContent = 'Flashing...';
+                    await controller.flash_ui(firmware, true, (phase, current, total) => {
+                        const percent = total > 0 ? (current / total) * 100 : 0;
+                        uiProgressFill.style.width = `${percent}%`;
+                        uiProgressText.textContent = `${phase}: ${current} / ${total}`;
+                    });
 
                     uiProgressText.textContent = 'Complete!';
                     updateTaskStatus('taskUi', 'success');

@@ -361,7 +361,7 @@ async fn reset_ui_to_user_gpio_sequence() {
 #[tokio::test]
 async fn reset_net_to_bootloader_gpio_sequence() {
     device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
-        ctl.reset_net_to_bootloader().await.unwrap();
+        ctl.reset_net_to_bootloader(|_ms| async {}).await.unwrap();
 
         let ops = gpio_ops.lock().unwrap();
         // First 2 ops are MGMT startup releasing both chips from reset
@@ -385,7 +385,7 @@ async fn reset_net_to_bootloader_gpio_sequence() {
 #[tokio::test]
 async fn reset_net_to_user_gpio_sequence() {
     device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
-        ctl.reset_net_to_user().await.unwrap();
+        ctl.reset_net_to_user(|_ms| async {}).await.unwrap();
 
         let ops = gpio_ops.lock().unwrap();
         // First 2 ops are MGMT startup releasing both chips from reset

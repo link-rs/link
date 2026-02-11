@@ -582,6 +582,9 @@ impl<P: CtlPort> CtlCore<P> {
     {
         const HELLO_TIMEOUT_MS: u64 = 100;
 
+        // Save the original timeout so we can restore it when done.
+        let original_timeout = self.port.as_ref().map(|p| p.timeout());
+
         // Set short timeout for hello attempts
         if let Some(port) = &mut self.port {
             let _ = port.set_timeout(std::time::Duration::from_millis(HELLO_TIMEOUT_MS));
@@ -591,9 +594,9 @@ impl<P: CtlPort> CtlCore<P> {
             let challenge = [0x12, 0x34, 0x56, 0x78];
 
             if self.hello(&challenge).await {
-                // Success! Restore normal timeout and return
-                if let Some(port) = &mut self.port {
-                    let _ = port.set_timeout(std::time::Duration::from_millis(1000));
+                // Success! Restore original timeout and return
+                if let (Some(port), Some(timeout)) = (&mut self.port, original_timeout) {
+                    let _ = port.set_timeout(timeout);
                 }
                 return true;
             }
@@ -601,9 +604,9 @@ impl<P: CtlPort> CtlCore<P> {
             // hello() already has timeout built in, no need for additional delay
         }
 
-        // All attempts failed, restore normal timeout
-        if let Some(port) = &mut self.port {
-            let _ = port.set_timeout(std::time::Duration::from_millis(1000));
+        // All attempts failed, restore original timeout
+        if let (Some(port), Some(timeout)) = (&mut self.port, original_timeout) {
+            let _ = port.set_timeout(timeout);
         }
         false
     }
@@ -1168,6 +1171,34 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(stats)
     }
 
+    /// Set NET chip BOOT pin directly.
+    pub async fn set_net_boot(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
+        use crate::shared::Pin;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetBoot as u8, value as u8]).await?;
+        let tlv = self.read_tlv_mgmt().await?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Set NET chip RST pin directly.
+    pub async fn set_net_rst(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
+        use crate::shared::Pin;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, value as u8]).await?;
+        let tlv = self.read_tlv_mgmt().await?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Reset the NET chip into bootloader mode using pin control.
     ///
     /// Includes 10ms delays between RST transitions to match the ESP32's
@@ -1177,17 +1208,17 @@ impl<P: CtlPort> CtlCore<P> {
         D: Fn(u64) -> F,
         F: core::future::Future<Output = ()>,
     {
-        use crate::shared::{Pin, PinValue};
+        use crate::shared::PinValue;
         // First power cycle (clean slate)
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::Low as u8]).await?;
+        self.set_net_rst(PinValue::Low).await?;
         delay_ms(10).await;
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::High as u8]).await?;
+        self.set_net_rst(PinValue::High).await?;
         // Set BOOT low for bootloader mode
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetBoot as u8, PinValue::Low as u8]).await?;
+        self.set_net_boot(PinValue::Low).await?;
         // Second power cycle - ESP32 samples BOOT when RST goes high
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::Low as u8]).await?;
+        self.set_net_rst(PinValue::Low).await?;
         delay_ms(10).await;
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::High as u8]).await
+        self.set_net_rst(PinValue::High).await
     }
 
     /// Reset the NET chip into user mode using pin control.
@@ -1198,17 +1229,17 @@ impl<P: CtlPort> CtlCore<P> {
         D: Fn(u64) -> F,
         F: core::future::Future<Output = ()>,
     {
-        use crate::shared::{Pin, PinValue};
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetBoot as u8, PinValue::High as u8]).await?;
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::Low as u8]).await?;
+        use crate::shared::PinValue;
+        self.set_net_boot(PinValue::High).await?;
+        self.set_net_rst(PinValue::Low).await?;
         delay_ms(10).await;
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::High as u8]).await
+        self.set_net_rst(PinValue::High).await
     }
 
     /// Hold the NET chip in reset.
     pub async fn hold_net_reset(&mut self) -> Result<(), CtlError> {
-        use crate::shared::{Pin, PinValue};
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, PinValue::Low as u8]).await
+        use crate::shared::PinValue;
+        self.set_net_rst(PinValue::Low).await
     }
 
     // ========================================================================
