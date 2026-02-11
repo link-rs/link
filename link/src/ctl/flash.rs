@@ -590,11 +590,6 @@ impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static, D:
     async fn set_baud_rate(&mut self, baud_rate: u32) -> Result<(), SerialPortError> {
         // If already at target baud rate, this is a no-op (ignore the request)
         if baud_rate == self.baud_rate {
-            #[cfg(target_arch = "wasm32")]
-            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
-                "XXX TunnelSerialInterface::set_baud_rate({}) - already at target, ignoring",
-                baud_rate
-            )));
             return Ok(());
         }
 
@@ -1255,12 +1250,6 @@ where
 
         self.drain();
 
-        #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
-            "XXX Upgrading baud rate from {} to {} before Flasher::connect",
-            INITIAL_BAUD, max_baud
-        )));
-
         // Take the port out of CtlCore
         let port = self.take_port();
 
@@ -1271,12 +1260,6 @@ where
         // Change the local port baud rate
         let mut port = temp_tunnel.into_port();
         let _ = port.set_baud_rate(max_baud).await;
-
-        #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
-            "XXX Baud rate upgraded to {}, creating TunnelSerialInterface",
-            max_baud
-        )));
 
         let serial_interface = TunnelSerialInterface::new(port, max_baud, delay);
 
@@ -1297,28 +1280,11 @@ where
         );
 
         // Connect to ESP32 bootloader (already at max baud rate)
-        #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
-            "XXX About to call Flasher::connect() (already at target baud)",
-        ));
-
         // Pass None for baud rate since we're already at max_baud
         let mut flasher =
             match Flasher::connect(connection, false, false, true, None, None).await {
-                Ok(f) => {
-                    #[cfg(target_arch = "wasm32")]
-                    web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
-                        "XXX Flasher::connect() succeeded at {} baud",
-                        max_baud
-                    )));
-                    f
-                }
+                Ok(f) => f,
                 Err((connection, e)) => {
-                    #[cfg(target_arch = "wasm32")]
-                    web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
-                        "XXX Flasher::connect() FAILED: {:?}",
-                        e
-                    )));
                     // Recover port from the returned connection
                     self.recover_port_from_connection(connection).await;
                     let _ = self.reset_ui_to_user().await;
@@ -1330,26 +1296,9 @@ where
             };
 
         // Get device info for flash settings
-        #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
-            "XXX About to call device_info() at {} baud",
-            max_baud
-        )));
-
         let info = match flasher.device_info().await {
-            Ok(info) => {
-                #[cfg(target_arch = "wasm32")]
-                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
-                    "XXX device_info() succeeded",
-                ));
-                info
-            }
+            Ok(info) => info,
             Err(e) => {
-                #[cfg(target_arch = "wasm32")]
-                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
-                    "XXX device_info() FAILED: {:?}",
-                    e
-                )));
                 self.recover_port_from_connection(flasher.into_connection())
                     .await;
                 let _ = self.reset_ui_to_user().await;
@@ -1360,11 +1309,6 @@ where
             }
         };
         let chip = flasher.chip();
-
-        #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
-            "XXX Peparing flash"
-        )));
 
         let flash_settings = FlashSettings::new(None, Some(info.flash_size), None);
         let flash_data = FlashData::new(flash_settings, 0, None, chip, info.crystal_frequency);
@@ -1405,18 +1349,10 @@ where
         // load_image_to_flash already calls target.finish(connection, true) which
         // resets the chip via reset_after_flash. No need to reset again here.
 
-        #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
-            "XXX Flash complete, recovering"
-        )));
-
         // Recover port and release UI
         self.recover_port_from_connection(flasher.into_connection())
             .await;
         let _ = self.reset_ui_to_user().await;
-
-        #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!("XXX Done")));
 
         Ok(())
     }
