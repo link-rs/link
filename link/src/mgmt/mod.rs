@@ -511,8 +511,8 @@ where
             let range = stack_monitor.stack();
             let base = range.end as u32;
             let top = range.start as u32;
-            let size = stack_monitor.stack_size() as u32;
-            let used = size.saturating_sub(stack_monitor.stack_painted() as u32);
+            let size = stack_monitor.stack_size();
+            let used = size.saturating_sub(stack_monitor.stack_painted());
             let info = StackInfo {
                 stack_base: base,
                 stack_top: top,

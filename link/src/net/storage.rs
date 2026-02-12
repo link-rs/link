@@ -17,7 +17,8 @@ pub use crate::shared::channel::{ChannelConfig, MAX_CHANNELS, MAX_CHANNEL_URL_LE
 
 /// Persistent storage data for the NET chip.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// Note: Only derive defmt::Format when not using alloc (WifiSsid contains String when alloc is enabled)
+#[cfg_attr(all(feature = "defmt", not(feature = "alloc")), derive(defmt::Format))]
 pub struct NetStorageData {
     pub wifi_ssids: Vec<WifiSsid, MAX_WIFI_SSIDS>,
     pub relay_url: String<MAX_RELAY_URL_LEN>,

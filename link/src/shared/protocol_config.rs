@@ -26,17 +26,25 @@ pub mod channels {
 
 /// Timeout values for various operations
 pub mod timeouts {
-    use std::time::Duration;
-
-    /// Default timeout for normal TLV operations
+    /// Default timeout for normal TLV operations (in seconds)
     pub const NORMAL_SECS: u64 = 3;
-    pub const NORMAL: Duration = Duration::from_secs(NORMAL_SECS);
 
-    /// Short timeout for quick operations
+    /// Short timeout for quick operations (in milliseconds)
     pub const SHORT_MS: u64 = 500;
-    pub const SHORT: Duration = Duration::from_millis(SHORT_MS);
 
-    /// Monitor mode timeout (non-blocking reads)
+    /// Monitor mode timeout (non-blocking reads, in milliseconds)
     pub const MONITOR_MS: u64 = 100;
-    pub const MONITOR: Duration = Duration::from_millis(MONITOR_MS);
+
+    // Duration constants - only available with std
+    #[cfg(feature = "std")]
+    mod durations {
+        use std::time::Duration;
+
+        pub const NORMAL: Duration = Duration::from_secs(super::NORMAL_SECS);
+        pub const SHORT: Duration = Duration::from_millis(super::SHORT_MS);
+        pub const MONITOR: Duration = Duration::from_millis(super::MONITOR_MS);
+    }
+
+    #[cfg(feature = "std")]
+    pub use durations::*;
 }

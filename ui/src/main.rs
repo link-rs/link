@@ -26,15 +26,15 @@ use {defmt_rtt as _, panic_probe as _};
 struct CortexMStackMonitor;
 
 impl link::StackMonitor for CortexMStackMonitor {
-    fn stack(&self) -> core::ops::Range<usize> {
+    fn stack(&self) -> core::ops::Range<*mut u32> {
         cortex_m_stack::stack()
     }
 
-    fn stack_size(&self) -> usize {
+    fn stack_size(&self) -> u32 {
         cortex_m_stack::stack_size()
     }
 
-    fn stack_painted(&self) -> usize {
+    fn stack_painted(&self) -> u32 {
         cortex_m_stack::stack_painted()
     }
 

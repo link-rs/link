@@ -31,6 +31,10 @@ pub use shared::{HEADER_SIZE, SYNC_WORD};
 // Re-export uart_config module for chip firmware
 pub use shared::uart_config;
 
+// Re-export StackMonitor trait for mgmt and ui firmware
+#[cfg(any(feature = "mgmt", feature = "ui"))]
+pub use shared::stack_monitor::StackMonitor;
+
 // Re-export protocol_config module for ctl
 #[cfg(feature = "ctl")]
 pub use shared::protocol_config;

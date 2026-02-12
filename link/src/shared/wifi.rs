@@ -28,7 +28,7 @@ pub const MAX_RELAY_URL_LEN: usize = 128;
 /// A WiFi SSID and password pair (heap-allocated when alloc is available).
 #[cfg(feature = "alloc")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// Note: Cannot derive defmt::Format with std::string::String (std types don't support defmt)
 pub struct WifiSsid {
     pub ssid: String,
     pub password: String,
