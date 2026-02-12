@@ -284,6 +284,13 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                             // Timeout or non-log TLV, continue
                         }
                         Err(e) => {
+                            // Check if it's a timeout error (can happen during read_exact)
+                            if let link::ctl::CtlError::Port(msg) = &e {
+                                if msg.contains("TimedOut") || msg.contains("timeout") {
+                                    // Timeout during partial read, continue
+                                    continue;
+                                }
+                            }
                             return Err(format!("Read error: {:?}", e).into());
                         }
                     }

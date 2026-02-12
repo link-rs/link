@@ -308,6 +308,13 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
                             // Timeout, continue
                         }
                         Err(e) => {
+                            // Check if it's a timeout error (can happen during read_exact)
+                            if let link::ctl::CtlError::Port(msg) = &e {
+                                if msg.contains("TimedOut") || msg.contains("timeout") {
+                                    // Timeout during partial read, continue
+                                    continue;
+                                }
+                            }
                             return Err(format!("Read error: {:?}", e).into());
                         }
                     }
