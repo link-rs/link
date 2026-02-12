@@ -21,6 +21,11 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             println!("MGMT Bootloader Info");
             println!("====================\n");
 
+            // STM32 bootloader requires 115200 baud with even parity
+            // Switch to bootloader baud rate
+            println!("Switching to bootloader baud rate (115200)...");
+            core.port_mut().get_mut().set_baud_rate(115200)?;
+
             // Try automatic bootloader entry (EV16) or detect if already in bootloader
             print!("Attempting automatic bootloader entry... ");
             std::io::stdout().flush()?;
@@ -120,6 +125,10 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
             core.exit_mgmt_bootloader(delay_ms).await;
 
+            // Switch back to normal operation baud rate (1000000)
+            println!("Switching to normal operation baud rate (1000000)...");
+            core.port_mut().get_mut().set_baud_rate(1000000)?;
+
             println!("\nDone!");
             Ok(())
         }
@@ -131,7 +140,7 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             println!("Firmware: {} ({} bytes)", file.display(), firmware.len());
 
             // Try automatic bootloader entry (EV16) or detect if already in bootloader
-            print!("\nAttempting automatic bootloader entry... ");
+            print!("Attempting automatic bootloader entry... ");
             std::io::stdout().flush()?;
 
             // Set short timeout for probing
@@ -178,6 +187,7 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             pb.set_style(pages_style.clone());
 
             let mut current_phase = None;
+            let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
             let result = core.flash_mgmt(&firmware, skip_init, |phase, progress, total| {
                 if current_phase != Some(phase) {
                     current_phase = Some(phase);
@@ -200,7 +210,7 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
                     pb.set_position(0);
                 }
                 pb.set_position(progress as u64);
-            }).await;
+            }, delay_ms).await;
 
             pb.finish_and_clear();
 
@@ -211,7 +221,7 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
                     core.exit_mgmt_bootloader(delay_ms).await;
 
                     println!("\nFlash complete!");
-                    println!("The MGMT chip should now be running the new firmware.");
+                    println!("The MGMT chip should now be running the new firmware at 1000000 baud.");
                     Ok(())
                 }
                 Err(e) => {

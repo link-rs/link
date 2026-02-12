@@ -101,6 +101,8 @@ pub enum CtlToMgmt {
     SetPin,
     /// Set NET UART baud rate (4 bytes: u32 big-endian)
     SetNetBaudRate,
+    /// Set UI UART baud rate (4 bytes: u32 big-endian)
+    SetUiBaudRate,
     /// Set CTL UART baud rate (4 bytes: u32 big-endian)
     /// ACK is sent before the baud rate change takes effect.
     SetCtlBaudRate,

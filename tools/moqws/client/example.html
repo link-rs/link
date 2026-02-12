@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MOQWS Example</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+        h1 { color: #333; }
+        .section {
+            background: #f5f5f5;
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+        }
+        label { display: block; margin: 0.5rem 0 0.25rem; font-weight: bold; }
+        input, button { padding: 0.5rem; margin: 0.25rem 0; }
+        input { width: 300px; }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        #log {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 1rem;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 0.9rem;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .log-info { color: #4ec9b0; }
+        .log-error { color: #f14c4c; }
+        .log-data { color: #ce9178; }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+        }
+        .stat {
+            background: white;
+            padding: 1rem;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .stat-value { font-size: 2rem; font-weight: bold; color: #007bff; }
+        .stat-label { color: #666; }
+    </style>
+</head>
+<body>
+    <h1>MOQWS Example Client</h1>
+
+    <div class="section">
+        <h2>Connection</h2>
+        <label>MOQWS Server URL:</label>
+        <input type="text" id="wsUrl" value="ws://localhost:8765">
+        <button id="connectWs">Connect to MOQWS</button>
+        <button id="disconnectWs" disabled>Disconnect</button>
+        <br><br>
+        <label>MOQT Relay URL:</label>
+        <input type="text" id="relayUrl" value="moqt://localhost:4433">
+        <button id="connectRelay" disabled>Connect to Relay</button>
+        <button id="disconnectRelay" disabled>Disconnect</button>
+    </div>
+
+    <div class="section">
+        <h2>Subscribe</h2>
+        <label>Namespace (comma-separated):</label>
+        <input type="text" id="subNamespace" value="audio,room1">
+        <label>Track:</label>
+        <input type="text" id="subTrack" value="mic">
+        <br>
+        <button id="subscribe" disabled>Subscribe</button>
+        <button id="unsubscribe" disabled>Unsubscribe</button>
+    </div>
+
+    <div class="section">
+        <h2>Publish</h2>
+        <label>Namespace (comma-separated):</label>
+        <input type="text" id="pubNamespace" value="audio,room1">
+        <label>Track:</label>
+        <input type="text" id="pubTrack" value="mic">
+        <br>
+        <button id="publishAnnounce" disabled>Announce Track</button>
+        <button id="publishTest" disabled>Publish Test Object</button>
+        <button id="publishEnd" disabled>End Publishing</button>
+    </div>
+
+    <div class="section">
+        <h2>Statistics</h2>
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-value" id="objectsReceived">0</div>
+                <div class="stat-label">Objects Received</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="bytesReceived">0</div>
+                <div class="stat-label">Bytes Received</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="objectsSent">0</div>
+                <div class="stat-label">Objects Sent</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Log</h2>
+        <div id="log"></div>
+    </div>
+
+    <script src="moqws.js"></script>
+    <script>
+        // Stats
+        let stats = { objectsReceived: 0, bytesReceived: 0, objectsSent: 0 };
+        let subscriptionId = null;
+        let publishId = null;
+        let publishObjectId = 0;
+
+        // Create client
+        const client = new MoqwsSimpleClient(document.getElementById('wsUrl').value);
+
+        // Logging
+        function log(msg, type = 'info') {
+            const logEl = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function updateStats() {
+            document.getElementById('objectsReceived').textContent = stats.objectsReceived;
+            document.getElementById('bytesReceived').textContent = stats.bytesReceived;
+            document.getElementById('objectsSent').textContent = stats.objectsSent;
+        }
+
+        // Event handlers
+        client.on('open', () => log('WebSocket connected'));
+        client.on('close', ({ code, reason }) => log(`WebSocket closed: ${code} ${reason}`, 'error'));
+        client.on('error', ({ code, message }) => log(`Error: ${code} - ${message}`, 'error'));
+
+        client.on('connected', ({ moqt_version, server_id }) => {
+            log(`Connected to MOQT relay (version=${moqt_version}, server=${server_id})`);
+            document.getElementById('connectRelay').disabled = true;
+            document.getElementById('disconnectRelay').disabled = false;
+            document.getElementById('subscribe').disabled = false;
+            document.getElementById('publishAnnounce').disabled = false;
+        });
+
+        client.on('disconnected', ({ reason }) => {
+            log(`Disconnected from relay: ${reason}`);
+            document.getElementById('connectRelay').disabled = false;
+            document.getElementById('disconnectRelay').disabled = true;
+            document.getElementById('subscribe').disabled = true;
+            document.getElementById('publishAnnounce').disabled = true;
+        });
+
+        client.on('subscribed', ({ id }) => {
+            log(`Subscribed (id=${id})`);
+            document.getElementById('unsubscribe').disabled = false;
+        });
+
+        client.on('subscribe_error', ({ id, code, message }) => {
+            log(`Subscribe error (id=${id}): ${code} - ${message}`, 'error');
+        });
+
+        client.on('subscription_ended', ({ id, reason }) => {
+            log(`Subscription ended (id=${id}): ${reason}`);
+            document.getElementById('unsubscribe').disabled = true;
+        });
+
+        client.on('published', ({ id }) => {
+            log(`Publish track ready (id=${id})`);
+            document.getElementById('publishTest').disabled = false;
+            document.getElementById('publishEnd').disabled = false;
+        });
+
+        client.on('publish_error', ({ id, code, message }) => {
+            log(`Publish error (id=${id}): ${code} - ${message}`, 'error');
+        });
+
+        client.on('object', ({ id, group_id, object_id, payload }) => {
+            stats.objectsReceived++;
+            stats.bytesReceived += payload.byteLength;
+            updateStats();
+            log(`Object received: id=${id}, group=${group_id}, obj=${object_id}, size=${payload.byteLength}`, 'data');
+        });
+
+        // Button handlers
+        document.getElementById('connectWs').onclick = async () => {
+            try {
+                client.client.wsUrl = document.getElementById('wsUrl').value;
+                await client.connect();
+                document.getElementById('connectWs').disabled = true;
+                document.getElementById('disconnectWs').disabled = false;
+                document.getElementById('connectRelay').disabled = false;
+            } catch (e) {
+                log(`Connection failed: ${e.message}`, 'error');
+            }
+        };
+
+        document.getElementById('disconnectWs').onclick = () => {
+            client.disconnect();
+            document.getElementById('connectWs').disabled = false;
+            document.getElementById('disconnectWs').disabled = true;
+            document.getElementById('connectRelay').disabled = true;
+            document.getElementById('disconnectRelay').disabled = true;
+        };
+
+        document.getElementById('connectRelay').onclick = async () => {
+            try {
+                const url = document.getElementById('relayUrl').value;
+                await client.connectToRelay(url);
+            } catch (e) {
+                log(`Relay connection failed: ${e.message}`, 'error');
+            }
+        };
+
+        document.getElementById('disconnectRelay').onclick = () => {
+            client.disconnectFromRelay();
+        };
+
+        document.getElementById('subscribe').onclick = async () => {
+            try {
+                const namespace = document.getElementById('subNamespace').value.split(',').map(s => s.trim());
+                const track = document.getElementById('subTrack').value;
+                subscriptionId = client.nextId();
+                await client.subscribe(subscriptionId, namespace, track);
+            } catch (e) {
+                log(`Subscribe failed: ${e.message}`, 'error');
+            }
+        };
+
+        document.getElementById('unsubscribe').onclick = () => {
+            if (subscriptionId !== null) {
+                client.unsubscribe(subscriptionId);
+                subscriptionId = null;
+                document.getElementById('unsubscribe').disabled = true;
+            }
+        };
+
+        document.getElementById('publishAnnounce').onclick = async () => {
+            try {
+                const namespace = document.getElementById('pubNamespace').value.split(',').map(s => s.trim());
+                const track = document.getElementById('pubTrack').value;
+                publishId = client.nextId();
+                publishObjectId = 0;
+                await client.publishAnnounce(publishId, namespace, track);
+            } catch (e) {
+                log(`Publish announce failed: ${e.message}`, 'error');
+            }
+        };
+
+        document.getElementById('publishTest').onclick = () => {
+            if (publishId !== null) {
+                // Generate test payload
+                const payload = new Uint8Array(64);
+                for (let i = 0; i < payload.length; i++) {
+                    payload[i] = Math.floor(Math.random() * 256);
+                }
+
+                const groupId = 12345;  // Fixed group ID for testing
+                client.publish(publishId, groupId, publishObjectId++, payload);
+                stats.objectsSent++;
+                updateStats();
+                log(`Published object: group=${groupId}, obj=${publishObjectId - 1}, size=${payload.length}`, 'data');
+            }
+        };
+
+        document.getElementById('publishEnd').onclick = () => {
+            if (publishId !== null) {
+                client.publishEnd(publishId);
+                publishId = null;
+                document.getElementById('publishTest').disabled = true;
+                document.getElementById('publishEnd').disabled = true;
+                log('Ended publishing');
+            }
+        };
+    </script>
+</body>
+</html>

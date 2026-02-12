@@ -26,26 +26,39 @@ pub struct Config {
 }
 
 /// STM32 bootloader-compatible config: 115200 baud, even parity, 1 stop bit.
-/// Used for CTL-MGMT and MGMT-UI links (both endpoints are STM32).
+/// Used only during firmware flashing for STM32 bootloader compatibility.
 pub const STM32_BOOTLOADER: Config = Config {
     baudrate: 115200,
     parity: Parity::Even,
     stop_bits: StopBits::One,
 };
 
-/// MGMT-NET link: 115200 baud, no parity, 1 stop bit.
+/// High-speed config: 1000000 baud, even parity, 1 stop bit.
+/// Used for all normal inter-chip communication.
+pub const HIGH_SPEED: Config = Config {
+    baudrate: 1000000,
+    parity: Parity::Even,
+    stop_bits: StopBits::One,
+};
+
+/// CTL-MGMT link: 1000000 baud, even parity, 1 stop bit.
+/// For bootloader flashing, use STM32_BOOTLOADER (115200 baud, even parity).
+pub const CTL_MGMT: Config = HIGH_SPEED;
+
+/// MGMT-UI link: 1000000 baud, even parity, 1 stop bit.
+/// For bootloader flashing, use STM32_BOOTLOADER (115200 baud, even parity).
+pub const MGMT_UI: Config = HIGH_SPEED;
+
+/// MGMT-NET link: 1000000 baud, no parity, 1 stop bit.
+/// Uses no parity to match ESP32 bootloader and user firmware.
 pub const MGMT_NET: Config = Config {
-    baudrate: 115200,
+    baudrate: 1000000,
     parity: Parity::None,
     stop_bits: StopBits::One,
 };
 
-/// UI-NET link: 460800 baud, no parity, 2 stop bits.
-pub const UI_NET: Config = Config {
-    baudrate: 460800,
-    parity: Parity::None,
-    stop_bits: StopBits::Two,
-};
+/// UI-NET link: 1000000 baud, even parity, 1 stop bit.
+pub const UI_NET: Config = HIGH_SPEED;
 
 /// Trait for types that can have their baud rate changed at runtime.
 ///

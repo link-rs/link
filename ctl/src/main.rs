@@ -31,7 +31,7 @@ struct Cli {
     #[arg(short, long)]
     port: Option<String>,
 
-    #[arg(short, long, default_value = "115200")]
+    #[arg(short, long, default_value = "1000000")]
     baud: u32,
 
     #[command(subcommand)]

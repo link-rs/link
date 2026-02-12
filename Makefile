@@ -9,7 +9,7 @@ NET_BIN = net/target/xtensa-esp32s3-espidf/debug/net
 NET_PARTITIONS = net/partitions.csv
 
 # Build all firmwares and control program
-all: $(UI_BIN) $(MGMT_BIN) $(NET_BIN) ctl
+all: $(UI_BIN) $(MGMT_BIN) $(NET_BIN) ctl web-ctl
 	@echo "Build complete."
 
 # Preflight checks: build everything, run tests, check formatting

@@ -686,7 +686,7 @@ fn main() {
         esp_pthread_set_cfg(&cfg);
     }
 
-    // XXX info!("net: initializing");
+    info!("net: initializing");
 
     let peripherals = Peripherals::take().unwrap();
     let sys_loop = EspSystemEventLoop::take().unwrap();

@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 
-mod storage;
-
 use cortex_m::singleton;
 use embassy_executor::Spawner;
 use embassy_stm32::{
@@ -17,9 +15,7 @@ use embassy_stm32::{
 };
 use embassy_time::Delay;
 use embedded_io_async::{ErrorType, Read, Write};
-use link::mgmt::BaudRateStorage;
 use link::uart_config::SetBaudRate;
-use storage::FlashBaudRateStorage;
 use {defmt_rtt as _, panic_probe as _};
 
 const DMA_BUF_SIZE: usize = link::MAX_VALUE_SIZE;
@@ -133,18 +129,13 @@ async fn main(_spawner: Spawner) {
     mco_config.speed = Speed::Low;
     let _mco = Mco::new(p.MCO, p.PA8, McoSource::PLL, mco_config);
 
-    // Initialize flash storage for baud rate persistence
-    let flash = embassy_stm32::flash::Flash::new_blocking(p.FLASH);
-    let mut storage = FlashBaudRateStorage::new(flash);
-
-    // Read stored baud rate, default to 115200 if not set
-    let ctl_baud_rate = storage.get().unwrap_or(115200);
-
     // UART configs from centralized definitions
-    // Use stored baud rate for CTL UART
-    let mut ctl_uart_config = link::uart_config::STM32_BOOTLOADER;
-    ctl_uart_config.baudrate = ctl_baud_rate;
-    let stm_config = uart_config_to_stm32(ctl_uart_config);
+    // CTL UART always boots at fixed high speed (1000000)
+    let ctl_config = uart_config_to_stm32(link::uart_config::CTL_MGMT);
+
+    // UI UART at high speed (1000000)
+    let ui_config = uart_config_to_stm32(link::uart_config::MGMT_UI);
+
     let net_config = uart_config_to_stm32(link::uart_config::MGMT_NET);
 
     // DMA buffers for ring-buffered RX
@@ -154,7 +145,7 @@ async fn main(_spawner: Spawner) {
 
     // UART to CTL (uses even parity for bootloader compatibility)
     let (to_ctl, from_ctl) = Uart::new(
-        p.USART1, p.PA10, p.PA9, Irqs, p.DMA1_CH2, p.DMA1_CH3, stm_config,
+        p.USART1, p.PA10, p.PA9, Irqs, p.DMA1_CH2, p.DMA1_CH3, ctl_config,
     )
     .unwrap()
     .split();
@@ -163,7 +154,7 @@ async fn main(_spawner: Spawner) {
 
     // UART to UI (uses even parity for bootloader compatibility)
     let (to_ui, from_ui) = Uart::new(
-        p.USART2, p.PA3, p.PA2, Irqs, p.DMA1_CH4, p.DMA1_CH5, stm_config,
+        p.USART2, p.PA3, p.PA2, Irqs, p.DMA1_CH4, p.DMA1_CH5, ui_config,
     )
     .unwrap()
     .split();
@@ -219,7 +210,6 @@ async fn main(_spawner: Spawner) {
         ui_reset_pins,
         net_reset_pins,
         Delay,
-        Some(&mut storage),
     )
     .await;
 }

@@ -293,7 +293,7 @@ impl<P, D> TunnelSerialInterface<P, D> {
             delay,
             raw_buffer: heapless::Vec::new(),
             buffer: heapless::Vec::new(),
-            timeout: Duration::from_secs(3),
+            timeout: Duration::from_secs(30),  // Increased for large flash operations
             baud_rate,
         }
     }
@@ -556,18 +556,11 @@ impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static, D:
         Ok(self.baud_rate)
     }
 
-    async fn set_baud_rate(&mut self, baud_rate: u32) -> Result<(), SerialPortError> {
-        // If already at target baud rate, this is a no-op (ignore the request)
-        if baud_rate == self.baud_rate {
-            return Ok(());
-        }
-
-        // If trying to change to a different baud rate, this is unexpected - panic
-        panic!(
-            "Unexpected baud rate change request: current={}, requested={}. \
-            Baud rate should be set before Flasher::connect, not during it.",
-            self.baud_rate, baud_rate
-        );
+    async fn set_baud_rate(&mut self, _baud_rate: u32) -> Result<(), SerialPortError> {
+        // We're already at max speed. ESP32 bootloader auto-detects the baud rate
+        // from the initial SYNC, so espflash's baud rate changes are unnecessary and would
+        // break the tunnel. Make this a no-op.
+        Ok(())
     }
 
     fn timeout(&self) -> Duration {
@@ -723,7 +716,11 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     where
         D: Fn(u64) -> F,
         F: core::future::Future<Output = ()>,
+        P: crate::ctl::SetBaudRate,
     {
+        // Set to bootloader baud rate
+        let _ = self.port_mut().set_baud_rate(115200).await;
+
         self.drain();
 
         // Establish known starting state (both signals low)
@@ -858,83 +855,112 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     ///
     /// Set `skip_init` to `true` if the bootloader has already been initialized
     /// (e.g., by `try_enter_mgmt_bootloader` which probes with 0x7F).
-    pub async fn flash_mgmt<F>(
+    pub async fn flash_mgmt<F, D, Fut>(
         &mut self,
         firmware: &[u8],
         skip_init: bool,
         mut progress: F,
+        delay_ms: D,
     ) -> Result<(), FlashError<P::Error>>
     where
         F: FnMut(FlashPhase, usize, usize),
-        P: crate::ctl::SetTimeout,
+        D: Fn(u64) -> Fut,
+        Fut: core::future::Future<Output = ()>,
+        P: crate::ctl::SetTimeout + crate::ctl::SetBaudRate,
     {
-        if !skip_init {
-            self.drain();
-        }
+        // Switch to bootloader baud rate BEFORE any bootloader interaction
+        let _ = self.port_mut().set_baud_rate(115200).await;
 
-        let mut bl = Bootloader::new(self.port_mut());
-
-        // Initialize communication
-        if !skip_init {
-            bl.init().await?;
-        }
-
-        // Erase pages needed for firmware (STM32F072CB has 2KB pages)
-        const PAGE_SIZE: usize = 2048;
-        let pages_needed = (firmware.len() + PAGE_SIZE - 1) / PAGE_SIZE;
-        let pages_needed = pages_needed.max(1);
-
-        for page in 0..pages_needed {
-            progress(FlashPhase::Erasing, page, pages_needed);
-            let page_num = page as u16;
-            if bl.extended_erase(Some(&[page_num]), None).await.is_err() {
-                bl.erase(Some(&[page as u8])).await?;
+        // Perform the flash operation, capturing the result
+        let result = async {
+            if !skip_init {
+                self.drain();
             }
-        }
-        progress(FlashPhase::Erasing, pages_needed, pages_needed);
 
-        // Write firmware in 256-byte chunks
-        let total = firmware.len();
-        let mut written = 0;
-        let base_address: u32 = 0x0800_0000;
+            let mut bl = Bootloader::new(self.port_mut());
 
-        for chunk in firmware.chunks(256) {
-            let address = base_address + written as u32;
-            bl.write_memory(address, chunk).await?;
-            written += chunk.len();
-            progress(FlashPhase::Writing, written, total);
-        }
-
-        // Verify by reading back
-        let mut verified = 0;
-        let mut read_buf = [0u8; 256];
-
-        for chunk in firmware.chunks(256) {
-            let address = base_address + verified as u32;
-            let len = bl
-                .read_memory(address, &mut read_buf[..chunk.len()])
-                .await?;
-            if &read_buf[..len] != chunk {
-                return Err(FlashError::VerifyFailed {
-                    address,
-                    expected: heapless::Vec::from_slice(chunk).unwrap(),
-                    actual: heapless::Vec::from_slice(&read_buf[..len]).unwrap(),
-                });
+            // Initialize communication
+            if !skip_init {
+                bl.init().await?;
             }
-            verified += len;
-            progress(FlashPhase::Verifying, verified, total);
+
+            // Erase pages needed for firmware (STM32F072CB has 2KB pages)
+            const PAGE_SIZE: usize = 2048;
+            let pages_needed = (firmware.len() + PAGE_SIZE - 1) / PAGE_SIZE;
+            let pages_needed = pages_needed.max(1);
+
+            for page in 0..pages_needed {
+                progress(FlashPhase::Erasing, page, pages_needed);
+                let page_num = page as u16;
+                if bl.extended_erase(Some(&[page_num]), None).await.is_err() {
+                    bl.erase(Some(&[page as u8])).await?;
+                }
+            }
+            progress(FlashPhase::Erasing, pages_needed, pages_needed);
+
+            // Write firmware in 256-byte chunks
+            let total = firmware.len();
+            let mut written = 0;
+            let base_address: u32 = 0x0800_0000;
+
+            for chunk in firmware.chunks(256) {
+                let address = base_address + written as u32;
+                bl.write_memory(address, chunk).await?;
+                written += chunk.len();
+                progress(FlashPhase::Writing, written, total);
+            }
+
+            // Verify by reading back
+            let mut verified = 0;
+            let mut read_buf = [0u8; 256];
+
+            for chunk in firmware.chunks(256) {
+                let address = base_address + verified as u32;
+                let len = bl
+                    .read_memory(address, &mut read_buf[..chunk.len()])
+                    .await?;
+                if &read_buf[..len] != chunk {
+                    return Err(FlashError::VerifyFailed {
+                        address,
+                        expected: heapless::Vec::from_slice(chunk).unwrap(),
+                        actual: heapless::Vec::from_slice(&read_buf[..len]).unwrap(),
+                    });
+                }
+                verified += len;
+                progress(FlashPhase::Verifying, verified, total);
+            }
+
+            // Jump to new firmware
+            bl.go(0x0800_0000).await?;
+
+            // Wait for MGMT to come back online
+            // Try hello() every 100ms, up to 50 attempts (5 seconds total)
+            // This helps avoid the need for retries in UI flashing
+            drop(bl); // Drop bootloader to release port reference
+            let _ = self.wait_for_mgmt_ready(50).await;
+
+            Ok(())
+        }
+        .await;
+
+        // Always restore CTL-MGMT UART to normal operation baud rate (1000000)
+        let _ = self.port_mut().set_baud_rate(1000000).await;
+
+        // On success, do a hardware reset to ensure peripherals are properly initialized
+        if result.is_ok() {
+            // Release BOOT0 and do a clean hardware reset
+            let _ = self.port_mut().write_rts(false).await;
+            delay_ms(50).await;
+            let _ = self.port_mut().write_dtr(true).await;
+            delay_ms(50).await;
+            let _ = self.port_mut().write_dtr(false).await;
+            delay_ms(200).await; // Initial wait for boot to start
+
+            // Wait for MGMT firmware to come online and be ready for commands
+            let _ = self.wait_for_mgmt_ready(50).await;
         }
 
-        // Jump to new firmware
-        bl.go(0x0800_0000).await?;
-
-        // Wait for MGMT to come back online
-        // Try hello() every 100ms, up to 50 attempts (5 seconds total)
-        // This helps avoid the need for retries in UI flashing
-        drop(bl); // Drop bootloader to release port reference
-        let _ = self.wait_for_mgmt_ready(50).await;
-
-        Ok(())
+        result
     }
 
     /// Get UI bootloader information.
@@ -1035,6 +1061,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         D: Fn(u64) -> Fut,
         Fut: core::future::Future<Output = ()>,
     {
+        // Switch MGMT-UI UART to bootloader baud rate (115200)
+        let _ = self.set_ui_baud_rate(115200).await;
+
         // Drain any stale data from buffers to prevent contamination
         // when tunneling UI bootloader commands through MGMT.
         self.drain();
@@ -1058,6 +1087,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
 
         // Release NET chip from reset
         let _ = self.reset_net_to_user(&delay_ms).await;
+
+        // Switch MGMT-UI UART back to normal operation baud rate (1000000)
+        let _ = self.set_ui_baud_rate(1000000).await;
 
         result
     }
@@ -1211,25 +1243,17 @@ where
         delay: D,
         max_baud: u32,
     ) -> Result<(), EspflashError> {
-        const INITIAL_BAUD: u32 = 115_200;
-
         // Hold UI chip in reset during NET flashing to avoid interference
         // (done before taking the port)
         let _ = self.hold_ui_reset().await;
 
         self.drain();
 
-        // Take the port out of CtlCore
+        // Take the port out of CtlCore (CTL-MGMT stays at 1000000)
         let port = self.take_port();
 
-        // Create a temporary TunnelSerialInterface to upgrade baud rate
-        let mut temp_tunnel = TunnelSerialInterface::new(port, INITIAL_BAUD, delay.clone());
-        let _ = temp_tunnel.change_baud_rate(max_baud).await;
-
-        // Change the local port baud rate
-        let mut port = temp_tunnel.into_port();
-        let _ = port.set_baud_rate(max_baud).await;
-
+        // MGMT-NET is already at max_baud from boot.
+        // ESP32 bootloader will auto-detect from the SYNC command.
         let serial_interface = TunnelSerialInterface::new(port, max_baud, delay);
 
         let port_info = PortInfo {
@@ -1245,11 +1269,11 @@ where
             port_info,
             ResetAfterOperation::HardReset,
             ResetBeforeOperation::DefaultReset,
-            max_baud,  // Already at max_baud
+            max_baud,
         );
 
-        // Connect to ESP32 bootloader (already at max baud rate)
-        // Pass None for baud rate since we're already at max_baud
+        // Connect to ESP32 bootloader at max_baud
+        // use_stub=false uses ROM bootloader (stub upload fails through tunnel)
         let mut flasher =
             match Flasher::connect(connection, false, false, true, None, None).await {
                 Ok(f) => f,
@@ -1258,8 +1282,8 @@ where
                     self.recover_port_from_connection(connection).await;
                     let _ = self.reset_ui_to_user().await;
                     return Err(EspflashError::Espflash(format!(
-                        "connect (after baud change to {}): {:?}",
-                        max_baud, e
+                        "connect: {:?}",
+                        e
                     )));
                 }
             };
@@ -1331,17 +1355,14 @@ where
         &mut self,
         connection: Connection<TunnelSerialInterface<P, D>>,
     ) {
-        const INITIAL_BAUD: u32 = 115_200;
-        const MAX_HELLO_ATTEMPTS: usize = 50;
+        const NORMAL_BAUD: u32 = 1_000_000;
 
+        // Restore MGMT-NET to normal operating speed (CTL-MGMT stays at 1000000)
         let mut tunnel = connection.into_serial();
-        let _ = tunnel.change_baud_rate(INITIAL_BAUD).await;
-        let mut port = tunnel.into_port();
-        let _ = port.set_baud_rate(INITIAL_BAUD).await;
+        let baud_bytes = NORMAL_BAUD.to_be_bytes();
+        let _ = tunnel.send_mgmt_command(CtlToMgmt::SetNetBaudRate, &baud_bytes).await;
+        let port = tunnel.into_port();
         self.put_port(port);
-
-        // Wait for MGMT to be ready after the reset caused by baud rate change
-        let _ = self.wait_for_mgmt_ready(MAX_HELLO_ATTEMPTS).await;
     }
 
     /// Get NET chip bootloader info.

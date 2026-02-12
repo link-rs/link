@@ -593,6 +593,23 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
+    /// Set the UI UART baud rate on the MGMT chip.
+    ///
+    /// This changes the baud rate between MGMT and UI chips.
+    /// The MGMT chip changes both TX and RX baud rates unilaterally.
+    pub async fn set_ui_baud_rate(&mut self, baud_rate: u32) -> Result<(), CtlError> {
+        self.write_tlv(CtlToMgmt::SetUiBaudRate, &baud_rate.to_be_bytes())
+            .await?;
+        let tlv = self.read_tlv_mgmt().await?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Set the CTL UART baud rate on the MGMT chip.
     ///
     /// This changes the baud rate between CTL and MGMT.

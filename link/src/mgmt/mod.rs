@@ -1,8 +1,5 @@
 //! MGMT (Management) chip - coordinates communication between all chips.
 
-pub mod storage;
-pub use storage::BaudRateStorage;
-
 use crate::info;
 use crate::shared::{
     Color, CtlToMgmt, CtlToNet, CtlToUi, Led, MgmtToCtl, ReadTlv, Tlv, Value, WriteTlv,
@@ -154,16 +151,18 @@ enum BaudRateChange {
     None,
     /// Change CTL UART baud rate (TX already changed, caller should change RX)
     Ctl(u32),
+    /// Change UI UART baud rate (TX already changed, caller should change RX)
+    Ui(u32),
     /// Change NET UART baud rate (TX already changed, caller should change RX)
     Net(u32),
 }
 
 #[allow(unreachable_code)]
-pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, S>(
+pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
     to_ctl: W,
     mut from_ctl: R,
     mut to_ui: W,
-    mut from_ui: R,
+    from_ui: R,
     mut to_net: W,
     from_net: R,
     led_a: (RA, GA, BA),
@@ -171,7 +170,6 @@ pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot,
     mut ui_reset_pins: UiResetPins<UiBoot0, UiBoot1, UiRst>,
     mut net_reset_pins: NetResetPins<NetBoot, NetRst>,
     mut delay: D,
-    mut storage: Option<&mut S>,
 ) -> !
 where
     W: Write + SetBaudRate,
@@ -188,7 +186,6 @@ where
     NetBoot: OutputPin,
     NetRst: OutputPin,
     D: DelayNs,
-    S: BaudRateStorage,
 {
     use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 
@@ -216,8 +213,9 @@ where
 
     // Track pending NET RX baud rate changes with an atomic
     // (0 = no change pending, non-zero = new baud rate to apply)
-    // This avoids deadlocks since net_task can poll this instead of holding a lock
+    // This avoids deadlocks since ui_task/net_task can poll this instead of holding a lock
     use core::sync::atomic::{AtomicU32, Ordering};
+    let ui_rx_pending_baud: AtomicU32 = AtomicU32::new(0);
     let net_rx_pending_baud: AtomicU32 = AtomicU32::new(0);
 
     // LED A: Blue=ToNet, Red=FromNet
@@ -225,7 +223,15 @@ where
 
     let ui_task = async {
         let mut buffer = Value::default();
+        let mut from_ui = from_ui;
         loop {
+            // Check for pending UI RX baud rate change
+            let pending = ui_rx_pending_baud.load(Ordering::SeqCst);
+            if pending != 0 {
+                ui_rx_pending_baud.store(0, Ordering::SeqCst);
+                from_ui.set_baud_rate(pending).await;
+            }
+
             buffer.resize(buffer.capacity(), 0).unwrap();
             let Ok(n) = from_ui.read(&mut buffer).await else {
                 info!("ui->mgmt: error!");
@@ -301,7 +307,6 @@ where
                 &mut ui_reset_pins,
                 &mut net_reset_pins,
                 &mut delay,
-                storage.as_deref_mut(),
             )
             .await;
 
@@ -313,6 +318,10 @@ where
                 BaudRateChange::Ctl(baud) => {
                     from_ctl.set_baud_rate(baud).await;
                     to_ctl.lock().await.set_baud_rate(baud).await;
+                }
+                BaudRateChange::Ui(baud) => {
+                    // Signal ui_task to apply this baud rate change
+                    ui_rx_pending_baud.store(baud, Ordering::SeqCst);
                 }
                 BaudRateChange::Net(baud) => {
                     // Signal net_task to apply this baud rate change
@@ -334,7 +343,7 @@ where
     unreachable!()
 }
 
-async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, S>(
+async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
     tlv: Tlv<CtlToMgmt>,
     to_ctl: &mut C,
     to_ui: &mut U,
@@ -342,16 +351,14 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, S>(
     ui_reset_pins: &mut UiResetPins<UiBoot0, UiBoot1, UiRst>,
     net_reset_pins: &mut NetResetPins<NetBoot, NetRst>,
     delay: &mut D,
-    storage: Option<&mut S>,
 ) -> BaudRateChange
 where
     C: WriteTlv<MgmtToCtl> + Write + SetBaudRate,
-    U: WriteTlv<CtlToUi> + Write,
+    U: WriteTlv<CtlToUi> + Write + SetBaudRate,
     N: WriteTlv<CtlToNet> + Write + SetBaudRate,
     UiBoot0: StatefulOutputPin,
     UiBoot1: StatefulOutputPin,
     UiRst: StatefulOutputPin,
-    S: BaudRateStorage,
     NetBoot: OutputPin,
     NetRst: OutputPin,
     D: DelayNs,
@@ -449,11 +456,29 @@ where
             info!("mgmt: setting NET baud rate to {}", baud_rate);
             // Flush pending NET TX data at old rate
             let _ = to_net.flush().await;
-            // Change NET TX baud rate; caller will update RX after releasing locks
+            // Change NET TX baud rate immediately
             to_net.set_baud_rate(baud_rate).await;
             // ACK goes to CTL at unchanged rate
             to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
+            // Signal net_task to change RX baud rate
             BaudRateChange::Net(baud_rate)
+        }
+        CtlToMgmt::SetUiBaudRate => {
+            // Parse 4-byte BE u32 baud rate
+            let baud_rate = u32::from_be_bytes([
+                tlv.value.get(0).copied().unwrap_or(0),
+                tlv.value.get(1).copied().unwrap_or(0),
+                tlv.value.get(2).copied().unwrap_or(0),
+                tlv.value.get(3).copied().unwrap_or(0),
+            ]);
+            info!("mgmt: setting UI baud rate to {}", baud_rate);
+            // Flush pending UI TX data at old rate
+            let _ = to_ui.flush().await;
+            // Send ACK before changing baud rate
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
+            // Change UI TX baud rate (RX will be changed by caller)
+            to_ui.set_baud_rate(baud_rate).await;
+            BaudRateChange::Ui(baud_rate)
         }
         CtlToMgmt::SetCtlBaudRate => {
             // Parse 4-byte BE u32 baud rate
@@ -464,15 +489,6 @@ where
                 tlv.value.get(3).copied().unwrap_or(0),
             ]);
             info!("mgmt: setting CTL baud rate to {}", baud_rate);
-
-            // Store the baud rate persistently
-            if let Some(storage) = storage {
-                if storage.set(baud_rate) {
-                    info!("mgmt: baud rate stored in flash");
-                } else {
-                    info!("mgmt: failed to store baud rate");
-                }
-            }
 
             // CRITICAL: Send ACK FIRST at old baud rate
             to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;

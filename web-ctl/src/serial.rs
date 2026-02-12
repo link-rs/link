@@ -49,6 +49,7 @@ struct WebSerialState {
     writer: WritableStreamDefaultWriter,
     read_buffer: VecDeque<u8>,
     read_timeout_ms: u32,
+    current_baud_rate: u32,
 }
 
 /// Create a JS `setTimeout`-based future that resolves after `ms` milliseconds.
@@ -124,6 +125,7 @@ impl WebSerial {
             writer,
             read_buffer: VecDeque::new(),
             read_timeout_ms: 3000,
+            current_baud_rate: baud_rate,
         });
 
         Ok(())
@@ -136,6 +138,12 @@ impl WebSerial {
         // Take the current state
         let old_state = self.state.borrow_mut().take();
         let old_state = old_state.ok_or(WebSerialError::NotConnected)?;
+
+        // If already at target baud rate, just restore state and return
+        if old_state.current_baud_rate == baud_rate {
+            *self.state.borrow_mut() = Some(old_state);
+            return Ok(());
+        }
 
         // Preserve the port (but we'll clear the read buffer after reset)
         let port = old_state.port;
@@ -172,6 +180,7 @@ impl WebSerial {
             writer,
             read_buffer: VecDeque::new(),  // Clear buffer - MGMT has reset
             read_timeout_ms,
+            current_baud_rate: baud_rate,
         });
 
         Ok(())
@@ -221,6 +230,7 @@ impl WebSerial {
             writer,
             read_buffer: VecDeque::new(),  // Clear buffer - MGMT has reset
             read_timeout_ms,
+            current_baud_rate: baud_rate,
         });
 
         Ok(())

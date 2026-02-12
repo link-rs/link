@@ -171,7 +171,7 @@ async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(config);
 
     // UART configs from centralized definitions
-    let mgmt_config = uart_config_to_stm32(link::uart_config::STM32_BOOTLOADER);
+    let mgmt_config = uart_config_to_stm32(link::uart_config::MGMT_UI);
     let net_config = uart_config_to_stm32(link::uart_config::UI_NET);
 
     // DMA buffers for ring-buffered RX

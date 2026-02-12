@@ -9,11 +9,11 @@ use link::ctl::espflash::target::ProgressCallbacks;
 use link::ctl::flash::{AsyncDelay, FlashPhase, MgmtBootloaderEntry};
 use link::ctl::stm;
 use link::ctl::{CtlCore, CtlError, SetTimeout};
-use wasm_bindgen_futures::JsFuture;
-use link::{UiLoopbackMode, MgmtToCtl, NetLoopbackMode};
+use link::{MgmtToCtl, NetLoopbackMode, UiLoopbackMode};
 use serde::{Deserialize, Serialize};
 use serial::{WebSerial, WebSerialAdapter};
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 
 /// Initialize panic hook for better error messages.
 #[wasm_bindgen(start)]
@@ -69,9 +69,7 @@ impl LinkController {
     /// Create a new LinkController instance.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self {
-            core: None,
-        }
+        Self { core: None }
     }
 
     /// Connect to a Link device via WebSerial.
@@ -132,7 +130,9 @@ impl LinkController {
 
     /// Get CtlCore, returning error if not connected.
     fn core_mut(&mut self) -> Result<&mut CtlCore<WebSerialAdapter>, JsValue> {
-        self.core.as_mut().ok_or_else(|| JsValue::from_str("Not connected"))
+        self.core
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("Not connected"))
     }
 
     /// Test connection with a Hello handshake.
@@ -233,7 +233,9 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn add_wifi_network(&mut self, ssid: &str, password: &str) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        core.add_wifi_ssid(ssid, password).await.map_err(ctl_error_to_js)
+        core.add_wifi_ssid(ssid, password)
+            .await
+            .map_err(ctl_error_to_js)
     }
 
     /// Clear all WiFi networks from NET chip storage.
@@ -294,7 +296,9 @@ impl LinkController {
         use link::{CtlToMgmt, Pin, PinValue};
         let core = self.core_mut()?;
         let value = if high { PinValue::High } else { PinValue::Low };
-        core.write_tlv_raw(CtlToMgmt::SetPin, &[Pin::NetBoot as u8, value as u8]).await.map_err(ctl_error_to_js)
+        core.write_tlv_raw(CtlToMgmt::SetPin, &[Pin::NetBoot as u8, value as u8])
+            .await
+            .map_err(ctl_error_to_js)
     }
 
     /// Set NET RST pin (EN). 1 = high, 0 = low.
@@ -303,21 +307,27 @@ impl LinkController {
         use link::{CtlToMgmt, Pin, PinValue};
         let core = self.core_mut()?;
         let value = if high { PinValue::High } else { PinValue::Low };
-        core.write_tlv_raw(CtlToMgmt::SetPin, &[Pin::NetRst as u8, value as u8]).await.map_err(ctl_error_to_js)
+        core.write_tlv_raw(CtlToMgmt::SetPin, &[Pin::NetRst as u8, value as u8])
+            .await
+            .map_err(ctl_error_to_js)
     }
 
     /// Reset the NET chip into bootloader mode.
     #[wasm_bindgen]
     pub async fn reset_net_to_bootloader(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        core.reset_net_to_bootloader(|ms| js_sleep(ms as u32)).await.map_err(ctl_error_to_js)
+        core.reset_net_to_bootloader(|ms| js_sleep(ms as u32))
+            .await
+            .map_err(ctl_error_to_js)
     }
 
     /// Reset the NET chip into user mode.
     #[wasm_bindgen]
     pub async fn reset_net_to_user(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        core.reset_net_to_user(|ms| js_sleep(ms as u32)).await.map_err(ctl_error_to_js)
+        core.reset_net_to_user(|ms| js_sleep(ms as u32))
+            .await
+            .map_err(ctl_error_to_js)
     }
 
     /// Get UI chip loopback mode as string.
@@ -352,7 +362,9 @@ impl LinkController {
         };
 
         let core = self.core_mut()?;
-        core.ui_set_loopback(loopback_mode).await.map_err(ctl_error_to_js)
+        core.ui_set_loopback(loopback_mode)
+            .await
+            .map_err(ctl_error_to_js)
     }
 
     /// Get NET chip loopback mode as string.
@@ -385,7 +397,9 @@ impl LinkController {
         };
 
         let core = self.core_mut()?;
-        core.net_set_loopback(loopback_mode).await.map_err(ctl_error_to_js)
+        core.net_set_loopback(loopback_mode)
+            .await
+            .map_err(ctl_error_to_js)
     }
 
     /// Ping the MGMT chip.
@@ -464,14 +478,18 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn circular_ping_via_ui(&mut self, data: Vec<u8>) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        core.ui_first_circular_ping(&data).await.map_err(ctl_error_to_js)
+        core.ui_first_circular_ping(&data)
+            .await
+            .map_err(ctl_error_to_js)
     }
 
     /// Send a circular ping starting from NET (NET → UI → MGMT → CTL).
     #[wasm_bindgen]
     pub async fn circular_ping_via_net(&mut self, data: Vec<u8>) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        core.net_first_circular_ping(&data).await.map_err(ctl_error_to_js)
+        core.net_first_circular_ping(&data)
+            .await
+            .map_err(ctl_error_to_js)
     }
 
     // ==================== JITTER STATS ====================
@@ -481,7 +499,10 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn get_jitter_stats(&mut self, channel_id: u8) -> Result<JsValue, JsValue> {
         let core = self.core_mut()?;
-        let stats = core.get_jitter_stats(channel_id).await.map_err(ctl_error_to_js)?;
+        let stats = core
+            .get_jitter_stats(channel_id)
+            .await
+            .map_err(ctl_error_to_js)?;
 
         let obj = js_sys::Object::new();
         js_sys::Reflect::set(&obj, &"received".into(), &stats.received.into())?;
@@ -489,7 +510,16 @@ impl LinkController {
         js_sys::Reflect::set(&obj, &"underruns".into(), &stats.underruns.into())?;
         js_sys::Reflect::set(&obj, &"overruns".into(), &stats.overruns.into())?;
         js_sys::Reflect::set(&obj, &"level".into(), &stats.level.into())?;
-        js_sys::Reflect::set(&obj, &"state".into(), &(if stats.state == 0 { "buffering" } else { "playing" }).into())?;
+        js_sys::Reflect::set(
+            &obj,
+            &"state".into(),
+            &(if stats.state == 0 {
+                "buffering"
+            } else {
+                "playing"
+            })
+            .into(),
+        )?;
         Ok(obj.into())
     }
 
@@ -502,14 +532,28 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn get_mgmt_bootloader_info(&mut self, skip_init: bool) -> Result<JsValue, JsValue> {
         let core = self.core_mut()?;
-        let info = core.get_mgmt_bootloader_info(skip_init).await
+        let info = core
+            .get_mgmt_bootloader_info(skip_init)
+            .await
             .map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
 
         let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"bootloaderVersion".into(), &info.bootloader_version.into())?;
+        js_sys::Reflect::set(
+            &obj,
+            &"bootloaderVersion".into(),
+            &info.bootloader_version.into(),
+        )?;
         js_sys::Reflect::set(&obj, &"chipId".into(), &info.chip_id.into())?;
-        js_sys::Reflect::set(&obj, &"chipName".into(), &stm::chip_name(info.chip_id).into())?;
-        js_sys::Reflect::set(&obj, &"commandCount".into(), &(info.command_count as u32).into())?;
+        js_sys::Reflect::set(
+            &obj,
+            &"chipName".into(),
+            &stm::chip_name(info.chip_id).into(),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &"commandCount".into(),
+            &(info.command_count as u32).into(),
+        )?;
 
         let commands = js_sys::Array::new();
         for i in 0..info.command_count {
@@ -522,7 +566,11 @@ impl LinkController {
         js_sys::Reflect::set(&obj, &"commands".into(), &commands)?;
 
         if let Some(flash_sample) = info.flash_sample {
-            js_sys::Reflect::set(&obj, &"flashSample".into(), &hex::encode(flash_sample).into())?;
+            js_sys::Reflect::set(
+                &obj,
+                &"flashSample".into(),
+                &hex::encode(flash_sample).into(),
+            )?;
             js_sys::Reflect::set(&obj, &"readProtected".into(), &false.into())?;
         } else {
             js_sys::Reflect::set(&obj, &"readProtected".into(), &true.into())?;
@@ -542,7 +590,9 @@ impl LinkController {
         // Clear internal TLV buffers
         core.drain();
         // Also drain the underlying WebSerial stream
-        core.port_mut().drain().await
+        core.port_mut()
+            .drain()
+            .await
             .map_err(|e| JsValue::from_str(&format!("Drain error: {:?}", e)))?;
         Ok(())
     }
@@ -557,12 +607,18 @@ impl LinkController {
         let core = self.core_mut()?;
 
         // Set short timeout for probing
-        let _ = core.port_mut().set_timeout(std::time::Duration::from_millis(200));
+        let _ = core
+            .port_mut()
+            .set_timeout(std::time::Duration::from_millis(200));
 
-        let result = core.try_enter_mgmt_bootloader(|ms| js_sleep(ms as u32)).await;
+        let result = core
+            .try_enter_mgmt_bootloader(|ms| js_sleep(ms as u32))
+            .await;
 
         // Restore normal timeout
-        let _ = core.port_mut().set_timeout(std::time::Duration::from_secs(3));
+        let _ = core
+            .port_mut()
+            .set_timeout(std::time::Duration::from_secs(3));
 
         match result {
             MgmtBootloaderEntry::AutoReset => Ok("auto_reset".to_string()),
@@ -591,7 +647,11 @@ impl LinkController {
     /// Pass firmware as Uint8Array.
     /// The progress callback receives (phase: string, current: number, total: number).
     #[wasm_bindgen]
-    pub async fn flash_mgmt(&mut self, firmware: js_sys::Uint8Array, progress_callback: js_sys::Function) -> Result<(), JsValue> {
+    pub async fn flash_mgmt(
+        &mut self,
+        firmware: js_sys::Uint8Array,
+        progress_callback: js_sys::Function,
+    ) -> Result<(), JsValue> {
         // Try automatic bootloader entry (DTR/RTS reset)
         let result = self.try_enter_mgmt_bootloader().await?;
         let skip_init = result == "auto_reset";
@@ -612,7 +672,9 @@ impl LinkController {
                 &JsValue::from(current as u32),
                 &JsValue::from(total as u32),
             );
-        }).await.map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
+        }, |ms| js_sleep(ms as u32))
+        .await
+        .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
 
     /// Flash firmware to the MGMT chip after manual bootloader entry.
@@ -622,7 +684,11 @@ impl LinkController {
     /// Pass firmware as Uint8Array.
     /// The progress callback receives (phase: string, current: number, total: number).
     #[wasm_bindgen]
-    pub async fn flash_mgmt_manual(&mut self, firmware: js_sys::Uint8Array, progress_callback: js_sys::Function) -> Result<(), JsValue> {
+    pub async fn flash_mgmt_manual(
+        &mut self,
+        firmware: js_sys::Uint8Array,
+        progress_callback: js_sys::Function,
+    ) -> Result<(), JsValue> {
         let firmware_data = firmware.to_vec();
         let core = self.core_mut()?;
 
@@ -639,7 +705,9 @@ impl LinkController {
                 &JsValue::from(current as u32),
                 &JsValue::from(total as u32),
             );
-        }).await.map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
+        }, |ms| js_sleep(ms as u32))
+        .await
+        .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
 
     /// Get UI chip bootloader information.
@@ -649,14 +717,28 @@ impl LinkController {
     pub async fn get_ui_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
         let core = self.core_mut()?;
 
-        let info = core.get_ui_bootloader_info(|ms| js_sleep(ms as u32)).await
+        let info = core
+            .get_ui_bootloader_info(|ms| js_sleep(ms as u32))
+            .await
             .map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
 
         let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"bootloaderVersion".into(), &info.bootloader_version.into())?;
+        js_sys::Reflect::set(
+            &obj,
+            &"bootloaderVersion".into(),
+            &info.bootloader_version.into(),
+        )?;
         js_sys::Reflect::set(&obj, &"chipId".into(), &info.chip_id.into())?;
-        js_sys::Reflect::set(&obj, &"chipName".into(), &stm::chip_name(info.chip_id).into())?;
-        js_sys::Reflect::set(&obj, &"commandCount".into(), &(info.command_count as u32).into())?;
+        js_sys::Reflect::set(
+            &obj,
+            &"chipName".into(),
+            &stm::chip_name(info.chip_id).into(),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &"commandCount".into(),
+            &(info.command_count as u32).into(),
+        )?;
 
         let commands = js_sys::Array::new();
         for i in 0..info.command_count {
@@ -669,7 +751,11 @@ impl LinkController {
         js_sys::Reflect::set(&obj, &"commands".into(), &commands)?;
 
         if let Some(flash_sample) = info.flash_sample {
-            js_sys::Reflect::set(&obj, &"flashSample".into(), &hex::encode(flash_sample).into())?;
+            js_sys::Reflect::set(
+                &obj,
+                &"flashSample".into(),
+                &hex::encode(flash_sample).into(),
+            )?;
             js_sys::Reflect::set(&obj, &"readProtected".into(), &false.into())?;
         } else {
             js_sys::Reflect::set(&obj, &"readProtected".into(), &true.into())?;
@@ -684,7 +770,12 @@ impl LinkController {
     /// Pass firmware as Uint8Array.
     /// The progress callback receives (phase: string, current: number, total: number).
     #[wasm_bindgen]
-    pub async fn flash_ui(&mut self, firmware: js_sys::Uint8Array, verify: bool, progress_callback: js_sys::Function) -> Result<(), JsValue> {
+    pub async fn flash_ui(
+        &mut self,
+        firmware: js_sys::Uint8Array,
+        verify: bool,
+        progress_callback: js_sys::Function,
+    ) -> Result<(), JsValue> {
         let firmware_data = firmware.to_vec();
         let core = self.core_mut()?;
 
@@ -706,7 +797,9 @@ impl LinkController {
                     &JsValue::from(total as u32),
                 );
             },
-        ).await.map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
+        )
+        .await
+        .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
 
     /// Get NET chip (ESP32) bootloader information.
@@ -715,7 +808,9 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn get_net_bootloader_info(&mut self) -> Result<JsValue, JsValue> {
         let core = self.core_mut()?;
-        let info = core.get_net_bootloader_info(JsDelay).await
+        let info = core
+            .get_net_bootloader_info(JsDelay)
+            .await
             .map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
 
         let obj = js_sys::Object::new();
@@ -723,8 +818,20 @@ impl LinkController {
         // Device info
         let device = &info.device_info;
         js_sys::Reflect::set(&obj, &"chip".into(), &format!("{:?}", device.chip).into())?;
-        js_sys::Reflect::set(&obj, &"flashSize".into(), &format!("{:?}", device.flash_size).trim_start_matches('_').into())?;
-        js_sys::Reflect::set(&obj, &"crystalFrequency".into(), &format!("{:?}", device.crystal_frequency).trim_start_matches('_').into())?;
+        js_sys::Reflect::set(
+            &obj,
+            &"flashSize".into(),
+            &format!("{:?}", device.flash_size)
+                .trim_start_matches('_')
+                .into(),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &"crystalFrequency".into(),
+            &format!("{:?}", device.crystal_frequency)
+                .trim_start_matches('_')
+                .into(),
+        )?;
 
         let features = js_sys::Array::new();
         for feature in &device.features {
@@ -751,7 +858,11 @@ impl LinkController {
     /// Pass an ELF file as Uint8Array - it will be converted to ESP-IDF bootloader format.
     /// The progress callback receives (phase: string, current: number, total: number).
     #[wasm_bindgen]
-    pub async fn flash_net(&mut self, elf_data: js_sys::Uint8Array, progress_callback: js_sys::Function) -> Result<(), JsValue> {
+    pub async fn flash_net(
+        &mut self,
+        elf_data: js_sys::Uint8Array,
+        progress_callback: js_sys::Function,
+    ) -> Result<(), JsValue> {
         let elf_bytes = elf_data.to_vec();
         let core = self.core_mut()?;
 
@@ -769,7 +880,11 @@ impl LinkController {
                 self.total = total;
                 self.verifying = false;
                 // Report initial state
-                let phase = if self.verifying { "verifying" } else { "writing" };
+                let phase = if self.verifying {
+                    "verifying"
+                } else {
+                    "writing"
+                };
                 let _ = self.callback.call3(
                     &JsValue::NULL,
                     &JsValue::from_str(phase),
@@ -778,7 +893,11 @@ impl LinkController {
                 );
             }
             fn update(&mut self, current: usize) {
-                let phase = if self.verifying { "verifying" } else { "writing" };
+                let phase = if self.verifying {
+                    "verifying"
+                } else {
+                    "writing"
+                };
                 let _ = self.callback.call3(
                     &JsValue::NULL,
                     &JsValue::from_str(phase),
@@ -807,8 +926,13 @@ impl LinkController {
             }
         }
 
-        let mut progress = JsProgressCallbacks { callback: progress_callback, total: 0, verifying: false };
-        core.flash_net(&elf_bytes, None, &mut progress, JsDelay, 460_800).await
+        let mut progress = JsProgressCallbacks {
+            callback: progress_callback,
+            total: 0,
+            verifying: false,
+        };
+        core.flash_net(&elf_bytes, None, &mut progress, JsDelay, 1_000_000)
+            .await
             .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
 
@@ -816,7 +940,9 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn erase_net(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        core.erase_net(JsDelay).await.map_err(|e| JsValue::from_str(&format!("Erase error: {:?}", e)))
+        core.erase_net(JsDelay)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Erase error: {:?}", e)))
     }
 
     // ==================== MONITOR ====================
@@ -825,7 +951,9 @@ impl LinkController {
     #[wasm_bindgen]
     pub fn set_monitor_timeout(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        let _ = core.port_mut().set_timeout(std::time::Duration::from_millis(100));
+        let _ = core
+            .port_mut()
+            .set_timeout(std::time::Duration::from_millis(100));
         Ok(())
     }
 
@@ -833,7 +961,9 @@ impl LinkController {
     #[wasm_bindgen]
     pub fn restore_timeout(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        let _ = core.port_mut().set_timeout(std::time::Duration::from_secs(3));
+        let _ = core
+            .port_mut()
+            .set_timeout(std::time::Duration::from_secs(3));
         Ok(())
     }
 
@@ -860,7 +990,11 @@ impl LinkController {
                     let bytes = tlv.value.as_slice();
                     let text = match core::str::from_utf8(bytes) {
                         Ok(s) => s.to_string(),
-                        Err(_) => bytes.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" "),
+                        Err(_) => bytes
+                            .iter()
+                            .map(|b| format!("{:02X}", b))
+                            .collect::<Vec<_>>()
+                            .join(" "),
                     };
                     Ok(JsValue::from_str(&text))
                 } else {
