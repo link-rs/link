@@ -8,6 +8,9 @@ use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::{ErrorType as DigitalErrorType, OutputPin, StatefulOutputPin};
 use embedded_hal::i2c::{ErrorType as I2cErrorType, Operation};
 use embedded_hal_async::digital::Wait;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::time::sleep;
 
 /// Trait for I2C device handlers that can be attached to MockI2c.
 pub trait I2cDevice {
@@ -196,20 +199,20 @@ impl Wait for MockButton {
 /// Controllable mock button for testing button press/release behavior.
 /// Uses tokio channels to trigger edge events.
 pub struct ControllableButton {
-    rising_rx: tokio::sync::mpsc::Receiver<()>,
-    falling_rx: tokio::sync::mpsc::Receiver<()>,
+    rising_rx: mpsc::Receiver<()>,
+    falling_rx: mpsc::Receiver<()>,
 }
 
 /// Handle to control a ControllableButton.
 pub struct ButtonController {
-    rising_tx: tokio::sync::mpsc::Sender<()>,
-    falling_tx: tokio::sync::mpsc::Sender<()>,
+    rising_tx: mpsc::Sender<()>,
+    falling_tx: mpsc::Sender<()>,
 }
 
 impl ControllableButton {
     pub fn new() -> (Self, ButtonController) {
-        let (rising_tx, rising_rx) = tokio::sync::mpsc::channel(1);
-        let (falling_tx, falling_rx) = tokio::sync::mpsc::channel(1);
+        let (rising_tx, rising_rx) = mpsc::channel(1);
+        let (falling_tx, falling_rx) = mpsc::channel(1);
         (
             Self {
                 rising_rx,
@@ -427,7 +430,7 @@ impl crate::ui::AudioSystem for MockAudioStream {
     ) -> Result<(), crate::ui::AudioError> {
         // Simulate real audio timing (80ms per frame at 8kHz stereo with A-law)
         // Use shorter delay in tests to speed them up while still allowing scheduler to run
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        sleep(Duration::from_millis(10)).await;
 
         // Create a stereo frame with a unique identifier in the first stereo pair
         // Use frame counter as amplitude for both L and R channels
@@ -483,7 +486,7 @@ impl crate::ui::AudioSystem for CapturingAudioStream {
             self.written_frames.lock().unwrap().push(tx.clone());
         }
         // Simulate real audio timing (5ms per frame for faster tests)
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        sleep(Duration::from_millis(5)).await;
         // Put frame counter in the first stereo pair
         rx.0[0] = self.frame_counter;
         rx.0[1] = self.frame_counter;
@@ -504,11 +507,11 @@ use std::collections::VecDeque;
 /// Writer that implements `std::io::Write` for sync code (like ctl::App).
 /// Sends byte chunks through a tokio channel.
 pub struct SyncWriter {
-    tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
 impl SyncWriter {
-    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>) -> Self {
+    pub fn new(tx: mpsc::UnboundedSender<Vec<u8>>) -> Self {
         Self { tx }
     }
 }
@@ -529,12 +532,12 @@ impl std::io::Write for SyncWriter {
 /// Reader that implements `std::io::Read` for sync code (like ctl::App).
 /// Uses blocking receive from a tokio channel.
 pub struct SyncReader {
-    rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    rx: mpsc::UnboundedReceiver<Vec<u8>>,
     buffer: VecDeque<u8>,
 }
 
 impl SyncReader {
-    pub fn new(rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
+    pub fn new(rx: mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
         Self {
             rx,
             buffer: VecDeque::new(),
@@ -564,12 +567,12 @@ impl std::io::Read for SyncReader {
 /// Writer that implements `embedded_io_async::Write` for async firmware code.
 /// Optionally tracks baud rate changes for testing.
 pub struct AsyncWriter {
-    tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    tx: mpsc::UnboundedSender<Vec<u8>>,
     baud_rate: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
 }
 
 impl AsyncWriter {
-    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>) -> Self {
+    pub fn new(tx: mpsc::UnboundedSender<Vec<u8>>) -> Self {
         Self {
             tx,
             baud_rate: None,
@@ -578,7 +581,7 @@ impl AsyncWriter {
 
     /// Create a writer with baud rate tracking.
     pub fn with_baud_tracking(
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        tx: mpsc::UnboundedSender<Vec<u8>>,
         baud_rate: std::sync::Arc<std::sync::atomic::AtomicU32>,
     ) -> Self {
         Self {
@@ -616,13 +619,13 @@ impl crate::shared::uart_config::SetBaudRate for AsyncWriter {
 /// Reader that implements `embedded_io_async::Read` for async firmware code.
 /// Optionally tracks baud rate changes for testing.
 pub struct AsyncReader {
-    rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    rx: mpsc::UnboundedReceiver<Vec<u8>>,
     buffer: VecDeque<u8>,
     baud_rate: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
 }
 
 impl AsyncReader {
-    pub fn new(rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
+    pub fn new(rx: mpsc::UnboundedReceiver<Vec<u8>>) -> Self {
         Self {
             rx,
             buffer: VecDeque::new(),
@@ -632,7 +635,7 @@ impl AsyncReader {
 
     /// Create a reader with baud rate tracking.
     pub fn with_baud_tracking(
-        rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        rx: mpsc::UnboundedReceiver<Vec<u8>>,
         baud_rate: std::sync::Arc<std::sync::atomic::AtomicU32>,
     ) -> Self {
         Self {
@@ -684,9 +687,9 @@ impl crate::shared::uart_config::SetBaudRate for AsyncReader {
 /// - Data flows: sync_writer -> async_reader, async_writer -> sync_reader
 pub fn sync_async_channel() -> ((SyncReader, SyncWriter), (AsyncReader, AsyncWriter)) {
     // sync_writer -> async_reader (CTL sends to firmware)
-    let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel();
+    let (tx1, rx1) = mpsc::unbounded_channel();
     // async_writer -> sync_reader (firmware sends to CTL)
-    let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
+    let (tx2, rx2) = mpsc::unbounded_channel();
 
     let sync_end = (SyncReader::new(rx2), SyncWriter::new(tx1));
     let async_end = (AsyncReader::new(rx1), AsyncWriter::new(tx2));
@@ -698,8 +701,8 @@ pub fn sync_async_channel() -> ((SyncReader, SyncWriter), (AsyncReader, AsyncWri
 ///
 /// Returns two `(AsyncReader, AsyncWriter)` pairs, one for each end.
 pub fn async_async_channel() -> ((AsyncReader, AsyncWriter), (AsyncReader, AsyncWriter)) {
-    let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel();
-    let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
+    let (tx1, rx1) = mpsc::unbounded_channel();
+    let (tx2, rx2) = mpsc::unbounded_channel();
 
     let end1 = (AsyncReader::new(rx2), AsyncWriter::new(tx1));
     let end2 = (AsyncReader::new(rx1), AsyncWriter::new(tx2));
@@ -762,9 +765,9 @@ impl crate::ctl::CtlPort for MockCtlPort {
 #[cfg(any(feature = "ctl-core", feature = "ctl"))]
 pub fn ctl_async_channel() -> (MockCtlPort, (AsyncReader, AsyncWriter)) {
     // ctl_writer -> mgmt_reader (CTL sends to MGMT)
-    let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel();
+    let (tx1, rx1) = mpsc::unbounded_channel();
     // mgmt_writer -> ctl_reader (MGMT sends to CTL)
-    let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
+    let (tx2, rx2) = mpsc::unbounded_channel();
 
     let ctl_port = MockCtlPort::new(AsyncReader::new(rx2), AsyncWriter::new(tx1));
     let mgmt_end = (AsyncReader::new(rx1), AsyncWriter::new(tx2));
@@ -789,9 +792,9 @@ pub fn ctl_async_channel_with_baud_tracking() -> (
     let net_baud = Arc::new(AtomicU32::new(115200));
 
     // ctl_writer -> mgmt_reader (CTL sends to MGMT)
-    let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel();
+    let (tx1, rx1) = mpsc::unbounded_channel();
     // mgmt_writer -> ctl_reader (MGMT sends to CTL)
-    let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
+    let (tx2, rx2) = mpsc::unbounded_channel();
 
     let ctl_port = MockCtlPort::new(
         AsyncReader::with_baud_tracking(rx2, ctl_baud.clone()),

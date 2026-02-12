@@ -4,8 +4,8 @@ use super::Core;
 use crate::{GetSetHex, GetSetU32, LoopbackAction, PinAction, PinLevel, ResetAction, StackAction, UiAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::FlashPhase;
-use link::ctl::SetTimeout;
-use link::UiLoopbackMode;
+use link::ctl::{CtlError, SetTimeout};
+use link::{PinValue, UiLoopbackMode};
 use std::io::Write;
 use std::time::Duration;
 
@@ -196,8 +196,8 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
         },
         UiAction::Boot0 { action: PinAction::Set { level } } => {
             let value = match level {
-                PinLevel::High => link::PinValue::High,
-                PinLevel::Low => link::PinValue::Low,
+                PinLevel::High => PinValue::High,
+                PinLevel::Low => PinValue::Low,
             };
             core.set_ui_boot0(value).await?;
             println!("UI BOOT0: {:?}", value);
@@ -205,8 +205,8 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
         }
         UiAction::Boot1 { action: PinAction::Set { level } } => {
             let value = match level {
-                PinLevel::High => link::PinValue::High,
-                PinLevel::Low => link::PinValue::Low,
+                PinLevel::High => PinValue::High,
+                PinLevel::Low => PinValue::Low,
             };
             core.set_ui_boot1(value).await?;
             println!("UI BOOT1: {:?}", value);
@@ -214,8 +214,8 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
         }
         UiAction::Rst { action: PinAction::Set { level } } => {
             let value = match level {
-                PinLevel::High => link::PinValue::High,
-                PinLevel::Low => link::PinValue::Low,
+                PinLevel::High => PinValue::High,
+                PinLevel::Low => PinValue::Low,
             };
             core.set_ui_rst(value).await?;
             println!("UI RST: {:?}", value);
@@ -238,7 +238,7 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                 Ok(())
             }
             ResetAction::Release => {
-                core.set_ui_rst(link::PinValue::High).await?;
+                core.set_ui_rst(PinValue::High).await?;
                 println!("UI chip released from reset");
                 Ok(())
             }
@@ -285,7 +285,7 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                         }
                         Err(e) => {
                             // Check if it's a timeout error (can happen during read_exact)
-                            if let link::ctl::CtlError::Port(msg) = &e {
+                            if let CtlError::Port(msg) = &e {
                                 if msg.contains("TimedOut") || msg.contains("timeout") {
                                     // Timeout during partial read, continue
                                     continue;

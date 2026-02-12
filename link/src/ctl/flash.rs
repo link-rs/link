@@ -14,6 +14,7 @@ use crate::shared::chip_config::tlv::PADDING_BYTES;
 use crate::shared::timing::uart::BAUD_RATE_CHANGE_MS;
 use crate::shared::tlv::buffer;
 use crate::shared::uart_config;
+use std::io::{Error as IoError, ErrorKind};
 use std::time::Duration;
 
 /// Information retrieved from the MGMT chip when it's in bootloader mode.
@@ -138,8 +139,8 @@ impl<P: CtlPort<Error = std::io::Error>> CtlPort for TunnelPort<'_, P> {
             let length = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
 
             if length > MAX_VALUE_SIZE {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
+                return Err(IoError::new(
+                    ErrorKind::InvalidData,
                     "TLV too long",
                 ));
             }
@@ -147,8 +148,8 @@ impl<P: CtlPort<Error = std::io::Error>> CtlPort for TunnelPort<'_, P> {
             // Read value
             let mut value = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
             if value.resize(length, 0).is_err() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
+                return Err(IoError::new(
+                    ErrorKind::InvalidData,
                     "TLV too long",
                 ));
             }
@@ -201,8 +202,8 @@ impl<P: CtlPort<Error = std::io::Error>> CtlPort for TunnelPort<'_, P> {
         while filled < buf.len() {
             let n = self.read(&mut buf[filled..]).await?;
             if n == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
+                return Err(IoError::new(
+                    ErrorKind::UnexpectedEof,
                     "unexpected EOF",
                 ));
             }

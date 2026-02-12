@@ -7,9 +7,9 @@ use crate::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::StdDelay;
-use link::ctl::{ChannelConfig, ProgressCallbacks, SetTimeout};
+use link::ctl::{ChannelConfig, CtlError, ProgressCallbacks, SetTimeout};
 use link::protocol_config::channels::{PTT, PTT_AI, CHAT_AI};
-use link::NetLoopbackMode;
+use link::{NetLoopbackMode, Pin, PinValue};
 
 /// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
 struct FlashProgress {
@@ -235,12 +235,12 @@ pub async fn handle_net(
             action: PinAction::Set { level },
         } => {
             let value = match level {
-                PinLevel::High => link::PinValue::High,
-                PinLevel::Low => link::PinValue::Low,
+                PinLevel::High => PinValue::High,
+                PinLevel::Low => PinValue::Low,
             };
             core.write_tlv_raw(
                 link::CtlToMgmt::SetPin,
-                &[link::Pin::NetBoot as u8, value as u8],
+                &[Pin::NetBoot as u8, value as u8],
             )
             .await?;
             println!("NET BOOT: {:?}", value);
@@ -250,12 +250,12 @@ pub async fn handle_net(
             action: PinAction::Set { level },
         } => {
             let value = match level {
-                PinLevel::High => link::PinValue::High,
-                PinLevel::Low => link::PinValue::Low,
+                PinLevel::High => PinValue::High,
+                PinLevel::Low => PinValue::Low,
             };
             core.write_tlv_raw(
                 link::CtlToMgmt::SetPin,
-                &[link::Pin::NetRst as u8, value as u8],
+                &[Pin::NetRst as u8, value as u8],
             )
             .await?;
             println!("NET RST: {:?}", value);
@@ -279,7 +279,7 @@ pub async fn handle_net(
                 ResetAction::Release => {
                     core.write_tlv_raw(
                         link::CtlToMgmt::SetPin,
-                        &[link::Pin::NetRst as u8, link::PinValue::High as u8],
+                        &[Pin::NetRst as u8, PinValue::High as u8],
                     )
                     .await?;
                     println!("NET chip released from reset");
@@ -345,7 +345,7 @@ pub async fn handle_net(
                         }
                         Err(e) => {
                             // Check if it's a timeout error (can happen during read_exact)
-                            if let link::ctl::CtlError::Port(msg) = &e {
+                            if let CtlError::Port(msg) = &e {
                                 if msg.contains("TimedOut") || msg.contains("timeout") {
                                     // Timeout during partial read, continue
                                     continue;
