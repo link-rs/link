@@ -1,7 +1,10 @@
 //! NET chip command handlers.
 
 use super::Core;
-use crate::{ChannelAction, GetSetString, NetAction, NetLoopbackAction, PinAction, PinLevel, ResetAction, WifiAction};
+use crate::{
+    ChannelAction, GetSetString, NetAction, NetLoopbackAction, PinAction, PinLevel, ResetAction,
+    WifiAction,
+};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::StdDelay;
 use link::ctl::{ChannelConfig, ProgressCallbacks, SetTimeout};
@@ -60,7 +63,10 @@ impl ProgressCallbacks for FlashProgress {
     }
 }
 
-pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn handle_net(
+    action: NetAction,
+    core: &mut Core,
+) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         NetAction::Ping { data } => {
             println!("Sending NET ping with data: {}", data);
@@ -70,7 +76,9 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
         }
         NetAction::Info => {
             println!("Querying NET chip info...");
-            let info = core.get_net_bootloader_info(StdDelay).await
+            let info = core
+                .get_net_bootloader_info(StdDelay)
+                .await
                 .map_err(|e| format!("Failed to get bootloader info: {:?}", e))?;
 
             let dev = &info.device_info;
@@ -175,7 +183,15 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
             println!("Flashing NET chip...\n");
 
             let mut progress = FlashProgress::new();
-            let result = core.flash_net(&firmware, partition_table_data.as_deref(), &mut progress, StdDelay, 1_000_000).await;
+            let result = core
+                .flash_net(
+                    &firmware,
+                    partition_table_data.as_deref(),
+                    &mut progress,
+                    StdDelay,
+                    1_000_000,
+                )
+                .await;
 
             progress.finish();
 
@@ -214,21 +230,33 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
                 Ok(())
             }
         },
-        NetAction::Boot { action: PinAction::Set { level } } => {
+        NetAction::Boot {
+            action: PinAction::Set { level },
+        } => {
             let value = match level {
                 PinLevel::High => link::PinValue::High,
                 PinLevel::Low => link::PinValue::Low,
             };
-            core.write_tlv_raw(link::CtlToMgmt::SetPin, &[link::Pin::NetBoot as u8, value as u8]).await?;
+            core.write_tlv_raw(
+                link::CtlToMgmt::SetPin,
+                &[link::Pin::NetBoot as u8, value as u8],
+            )
+            .await?;
             println!("NET BOOT: {:?}", value);
             Ok(())
         }
-        NetAction::Rst { action: PinAction::Set { level } } => {
+        NetAction::Rst {
+            action: PinAction::Set { level },
+        } => {
             let value = match level {
                 PinLevel::High => link::PinValue::High,
                 PinLevel::Low => link::PinValue::Low,
             };
-            core.write_tlv_raw(link::CtlToMgmt::SetPin, &[link::Pin::NetRst as u8, value as u8]).await?;
+            core.write_tlv_raw(
+                link::CtlToMgmt::SetPin,
+                &[link::Pin::NetRst as u8, value as u8],
+            )
+            .await?;
             println!("NET RST: {:?}", value);
             Ok(())
         }
@@ -248,12 +276,16 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
                     println!("NET chip held in reset");
                 }
                 ResetAction::Release => {
-                    core.write_tlv_raw(link::CtlToMgmt::SetPin, &[link::Pin::NetRst as u8, link::PinValue::High as u8]).await?;
+                    core.write_tlv_raw(
+                        link::CtlToMgmt::SetPin,
+                        &[link::Pin::NetRst as u8, link::PinValue::High as u8],
+                    )
+                    .await?;
                     println!("NET chip released from reset");
                 }
             }
             Ok(())
-        },
+        }
         NetAction::Erase => {
             println!("Erasing NET chip flash...");
             match core.erase_net(StdDelay).await {
@@ -273,7 +305,10 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
             println!("Monitoring NET chip (ESC to stop)...\n");
 
             // Set a short timeout for non-blocking reads
-            if let Err(e) = core.port_mut().set_timeout(std::time::Duration::from_millis(100)) {
+            if let Err(e) = core
+                .port_mut()
+                .set_timeout(std::time::Duration::from_millis(100))
+            {
                 eprintln!("Warning: couldn't set timeout: {}", e);
             }
 
@@ -319,13 +354,17 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
                         }
                     }
                 }
-            }.await;
+            }
+            .await;
 
             // Always restore terminal mode and timeout
             terminal::disable_raw_mode()?;
 
             // Restore timeout to normal (3 seconds)
-            if let Err(e) = core.port_mut().set_timeout(std::time::Duration::from_secs(3)) {
+            if let Err(e) = core
+                .port_mut()
+                .set_timeout(std::time::Duration::from_secs(3))
+            {
                 eprintln!("Warning: couldn't restore timeout: {}", e);
             }
 
@@ -401,7 +440,10 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
                 let config = ChannelConfig {
                     channel_id,
                     enabled,
-                    relay_url: relay_url.as_str().try_into().map_err(|_| "relay_url too long")?,
+                    relay_url: relay_url
+                        .as_str()
+                        .try_into()
+                        .map_err(|_| "relay_url too long")?,
                 };
                 core.set_channel_config(&config).await?;
                 println!("Channel {} configuration updated", channel_id);
@@ -426,7 +468,10 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
                 1 => "Playing",
                 _ => "Unknown",
             };
-            println!("Jitter buffer stats for channel {} ({}):", channel_id, channel_name);
+            println!(
+                "Jitter buffer stats for channel {} ({}):",
+                channel_id, channel_name
+            );
             println!("  received:  {}", stats.received);
             println!("  output:    {}", stats.output);
             println!("  underruns: {}", stats.underruns);
