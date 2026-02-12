@@ -247,8 +247,6 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             if reset {
                 println!("Resetting UI chip...");
                 core.reset_ui_to_user().await?;
-                // Wait for boot messages to start appearing
-                tokio::time::sleep(Duration::from_millis(100)).await;
             }
             println!("Monitoring UI chip logs (ESC to stop)...\n");
 
