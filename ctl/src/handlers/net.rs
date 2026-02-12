@@ -269,6 +269,8 @@ pub async fn handle_net(action: NetAction, core: &mut Core) -> Result<(), Box<dy
                 println!("Resetting NET chip...");
                 let delay = |ms| tokio::time::sleep(std::time::Duration::from_millis(ms));
                 core.reset_net_to_user(delay).await?;
+                // Wait for boot messages to start appearing
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
             println!("Monitoring NET chip (ESC to stop)...\n");
 
