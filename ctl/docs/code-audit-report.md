@@ -1,7 +1,7 @@
 # Code Audit Report: Fixed-Length Delays, Magic Constants, and Deep Nesting
 
 **Date**: February 12, 2026
-**Scope**: ctl/, web-ctl/, mgmt/, link/src/ctl/, link/src/mgmt/, link/src/shared/
+**Scope**: ctl/, web-ctl/, mgmt/, ui/, net/, link/src/ctl/, link/src/mgmt/, link/src/shared/, link/src/ui/, link/src/net/
 
 ## Executive Summary
 
@@ -13,9 +13,9 @@ This audit analyzed the codebase for three code quality patterns that impact mai
 |---------|----------|------------|----------|-------|
 | Fixed-Length Delays | 8 | 12 | 3 | 23 |
 | Magic Constants | 15 | 18 | 12 | 45 |
-| Deep Nesting | 0 | 3 | 8 | 11 |
+| Deep Nesting | 0 | 22 | 7 | 29 |
 
-**Overall Assessment**: The codebase shows good use of centralized constants for UART configuration in `link/src/shared/uart_config.rs`. However, there are numerous hardcoded timing values and magic numbers scattered throughout that should be consolidated. Deep nesting is minimal and mostly acceptable.
+**Overall Assessment**: The codebase shows good use of centralized constants for UART configuration in `link/src/shared/uart_config.rs`. However, there are numerous hardcoded timing values and magic numbers scattered throughout that should be consolidated. Deep nesting (three-level `::` paths) appears 29 times across 7 patterns, with the most significant being `std::io::Error` (10 occurrences) and `link::ctl::*` paths (9 occurrences) that would benefit from use declarations.
 
 ---
 
@@ -683,66 +683,219 @@ Well-commented magic numbers in test code and algorithms where the number is alr
 
 ## 3. Deep Nesting
 
+Analysis using pattern `\w\+::\w\+::\w\+` found **29 instances** of three-level namespace nesting across **7 unique patterns**.
+
 ### MUST FIX (0 issues)
 
 No critical deep nesting issues found.
 
 ---
 
-### SHOULD FIX (3 issues)
+### SHOULD FIX (3 patterns, 22 total instances)
 
-#### 7.1 Repeated `link::ctl::` paths in imports
-**Issue**:
+#### 7.1 `std::<module>::<item>` - 10 occurrences
+**Files affected**: 4 files
+- `link/src/ctl/flash.rs` (7 occurrences - lines 114, 115, 153, 154, 162, 163, 216, 217, 309)
+- `ctl/src/handlers/net.rs` (2 occurrences - lines 264, 302)
+- `web-ctl/src/serial.rs` (1 occurrence - line 314, 320)
+
+**Patterns observed**:
+- `std::io::Error` - Used in error types and constructors
+- `std::io::ErrorKind` - Used in error construction
+- `std::time::Duration` - Used in timeout operations
+
+**Example issues**:
 ```rust
-use link::ctl::espflash::target::ProgressCallbacks;
-use link::ctl::flash::{AsyncDelay, FlashPhase, MgmtBootloaderEntry};
-use link::ctl::stm;
-use link::ctl::{CtlCore, CtlError, SetTimeout};
+// flash.rs:114
+impl<P: CtlPort<Error = std::io::Error>> CtlPort for TunnelPort<'_, P> {
+
+// flash.rs:153-154
+return Err(std::io::Error::new(
+    std::io::ErrorKind::InvalidData,
+    "TLV length exceeds maximum"
+));
+
+// net.rs:264
+tokio::time::sleep(std::time::Duration::from_millis(0))?
 ```
 
 **Proposed Fix**:
 ```rust
-use link::ctl::{
-    self,
-    espflash::target::ProgressCallbacks,
-    flash::{AsyncDelay, FlashPhase, MgmtBootloaderEntry},
-    stm,
-    CtlCore, CtlError, SetTimeout,
+use std::io::{Error as IoError, ErrorKind};
+use std::time::Duration;
+
+// Then use:
+impl<P: CtlPort<Error = IoError>> CtlPort for TunnelPort<'_, P> {
+
+return Err(IoError::new(
+    ErrorKind::InvalidData,
+    "TLV length exceeds maximum"
+));
+
+tokio::time::sleep(Duration::from_millis(0))?
+```
+
+**Priority**: Should Fix - Appears in multiple files, impacts readability in trait bounds and error handling
+
+---
+
+#### 7.2 `link::<module>::<item>` - 9 occurrences
+**Files affected**: 4 files
+- `ctl/src/handlers/net.rs` (5 occurrences - lines 9, 237, 238, 251, 252, 347)
+- `web-ctl/src/lib.rs` (3 occurrences)
+- `web-ctl/src/serial.rs` (1 occurrence)
+
+**Patterns observed**:
+- `link::ctl::flash::StdDelay`
+- `link::ctl::CtlError` - Error type in match expressions
+- `link::PinValue::High/Low` - Pin control enums
+- `link::Pin::NetBoot/NetRst` - Pin enumeration
+
+**Example issues**:
+```rust
+// handlers/net.rs:237-238
+let value = match level {
+    PinLevel::High => link::PinValue::High,
+    PinLevel::Low => link::PinValue::Low,
 };
-```
 
----
-
-#### 7.2 Repeated `link::shared::` paths
-**Issue**: Multiple separate use statements for items from the same module.
-
-**Proposed Fix**: Combine into single use statement or use module alias:
-```rust
-use crate::shared::{self as shared, Pin, PinValue, CtlToMgmt, MgmtToCtl};
-```
-
----
-
-#### 7.3 Long module paths in error handling
-**File**: `ctl/src/handlers/net.rs:347`
-
-**Issue**:
-```rust
+// handlers/net.rs:347
 if let link::ctl::CtlError::Port(msg) = &e {
+    if msg.contains("TimedOut") || msg.contains("timeout") {
 ```
 
 **Proposed Fix**:
 ```rust
-use link::ctl::CtlError;
-// Then:
+use link::{Pin, PinValue};
+use link::ctl::{flash::StdDelay, CtlError};
+
+// Then use:
+let value = match level {
+    PinLevel::High => PinValue::High,
+    PinLevel::Low => PinValue::Low,
+};
+
 if let CtlError::Port(msg) = &e {
 ```
 
+**Priority**: Should Fix - Internal crate paths used repeatedly in handlers
+
 ---
 
-### OPTIONAL (8 issues)
+#### 7.3 `esp_idf_svc::<module>::<item>` - 3 occurrences
+**Files affected**: 1 file
+- `net/src/main.rs` (3 occurrences - lines 95, 763, 769)
 
-Various fully-qualified paths that are acceptable but could be shortened with use declarations. Most are in error handling or match expressions where the full path provides clarity.
+**Patterns observed**:
+- `esp_idf_svc::sys::esp_efuse_mac_get_default`
+- `esp_idf_svc::wifi::EspWifi`
+- `esp_idf_svc::wifi::BlockingWifi`
+
+**Example issues**:
+```rust
+// main.rs:95
+esp_idf_svc::sys::esp_efuse_mac_get_default(mac.as_mut_ptr());
+
+// main.rs:763-769
+let wifi = esp_idf_svc::wifi::EspWifi::new(...)?;
+let mut wifi = esp_idf_svc::wifi::BlockingWifi::wrap(wifi, sys_loop).unwrap();
+```
+
+**Proposed Fix**:
+```rust
+use esp_idf_svc::{sys, wifi};
+
+// Then use:
+sys::esp_efuse_mac_get_default(mac.as_mut_ptr());
+
+let wifi = wifi::EspWifi::new(...)?;
+let mut wifi = wifi::BlockingWifi::wrap(wifi, sys_loop).unwrap();
+```
+
+**Priority**: Should Fix - Localized to one file, easy cleanup
+
+---
+
+### OPTIONAL (4 patterns, 7 total instances)
+
+#### 8.1 `tokio::<module>::<item>` - 2 occurrences
+**File**: `ctl/src/handlers/net.rs` (lines 264, 302)
+
+**Patterns**: `tokio::time::sleep()`, `tokio::sync::mpsc::{...}`
+
+**Suggested fix**:
+```rust
+use tokio::time::sleep;
+use tokio::sync::mpsc;
+```
+
+**Assessment**: Optional - Limited occurrence, but would slightly improve readability
+
+---
+
+#### 8.2 `crate::<module>::<item>` - 2 occurrences
+**File**: `link/src/integration_tests.rs` (lines 9-10)
+
+**Patterns**: `crate::ctl::CtlCore`, `crate::shared::mocks::{...}`
+
+**Assessment**: Optional - Internal crate references in tests, already appropriate
+
+---
+
+#### 8.3 `embedded_hal::<module>::<item>` - 2 occurrences
+**File**: `ui/src/main.rs` (lines 20-21)
+
+**Patterns**: `embedded_hal::delay::DelayNs`, `embedded_hal::i2c::I2c`
+
+**Assessment**: Optional - Type aliases already in place, current pattern acceptable
+
+---
+
+#### 8.4 `embassy_sync::<module>::<item>` - 1 occurrence
+**File**: `link/src/integration_tests.rs` (line 16)
+
+**Pattern**: `embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex`
+
+**Assessment**: Optional - Test-only, single use
+
+---
+
+### Summary Table
+
+| Pattern | Count | Severity | Files Affected | Primary File |
+|---------|-------|----------|----------------|--------------|
+| `std::io::<item>` | 10 | Should Fix | 4 | `flash.rs` (7) |
+| `link::ctl::<item>` | 9 | Should Fix | 4 | `handlers/net.rs` (5) |
+| `esp_idf_svc::<item>` | 3 | Should Fix | 1 | `net/main.rs` (3) |
+| `tokio::time::<item>` | 2 | Optional | 1 | `handlers/net.rs` |
+| `crate::<item>` | 2 | Optional | 1 | `integration_tests.rs` |
+| `embedded_hal::<item>` | 2 | Optional | 1 | `ui/main.rs` |
+| `embassy_sync::<item>` | 1 | Optional | 1 | `integration_tests.rs` |
+
+**Total instances**: 29 across 7 unique patterns
+
+---
+
+### Analysis by Module
+
+**link/src/ctl/flash.rs** (7 instances)
+- Primary concern: `std::io::Error` appears extensively in type signatures and error construction
+- Impact: Most affected file for deep nesting
+- Recommendation: Add `use std::io::{Error as IoError, ErrorKind};` at module level
+
+**ctl/src/handlers/net.rs** (7 instances)
+- Primary concern: Mix of `link::*` internal paths and `std::time::Duration`
+- Impact: Scattered across error handling and timeout operations
+- Recommendation: Consolidate imports for `link::ctl` and `link` types
+
+**net/src/main.rs** (3 instances)
+- Primary concern: `esp_idf_svc::*` external crate paths
+- Impact: Localized WiFi setup code
+- Recommendation: Add module-level imports for `sys` and `wifi`
+
+**Other files** (12 instances combined)
+- Scattered across web-ctl, tests, and UI
+- Generally lower impact, mostly optional fixes
 
 ---
 
