@@ -416,7 +416,6 @@ impl<P: CtlPort> CtlCore<P> {
                 buffer.truncate(buffer.len() - 1);
                 Ok(None)
             }
-            Err(_) => Ok(None),
         }
     }
 

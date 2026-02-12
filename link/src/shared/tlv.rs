@@ -316,8 +316,6 @@ pub mod buffer {
         InvalidType(u16),
         /// TLV value length exceeds maximum.
         TooLong,
-        /// Incomplete TLV (need more data).
-        Incomplete,
     }
 
     /// Find the position of SYNC_WORD in a slice.
@@ -390,29 +388,6 @@ pub mod buffer {
         Ok(Some((Tlv { tlv_type, value }, total_len)))
     }
 
-    /// Parse a complete TLV from buffer (for tunneled TLVs).
-    ///
-    /// This expects the buffer to contain a complete TLV starting with SYNC_WORD at position 0.
-    /// Returns `Err(ParseError)` if the data is invalid or incomplete.
-    ///
-    /// This is a thin wrapper around `try_parse_from_buffer()` with stricter requirements.
-    pub fn parse_complete<T: TryFrom<u16>>(data: &[u8]) -> Result<Tlv<T>, ParseError> {
-        // Check minimum length
-        if data.len() < SYNC_WORD.len() + HEADER_SIZE {
-            return Err(ParseError::Incomplete);
-        }
-
-        // Verify sync word at position 0
-        if &data[0..SYNC_WORD.len()] != SYNC_WORD {
-            return Err(ParseError::Incomplete);
-        }
-
-        // Use try_parse_from_buffer (which will find sync at position 0)
-        match try_parse_from_buffer(data)? {
-            Some((tlv, _)) => Ok(tlv),
-            None => Err(ParseError::Incomplete),
-        }
-    }
 }
 
 // ============================================================================
@@ -442,14 +417,6 @@ pub mod tunnel {
         result
     }
 
-    /// Decode nested TLV from wrapper value field.
-    ///
-    /// The `wrapper_value` should contain a complete TLV (sync_word + header + value).
-    pub fn decode_nested<T: TryFrom<u16>>(
-        wrapper_value: &[u8],
-    ) -> Result<Tlv<T>, super::buffer::ParseError> {
-        super::buffer::parse_complete(wrapper_value)
-    }
 }
 
 #[cfg(test)]
@@ -645,8 +612,8 @@ mod test {
     }
 
     #[test]
-    fn buffer_parse_complete() {
-        use buffer::parse_complete;
+    fn buffer_try_parse_from_buffer() {
+        use buffer::try_parse_from_buffer;
 
         // Valid complete TLV
         let mut data = Vec::new();
@@ -655,28 +622,29 @@ mod test {
         data.extend_from_slice(&[0x00, 0x00, 0x00, 0x03]);
         data.extend_from_slice(b"foo");
 
-        let tlv = parse_complete::<CtlToMgmt>(&data).unwrap();
+        let (tlv, consumed) = try_parse_from_buffer::<CtlToMgmt>(&data).unwrap().unwrap();
         assert_eq!(tlv.tlv_type, CtlToMgmt::Ping);
         assert_eq!(tlv.value.as_slice(), b"foo");
+        assert_eq!(consumed, data.len());
 
-        // Missing sync word
+        // Missing sync word - returns Ok(None)
         let data = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x42];
-        let result = parse_complete::<CtlToMgmt>(&data);
-        assert!(matches!(result, Err(buffer::ParseError::Incomplete)));
+        let result = try_parse_from_buffer::<CtlToMgmt>(&data).unwrap();
+        assert!(result.is_none());
 
-        // Incomplete data
+        // Incomplete data - returns Ok(None)
         let mut data = Vec::new();
         data.extend_from_slice(&SYNC_WORD);
         data.extend_from_slice(&[0x00, 0x00]);
         // Missing length and value
 
-        let result = parse_complete::<CtlToMgmt>(&data);
-        assert!(matches!(result, Err(buffer::ParseError::Incomplete)));
+        let result = try_parse_from_buffer::<CtlToMgmt>(&data).unwrap();
+        assert!(result.is_none());
     }
 
     #[test]
-    fn tunnel_encode_decode_roundtrip() {
-        use tunnel::{decode_nested, encode_nested};
+    fn tunnel_encode_nested() {
+        use tunnel::encode_nested;
 
         let original_type = CtlToUi::Ping;
         let original_value = b"test data";
@@ -684,11 +652,11 @@ mod test {
         // Encode
         let nested = encode_nested(original_type, original_value);
 
-        // Verify structure
+        // Verify structure: sync_word + header + value
         assert_eq!(&nested[0..4], &SYNC_WORD);
 
-        // Decode
-        let decoded = decode_nested::<CtlToUi>(&nested).unwrap();
+        // Verify can be parsed back
+        let (decoded, _) = buffer::try_parse_from_buffer::<CtlToUi>(&nested).unwrap().unwrap();
         assert_eq!(decoded.tlv_type, original_type);
         assert_eq!(decoded.value.as_slice(), original_value);
     }
