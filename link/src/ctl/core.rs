@@ -420,18 +420,6 @@ impl<P: CtlPort> CtlCore<P> {
         }
     }
 
-    /// Parse an inner TLV from tunneled message data (legacy, for compatibility).
-    fn parse_inner_tlv<T: TryFrom<u16>>(&self, data: &[u8]) -> Result<Tlv<T>, CtlError> {
-        tunnel::decode_nested(data).map_err(|e| match e {
-            buffer::ParseError::InvalidType(raw_type) => CtlError::InvalidType(raw_type),
-            buffer::ParseError::TooLong => CtlError::TooLong,
-            buffer::ParseError::Incomplete => CtlError::InvalidLength {
-                expected: SYNC_WORD.len() + HEADER_SIZE,
-                actual: data.len(),
-            },
-        })
-    }
-
     // ========================================================================
     // MGMT operations
     // ========================================================================
@@ -888,36 +876,43 @@ impl<P: CtlPort> CtlCore<P> {
     ///
     /// Use this for polling scenarios where you expect timeouts.
     pub async fn try_read_ui_log(&mut self) -> Result<Option<String>, CtlError> {
-        // Try to read a TLV (returns None on timeout/EOF)
+        // First, try to parse a TLV from the existing buffer
+        if let Some(tlv) = Self::try_parse_tlv_from_buffer::<UiToCtl>(&mut self.ui_buffer)? {
+            if tlv.tlv_type == UiToCtl::Log {
+                match core::str::from_utf8(&tlv.value) {
+                    Ok(msg) => return Ok(Some(msg.into())),
+                    Err(_) => {
+                        return Ok(Some(format!(
+                            "<invalid utf8: {:?}>",
+                            tlv.value.as_slice()
+                        )))
+                    }
+                }
+            }
+            // Non-log TLV, discard it and check for more data
+        }
+
+        // Need more data - try to read from wire (returns None on timeout)
         let Some(tlv) = self.read_tlv::<MgmtToCtl>().await? else {
             return Ok(None); // Timeout/no data
         };
 
-        // Check if it's a FromUi containing a Log
-        if tlv.tlv_type == MgmtToCtl::FromUi {
-            if let Ok(inner) = self.parse_inner_tlv::<UiToCtl>(&tlv.value) {
-                if inner.tlv_type == UiToCtl::Log {
-                    match core::str::from_utf8(&inner.value) {
-                        Ok(msg) => return Ok(Some(msg.into())),
-                        Err(_) => {
-                            return Ok(Some(format!(
-                                "<invalid utf8: {:?}>",
-                                inner.value.as_slice()
-                            )))
-                        }
-                    }
-                }
+        // Append data to appropriate buffer
+        match tlv.tlv_type {
+            MgmtToCtl::FromUi => {
+                let _ = self.ui_buffer.extend_from_slice(&tlv.value);
             }
-            // Non-log UI TLV, buffer it
-            self.ui_buffer.clear();
-            let _ = self.ui_buffer.extend_from_slice(&tlv.value);
-        } else if tlv.tlv_type == MgmtToCtl::FromNet {
-            // Buffer NET message for other methods
-            self.net_buffer.clear();
-            let _ = self.net_buffer.extend_from_slice(&tlv.value);
+            MgmtToCtl::FromNet => {
+                let _ = self.net_buffer.extend_from_slice(&tlv.value);
+            }
+            _ => {
+                // Skip MGMT-level messages
+            }
         }
 
-        Ok(None) // Got TLV but not a UI log (or timeout)
+        // Return None to indicate we got data but not a complete Log TLV yet
+        // (caller will call us again in the next iteration)
+        Ok(None)
     }
 
     // ========================================================================
