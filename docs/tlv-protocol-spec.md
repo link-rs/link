@@ -1,7 +1,7 @@
 # Link TLV Protocol Specification
 
-**Version:** 1.1
-**Date:** 2026-02-06
+**Version:** 1.2
+**Date:** 2026-02-11
 
 ## 1. Overview
 
@@ -123,17 +123,21 @@ the sum of all part lengths.
 
 | Link        | Baud Rate | Parity | Stop Bits | Flow Control |
 |-------------|-----------|--------|-----------|--------------|
-| CTL -- MGMT | 115200    | Even   | 1         | None         |
-| MGMT -- UI  | 115200    | Even   | 1         | None         |
-| MGMT -- NET | 115200*   | None   | 1         | None         |
-| UI -- NET   | 460800    | None   | 2         | None         |
+| CTL -- MGMT | 1000000   | Even   | 1         | None         |
+| MGMT -- UI  | 1000000   | Even   | 1         | None         |
+| MGMT -- NET | 1000000   | None   | 1         | None         |
+| UI -- NET   | 1000000   | Even   | 1         | None         |
 
-The MGMT--NET and CTL--MGMT baud rates are configurable at runtime via
-`SetNetBaudRate` and `SetCtlBaudRate` respectively.
+All baud rates are configurable at runtime via `SetNetBaudRate`,
+`SetUiBaudRate`, and `SetCtlBaudRate` respectively. For STM32 bootloader
+flashing, the CTL--MGMT and MGMT--UI links are temporarily switched to
+115200/8E1 (the STM32 bootloader's fixed configuration).
 
-The CTL--MGMT and MGMT--UI links use even parity because they share the
-STM32 bootloader UART configuration (115200/8E1), allowing the same physical
-connection to be used for both TLV communication and bootloader flashing.
+The CTL--MGMT and MGMT--UI links use even parity for compatibility with
+the STM32 bootloader (115200/8E1), allowing the same physical connection
+to be used for both TLV communication and bootloader flashing. The
+MGMT--NET link uses no parity to match the ESP32 bootloader and user
+firmware.
 
 ## 6. Message Types
 
@@ -153,9 +157,10 @@ Messages from CTL host to MGMT chip.
 | 0x03  | Hello          | 4 bytes (challenge)        | Hello                         |
 | 0x04  | SetPin         | 2 bytes (pin, value)       | Ack                           |
 | 0x05  | SetNetBaudRate | 4 bytes (u32 BE baud rate) | Ack                           |
-| 0x06  | SetCtlBaudRate | 4 bytes (u32 BE baud rate) | Ack*                          |
-| 0x07  | GetStackInfo   | (empty)                    | StackInfo                     |
-| 0x08  | RepaintStack   | (empty)                    | Ack                           |
+| 0x06  | SetUiBaudRate  | 4 bytes (u32 BE baud rate) | Ack                           |
+| 0x07  | SetCtlBaudRate | 4 bytes (u32 BE baud rate) | Ack*                          |
+| 0x08  | GetStackInfo   | (empty)                    | StackInfo                     |
+| 0x09  | RepaintStack   | (empty)                    | Ack                           |
 
 *SetCtlBaudRate: The Ack is sent at the **old** baud rate before MGMT
 switches. CTL must change its own baud rate after receiving the Ack.
@@ -362,6 +367,11 @@ encryption. Stored in UI chip EEPROM.
 ### 7.9 Baud Rate
 
 4 bytes, u32 big-endian. The new baud rate in bits per second.
+
+`SetUiBaudRate` changes the MGMT--UI link unilaterally (MGMT changes both
+TX and RX). `SetNetBaudRate` changes the MGMT--NET link similarly.
+`SetCtlBaudRate` sends the Ack at the old baud rate, then MGMT switches;
+CTL must change its own baud rate after receiving the Ack.
 
 ### 7.10 Pin Control (SetPin)
 

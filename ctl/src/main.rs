@@ -414,9 +414,36 @@ async fn find_link_device(baud: u32) -> Option<(Core, String)> {
     println!("Scanning for Link devices...");
 
     for port_name in &all_ports {
-        if let Some(app) = try_connect(port_name, baud).await {
+        if let Some(mut core) = try_connect(port_name, baud).await {
             println!("Found Link device on {}", port_name);
-            return Some((app, port_name.clone()));
+
+            // Wait for MGMT to be fully ready for tunneling
+            if !core.wait_for_mgmt_ready(50).await {
+                continue; // Try next port
+            }
+
+            // Clear any stale data from buffers after hello exchanges
+            core.drain();
+
+            // Probe for UI readiness (UI chip may still be booting after MGMT released it from reset)
+            let max_attempts = 20;
+            for _attempt in 1..=max_attempts {
+                // Set short timeout for probing
+                let _ = core.port_mut().set_timeout(Duration::from_millis(100));
+
+                if core.ui_ping(b"probe").await.is_ok() {
+                    // Restore normal timeout
+                    let _ = core.port_mut().set_timeout(Duration::from_secs(3));
+                    return Some((core, port_name.clone()));
+                }
+
+                // Wait a bit before retry
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+
+            // UI didn't respond, but continue anyway (NET might work, or device might not have UI firmware)
+            let _ = core.port_mut().set_timeout(Duration::from_secs(3));
+            return Some((core, port_name.clone()));
         }
     }
 
@@ -478,6 +505,15 @@ async fn connect(
         let port = TokioSerialPort::new(stream);
         let mut core = new_core(port);
         core.init_port(delay_ms).await;
+
+        // Wait for MGMT to boot and be ready
+        if !core.wait_for_mgmt_ready(50).await {
+            return Err("MGMT chip not responding after reset".into());
+        }
+
+        // Clear any stale data from buffers after hello exchanges
+        core.drain();
+
         return Ok((core, port_name));
     }
 
@@ -489,6 +525,15 @@ async fn connect(
     // Fall back to manual selection
     let (mut core, port_name) = manually_select_port(baud)?;
     core.init_port(delay_ms).await;
+
+    // Wait for MGMT to boot and be ready
+    if !core.wait_for_mgmt_ready(50).await {
+        return Err("MGMT chip not responding after reset".into());
+    }
+
+    // Clear any stale data from buffers after hello exchanges
+    core.drain();
+
     Ok((core, port_name))
 }
 
