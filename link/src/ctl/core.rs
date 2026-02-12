@@ -1164,17 +1164,29 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Reset the NET chip into user mode using pin control.
     ///
-    /// Includes a 10ms delay between RST transitions.
+    /// Does a two-cycle reset similar to bootloader mode:
+    /// 1. Clean reset to clear state
+    /// 2. Set BOOT high, then reset again (ESP32 samples BOOT when RST goes high)
     pub async fn reset_net_to_user<D, F>(&mut self, delay_ms: D) -> Result<(), CtlError>
     where
         D: Fn(u64) -> F,
         F: core::future::Future<Output = ()>,
     {
         use crate::shared::PinValue;
-        self.set_net_boot(PinValue::High).await?;
+        // First power cycle (clean slate)
         self.set_net_rst(PinValue::Low).await?;
         delay_ms(10).await;
-        self.set_net_rst(PinValue::High).await
+        self.set_net_rst(PinValue::High).await?;
+        delay_ms(50).await; // Let it settle
+        // Set BOOT high for user mode
+        self.set_net_boot(PinValue::High).await?;
+        // Second power cycle - ESP32 samples BOOT when RST goes high
+        self.set_net_rst(PinValue::Low).await?;
+        delay_ms(10).await;
+        self.set_net_rst(PinValue::High).await?;
+        // Give time for boot
+        delay_ms(100).await;
+        Ok(())
     }
 
     /// Hold the NET chip in reset.
