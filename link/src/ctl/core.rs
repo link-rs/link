@@ -429,10 +429,6 @@ impl<P: CtlPort> CtlCore<P> {
                 expected: SYNC_WORD.len() + HEADER_SIZE,
                 actual: data.len(),
             },
-            buffer::ParseError::InvalidLength => CtlError::InvalidLength {
-                expected: 0,
-                actual: data.len(),
-            },
         })
     }
 

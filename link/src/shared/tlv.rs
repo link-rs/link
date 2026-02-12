@@ -300,7 +300,7 @@ pub use async_tlv::{ReadTlv, WriteTlv};
 // Buffer-based parsing utilities (for ctl module)
 // ============================================================================
 
-#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg(feature = "ctl-core")]
 pub mod buffer {
     //! Pure functions for parsing TLVs from byte buffers.
     //!
@@ -318,8 +318,6 @@ pub mod buffer {
         TooLong,
         /// Incomplete TLV (need more data).
         Incomplete,
-        /// Invalid length field.
-        InvalidLength,
     }
 
     /// Find the position of SYNC_WORD in a slice.
@@ -421,7 +419,7 @@ pub mod buffer {
 // Tunneling utilities (for ctl module)
 // ============================================================================
 
-#[cfg(feature = "std")]
+#[cfg(feature = "ctl-core")]
 pub mod tunnel {
     //! Utilities for encoding/decoding nested TLVs.
     //!
@@ -449,8 +447,8 @@ pub mod tunnel {
     /// The `wrapper_value` should contain a complete TLV (sync_word + header + value).
     pub fn decode_nested<T: TryFrom<u16>>(
         wrapper_value: &[u8],
-    ) -> Result<Tlv<T>, buffer::ParseError> {
-        buffer::parse_complete(wrapper_value)
+    ) -> Result<Tlv<T>, super::buffer::ParseError> {
+        super::buffer::parse_complete(wrapper_value)
     }
 }
 
