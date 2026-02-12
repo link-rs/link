@@ -311,6 +311,7 @@ pub mod buffer {
 
     /// Errors that can occur during buffer parsing.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[allow(dead_code)] // Planned for TLV consolidation (not yet integrated)
     pub enum ParseError {
         /// Invalid TLV type.
         InvalidType(u16),
@@ -319,12 +320,14 @@ pub mod buffer {
         /// Incomplete TLV (need more data).
         Incomplete,
         /// Invalid length field.
+        #[allow(dead_code)] // Planned for TLV consolidation (not yet integrated)
         InvalidLength,
     }
 
     /// Find the position of SYNC_WORD in a slice.
     ///
     /// Returns the index of the first occurrence, or None if not found.
+    #[allow(dead_code)] // Planned for TLV consolidation (not yet integrated)
     pub fn find_sync_word(data: &[u8]) -> Option<usize> {
         if data.len() < SYNC_WORD.len() {
             return None;
@@ -348,6 +351,7 @@ pub mod buffer {
     ///
     /// The buffer is not modified - the caller is responsible for removing
     /// consumed bytes.
+    #[allow(dead_code)] // Planned for TLV consolidation (not yet integrated)
     pub fn try_parse_from_buffer<T: TryFrom<u16>>(
         buffer: &[u8],
     ) -> Result<Option<(Tlv<T>, usize)>, ParseError> {
@@ -398,6 +402,7 @@ pub mod buffer {
     /// Returns `Err(ParseError)` if the data is invalid or incomplete.
     ///
     /// This is a thin wrapper around `try_parse_from_buffer()` with stricter requirements.
+    #[allow(dead_code)] // Planned for TLV consolidation (not yet integrated)
     pub fn parse_complete<T: TryFrom<u16>>(data: &[u8]) -> Result<Tlv<T>, ParseError> {
         // Check minimum length
         if data.len() < SYNC_WORD.len() + HEADER_SIZE {
@@ -433,6 +438,7 @@ pub mod tunnel {
     ///
     /// Returns a Vec containing the complete nested TLV ready to be used
     /// as the value field of a wrapper TLV.
+    #[allow(dead_code)] // Planned for TLV consolidation (not yet integrated)
     pub fn encode_nested<T: Into<u16>>(inner_type: T, inner_value: &[u8]) -> std::vec::Vec<u8> {
         let type_val: u16 = inner_type.into();
         let header = super::encode_header_bytes(type_val, inner_value.len());
@@ -447,6 +453,7 @@ pub mod tunnel {
     /// Decode nested TLV from wrapper value field.
     ///
     /// The `wrapper_value` should contain a complete TLV (sync_word + header + value).
+    #[allow(dead_code)] // Planned for TLV consolidation (not yet integrated)
     pub fn decode_nested<T: TryFrom<u16>>(
         wrapper_value: &[u8],
     ) -> Result<Tlv<T>, buffer::ParseError> {
