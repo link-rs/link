@@ -723,17 +723,25 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         let _ = self.port_mut().write_dtr(true).await;
         delay_ms(50).await;
         let _ = self.port_mut().write_dtr(false).await;
-        delay_ms(500).await;
 
         self.drain();
 
-        // Probe for bootloader. This consumes the init byte (0x7F → ACK),
-        // so callers should pass skip_init=true to flash_mgmt/get_mgmt_bootloader_info.
-        if self.probe_mgmt_bootloader().await {
-            return MgmtBootloaderEntry::AutoReset;
-        }
+        // Poll for bootloader ready (up to 2 seconds)
+        use crate::timing::bootloader::{PROBE_RETRY_INTERVAL_MS, MAX_WAIT_MS};
+        let start = std::time::Instant::now();
+        loop {
+            // Probe for bootloader. This consumes the init byte (0x7F → ACK),
+            // so callers should pass skip_init=true to flash_mgmt/get_mgmt_bootloader_info.
+            if self.probe_mgmt_bootloader().await {
+                return MgmtBootloaderEntry::AutoReset;
+            }
 
-        MgmtBootloaderEntry::NotDetected
+            if start.elapsed().as_millis() as u64 > MAX_WAIT_MS {
+                return MgmtBootloaderEntry::NotDetected;
+            }
+
+            delay_ms(PROBE_RETRY_INTERVAL_MS).await;
+        }
     }
 
     /// Probe if MGMT bootloader is currently active.
@@ -763,6 +771,20 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
             Ok(()) => response[0] == 0x79,
             Err(_) => false,
         }
+    }
+
+    /// Probe if UI bootloader is currently active.
+    ///
+    /// Creates a tunnel to the UI chip and attempts to initialize the bootloader.
+    /// Returns `true` if bootloader responds, `false` otherwise.
+    ///
+    /// Note: This has a short timeout to avoid blocking.
+    async fn probe_ui_bootloader(&mut self) -> bool {
+        let ui_tunnel = TunnelPort::new(self.port_mut());
+        let mut bl = Bootloader::new(ui_tunnel);
+
+        // Try to initialize - if successful, bootloader is active
+        bl.init().await.is_ok()
     }
 
     /// Exit the MGMT bootloader and return to user code.
@@ -942,7 +964,6 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
             let _ = self.port_mut().write_dtr(true).await;
             delay_ms(50).await;
             let _ = self.port_mut().write_dtr(false).await;
-            delay_ms(200).await; // Initial wait for boot to start
 
             // Wait for MGMT firmware to come online and be ready for commands
             let _ = self.wait_for_mgmt_ready(50).await;
@@ -975,8 +996,21 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         // Reset UI chip into bootloader mode
         let _ = self.reset_ui_to_bootloader().await;
 
-        // Wait for bootloader to be ready
-        delay_ms(1000).await;
+        // Poll for UI bootloader ready (up to 2 seconds)
+        use crate::timing::bootloader::{PROBE_RETRY_INTERVAL_MS, MAX_WAIT_MS};
+        let start = std::time::Instant::now();
+        loop {
+            if self.probe_ui_bootloader().await {
+                break;
+            }
+            if start.elapsed().as_millis() as u64 > MAX_WAIT_MS {
+                return Err(stm::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "UI bootloader did not respond within timeout",
+                )));
+            }
+            delay_ms(PROBE_RETRY_INTERVAL_MS).await;
+        }
 
         // Query bootloader info
         let result = self.query_ui_bootloader().await;
@@ -1062,8 +1096,21 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         // Reset UI chip into bootloader mode
         let _ = self.reset_ui_to_bootloader().await;
 
-        // Wait for bootloader to be ready
-        delay_ms(100).await;
+        // Poll for UI bootloader ready (up to 2 seconds)
+        use crate::timing::bootloader::{PROBE_RETRY_INTERVAL_MS, MAX_WAIT_MS};
+        let start = std::time::Instant::now();
+        loop {
+            if self.probe_ui_bootloader().await {
+                break;
+            }
+            if start.elapsed().as_millis() as u64 > MAX_WAIT_MS {
+                return Err(FlashError::Bootloader(stm::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "UI bootloader did not respond within timeout",
+                ))));
+            }
+            delay_ms(PROBE_RETRY_INTERVAL_MS).await;
+        }
 
         // Flash the firmware
         let result = self
