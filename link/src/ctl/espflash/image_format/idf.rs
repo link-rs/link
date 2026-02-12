@@ -8,6 +8,8 @@ use bytemuck::{Pod, Zeroable, bytes_of, from_bytes, pod_read_unaligned};
 use esp_idf_part::{AppType, DataType, Flags, Partition, PartitionTable, SubType, Type};
 use log::warn;
 use miette::{IntoDiagnostic, Result};
+
+use crate::shared::chip_config::esp32::s3::MAX_PARTITION_SIZE;
 use object::{
     Endianness,
     File,
@@ -32,9 +34,6 @@ const ESP_MAGIC: u8 = 0xE9;
 const IROM_ALIGN: u32 = 0x10000;
 const SEG_HEADER_LEN: u32 = 8;
 const WP_PIN_DISABLED: u8 = 0xEE;
-
-/// Max partition size is 16 MB
-const MAX_PARTITION_SIZE: u32 = 16 * 1000 * 1024;
 
 const BOOTLOADER_ESP32_26MHZ: &[u8] =
     include_bytes!("../resources/bootloaders/esp32_26-bootloader.bin");

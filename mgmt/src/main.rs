@@ -18,6 +18,27 @@ use embedded_io_async::{ErrorType, Read, Write};
 use link::uart_config::SetBaudRate;
 use {defmt_rtt as _, panic_probe as _};
 
+/// Stack monitor implementation using cortex-m-stack.
+struct CortexMStackMonitor;
+
+impl link::StackMonitor for CortexMStackMonitor {
+    fn stack(&self) -> core::ops::Range<usize> {
+        cortex_m_stack::stack()
+    }
+
+    fn stack_size(&self) -> usize {
+        cortex_m_stack::stack_size()
+    }
+
+    fn stack_painted(&self) -> usize {
+        cortex_m_stack::stack_painted()
+    }
+
+    fn repaint_stack(&self) {
+        cortex_m_stack::repaint_stack();
+    }
+}
+
 const DMA_BUF_SIZE: usize = link::MAX_VALUE_SIZE;
 
 /// Convert centralized UART config to STM32 HAL config.
@@ -210,6 +231,7 @@ async fn main(_spawner: Spawner) {
         ui_reset_pins,
         net_reset_pins,
         Delay,
+        CortexMStackMonitor,
     )
     .await;
 }

@@ -8,6 +8,7 @@ use crate::{
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::StdDelay;
 use link::ctl::{ChannelConfig, ProgressCallbacks, SetTimeout};
+use link::protocol_config::channels::{PTT, PTT_AI, CHAT_AI};
 use link::NetLoopbackMode;
 
 /// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
@@ -375,7 +376,7 @@ pub async fn handle_net(
         NetAction::Channel { action } => match action {
             None => {
                 // List all channel configs by querying each known channel
-                let channel_ids = [0u8, 1, 3]; // Ptt, PttAi, ChatAi
+                let channel_ids = [PTT, PTT_AI, CHAT_AI];
                 let mut found_any = false;
                 for &id in &channel_ids {
                     match core.get_channel_config(id).await {

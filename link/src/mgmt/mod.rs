@@ -158,7 +158,7 @@ enum BaudRateChange {
 }
 
 #[allow(unreachable_code)]
-pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
+pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, SM>(
     to_ctl: W,
     mut from_ctl: R,
     mut to_ui: W,
@@ -170,6 +170,7 @@ pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot,
     mut ui_reset_pins: UiResetPins<UiBoot0, UiBoot1, UiRst>,
     mut net_reset_pins: NetResetPins<NetBoot, NetRst>,
     mut delay: D,
+    stack_monitor: SM,
 ) -> !
 where
     W: Write + SetBaudRate,
@@ -184,6 +185,7 @@ where
     UiBoot1: StatefulOutputPin,
     UiRst: StatefulOutputPin,
     NetBoot: OutputPin,
+    SM: crate::shared::StackMonitor,
     NetRst: OutputPin,
     D: DelayNs,
 {
@@ -307,6 +309,7 @@ where
                 &mut ui_reset_pins,
                 &mut net_reset_pins,
                 &mut delay,
+                &stack_monitor,
             )
             .await;
 
@@ -343,7 +346,7 @@ where
     unreachable!()
 }
 
-async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
+async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, SM>(
     tlv: Tlv<CtlToMgmt>,
     to_ctl: &mut C,
     to_ui: &mut U,
@@ -351,6 +354,7 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D>(
     ui_reset_pins: &mut UiResetPins<UiBoot0, UiBoot1, UiRst>,
     net_reset_pins: &mut NetResetPins<NetBoot, NetRst>,
     delay: &mut D,
+    stack_monitor: &SM,
 ) -> BaudRateChange
 where
     C: WriteTlv<MgmtToCtl> + Write + SetBaudRate,
@@ -362,6 +366,7 @@ where
     NetBoot: OutputPin,
     NetRst: OutputPin,
     D: DelayNs,
+    SM: crate::shared::StackMonitor,
 {
     match tlv.tlv_type {
         CtlToMgmt::Ping => {
@@ -502,13 +507,12 @@ where
         }
         CtlToMgmt::GetStackInfo => {
             info!("mgmt: get stack info");
-            use cortex_m_stack::{stack, stack_size, stack_painted};
             use crate::shared::StackInfo;
-            let range = stack();
+            let range = stack_monitor.stack();
             let base = range.end as u32;
             let top = range.start as u32;
-            let size = stack_size() as u32;
-            let used = size.saturating_sub(stack_painted() as u32);
+            let size = stack_monitor.stack_size() as u32;
+            let used = size.saturating_sub(stack_monitor.stack_painted() as u32);
             let info = StackInfo {
                 stack_base: base,
                 stack_top: top,
@@ -523,7 +527,7 @@ where
         }
         CtlToMgmt::RepaintStack => {
             info!("mgmt: repaint stack");
-            cortex_m_stack::repaint_stack();
+            stack_monitor.repaint_stack();
             to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
             BaudRateChange::None
         }

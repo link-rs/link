@@ -13,6 +13,9 @@ use crate::shared::{
     NetToCtl, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid, HEADER_SIZE, MAX_VALUE_SIZE,
     SYNC_WORD,
 };
+use crate::shared::protocol_config::retries::MAX_TLV_SKIP;
+use crate::shared::timing::bootloader::HELLO_TIMEOUT_MS;
+use crate::shared::timing::reset::ESP32_RESET_HOLD_MS;
 use crate::shared::tlv::{buffer, tunnel};
 
 use super::port::CtlPort;
@@ -446,7 +449,6 @@ impl<P: CtlPort> CtlCore<P> {
     /// against misaligned data (e.g. NET boot spam that arrives before the first TLV).
     pub async fn hello(&mut self, challenge: &[u8; 4]) -> bool {
         const MAGIC: &[u8; 4] = b"LINK";
-        const MAX_TLVS: usize = 1024; // Give up after skipping this many TLVs
 
         let expected_value: [u8; 4] = [
             challenge[0] ^ MAGIC[0],
@@ -461,7 +463,7 @@ impl<P: CtlPort> CtlCore<P> {
         }
 
         // Read TLV frames using sync word scanning, skipping non-Hello ones
-        for _ in 0..MAX_TLVS {
+        for _ in 0..MAX_TLV_SKIP {
             match self.read_tlv::<MgmtToCtl>().await {
                 Ok(Some(tlv)) => {
                     if tlv.tlv_type == MgmtToCtl::Hello && tlv.value.len() == 4 {
@@ -487,8 +489,6 @@ impl<P: CtlPort> CtlCore<P> {
     where
         P: crate::ctl::SetTimeout,
     {
-        const HELLO_TIMEOUT_MS: u64 = 100;
-
         // Save the original timeout so we can restore it when done.
         let original_timeout = self.port.as_ref().map(|p| p.timeout());
 
@@ -1142,13 +1142,13 @@ impl<P: CtlPort> CtlCore<P> {
         use crate::shared::PinValue;
         // First power cycle (clean slate)
         self.set_net_rst(PinValue::Low).await?;
-        delay_ms(10).await;
+        delay_ms(ESP32_RESET_HOLD_MS).await;
         self.set_net_rst(PinValue::High).await?;
         // Set BOOT low for bootloader mode
         self.set_net_boot(PinValue::Low).await?;
         // Second power cycle - ESP32 samples BOOT when RST goes high
         self.set_net_rst(PinValue::Low).await?;
-        delay_ms(10).await;
+        delay_ms(ESP32_RESET_HOLD_MS).await;
         self.set_net_rst(PinValue::High).await
     }
 
@@ -1163,7 +1163,7 @@ impl<P: CtlPort> CtlCore<P> {
         use crate::shared::PinValue;
         self.set_net_boot(PinValue::High).await?;
         self.set_net_rst(PinValue::Low).await?;
-        delay_ms(10).await;
+        delay_ms(ESP32_RESET_HOLD_MS).await;
         self.set_net_rst(PinValue::High).await
     }
 

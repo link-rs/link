@@ -46,7 +46,7 @@ enum Event {
 }
 
 #[allow(unreachable_code)]
-pub async fn run<W, R, LR, LG, LB, BA, BB, BM, I, D, AS>(
+pub async fn run<W, R, LR, LG, LB, BA, BB, BM, I, D, AS, SM>(
     mut to_mgmt: W,
     from_mgmt: R,
     mut to_net: W,
@@ -58,6 +58,7 @@ pub async fn run<W, R, LR, LG, LB, BA, BB, BM, I, D, AS>(
     mut i2c: I,
     mut delay: D,
     mut audio_system: AS,
+    stack_monitor: SM,
 ) -> !
 where
     W: Write,
@@ -71,6 +72,7 @@ where
     I: I2c,
     D: DelayNs,
     AS: AudioSystem,
+    SM: crate::shared::StackMonitor,
 {
     info!("ui: starting");
 
@@ -128,6 +130,7 @@ where
                         &mut delay,
                         &loopback_mode,
                         &mut sframe_state,
+                        &stack_monitor,
                     )
                     .await
                 }
@@ -363,7 +366,7 @@ async fn button_monitor<'a, B: Wait, const N: usize>(
     }
 }
 
-async fn handle_mgmt<M, N, I, D>(
+async fn handle_mgmt<M, N, I, D, SM>(
     tlv: Tlv<CtlToUi>,
     to_mgmt: &mut M,
     to_net: &mut N,
@@ -371,11 +374,13 @@ async fn handle_mgmt<M, N, I, D>(
     delay: &mut D,
     loopback_mode: &AtomicU8,
     sframe_state: &mut sframe::SFrameState,
+    stack_monitor: &SM,
 ) where
     M: WriteTlv<UiToCtl>,
     N: WriteTlv<UiToNet>,
     I: I2c,
     D: DelayNs,
+    SM: crate::shared::StackMonitor,
 {
     match tlv.tlv_type {
         CtlToUi::Ping => {
@@ -457,42 +462,27 @@ async fn handle_mgmt<M, N, I, D>(
         }
         CtlToUi::GetStackInfo => {
             info!("ui: get stack info");
-            #[cfg(feature = "cortex-m-stack")]
-            {
-                use cortex_m_stack::{stack, stack_size, stack_painted};
-                use crate::shared::StackInfo;
-                let range = stack();
-                let base = range.end as u32;
-                let top = range.start as u32;
-                let size = stack_size() as u32;
-                let used = size.saturating_sub(stack_painted() as u32);
-                let info = StackInfo {
-                    stack_base: base,
-                    stack_top: top,
-                    stack_size: size,
-                    stack_used: used,
-                };
-                let mut buf = [0u8; 32];
-                if let Some(serialized) = info.to_bytes(&mut buf) {
-                    to_mgmt.must_write_tlv(UiToCtl::StackInfo, serialized).await;
-                }
-            }
-            #[cfg(not(feature = "cortex-m-stack"))]
-            {
-                to_mgmt.must_write_tlv(UiToCtl::Error, b"stack measurement not available").await;
+            use crate::shared::StackInfo;
+            let range = stack_monitor.stack();
+            let base = range.end as u32;
+            let top = range.start as u32;
+            let size = stack_monitor.stack_size() as u32;
+            let used = size.saturating_sub(stack_monitor.stack_painted() as u32);
+            let info = StackInfo {
+                stack_base: base,
+                stack_top: top,
+                stack_size: size,
+                stack_used: used,
+            };
+            let mut buf = [0u8; 32];
+            if let Some(serialized) = info.to_bytes(&mut buf) {
+                to_mgmt.must_write_tlv(UiToCtl::StackInfo, serialized).await;
             }
         }
         CtlToUi::RepaintStack => {
             info!("ui: repaint stack");
-            #[cfg(feature = "cortex-m-stack")]
-            {
-                cortex_m_stack::repaint_stack();
-                to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
-            }
-            #[cfg(not(feature = "cortex-m-stack"))]
-            {
-                to_mgmt.must_write_tlv(UiToCtl::Error, b"stack measurement not available").await;
-            }
+            stack_monitor.repaint_stack();
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
     }
 }
@@ -588,6 +578,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &mut sframe_state,
+            &crate::shared::NoOpStackMonitor,
         )
         .await;
 
@@ -621,6 +612,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &mut sframe_state,
+            &crate::shared::NoOpStackMonitor,
         )
         .await;
 
@@ -661,6 +653,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &mut sframe_state,
+            &crate::shared::NoOpStackMonitor,
         )
         .await;
 
@@ -698,6 +691,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &mut sframe_state,
+            &crate::shared::NoOpStackMonitor,
         )
         .await;
 
@@ -733,6 +727,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &mut sframe_state,
+            &crate::shared::NoOpStackMonitor,
         )
         .await;
 
@@ -768,6 +763,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &mut sframe_state,
+            &crate::shared::NoOpStackMonitor,
         )
         .await;
 

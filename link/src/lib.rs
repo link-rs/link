@@ -31,6 +31,14 @@ pub use shared::{HEADER_SIZE, SYNC_WORD};
 // Re-export uart_config module for chip firmware
 pub use shared::uart_config;
 
+// Re-export protocol_config module for ctl
+#[cfg(feature = "ctl")]
+pub use shared::protocol_config;
+
+// Re-export timing module for ctl
+#[cfg(feature = "ctl")]
+pub use shared::timing;
+
 // Re-export async TLV traits and types for firmware modules and async-ctl
 #[cfg(feature = "async-ctl")]
 pub use shared::tlv::{ReadTlv, WriteTlv, Tlv};

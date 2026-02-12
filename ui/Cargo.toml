@@ -20,7 +20,7 @@ panic-probe = { version = "1", features = ["print-defmt"] }
 
 embedded-io-async = "0.6"
 embedded-hal = "1"
-link = { path = "../link", default-features = false, features = ["ui", "defmt", "audio-buffer", "cortex-m-stack"] }
+link = { path = "../link", default-features = false, features = ["ui", "defmt", "audio-buffer"] }
 
 [profile.dev]
 opt-level = "s"

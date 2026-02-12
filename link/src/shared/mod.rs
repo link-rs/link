@@ -1,6 +1,10 @@
 //! Shared types and utilities used across all chips.
 
+pub mod chip_config;
 pub mod chunk;
+pub mod protocol_config;
+pub mod stack_monitor;
+pub mod timing;
 
 // Jitter buffer - for net firmware with audio-buffer, esp-idf, or tests
 #[cfg(any(
@@ -89,6 +93,9 @@ pub use wifi::WifiSsid;
 #[allow(unused_imports)] // Re-exported for public API
 pub use channel::{ChannelConfig, MAX_CHANNEL_URL_LEN};
 
+// Stack monitor trait - used by mgmt and ui firmware
+#[cfg(any(feature = "mgmt", feature = "ui"))]
+pub use stack_monitor::{StackMonitor, NoOpStackMonitor};
 
 // Re-export embassy_sync types for use by firmware chip modules that need them
 #[cfg(any(feature = "net", feature = "ui"))]

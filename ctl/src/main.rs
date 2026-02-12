@@ -8,6 +8,7 @@ mod serial;
 
 use clap::{FromArgMatches, Parser, Subcommand};
 use link::ctl::{CtlCore, SetTimeout};
+use link::timing::bootloader::PROBE_RETRY_INTERVAL_MS;
 use rand::Rng;
 use reedline_repl_rs::clap::ArgMatches;
 use reedline_repl_rs::{CallBackMap, Repl};
@@ -31,7 +32,7 @@ struct Cli {
     #[arg(short, long)]
     port: Option<String>,
 
-    #[arg(short, long, default_value = "1000000")]
+    #[arg(short, long, default_value_t = link::uart_config::HIGH_SPEED.baudrate)]
     baud: u32,
 
     #[command(subcommand)]
@@ -438,7 +439,7 @@ async fn find_link_device(baud: u32) -> Option<(Core, String)> {
                 }
 
                 // Wait a bit before retry
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(PROBE_RETRY_INTERVAL_MS)).await;
             }
 
             // UI didn't respond, but continue anyway (NET might work, or device might not have UI firmware)

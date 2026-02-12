@@ -15,6 +15,7 @@ use super::super::{
     command::{Command, CommandType},
     flasher::FLASH_WRITE_SIZE,
 };
+use crate::shared::timing::reset::ESP32_EXTENDED_RESET_MS;
 
 /// Default time to wait before releasing the boot pin after a reset.
 const DEFAULT_RESET_DELAY: u64 = 50; // ms
@@ -84,7 +85,7 @@ impl ResetStrategy {
                 set_rts(serial_port, true).await?; // EN = LOW, chip in reset
                 set_dtr(serial_port, false).await?; // IO0 = HIGH
 
-                serial_port.delay_ms(100).await;
+                serial_port.delay_ms(ESP32_EXTENDED_RESET_MS as u32).await;
 
                 set_rts(serial_port, false).await?; // EN = HIGH, chip out of reset
                 set_dtr(serial_port, true).await?; // IO0 = LOW

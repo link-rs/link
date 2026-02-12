@@ -7,7 +7,13 @@ use super::espflash::connection::{ClearBufferType, SerialInterface, SerialPortEr
 use super::port::{CtlPort, SetBaudRate, SetTimeout};
 use super::stm::{self, Bootloader};
 use crate::shared::{CtlToMgmt, MgmtToCtl, HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD};
+use crate::shared::chip_config::stm32::f405::{SECTOR_SIZES, VERIFY_CHUNK_SIZE, FLASH_BASE};
+use crate::shared::chip_config::stm32::f405::WRITE_CHUNK_SIZE as F405_WRITE_CHUNK_SIZE;
+use crate::shared::chip_config::stm32::f072::{PAGE_SIZE, WRITE_CHUNK_SIZE as F072_WRITE_CHUNK_SIZE, FLASH_BASE as F072_FLASH_BASE};
+use crate::shared::chip_config::tlv::PADDING_BYTES;
+use crate::shared::timing::uart::BAUD_RATE_CHANGE_MS;
 use crate::shared::tlv::buffer;
+use crate::shared::uart_config;
 use std::time::Duration;
 
 /// Information retrieved from the MGMT chip when it's in bootloader mode.
@@ -38,9 +44,6 @@ pub enum FlashPhase {
     Verifying,
 }
 
-/// Maximum size for verification error data (matches write chunk size).
-const VERIFY_CHUNK_SIZE: usize = 256;
-
 /// Errors that can occur during flash operations.
 #[derive(Debug)]
 pub enum FlashError<E> {
@@ -63,21 +66,6 @@ impl<E> From<stm::Error<E>> for FlashError<E> {
 /// Calculate the number of sectors needed for a given firmware size on STM32F405.
 /// Sectors 0-3: 16KB each, Sector 4: 64KB, Sectors 5-11: 128KB each.
 fn sectors_for_size_f405(size: usize) -> usize {
-    const SECTOR_SIZES: [usize; 12] = [
-        16 * 1024,  // Sector 0
-        16 * 1024,  // Sector 1
-        16 * 1024,  // Sector 2
-        16 * 1024,  // Sector 3
-        64 * 1024,  // Sector 4
-        128 * 1024, // Sector 5
-        128 * 1024, // Sector 6
-        128 * 1024, // Sector 7
-        128 * 1024, // Sector 8
-        128 * 1024, // Sector 9
-        128 * 1024, // Sector 10
-        128 * 1024, // Sector 11
-    ];
-
     let mut total = 0;
     for (i, &sector_size) in SECTOR_SIZES.iter().enumerate() {
         if total >= size {
@@ -254,7 +242,7 @@ impl AsyncDelay for StdDelay {
 const TLV_HEADER_SIZE: usize = 6;
 
 /// Maximum size for the raw buffer (must hold at least one complete TLV).
-const RAW_BUFFER_SIZE: usize = SYNC_WORD.len() + TLV_HEADER_SIZE + MAX_VALUE_SIZE + 256;
+const RAW_BUFFER_SIZE: usize = SYNC_WORD.len() + TLV_HEADER_SIZE + MAX_VALUE_SIZE + PADDING_BYTES;
 
 /// Async serial interface for flashing the NET chip (ESP32) through the MGMT tunnel.
 ///
@@ -536,7 +524,7 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
             .await?;
 
         // Small delay for MGMT to complete the baud rate switch
-        self.delay.delay_ms(10).await;
+        self.delay.delay_ms(BAUD_RATE_CHANGE_MS as u32).await;
 
         // Update local baud rate tracking
         self.baud_rate = baud_rate;
@@ -719,7 +707,7 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         P: crate::ctl::SetBaudRate,
     {
         // Set to bootloader baud rate
-        let _ = self.port_mut().set_baud_rate(115200).await;
+        let _ = self.port_mut().set_baud_rate(uart_config::STM32_BOOTLOADER.baudrate).await;
 
         self.drain();
 
@@ -869,7 +857,7 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         P: crate::ctl::SetTimeout + crate::ctl::SetBaudRate,
     {
         // Switch to bootloader baud rate BEFORE any bootloader interaction
-        let _ = self.port_mut().set_baud_rate(115200).await;
+        let _ = self.port_mut().set_baud_rate(uart_config::STM32_BOOTLOADER.baudrate).await;
 
         // Perform the flash operation, capturing the result
         let result = async {
@@ -885,7 +873,6 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
             }
 
             // Erase pages needed for firmware (STM32F072CB has 2KB pages)
-            const PAGE_SIZE: usize = 2048;
             let pages_needed = (firmware.len() + PAGE_SIZE - 1) / PAGE_SIZE;
             let pages_needed = pages_needed.max(1);
 
@@ -901,9 +888,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
             // Write firmware in 256-byte chunks
             let total = firmware.len();
             let mut written = 0;
-            let base_address: u32 = 0x0800_0000;
+            let base_address: u32 = F072_FLASH_BASE;
 
-            for chunk in firmware.chunks(256) {
+            for chunk in firmware.chunks(F072_WRITE_CHUNK_SIZE) {
                 let address = base_address + written as u32;
                 bl.write_memory(address, chunk).await?;
                 written += chunk.len();
@@ -912,9 +899,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
 
             // Verify by reading back
             let mut verified = 0;
-            let mut read_buf = [0u8; 256];
+            let mut read_buf = [0u8; F072_WRITE_CHUNK_SIZE];
 
-            for chunk in firmware.chunks(256) {
+            for chunk in firmware.chunks(F072_WRITE_CHUNK_SIZE) {
                 let address = base_address + verified as u32;
                 let len = bl
                     .read_memory(address, &mut read_buf[..chunk.len()])
@@ -944,7 +931,7 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         .await;
 
         // Always restore CTL-MGMT UART to normal operation baud rate (1000000)
-        let _ = self.port_mut().set_baud_rate(1000000).await;
+        let _ = self.port_mut().set_baud_rate(uart_config::HIGH_SPEED.baudrate).await;
 
         // On success, do a hardware reset to ensure peripherals are properly initialized
         if result.is_ok() {
@@ -1062,7 +1049,7 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         Fut: core::future::Future<Output = ()>,
     {
         // Switch MGMT-UI UART to bootloader baud rate (115200)
-        let _ = self.set_ui_baud_rate(115200).await;
+        let _ = self.set_ui_baud_rate(uart_config::STM32_BOOTLOADER.baudrate).await;
 
         // Drain any stale data from buffers to prevent contamination
         // when tunneling UI bootloader commands through MGMT.
@@ -1089,7 +1076,7 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         let _ = self.reset_net_to_user(&delay_ms).await;
 
         // Switch MGMT-UI UART back to normal operation baud rate (1000000)
-        let _ = self.set_ui_baud_rate(1000000).await;
+        let _ = self.set_ui_baud_rate(uart_config::HIGH_SPEED.baudrate).await;
 
         result
     }
@@ -1131,9 +1118,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         // Write firmware in 256-byte chunks
         let total = firmware.len();
         let mut written = 0;
-        let base_address: u32 = 0x0800_0000;
+        let base_address: u32 = FLASH_BASE;
 
-        for chunk in firmware.chunks(256) {
+        for chunk in firmware.chunks(F405_WRITE_CHUNK_SIZE) {
             let address = base_address + written as u32;
             bl.write_memory(address, chunk).await?;
             written += chunk.len();
@@ -1143,9 +1130,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         // Verify by reading back (optional)
         if verify {
             let mut verified = 0;
-            let mut read_buf = [0u8; 256];
+            let mut read_buf = [0u8; F405_WRITE_CHUNK_SIZE];
 
-            for chunk in firmware.chunks(256) {
+            for chunk in firmware.chunks(F405_WRITE_CHUNK_SIZE) {
                 let address = base_address + verified as u32;
                 let len = bl
                     .read_memory(address, &mut read_buf[..chunk.len()])
@@ -1380,7 +1367,7 @@ where
 
         // Take the port out of CtlCore
         let port = self.take_port();
-        let serial_interface = TunnelSerialInterface::new(port, 115_200, delay);
+        let serial_interface = TunnelSerialInterface::new(port, uart_config::STM32_BOOTLOADER.baudrate, delay);
 
         let port_info = PortInfo {
             vid: 0,
@@ -1395,7 +1382,7 @@ where
             port_info,
             ResetAfterOperation::NoReset,
             ResetBeforeOperation::DefaultReset,
-            115_200,
+            uart_config::STM32_BOOTLOADER.baudrate,
         );
 
         let mut flasher = match Flasher::connect(
@@ -1452,7 +1439,7 @@ where
 
         // Take the port out of CtlCore
         let port = self.take_port();
-        let serial_interface = TunnelSerialInterface::new(port, 115_200, delay);
+        let serial_interface = TunnelSerialInterface::new(port, uart_config::STM32_BOOTLOADER.baudrate, delay);
 
         let port_info = PortInfo {
             vid: 0x303A,
