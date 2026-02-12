@@ -9,9 +9,10 @@
 use crate::ctl::CtlCore;
 use crate::shared::mocks::{
     GpioOp, MockAsyncDelay, MockAudioStream, MockButton, MockCtlPort, MockDelay, MockFlash,
-    MockPin, TrackingPin, async_async_channel, ctl_async_channel,
-    ctl_async_channel_with_baud_tracking, mock_i2c_with_eeprom, mock_led_pins,
+    MockPin, TrackingPin, async_async_channel, ctl_async_channel, mock_i2c_with_eeprom,
+    mock_led_pins,
 };
+use crate::shared::NoOpStackMonitor;
 use crate::{mgmt, net, ui};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -55,6 +56,7 @@ where
         ui_reset_pins,
         net_reset_pins,
         MockAsyncDelay,
+        NoOpStackMonitor,
     );
 
     // Create WS channels for NET app
@@ -81,6 +83,7 @@ where
             mock_i2c_with_eeprom(),
             MockDelay,
             MockAudioStream::new(),
+            NoOpStackMonitor,
         ) => {}
         _ = net::run(
             net_to_mgmt,
@@ -139,6 +142,7 @@ where
         ui_reset_pins,
         net_reset_pins,
         MockAsyncDelay,
+        NoOpStackMonitor,
     );
 
     // Create WS channels for NET app
@@ -165,6 +169,7 @@ where
             mock_i2c_with_eeprom(),
             MockDelay,
             MockAudioStream::new(),
+            NoOpStackMonitor,
         ) => {}
         _ = net::run(
             net_to_mgmt,
@@ -467,6 +472,7 @@ where
         ui_reset_pins,
         net_reset_pins,
         MockAsyncDelay,
+        NoOpStackMonitor,
     );
 
     // Create WS channels for NET app
@@ -493,6 +499,7 @@ where
             mock_i2c_with_eeprom(),
             MockDelay,
             MockAudioStream::new(),
+            NoOpStackMonitor,
         ) => {}
         _ = net::run(
             net_to_mgmt,

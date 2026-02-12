@@ -10,12 +10,8 @@ pub mod stack_monitor;
 #[cfg(feature = "ctl")]
 pub mod timing;
 
-// Jitter buffer - for net firmware with audio-buffer, esp-idf, or tests
-#[cfg(any(
-    all(feature = "net", feature = "audio-buffer"),
-    feature = "esp-idf",
-    test
-))]
+// Jitter buffer - for net firmware or tests
+#[cfg(any(feature = "net", test))]
 pub mod jitter_buffer;
 
 pub mod led;
@@ -35,29 +31,20 @@ pub mod uart_config;
 #[cfg(feature = "net")]
 pub mod moq;
 
-// WiFi types - only used by ctl, ctl-core, net, and async-ctl
-#[cfg(any(
-    feature = "ctl",
-    feature = "ctl-core",
-    feature = "net",
-    feature = "async-ctl"
-))]
+// WiFi types - used by ctl and net
+#[cfg(any(feature = "ctl", feature = "net"))]
 pub mod wifi;
 
-// Channel configuration types - used by ctl, ctl-core, and net
-#[cfg(any(feature = "ctl", feature = "ctl-core", feature = "net"))]
+// Channel configuration types - used by ctl and net
+#[cfg(any(feature = "ctl", feature = "net"))]
 pub mod channel;
 
 // Re-export the info macro (no-op when defmt is disabled)
 #[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 pub(crate) use logging::info;
 
-// Jitter buffer types - for net firmware with audio-buffer, esp-idf, or tests
-#[cfg(any(
-    all(feature = "net", feature = "audio-buffer"),
-    feature = "esp-idf",
-    test
-))]
+// Jitter buffer types - for net firmware or tests
+#[cfg(any(feature = "net", test))]
 #[allow(unused_imports)] // Re-exported for public API
 pub use jitter_buffer::{JitterBuffer, JitterState, JitterStats, BUFFER_FRAMES, MIN_START_LEVEL};
 
@@ -69,8 +56,8 @@ pub use protocol::*;
 
 // TLV types - core types used by all
 pub use tlv::{Tlv, MAX_VALUE_SIZE};
-// Sync TLV constants - used by ctl, ctl-core, and esp-idf (bare-metal firmware uses async traits)
-#[cfg(any(feature = "ctl", feature = "ctl-core", feature = "esp-idf"))]
+// Sync TLV constants - used by ctl and net (bare-metal firmware uses async traits)
+#[cfg(any(feature = "ctl", feature = "net"))]
 pub use tlv::{HEADER_SIZE, SYNC_WORD};
 // Async TLV traits and types - for firmware modules
 #[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
@@ -82,18 +69,13 @@ pub use tlv::{ReadTlv, Value, WriteTlv};
 #[allow(unused_imports)] // Re-exported for public API
 pub use moq::{MoqError, MoqExampleType, MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN};
 
-// WiFi types - WifiSsid used by ctl, ctl-core, net, and async-ctl
-#[cfg(any(
-    feature = "ctl",
-    feature = "ctl-core",
-    feature = "net",
-    feature = "async-ctl"
-))]
+// WiFi types - WifiSsid used by ctl and net
+#[cfg(any(feature = "ctl", feature = "net"))]
 #[allow(unused_imports)] // Re-exported for public API
 pub use wifi::WifiSsid;
 
-// Channel configuration types - used by ctl, ctl-core, and net
-#[cfg(any(feature = "ctl", feature = "ctl-core", feature = "net"))]
+// Channel configuration types - used by ctl and net
+#[cfg(any(feature = "ctl", feature = "net"))]
 #[allow(unused_imports)] // Re-exported for public API
 pub use channel::{ChannelConfig, MAX_CHANNEL_URL_LEN};
 

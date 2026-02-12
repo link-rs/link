@@ -1,34 +1,19 @@
 //! TLV (Type-Length-Value) encoding and decoding.
 
-// Async TLV imports - for firmware modules and async-ctl
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
+// Async TLV imports - for firmware modules
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 use embedded_io_async::{Read, ReadExactError, Write};
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
-use heapless::Vec;
 
-// Verbose TLV tracing - enable with `trace-tlv` feature, easy to disable
-#[cfg(feature = "trace-tlv")]
-macro_rules! trace {
-    ($($arg:tt)*) => { defmt::debug!($($arg)*) };
-}
-
-#[cfg(all(
-    not(feature = "trace-tlv"),
-    any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl")
-))]
-macro_rules! trace {
-    ($($arg:tt)*) => {};
-}
 
 type Type = u16;
 type Length = u32;
 
 /// Value buffer for TLV messages.
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
-pub type Value = Vec<u8, MAX_VALUE_SIZE>;
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
+pub type Value = heapless::Vec<u8, MAX_VALUE_SIZE>;
 
 pub const HEADER_SIZE: usize = core::mem::size_of::<Type>() + core::mem::size_of::<Length>();
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 type Header = [u8; HEADER_SIZE];
 
 pub const MAX_VALUE_SIZE: usize = 640;
@@ -62,7 +47,7 @@ fn encode_header_bytes(tlv_type: u16, length: usize) -> [u8; HEADER_SIZE] {
 }
 
 // Typed header decoding for async modules
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 fn decode_header<T: TryFrom<u16>>(header: &Header) -> Result<(T, usize), T::Error> {
     let (raw_type, length) = decode_header_bytes(header);
     let tlv_type = T::try_from(raw_type)?;
@@ -70,7 +55,7 @@ fn decode_header<T: TryFrom<u16>>(header: &Header) -> Result<(T, usize), T::Erro
 }
 
 // Typed header encoding for async modules
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 fn encode_header(tlv_type: impl Into<u16>, length: usize) -> Header {
     encode_header_bytes(tlv_type.into(), length)
 }
@@ -80,17 +65,18 @@ fn encode_header(tlv_type: impl Into<u16>, length: usize) -> Header {
 pub struct Tlv<T> {
     pub tlv_type: T,
     // Use async Value type when any firmware feature is enabled
-    #[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
+    #[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
     pub value: Value,
     // Use heapless::Vec directly when only ctl feature (no firmware features)
-    #[cfg(not(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl")))]
+    #[cfg(not(any(feature = "mgmt", feature = "net", feature = "ui")))]
     pub value: heapless::Vec<u8, MAX_VALUE_SIZE>,
 }
 
 // Async TLV types and traits - for firmware modules
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 mod async_tlv {
     use super::*;
+    use heapless::Vec;
 
     #[cfg(test)]
     type TlvVec = Vec<u8, { HEADER_SIZE + MAX_VALUE_SIZE }>;
@@ -133,8 +119,6 @@ mod async_tlv {
         type Error = ReadError<R::Error>;
 
         async fn read_tlv(&mut self) -> Result<Option<Tlv<T>>, Self::Error> {
-            trace!("scanning for sync word");
-
             // Scan for sync word, draining any garbage
             let mut matched = 0usize;
             while matched < SYNC_WORD.len() {
@@ -154,55 +138,27 @@ mod async_tlv {
             }
 
             // Sync word found, now read the header
-            trace!("reading header");
-
             let mut header = [0u8; HEADER_SIZE];
             match self.read_exact(&mut header).await {
-                Ok(()) => {
-                    trace!("header = {=[u8]:02x}", header);
-                }
-                Err(ReadExactError::UnexpectedEof) => {
-                    trace!("unexpected EOF at header");
-                    return Ok(None);
-                }
-                Err(ReadExactError::Other(e)) => {
-                    trace!("IO error at header");
-                    return Err(ReadError::Io(e));
-                }
+                Ok(()) => {}
+                Err(ReadExactError::UnexpectedEof) => return Ok(None),
+                Err(ReadExactError::Other(e)) => return Err(ReadError::Io(e)),
             }
 
             let Ok((tlv_type, length)) = decode_header(&header) else {
-                trace!("invalid type in header");
                 return Err(ReadError::InvalidType);
             };
 
-            trace!(
-                "type={:#06x}, length={:#x}",
-                u16::from_be_bytes([header[0], header[1]]),
-                length
-            );
-
             let mut value = Value::new();
             if value.resize(length, 0).is_err() {
-                trace!("value too long ({:#x})", length);
                 return Err(ReadError::TooLong);
             }
 
             match self.read_exact(&mut value).await {
-                Ok(()) => {
-                    trace!("value = {=[u8]:02x}", value.as_slice());
-                }
-                Err(ReadExactError::UnexpectedEof) => {
-                    trace!("unexpected EOF at value");
-                    return Ok(None);
-                }
-                Err(ReadExactError::Other(e)) => {
-                    trace!("IO error at value");
-                    return Err(ReadError::Io(e));
-                }
+                Ok(()) => {}
+                Err(ReadExactError::UnexpectedEof) => return Ok(None),
+                Err(ReadExactError::Other(e)) => return Err(ReadError::Io(e)),
             }
-
-            trace!("complete, value={=[u8]:02x}", value.as_slice());
 
             Ok(Some(Tlv { tlv_type, value }))
         }
@@ -252,18 +208,11 @@ mod async_tlv {
 
         async fn write_tlv(&mut self, tlv_type: T, value: &[u8]) -> Result<(), W::Error> {
             let type_val: u16 = tlv_type.into();
-            trace!(
-                "write sync + type={:#06x}, length={:#x}",
-                type_val,
-                value.len()
-            );
             self.write_all(&SYNC_WORD).await?;
             let header = encode_header(type_val, value.len());
             self.write_all(&header).await?;
             self.write_all(&value).await?;
-            self.flush().await?;
-            trace!("write complete");
-            Ok(())
+            self.flush().await
         }
 
         async fn write_tlv_parts(
@@ -273,26 +222,18 @@ mod async_tlv {
         ) -> Result<(), W::Error> {
             let type_val: u16 = tlv_type.into();
             let total_len: usize = parts.iter().map(|p| p.len()).sum();
-            trace!(
-                "write sync + type={:#06x}, length={:#x} (parts={})",
-                type_val,
-                total_len,
-                parts.len()
-            );
             self.write_all(&SYNC_WORD).await?;
             let header = encode_header(type_val, total_len);
             self.write_all(&header).await?;
             for part in parts {
                 self.write_all(part).await?;
             }
-            self.flush().await?;
-            trace!("write complete");
-            Ok(())
+            self.flush().await
         }
     }
 }
 
-#[cfg(any(feature = "mgmt", feature = "net", feature = "ui", feature = "async-ctl"))]
+#[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 #[allow(unused_imports)] // Re-exported for public API, may not be used internally
 pub use async_tlv::{ReadTlv, WriteTlv};
 
@@ -300,7 +241,7 @@ pub use async_tlv::{ReadTlv, WriteTlv};
 // Buffer-based parsing utilities (for ctl module)
 // ============================================================================
 
-#[cfg(feature = "ctl-core")]
+#[cfg(feature = "ctl")]
 pub mod buffer {
     //! Pure functions for parsing TLVs from byte buffers.
     //!
@@ -394,7 +335,7 @@ pub mod buffer {
 // Tunneling utilities (for ctl module)
 // ============================================================================
 
-#[cfg(feature = "ctl-core")]
+#[cfg(feature = "ctl")]
 pub mod tunnel {
     //! Utilities for encoding/decoding nested TLVs.
     //!

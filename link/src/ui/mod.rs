@@ -782,6 +782,7 @@ mod audio_streaming_tests {
         mock_i2c_with_eeprom, mock_led_pins, ControllableButton, MockAudioStream, MockButton,
         MockDelay,
     };
+    use crate::shared::NoOpStackMonitor;
     use crate::shared::ReadTlv;
     use embedded_io_adapters::futures_03::FromFutures;
     use std::sync::{Arc, Mutex};
@@ -871,6 +872,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 MockAudioStream::new(),
+                NoOpStackMonitor,
             ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
@@ -937,6 +939,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 MockAudioStream::new(),
+                NoOpStackMonitor,
             ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
@@ -998,6 +1001,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 MockAudioStream::new(),
+                NoOpStackMonitor,
             ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
@@ -1062,6 +1066,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 MockAudioStream::new(),
+                NoOpStackMonitor,
             ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
@@ -1100,6 +1105,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 MockAudioStream::new(),
+                NoOpStackMonitor,
             ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
@@ -1154,6 +1160,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 MockAudioStream::new(),
+                NoOpStackMonitor,
             ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
@@ -1249,6 +1256,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 audio_stream,
+                NoOpStackMonitor,
             ) => unreachable!(),
             _ = async {
                 // Wait for startup tone to complete (50 frames × 5ms = 250ms)
@@ -1343,6 +1351,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 audio_stream,
+                NoOpStackMonitor,
             ) => unreachable!(),
             _ = async {
                 // Wait for startup tone to complete (50 frames × 5ms = 250ms)

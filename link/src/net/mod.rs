@@ -2,8 +2,8 @@
 
 mod storage;
 
-// Re-export jitter buffer from shared (audio-buffer or esp-idf)
-#[cfg(any(feature = "audio-buffer", feature = "esp-idf"))]
+// Re-export jitter buffer from shared
+#[cfg(feature = "ui")]
 pub use crate::shared::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
 pub use storage::{
     ChannelConfig, MAX_CHANNELS, MAX_CHANNEL_URL_LEN, MAX_MOQ_NAMESPACE_LEN,
@@ -16,16 +16,60 @@ use crate::shared::{
     Channel, Color, CriticalSectionRawMutex, Led, CtlToNet, NetToCtl, NetToUi, RawMutex,
     Receiver, Sender, Tlv, UiToNet, WriteTlv, read_tlv_loop,
 };
-#[cfg(feature = "audio-buffer")]
+#[cfg(feature = "ui")]
 use crate::shared::ChannelId;
-#[cfg(feature = "audio-buffer")]
+#[cfg(feature = "ui")]
 use embassy_futures::select::{Either, select};
-#[cfg(feature = "audio-buffer")]
-use embassy_time::{Duration, Ticker};
 use embedded_hal::digital::StatefulOutputPin;
 use embedded_io_async::{Read, Write};
 use embedded_storage::{ReadStorage, Storage};
 use heapless::{String, Vec};
+
+/// Async ticker that fires at a fixed interval using `std::time`.
+#[cfg(feature = "ui")]
+mod ticker {
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll};
+    use std::time::{Duration, Instant};
+
+    pub struct Ticker {
+        interval: Duration,
+        next_tick: Instant,
+    }
+
+    impl Ticker {
+        pub fn every(interval: Duration) -> Self {
+            Self {
+                interval,
+                next_tick: Instant::now() + interval,
+            }
+        }
+
+        pub fn next(&mut self) -> TickFuture<'_> {
+            TickFuture { ticker: self }
+        }
+    }
+
+    pub struct TickFuture<'a> {
+        ticker: &'a mut Ticker,
+    }
+
+    impl Future for TickFuture<'_> {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if Instant::now() >= self.ticker.next_tick {
+                let interval = self.ticker.interval;
+                self.ticker.next_tick += interval;
+                Poll::Ready(())
+            } else {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+}
 
 /// Maximum size for WebSocket message payload.
 /// Matches the audio frame size (160 bytes = 20ms at 8kHz).
@@ -131,7 +175,7 @@ where
     };
 
     // Event handling task - with or without audio jitter buffer
-    #[cfg(feature = "audio-buffer")]
+    #[cfg(feature = "ui")]
     let handle_task = async {
         let mut ws_mode = WsMode::Normal;
         let mut loopback = false;
@@ -140,7 +184,7 @@ where
         // Per-channel jitter buffers
         let mut ptt_buffer: JitterBuffer = JitterBuffer::new();
         let mut ptt_ai_buffer: JitterBuffer = JitterBuffer::new();
-        let mut ticker = Ticker::every(Duration::from_millis(20));
+        let mut ticker = ticker::Ticker::every(std::time::Duration::from_millis(20));
         info!("net: ready to handle events (audio buffering enabled)");
         loop {
             match select(channel.receive(), ticker.next()).await {
@@ -225,7 +269,7 @@ where
         }
     };
 
-    #[cfg(not(feature = "audio-buffer"))]
+    #[cfg(not(feature = "ui"))]
     let handle_task = async {
         let mut ws_mode = WsMode::Normal;
         let mut loopback = false;
@@ -447,11 +491,11 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
         CtlToNet::GetJitterStats => {
-            // This is handled in the event loop for audio-buffer mode
-            // In non-audio-buffer mode, return error
-            info!("net: jitter stats not available (audio-buffer disabled)");
+            // This is handled in the event loop when ui feature is enabled
+            // Without ui feature, return error
+            info!("net: jitter stats not available (ui feature disabled)");
             to_mgmt
-                .must_write_tlv(NetToCtl::Error, b"no audio-buffer")
+                .must_write_tlv(NetToCtl::Error, b"no jitter buffer")
                 .await;
         }
     }
@@ -513,7 +557,7 @@ where
     }
 }
 
-#[cfg(any(test, not(feature = "audio-buffer")))]
+#[cfg(any(test, not(feature = "ui")))]
 async fn handle_ws<U, LR, LG, LB>(
     event: WsEvent,
     to_ui: &mut U,
@@ -557,7 +601,7 @@ async fn handle_ws<U, LR, LG, LB>(
 
 /// Handle WebSocket events with audio buffering.
 /// Audio frames are pushed to per-channel jitter buffers instead of being sent directly to UI.
-#[cfg(feature = "audio-buffer")]
+#[cfg(feature = "ui")]
 async fn handle_ws_buffered<LR, LG, LB>(
     event: WsEvent,
     led: &mut Led<LR, LG, LB>,
