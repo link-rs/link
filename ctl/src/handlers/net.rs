@@ -68,6 +68,27 @@ pub async fn handle_net(
     action: NetAction,
     core: &mut Core,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Commands that communicate with NET firmware need it to be booted and ready.
+    // The NET chip (ESP32-S3) is reset each time MGMT boots, and takes several
+    // seconds to initialize (especially if connecting to WiFi).
+    let needs_net_firmware = matches!(
+        &action,
+        NetAction::Ping { .. }
+            | NetAction::Wifi { .. }
+            | NetAction::RelayUrl { .. }
+            | NetAction::Loopback { .. }
+            | NetAction::Channel { .. }
+            | NetAction::JitterStats { .. }
+    );
+
+    if needs_net_firmware {
+        // NET chip (ESP32-S3) takes several seconds to boot after MGMT releases
+        // it from reset. Wait up to 30 seconds for WiFi connection + initialization.
+        if !core.wait_for_net_ready(30).await {
+            return Err("NET chip did not respond (is firmware flashed?)".into());
+        }
+    }
+
     match action {
         NetAction::Ping { data } => {
             println!("Sending NET ping with data: {}", data);

@@ -362,11 +362,9 @@ impl<P: CtlPort> CtlCore<P> {
                 .ok_or(CtlError::UnexpectedEof)?;
             match tlv.tlv_type {
                 MgmtToCtl::FromNet => {
-                    // Append to NET stream buffer
                     let _ = self.net_buffer.extend_from_slice(&tlv.value);
                 }
                 MgmtToCtl::FromUi => {
-                    // Append to UI stream buffer
                     let _ = self.ui_buffer.extend_from_slice(&tlv.value);
                 }
                 _ => {
@@ -516,6 +514,32 @@ impl<P: CtlPort> CtlCore<P> {
             let _ = port.set_timeout(timeout);
         }
         false
+    }
+
+    /// Wait for the NET chip to be ready by sending a single ping with a long timeout.
+    ///
+    /// The NET chip (ESP32-S3) takes several seconds to boot after MGMT releases
+    /// it from reset. If WiFi credentials are stored, it may block during WiFi
+    /// connection. This method sends one ping and waits for a response.
+    ///
+    /// Returns `true` if NET responded, `false` if timeout expired.
+    pub async fn wait_for_net_ready(&mut self, timeout_secs: u64) -> bool
+    where
+        P: crate::ctl::SetTimeout,
+    {
+        let original_timeout = self.port.as_ref().map(|p| p.timeout());
+
+        if let Some(port) = &mut self.port {
+            let _ = port.set_timeout(std::time::Duration::from_secs(timeout_secs));
+        }
+
+        self.net_buffer.clear();
+        let result = self.net_ping(b"ready").await.is_ok();
+
+        if let (Some(port), Some(timeout)) = (&mut self.port, original_timeout) {
+            let _ = port.set_timeout(timeout);
+        }
+        result
     }
 
     /// Ping the MGMT chip.
@@ -937,6 +961,7 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Ping the NET chip through the MGMT tunnel.
     pub async fn net_ping(&mut self, data: &[u8]) -> Result<(), CtlError> {
+        self.net_buffer.clear();
         self.write_tlv_net(CtlToNet::Ping, data).await?;
         let tlv = self.read_tlv_net().await?;
         if tlv.tlv_type != NetToCtl::Pong {
