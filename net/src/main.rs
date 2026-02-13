@@ -78,6 +78,10 @@ enum MoqEvent {
     ChatReceived { message: String },
     /// Audio frame received from MoQ subscription.
     AudioReceived { data: Vec<u8> },
+    /// WiFi connected (initial or reconnect).
+    WifiConnected,
+    /// WiFi disconnected.
+    WifiDisconnected,
 }
 
 // ============================================================================
@@ -226,7 +230,16 @@ fn setup_ptt_tracks(
 
 /// Spawn the MoQ task in a separate thread.
 /// PTT mode is automatically started when connected to the relay.
-fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
+fn spawn_moq_task(
+    wifi: Option<(
+        esp_idf_svc::wifi::BlockingWifi<esp_idf_svc::wifi::EspWifi<'static>>,
+        String,
+        String,
+    )>,
+    initial_relay_url: Option<String>,
+    cmd_rx: Receiver<MoqCommand>,
+    event_tx: Sender<MoqEvent>,
+) {
     use std::sync::mpsc::TryRecvError;
     use std::time::Instant;
 
@@ -236,8 +249,28 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
         .spawn(move || {
             info!("MoQ task started");
 
+            // WiFi state
+            let mut wifi = wifi;
+            let mut wifi_connected = false;
+            let mut last_wifi_check = Instant::now();
+
+            // Initial WiFi connection
+            if let Some((ref mut w, ref ssid, ref password)) = wifi {
+                info!("net: connecting to WiFi '{}'", ssid);
+                match connect_wifi(w, ssid, password) {
+                    Ok(()) => {
+                        info!("net: WiFi connected");
+                        wifi_connected = true;
+                        let _ = event_tx.send(MoqEvent::WifiConnected);
+                    }
+                    Err(e) => {
+                        warn!("net: WiFi connect failed: {:?}", e);
+                    }
+                }
+            }
+
             let mut client: Option<quicr::Client> = None;
-            let mut relay_url: Option<String> = None;
+            let mut relay_url: Option<String> = initial_relay_url;
             let mut last_reconnect_attempt: Option<Instant> = None;
             let mut ptt_ready = false;
 
@@ -444,8 +477,53 @@ fn spawn_moq_task(cmd_rx: Receiver<MoqCommand>, event_tx: Sender<MoqEvent>) {
                     }
                 }
 
-                // Reconnection logic: if we have a URL but no client, try to reconnect
-                if client.is_none() {
+                // WiFi monitoring (every 5 seconds)
+                if let Some((ref mut w, ref ssid, ref _password)) = wifi {
+                    if last_wifi_check.elapsed() >= Duration::from_secs(5) {
+                        last_wifi_check = Instant::now();
+                        let is_up = w.is_connected().unwrap_or(false);
+
+                        if wifi_connected && !is_up {
+                            warn!("net: WiFi disconnected");
+                            wifi_connected = false;
+
+                            // Tear down MoQ (can't work without WiFi)
+                            if client.is_some() {
+                                client = None;
+                                ptt_ready = false;
+                                ptt_pub_track = None;
+                                ai_pub_track = None;
+                                ptt_subscription = None;
+                                ai_subscription = None;
+                                let _ = event_tx.send(MoqEvent::Disconnected);
+                            }
+                            let _ = event_tx.send(MoqEvent::WifiDisconnected);
+                        }
+
+                        if !wifi_connected {
+                            info!("net: attempting WiFi reconnect to '{}'", ssid);
+                            match w.connect() {
+                                Ok(()) => match w.wait_netif_up() {
+                                    Ok(()) => {
+                                        info!("net: WiFi reconnected");
+                                        wifi_connected = true;
+                                        last_reconnect_attempt = None;
+                                        let _ = event_tx.send(MoqEvent::WifiConnected);
+                                    }
+                                    Err(e) => {
+                                        warn!("net: WiFi wait_netif_up failed: {:?}", e);
+                                    }
+                                },
+                                Err(e) => {
+                                    warn!("net: WiFi reconnect failed: {:?}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Reconnection logic: if WiFi is up and we have a URL but no client, try to reconnect
+                if wifi_connected && client.is_none() {
                     if let Some(ref url) = relay_url {
                         let now = Instant::now();
                         let should_reconnect = last_reconnect_attempt
@@ -766,7 +844,7 @@ fn main() {
         Some(nvs_partition.clone()),
     )
     .unwrap();
-    let mut wifi = esp_idf_svc::wifi::BlockingWifi::wrap(wifi, sys_loop).unwrap();
+    let wifi = esp_idf_svc::wifi::BlockingWifi::wrap(wifi, sys_loop).unwrap();
 
     // Open NVS for storage
     let nvs = match EspNvs::new(nvs_partition.clone(), NVS_NAMESPACE, true) {
@@ -784,10 +862,23 @@ fn main() {
         storage.wifi_ssids.len()
     );
 
-    // MoQ channels and task
+    // MoQ + WiFi task (combined thread handles WiFi connection, monitoring, and MoQ)
     let (moq_cmd_tx, moq_cmd_rx) = mpsc::channel::<MoqCommand>();
     let (moq_event_tx, moq_event_rx) = mpsc::channel::<MoqEvent>();
-    spawn_moq_task(moq_cmd_rx, moq_event_tx);
+
+    let wifi_config = if !storage.wifi_ssids.is_empty() {
+        let ssid = storage.wifi_ssids[0].ssid.clone();
+        let password = storage.wifi_ssids[0].password.clone();
+        Some((wifi, ssid, password))
+    } else {
+        None
+    };
+    let initial_relay_url = if !storage.relay_url.is_empty() {
+        Some(storage.relay_url.clone())
+    } else {
+        None
+    };
+    spawn_moq_task(wifi_config, initial_relay_url, moq_cmd_rx, moq_event_tx);
 
     // Loopback mode state
     let mut loopback = NetLoopbackMode::Off;
@@ -797,41 +888,6 @@ fn main() {
     let mut ptt_ai_buffer = JitterBuffer::new();
     let mut last_buffer_tick = Instant::now();
     const BUFFER_TICK_INTERVAL: Duration = Duration::from_millis(20);
-
-    // Start WiFi connection in background so the main loop can process
-    // UART commands immediately (WiFi connection can take 10+ seconds).
-    let mut wifi_result_rx = if !storage.wifi_ssids.is_empty() {
-        let ssid = storage.wifi_ssids[0].ssid.clone();
-        let password = storage.wifi_ssids[0].password.clone();
-        let (tx, rx) = mpsc::channel();
-
-        thread::Builder::new()
-            .name("wifi".to_string())
-            .stack_size(4096)
-            .spawn(move || {
-                info!("net: connecting to WiFi '{}'", ssid);
-                match connect_wifi(&mut wifi, &ssid, &password) {
-                    Ok(()) => {
-                        info!("net: WiFi connected");
-                        let _ = tx.send(true);
-                    }
-                    Err(e) => {
-                        warn!("net: WiFi connect failed: {:?}", e);
-                        let _ = tx.send(false);
-                    }
-                }
-                // Keep wifi alive — dropping EspWifi tears down the connection.
-                // Park the thread forever so the wifi object is never dropped.
-                loop {
-                    thread::park();
-                }
-            })
-            .unwrap();
-
-        Some(rx)
-    } else {
-        None
-    };
 
     info!("net: starting main loop");
 
@@ -875,27 +931,7 @@ fn main() {
             }
         }
 
-        // Check if background WiFi connection completed
-        if let Some(rx) = wifi_result_rx.take() {
-            match rx.try_recv() {
-                Ok(true) => {
-                    set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
-                    if !storage.relay_url.is_empty() {
-                        info!("net: connecting to MoQ relay: {}", storage.relay_url);
-                        let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(
-                            storage.relay_url.clone(),
-                        ));
-                    }
-                }
-                Ok(false) => {}
-                Err(_) => {
-                    // Not ready yet, put it back
-                    wifi_result_rx = Some(rx);
-                }
-            }
-        }
-
-        // MoQ event handling
+        // MoQ/WiFi event handling
         use std::sync::mpsc::TryRecvError;
         match moq_event_rx.try_recv() {
             Ok(MoqEvent::Connected) => {
@@ -908,6 +944,14 @@ fn main() {
             Ok(MoqEvent::Disconnected) => {
                 info!("net: MoQ disconnected");
                 set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
+            }
+            Ok(MoqEvent::WifiConnected) => {
+                info!("net: WiFi connected");
+                set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
+            }
+            Ok(MoqEvent::WifiDisconnected) => {
+                warn!("net: WiFi disconnected");
+                set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Red);
             }
             Ok(MoqEvent::Error { message }) => {
                 warn!("net: MoQ error: {}", message);
