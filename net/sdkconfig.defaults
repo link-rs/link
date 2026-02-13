@@ -128,11 +128,6 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../../../../partitions.csv"
 # UART (for CTL communication)
 CONFIG_UART_ISR_IN_IRAM=y
 
-# Console - disable UART console so UART0 is free for MGMT communication.
-# Without this, ESP-IDF prints boot messages and log output on UART0,
-# corrupting the TLV protocol stream.
-CONFIG_ESP_CONSOLE_NONE=y
-
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
