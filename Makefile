@@ -1,4 +1,4 @@
-.PHONY: all preflight format flash-ui flash-mgmt flash-net flash-all clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl
+.PHONY: all preflight format flash-ui flash-mgmt flash-net flash-all clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl test-ctl
 
 CRATES = ui mgmt net ctl link web-ctl web-link echo-server
 
@@ -88,6 +88,10 @@ web-link:
 serve-link: web-link
 	@echo "Serving at http://localhost:8081"
 	cd web-link/www && python3 -m http.server 8081
+
+# Hardware integration tests (requires connected EV16 device)
+test-ctl: ctl
+	./ctl/test.sh
 
 clean:
 	cd ui && cargo clean
