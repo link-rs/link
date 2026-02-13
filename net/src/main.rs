@@ -798,24 +798,35 @@ fn main() {
     let mut last_buffer_tick = Instant::now();
     const BUFFER_TICK_INTERVAL: Duration = Duration::from_millis(20);
 
-    // Try to connect to WiFi if we have credentials
-    if !storage.wifi_ssids.is_empty() {
-        let wifi_ssid = &storage.wifi_ssids[0];
-        info!("net: connecting to WiFi '{}'", wifi_ssid.ssid);
+    // Start WiFi connection in background so the main loop can process
+    // UART commands immediately (WiFi connection can take 10+ seconds).
+    let mut wifi_result_rx = if !storage.wifi_ssids.is_empty() {
+        let ssid = storage.wifi_ssids[0].ssid.clone();
+        let password = storage.wifi_ssids[0].password.clone();
+        let (tx, rx) = mpsc::channel();
 
-        if let Err(e) = connect_wifi(&mut wifi, &wifi_ssid.ssid, &wifi_ssid.password) {
-            warn!("net: WiFi connect failed: {:?}", e);
-        } else {
-            info!("net: WiFi connected");
-            set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
+        thread::Builder::new()
+            .name("wifi".to_string())
+            .stack_size(4096)
+            .spawn(move || {
+                info!("net: connecting to WiFi '{}'", ssid);
+                match connect_wifi(&mut wifi, &ssid, &password) {
+                    Ok(()) => {
+                        info!("net: WiFi connected");
+                        let _ = tx.send(true);
+                    }
+                    Err(e) => {
+                        warn!("net: WiFi connect failed: {:?}", e);
+                        let _ = tx.send(false);
+                    }
+                }
+            })
+            .unwrap();
 
-            // Connect to MoQ relay if URL is stored
-            if !storage.relay_url.is_empty() {
-                info!("net: connecting to MoQ relay: {}", storage.relay_url);
-                let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(storage.relay_url.clone()));
-            }
-        }
-    }
+        Some(rx)
+    } else {
+        None
+    };
 
     info!("net: starting main loop");
 
@@ -856,6 +867,26 @@ fn main() {
                     loopback,
                     &moq_cmd_tx,
                 );
+            }
+        }
+
+        // Check if background WiFi connection completed
+        if let Some(rx) = wifi_result_rx.take() {
+            match rx.try_recv() {
+                Ok(true) => {
+                    set_led_color(&mut led_r, &mut led_g, &mut led_b, Color::Green);
+                    if !storage.relay_url.is_empty() {
+                        info!("net: connecting to MoQ relay: {}", storage.relay_url);
+                        let _ = moq_cmd_tx.send(MoqCommand::SetRelayUrl(
+                            storage.relay_url.clone(),
+                        ));
+                    }
+                }
+                Ok(false) => {}
+                Err(_) => {
+                    // Not ready yet, put it back
+                    wifi_result_rx = Some(rx);
+                }
             }
         }
 
