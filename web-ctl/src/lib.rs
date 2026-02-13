@@ -278,14 +278,18 @@ impl LinkController {
     #[wasm_bindgen]
     pub async fn reset_ui_to_bootloader(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        core.reset_ui_to_bootloader().await.map_err(ctl_error_to_js)
+        core.reset_ui_to_bootloader(|ms| js_sleep(ms as u32))
+            .await
+            .map_err(ctl_error_to_js)
     }
 
     /// Reset the UI chip into user mode.
     #[wasm_bindgen]
     pub async fn reset_ui_to_user(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
-        core.reset_ui_to_user().await.map_err(ctl_error_to_js)
+        core.reset_ui_to_user(|ms| js_sleep(ms as u32))
+            .await
+            .map_err(ctl_error_to_js)
     }
 
     // ==================== NET PIN CONTROL ====================

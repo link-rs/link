@@ -3,7 +3,6 @@
 mod storage;
 
 // Re-export jitter buffer from shared
-#[cfg(feature = "ui")]
 pub use crate::shared::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
 pub use storage::{
     ChannelConfig, MAX_CHANNELS, MAX_CHANNEL_URL_LEN, MAX_MOQ_NAMESPACE_LEN,

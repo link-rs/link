@@ -328,7 +328,7 @@ async fn set_and_get_relay_url() {
 #[tokio::test]
 async fn reset_ui_to_bootloader_gpio_sequence() {
     device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
-        ctl.reset_ui_to_bootloader().await.unwrap();
+        ctl.reset_ui_to_bootloader(|_| async {}).await.unwrap();
 
         let ops = gpio_ops.lock().unwrap();
         // First 2 ops are MGMT startup releasing both chips from reset
@@ -347,7 +347,7 @@ async fn reset_ui_to_bootloader_gpio_sequence() {
 #[tokio::test]
 async fn reset_ui_to_user_gpio_sequence() {
     device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
-        ctl.reset_ui_to_user().await.unwrap();
+        ctl.reset_ui_to_user(|_| async {}).await.unwrap();
 
         let ops = gpio_ops.lock().unwrap();
         // First 2 ops are MGMT startup releasing both chips from reset

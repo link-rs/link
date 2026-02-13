@@ -823,23 +823,40 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Reset the UI chip into bootloader mode using pin control.
-    pub async fn reset_ui_to_bootloader(&mut self) -> Result<(), CtlError> {
+    ///
+    /// Includes a delay between RST transitions so the STM32 reliably
+    /// samples the BOOT pins.
+    pub async fn reset_ui_to_bootloader<D, F>(&mut self, delay_ms: D) -> Result<(), CtlError>
+    where
+        D: Fn(u64) -> F,
+        F: core::future::Future<Output = ()>,
+    {
         use crate::shared::PinValue;
+        use crate::shared::timing::reset::STM32_SIGNAL_TRANSITION_MS;
         // BOOT0=1, BOOT1=0, then RST cycle
         self.set_ui_boot0(PinValue::High).await?;
         self.set_ui_boot1(PinValue::Low).await?;
         self.set_ui_rst(PinValue::Low).await?;
-        // Small delay for reset to take effect (caller should provide)
+        delay_ms(STM32_SIGNAL_TRANSITION_MS).await;
         self.set_ui_rst(PinValue::High).await
     }
 
     /// Reset the UI chip into user mode using pin control.
-    pub async fn reset_ui_to_user(&mut self) -> Result<(), CtlError> {
+    ///
+    /// Includes a delay between RST transitions so the STM32 reliably
+    /// samples the BOOT pins.
+    pub async fn reset_ui_to_user<D, F>(&mut self, delay_ms: D) -> Result<(), CtlError>
+    where
+        D: Fn(u64) -> F,
+        F: core::future::Future<Output = ()>,
+    {
         use crate::shared::PinValue;
+        use crate::shared::timing::reset::STM32_SIGNAL_TRANSITION_MS;
         // BOOT0=0, BOOT1=1, then RST cycle
         self.set_ui_boot0(PinValue::Low).await?;
         self.set_ui_boot1(PinValue::High).await?;
         self.set_ui_rst(PinValue::Low).await?;
+        delay_ms(STM32_SIGNAL_TRANSITION_MS).await;
         self.set_ui_rst(PinValue::High).await
     }
 

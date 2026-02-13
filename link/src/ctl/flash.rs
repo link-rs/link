@@ -773,19 +773,6 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         }
     }
 
-    /// Probe if UI bootloader is currently active.
-    ///
-    /// Creates a tunnel to the UI chip and attempts to initialize the bootloader.
-    /// Returns `true` if bootloader responds, `false` otherwise.
-    ///
-    /// Note: This has a short timeout to avoid blocking.
-    async fn probe_ui_bootloader(&mut self) -> bool {
-        let ui_tunnel = TunnelPort::new(self.port_mut());
-        let mut bl = Bootloader::new(ui_tunnel);
-
-        // Try to initialize - if successful, bootloader is active
-        bl.init().await.is_ok()
-    }
 
     /// Exit the MGMT bootloader and return to user code.
     ///
@@ -994,29 +981,16 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         self.drain();
 
         // Reset UI chip into bootloader mode
-        let _ = self.reset_ui_to_bootloader().await;
+        let _ = self.reset_ui_to_bootloader(&delay_ms).await;
 
-        // Poll for UI bootloader ready (up to 2 seconds)
-        use crate::timing::bootloader::{PROBE_RETRY_INTERVAL_MS, MAX_WAIT_MS};
-        let start = std::time::Instant::now();
-        loop {
-            if self.probe_ui_bootloader().await {
-                break;
-            }
-            if start.elapsed().as_millis() as u64 > MAX_WAIT_MS {
-                return Err(stm::Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "UI bootloader did not respond within timeout",
-                )));
-            }
-            delay_ms(PROBE_RETRY_INTERVAL_MS).await;
-        }
+        // Wait for bootloader to start before attempting init.
+        delay_ms(crate::timing::reset::STM32_INITIAL_STABILIZATION_MS).await;
 
-        // Query bootloader info
+        // Query bootloader info (init + get + get_id)
         let result = self.query_ui_bootloader().await;
 
         // Always reset UI chip back to user mode
-        let _ = self.reset_ui_to_user().await;
+        let _ = self.reset_ui_to_user(&delay_ms).await;
 
         result
     }
@@ -1094,31 +1068,20 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         let _ = self.hold_net_reset().await;
 
         // Reset UI chip into bootloader mode
-        let _ = self.reset_ui_to_bootloader().await;
+        let _ = self.reset_ui_to_bootloader(&delay_ms).await;
 
-        // Poll for UI bootloader ready (up to 2 seconds)
-        use crate::timing::bootloader::{PROBE_RETRY_INTERVAL_MS, MAX_WAIT_MS};
-        let start = std::time::Instant::now();
-        loop {
-            if self.probe_ui_bootloader().await {
-                break;
-            }
-            if start.elapsed().as_millis() as u64 > MAX_WAIT_MS {
-                return Err(FlashError::Bootloader(stm::Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "UI bootloader did not respond within timeout",
-                ))));
-            }
-            delay_ms(PROBE_RETRY_INTERVAL_MS).await;
-        }
+        // Wait for bootloader to start before attempting init.
+        // The STM32 bootloader's 0x7F auto-baud init must only be sent once —
+        // a second 0x7F is interpreted as a command byte, corrupting state.
+        delay_ms(crate::timing::reset::STM32_INITIAL_STABILIZATION_MS).await;
 
-        // Flash the firmware
+        // Flash the firmware (init + erase + write + verify)
         let result = self
             .flash_ui_in_bootloader_mode(firmware, verify, &mut progress)
             .await;
 
         // Always reset UI chip back to user mode
-        let _ = self.reset_ui_to_user().await;
+        let _ = self.reset_ui_to_user(&delay_ms).await;
 
         // Release NET chip from reset
         let _ = self.reset_net_to_user(&delay_ms).await;
@@ -1135,10 +1098,10 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     /// reset and delay asynchronously before calling this method.
     ///
     /// Typical usage:
-    /// 1. Call `reset_ui_to_bootloader()`
+    /// 1. Call `reset_ui_to_bootloader(delay_ms)`
     /// 2. Wait for bootloader to be ready (e.g., 100ms)
     /// 3. Call this method
-    /// 4. Call `reset_ui_to_user()`
+    /// 4. Call `reset_ui_to_user(delay_ms)`
     pub async fn flash_ui_in_bootloader_mode<F>(
         &mut self,
         firmware: &[u8],
@@ -1278,6 +1241,13 @@ where
         delay: D,
         max_baud: u32,
     ) -> Result<(), EspflashError> {
+        // Clone delay for reset operations after the original is consumed by TunnelSerialInterface
+        let reset_delay = delay.clone();
+        let delay_fn = move |ms: u64| {
+            let d = reset_delay.clone();
+            async move { d.delay_ms(ms as u32).await }
+        };
+
         // Hold UI chip in reset during NET flashing to avoid interference
         // (done before taking the port)
         let _ = self.hold_ui_reset().await;
@@ -1315,7 +1285,7 @@ where
                 Err((connection, e)) => {
                     // Recover port from the returned connection
                     self.recover_port_from_connection(connection).await;
-                    let _ = self.reset_ui_to_user().await;
+                    let _ = self.reset_ui_to_user(&delay_fn).await;
                     return Err(EspflashError::Espflash(format!(
                         "connect: {:?}",
                         e
@@ -1329,7 +1299,7 @@ where
             Err(e) => {
                 self.recover_port_from_connection(flasher.into_connection())
                     .await;
-                let _ = self.reset_ui_to_user().await;
+                let _ = self.reset_ui_to_user(&delay_fn).await;
                 return Err(EspflashError::Espflash(format!(
                     "device_info (connect succeeded, now at {} baud): {:?}",
                     max_baud, e
@@ -1353,7 +1323,7 @@ where
             Err(e) => {
                 self.recover_port_from_connection(flasher.into_connection())
                     .await;
-                let _ = self.reset_ui_to_user().await;
+                let _ = self.reset_ui_to_user(&delay_fn).await;
                 return Err(EspflashError::Espflash(format!(
                     "IdfBootloaderFormat: {:?}",
                     e
@@ -1367,7 +1337,7 @@ where
         {
             self.recover_port_from_connection(flasher.into_connection())
                 .await;
-            let _ = self.reset_ui_to_user().await;
+            let _ = self.reset_ui_to_user(&delay_fn).await;
             return Err(EspflashError::Espflash(format!(
                 "load_image_to_flash: {:?}",
                 e
@@ -1380,7 +1350,7 @@ where
         // Recover port and release UI
         self.recover_port_from_connection(flasher.into_connection())
             .await;
-        let _ = self.reset_ui_to_user().await;
+        let _ = self.reset_ui_to_user(&delay_fn).await;
 
         Ok(())
     }

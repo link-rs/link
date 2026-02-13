@@ -223,12 +223,14 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
         }
         UiAction::Reset { action } => match action.unwrap_or_default() {
             ResetAction::User => {
-                core.reset_ui_to_user().await?;
+                let delay = |ms| tokio::time::sleep(Duration::from_millis(ms));
+                core.reset_ui_to_user(delay).await?;
                 println!("UI chip reset to user mode");
                 Ok(())
             }
             ResetAction::Bootloader => {
-                core.reset_ui_to_bootloader().await?;
+                let delay = |ms| tokio::time::sleep(Duration::from_millis(ms));
+                core.reset_ui_to_bootloader(delay).await?;
                 println!("UI chip reset to bootloader mode");
                 Ok(())
             }
@@ -246,7 +248,8 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
         UiAction::Monitor { reset } => {
             if reset {
                 println!("Resetting UI chip...");
-                core.reset_ui_to_user().await?;
+                let delay = |ms| tokio::time::sleep(Duration::from_millis(ms));
+                core.reset_ui_to_user(delay).await?;
             }
             println!("Monitoring UI chip logs (ESC to stop)...\n");
 
