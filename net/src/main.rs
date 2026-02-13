@@ -820,6 +820,11 @@ fn main() {
                         let _ = tx.send(false);
                     }
                 }
+                // Keep wifi alive — dropping EspWifi tears down the connection.
+                // Park the thread forever so the wifi object is never dropped.
+                loop {
+                    thread::park();
+                }
             })
             .unwrap();
 
