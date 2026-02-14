@@ -35,8 +35,3 @@ pub mod bootloader {
     pub const MAX_WAIT_MS: u64 = 2000;
 }
 
-/// UART communication delays
-pub mod uart {
-    /// Delay after baud rate change to allow hardware to stabilize
-    pub const BAUD_RATE_CHANGE_MS: u64 = 10;
-}

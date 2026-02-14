@@ -1,7 +1,7 @@
 //! MGMT chip command handlers.
 
 use super::Core;
-use crate::{GetSetU32, MgmtAction, StackAction};
+use crate::{MgmtAction, StackAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
 use link::ctl::flash::{FlashPhase, MgmtBootloaderEntry};
@@ -230,48 +230,6 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
                     eprintln!("  1. Set BOOT0 pin high");
                     eprintln!("  2. Reset the device");
                     Err("Flash failed".into())
-                }
-            }
-        }
-        MgmtAction::NetBaudRate { action } => {
-            let action = action.unwrap_or_default();
-            match action {
-                GetSetU32::Get => {
-                    // MGMT doesn't currently support querying baud rate
-                    println!(
-                        "Get not implemented - MGMT protocol doesn't support baud rate queries"
-                    );
-                    Ok(())
-                }
-                GetSetU32::Set { value } => {
-                    println!("Setting NET UART baud rate to {}", value);
-                    core.set_net_baud_rate(value).await?;
-                    println!("NET baud rate set to {}", value);
-                    Ok(())
-                }
-            }
-        }
-        MgmtAction::CtlBaudRate { action } => {
-            let action = action.unwrap_or_default();
-            match action {
-                GetSetU32::Get => {
-                    // MGMT doesn't currently support querying baud rate
-                    println!(
-                        "Get not implemented - MGMT protocol doesn't support baud rate queries"
-                    );
-                    Ok(())
-                }
-                GetSetU32::Set { value } => {
-                    println!("Setting CTL UART baud rate to {}", value);
-
-                    // Send command to MGMT (ACK is sent before rate change)
-                    core.set_ctl_baud_rate(value).await?;
-
-                    // Now change local serial port baud rate to match
-                    core.port_mut().get_mut().set_baud_rate(value)?;
-
-                    println!("CTL baud rate set to {} (both MGMT and local)", value);
-                    Ok(())
                 }
             }
         }

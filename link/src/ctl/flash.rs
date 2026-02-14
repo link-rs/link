@@ -11,7 +11,6 @@ use crate::shared::chip_config::stm32::f405::{SECTOR_SIZES, VERIFY_CHUNK_SIZE, F
 use crate::shared::chip_config::stm32::f405::WRITE_CHUNK_SIZE as F405_WRITE_CHUNK_SIZE;
 use crate::shared::chip_config::stm32::f072::{PAGE_SIZE, WRITE_CHUNK_SIZE as F072_WRITE_CHUNK_SIZE, FLASH_BASE as F072_FLASH_BASE};
 use crate::shared::chip_config::tlv::PADDING_BYTES;
-use crate::shared::timing::uart::BAUD_RATE_CHANGE_MS;
 use crate::shared::tlv::buffer;
 use crate::shared::uart_config;
 use std::io::{Error as IoError, ErrorKind};
@@ -422,116 +421,6 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
         self.port.flush().await
     }
 
-    /// Try to parse TLVs from raw buffer, looking for a specific type.
-    /// Returns Some(value) if found, None if not enough data yet.
-    /// Removes the found TLV from raw_buffer; buffers FromNet values along the way.
-    fn try_parse_tlv_of_type(
-        &mut self,
-        target_type: MgmtToCtl,
-    ) -> Option<heapless::Vec<u8, MAX_VALUE_SIZE>> {
-        loop {
-            // Try to parse a TLV using shared buffer utilities
-            match buffer::try_parse_from_buffer::<MgmtToCtl>(&self.raw_buffer) {
-                Ok(Some((tlv, consumed))) => {
-                    // Remove consumed bytes from raw buffer
-                    let new_len = self.raw_buffer.len() - consumed;
-                    for i in 0..new_len {
-                        self.raw_buffer[i] = self.raw_buffer[i + consumed];
-                    }
-                    self.raw_buffer.truncate(new_len);
-
-                    // Check if this is the target type
-                    if tlv.tlv_type == target_type {
-                        return Some(tlv.value);
-                    }
-
-                    // Buffer FromNet values along the way
-                    if tlv.tlv_type == MgmtToCtl::FromNet {
-                        let _ = self.buffer.extend_from_slice(&tlv.value);
-                    }
-
-                    // Continue looking for target type
-                }
-                Ok(None) => {
-                    // No complete TLV yet - discard garbage before sync word if any
-                    if let Some(sync_pos) = buffer::find_sync_word(&self.raw_buffer) {
-                        if sync_pos > 0 {
-                            let new_len = self.raw_buffer.len() - sync_pos;
-                            for i in 0..new_len {
-                                self.raw_buffer[i] = self.raw_buffer[i + sync_pos];
-                            }
-                            self.raw_buffer.truncate(new_len);
-                        }
-                    }
-                    return None;
-                }
-                Err(buffer::ParseError::TooLong) => {
-                    // Invalid length - skip one byte and retry
-                    if self.raw_buffer.is_empty() {
-                        return None;
-                    }
-                    let new_len = self.raw_buffer.len() - 1;
-                    for i in 0..new_len {
-                        self.raw_buffer[i] = self.raw_buffer[i + 1];
-                    }
-                    self.raw_buffer.truncate(new_len);
-                }
-                Err(_) => {
-                    // Other parse error - skip one byte and retry
-                    if self.raw_buffer.is_empty() {
-                        return None;
-                    }
-                    let new_len = self.raw_buffer.len() - 1;
-                    for i in 0..new_len {
-                        self.raw_buffer[i] = self.raw_buffer[i + 1];
-                    }
-                    self.raw_buffer.truncate(new_len);
-                }
-            }
-        }
-    }
-
-    /// Send a command TLV to MGMT and wait for Ack.
-    async fn send_mgmt_command(
-        &mut self,
-        cmd: CtlToMgmt,
-        value: &[u8],
-    ) -> Result<(), std::io::Error> {
-        // Write command
-        self.write_mgmt_command(cmd, value).await?;
-
-        // Wait for Ack (buffer FromNet messages along the way)
-        loop {
-            // Try to find Ack in existing raw data
-            if self.try_parse_tlv_of_type(MgmtToCtl::Ack).is_some() {
-                return Ok(());
-            }
-
-            // Read more data from port
-            self.fill_raw_buffer().await?;
-        }
-    }
-
-    /// Change baud rate on both CTL-MGMT and MGMT-NET links.
-    pub async fn change_baud_rate(&mut self, baud_rate: u32) -> Result<(), std::io::Error> {
-        let baud_bytes = baud_rate.to_be_bytes();
-
-        // Set NET baud rate
-        self.send_mgmt_command(CtlToMgmt::SetNetBaudRate, &baud_bytes)
-            .await?;
-
-        // Set CTL baud rate (ACK comes at old rate, then MGMT switches)
-        self.send_mgmt_command(CtlToMgmt::SetCtlBaudRate, &baud_bytes)
-            .await?;
-
-        // Small delay for MGMT to complete the baud rate switch
-        self.delay.delay_ms(BAUD_RATE_CHANGE_MS as u32).await;
-
-        // Update local baud rate tracking
-        self.baud_rate = baud_rate;
-
-        Ok(())
-    }
 }
 
 impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static, D: AsyncDelay>
@@ -1360,13 +1249,7 @@ where
         &mut self,
         connection: Connection<TunnelSerialInterface<P, D>>,
     ) {
-        const NORMAL_BAUD: u32 = 1_000_000;
-
-        // Restore MGMT-NET to normal operating speed (CTL-MGMT stays at 1000000)
-        let mut tunnel = connection.into_serial();
-        let baud_bytes = NORMAL_BAUD.to_be_bytes();
-        let _ = tunnel.send_mgmt_command(CtlToMgmt::SetNetBaudRate, &baud_bytes).await;
-        let port = tunnel.into_port();
+        let port = connection.into_serial().into_port();
         self.put_port(port);
     }
 

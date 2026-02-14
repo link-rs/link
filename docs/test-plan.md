@@ -27,8 +27,6 @@ expected string.
 | 3 | `ctl mgmt ping "test1234"` | Exit 0, stdout contains `Received pong!` |
 | 4 | `ctl mgmt stack info` | Exit 0, stdout contains `Stack Size:` and `Stack Used:` |
 | 5 | `ctl mgmt stack repaint` | Exit 0, stdout contains `Stack repainted` |
-| 6 | `ctl mgmt net-baud-rate set 115200` then `ctl mgmt net-baud-rate set 1000000` | Each exits 0, stdout contains `NET baud rate set to` |
-| 7 | `ctl mgmt ctl-baud-rate get` | Exit 0, stdout contains `Get not implemented` |
 
 ### 1.3 UI Chip
 
@@ -161,12 +159,6 @@ or firmware binaries that aren't available in the repo.
 |---|---------|-----------|
 | 59 | `ctl net monitor` | Interactive: enters raw terminal mode, streams raw NET data until ESC is pressed. Requires human to observe output and press ESC. |
 | 60 | `ctl net monitor --reset` | Same, but resets the NET chip first. Verify that boot-time output appears. |
-
-### 2.10 CTL Baud Rate Change
-
-| # | Command | Why manual |
-|---|---------|-----------|
-| 61 | `ctl mgmt ctl-baud-rate set 115200` | Changes the CTL-MGMT link baud rate. The `ctl` process changes the local serial port to match, so subsequent commands in the same session work. But the next invocation of `ctl` defaults to 1000000 and will fail to connect. Verify by running `ctl -b 115200 hello` afterward, then restore with `ctl -b 115200 mgmt ctl-baud-rate set 1000000`. Risky to script because a failure mid-change can leave the device unreachable until power cycle. |
 
 
 ## 3. Script Skeleton
@@ -306,11 +298,11 @@ echo "=== Results: $PASS passed, $FAIL failed ==="
 
 | Category | Count | Method |
 |----------|-------|--------|
-| Scripted | 48 | Automated bash script |
-| Manual | 13 | Human operator with firmware binaries |
-| **Total** | **61** | |
+| Scripted | 46 | Automated bash script |
+| Manual | 12 | Human operator with firmware binaries |
+| **Total** | **58** | |
 
 The scripted tests cover all non-destructive, non-interactive features.
 The manual tests cover flashing (requires firmware binaries, risk of bricking),
-monitoring (interactive terminal), bootloader info (may require manual
-intervention), and baud rate changes (risk of losing communication).
+monitoring (interactive terminal), and bootloader info (may require manual
+intervention).

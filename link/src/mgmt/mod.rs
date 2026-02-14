@@ -149,12 +149,8 @@ pub type Esp32ResetPins<Boot, Rst> = NetResetPins<Boot, Rst>;
 /// The caller is responsible for applying changes to RX sides after releasing locks.
 enum BaudRateChange {
     None,
-    /// Change CTL UART baud rate (TX already changed, caller should change RX)
-    Ctl(u32),
     /// Change UI UART baud rate (TX already changed, caller should change RX)
     Ui(u32),
-    /// Change NET UART baud rate (TX already changed, caller should change RX)
-    Net(u32),
 }
 
 #[allow(unreachable_code)]
@@ -213,12 +209,11 @@ where
     // Wrap to_ctl in a mutex since it's shared between tasks
     let to_ctl: Mutex<NoopRawMutex, _> = Mutex::new(to_ctl);
 
-    // Track pending NET RX baud rate changes with an atomic
+    // Track pending UI RX baud rate changes with an atomic
     // (0 = no change pending, non-zero = new baud rate to apply)
-    // This avoids deadlocks since ui_task/net_task can poll this instead of holding a lock
+    // This avoids deadlocks since ui_task can poll this instead of holding a lock
     use core::sync::atomic::{AtomicU32, Ordering};
     let ui_rx_pending_baud: AtomicU32 = AtomicU32::new(0);
-    let net_rx_pending_baud: AtomicU32 = AtomicU32::new(0);
 
     // LED A: Blue=ToNet, Red=FromNet
     // LED B: Blue=ToUi, Red=FromUi
@@ -256,13 +251,6 @@ where
         let mut buffer = Value::default();
         let mut from_net = from_net;
         loop {
-            // Check for pending NET RX baud rate change
-            let pending = net_rx_pending_baud.load(Ordering::SeqCst);
-            if pending != 0 {
-                net_rx_pending_baud.store(0, Ordering::SeqCst);
-                from_net.set_baud_rate(pending).await;
-            }
-
             buffer.resize(buffer.capacity(), 0).unwrap();
             let Ok(n) = from_net.read(&mut buffer).await else {
                 info!("net->mgmt: error!");
@@ -318,18 +306,9 @@ where
 
             match baud_change {
                 BaudRateChange::None => {}
-                BaudRateChange::Ctl(baud) => {
-                    from_ctl.set_baud_rate(baud).await;
-                    to_ctl.lock().await.set_baud_rate(baud).await;
-                }
                 BaudRateChange::Ui(baud) => {
                     // Signal ui_task to apply this baud rate change
                     ui_rx_pending_baud.store(baud, Ordering::SeqCst);
-                }
-                BaudRateChange::Net(baud) => {
-                    // Signal net_task to apply this baud rate change
-                    // (net_task will check this atomic before each read)
-                    net_rx_pending_baud.store(baud, Ordering::SeqCst);
                 }
             }
 
@@ -353,7 +332,7 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, SM>(
     to_net: &mut N,
     ui_reset_pins: &mut UiResetPins<UiBoot0, UiBoot1, UiRst>,
     net_reset_pins: &mut NetResetPins<NetBoot, NetRst>,
-    delay: &mut D,
+    _delay: &mut D,
     stack_monitor: &SM,
 ) -> BaudRateChange
 where
@@ -450,24 +429,6 @@ where
             to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
             BaudRateChange::None
         }
-        CtlToMgmt::SetNetBaudRate => {
-            // Parse 4-byte BE u32 baud rate
-            let baud_rate = u32::from_be_bytes([
-                tlv.value.get(0).copied().unwrap_or(0),
-                tlv.value.get(1).copied().unwrap_or(0),
-                tlv.value.get(2).copied().unwrap_or(0),
-                tlv.value.get(3).copied().unwrap_or(0),
-            ]);
-            info!("mgmt: setting NET baud rate to {}", baud_rate);
-            // Flush pending NET TX data at old rate
-            let _ = to_net.flush().await;
-            // Change NET TX baud rate immediately
-            to_net.set_baud_rate(baud_rate).await;
-            // ACK goes to CTL at unchanged rate
-            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
-            // Signal net_task to change RX baud rate
-            BaudRateChange::Net(baud_rate)
-        }
         CtlToMgmt::SetUiBaudRate => {
             // Parse 4-byte BE u32 baud rate
             let baud_rate = u32::from_be_bytes([
@@ -484,26 +445,6 @@ where
             // Change UI TX baud rate (RX will be changed by caller)
             to_ui.set_baud_rate(baud_rate).await;
             BaudRateChange::Ui(baud_rate)
-        }
-        CtlToMgmt::SetCtlBaudRate => {
-            // Parse 4-byte BE u32 baud rate
-            let baud_rate = u32::from_be_bytes([
-                tlv.value.get(0).copied().unwrap_or(0),
-                tlv.value.get(1).copied().unwrap_or(0),
-                tlv.value.get(2).copied().unwrap_or(0),
-                tlv.value.get(3).copied().unwrap_or(0),
-            ]);
-            info!("mgmt: setting CTL baud rate to {}", baud_rate);
-
-            // CRITICAL: Send ACK FIRST at old baud rate
-            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
-            // Flush to ensure ACK is transmitted before rate change
-            let _ = to_ctl.flush().await;
-            // Small delay to ensure ACK bytes are fully transmitted on wire
-            delay.delay_ms(5).await;
-            // Change CTL TX baud rate; caller will update RX after returning
-            to_ctl.set_baud_rate(baud_rate).await;
-            BaudRateChange::Ctl(baud_rate)
         }
         CtlToMgmt::GetStackInfo => {
             info!("mgmt: get stack info");

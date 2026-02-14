@@ -565,29 +565,13 @@ impl std::io::Read for SyncReader {
 }
 
 /// Writer that implements `embedded_io_async::Write` for async firmware code.
-/// Optionally tracks baud rate changes for testing.
 pub struct AsyncWriter {
     tx: mpsc::UnboundedSender<Vec<u8>>,
-    baud_rate: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
 }
 
 impl AsyncWriter {
     pub fn new(tx: mpsc::UnboundedSender<Vec<u8>>) -> Self {
-        Self {
-            tx,
-            baud_rate: None,
-        }
-    }
-
-    /// Create a writer with baud rate tracking.
-    pub fn with_baud_tracking(
-        tx: mpsc::UnboundedSender<Vec<u8>>,
-        baud_rate: std::sync::Arc<std::sync::atomic::AtomicU32>,
-    ) -> Self {
-        Self {
-            tx,
-            baud_rate: Some(baud_rate),
-        }
+        Self { tx }
     }
 }
 
@@ -609,19 +593,13 @@ impl embedded_io_async::Write for AsyncWriter {
 
 #[cfg(feature = "mgmt")]
 impl crate::shared::uart_config::SetBaudRate for AsyncWriter {
-    async fn set_baud_rate(&mut self, baud_rate: u32) {
-        if let Some(ref baud) = self.baud_rate {
-            baud.store(baud_rate, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
+    async fn set_baud_rate(&mut self, _baud_rate: u32) {}
 }
 
 /// Reader that implements `embedded_io_async::Read` for async firmware code.
-/// Optionally tracks baud rate changes for testing.
 pub struct AsyncReader {
     rx: mpsc::UnboundedReceiver<Vec<u8>>,
     buffer: VecDeque<u8>,
-    baud_rate: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
 }
 
 impl AsyncReader {
@@ -629,19 +607,6 @@ impl AsyncReader {
         Self {
             rx,
             buffer: VecDeque::new(),
-            baud_rate: None,
-        }
-    }
-
-    /// Create a reader with baud rate tracking.
-    pub fn with_baud_tracking(
-        rx: mpsc::UnboundedReceiver<Vec<u8>>,
-        baud_rate: std::sync::Arc<std::sync::atomic::AtomicU32>,
-    ) -> Self {
-        Self {
-            rx,
-            buffer: VecDeque::new(),
-            baud_rate: Some(baud_rate),
         }
     }
 }
@@ -671,11 +636,7 @@ impl embedded_io_async::Read for AsyncReader {
 
 #[cfg(feature = "mgmt")]
 impl crate::shared::uart_config::SetBaudRate for AsyncReader {
-    async fn set_baud_rate(&mut self, baud_rate: u32) {
-        if let Some(ref baud) = self.baud_rate {
-            baud.store(baud_rate, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
+    async fn set_baud_rate(&mut self, _baud_rate: u32) {}
 }
 
 /// Create a bidirectional channel pair for connecting sync and async code.
@@ -775,35 +736,4 @@ pub fn ctl_async_channel() -> (MockCtlPort, (AsyncReader, AsyncWriter)) {
     (ctl_port, mgmt_end)
 }
 
-/// Create a bidirectional channel pair for CTL with baud rate tracking.
-///
-/// Returns `(MockCtlPort, (AsyncReader, AsyncWriter), ctl_baud, net_baud)`.
-#[cfg(feature = "ctl")]
-pub fn ctl_async_channel_with_baud_tracking() -> (
-    MockCtlPort,
-    (AsyncReader, AsyncWriter),
-    std::sync::Arc<std::sync::atomic::AtomicU32>,
-    std::sync::Arc<std::sync::atomic::AtomicU32>,
-) {
-    use std::sync::atomic::AtomicU32;
-    use std::sync::Arc;
 
-    let ctl_baud = Arc::new(AtomicU32::new(115200));
-    let net_baud = Arc::new(AtomicU32::new(115200));
-
-    // ctl_writer -> mgmt_reader (CTL sends to MGMT)
-    let (tx1, rx1) = mpsc::unbounded_channel();
-    // mgmt_writer -> ctl_reader (MGMT sends to CTL)
-    let (tx2, rx2) = mpsc::unbounded_channel();
-
-    let ctl_port = MockCtlPort::new(
-        AsyncReader::with_baud_tracking(rx2, ctl_baud.clone()),
-        AsyncWriter::with_baud_tracking(tx1, ctl_baud.clone()),
-    );
-    let mgmt_end = (
-        AsyncReader::with_baud_tracking(rx1, net_baud.clone()),
-        AsyncWriter::with_baud_tracking(tx2, net_baud.clone()),
-    );
-
-    (ctl_port, mgmt_end, ctl_baud, net_baud)
-}

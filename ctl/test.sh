@@ -55,13 +55,6 @@ run "mgmt ping custom" "Received pong!" "$CTL" mgmt ping "test1234"
 run "mgmt stack info" "Stack Size:" "$CTL" mgmt stack info
 run "mgmt stack repaint" "Stack repainted" "$CTL" mgmt stack repaint
 
-# net-baud-rate round-trip (set to 115200, then restore to 1000000)
-run "mgmt net-baud-rate set 115200" "NET baud rate set to" "$CTL" mgmt net-baud-rate set 115200
-run "mgmt net-baud-rate set 1000000" "NET baud rate set to" "$CTL" mgmt net-baud-rate set 1000000
-
-# ctl-baud-rate get (not implemented)
-run "mgmt ctl-baud-rate get" "Get not implemented" "$CTL" mgmt ctl-baud-rate get
-
 # ── 1.3 UI Chip ──
 
 echo "--- UI ---"

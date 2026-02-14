@@ -86,16 +86,6 @@ enum MgmtAction {
     Flash {
         file: std::path::PathBuf,
     },
-    #[command(name = "net-baud-rate")]
-    NetBaudRate {
-        #[command(subcommand)]
-        action: Option<GetSetU32>,
-    },
-    #[command(name = "ctl-baud-rate")]
-    CtlBaudRate {
-        #[command(subcommand)]
-        action: Option<GetSetU32>,
-    },
     /// Stack usage measurement
     Stack {
         #[command(subcommand)]

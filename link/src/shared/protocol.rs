@@ -99,13 +99,8 @@ pub enum CtlToMgmt {
     Hello,
     /// Set a pin (2 bytes: pin enum, value 0=low/1=high)
     SetPin,
-    /// Set NET UART baud rate (4 bytes: u32 big-endian)
-    SetNetBaudRate,
     /// Set UI UART baud rate (4 bytes: u32 big-endian)
     SetUiBaudRate,
-    /// Set CTL UART baud rate (4 bytes: u32 big-endian)
-    /// ACK is sent before the baud rate change takes effect.
-    SetCtlBaudRate,
     /// Get MGMT chip stack usage information
     GetStackInfo,
     /// Repaint the MGMT chip stack with the paint pattern
