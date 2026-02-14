@@ -138,7 +138,7 @@ run "net reset user (after bootloader)" "NET chip reset to user mode" "$CTL" net
 # channels
 "$CTL" net channel clear >/dev/null 2>&1
 run "net channel clear" "All channel configurations cleared" "$CTL" net channel clear
-run "net channel set 0" "updated" "$CTL" net channel set 0 --enabled true --relay-url "https://r.example.com"
+run "net channel set 0" "updated" "$CTL" net channel set 0 --enabled --relay-url "https://r.example.com"
 run "net channel get 0" "enabled: true" "$CTL" net channel get 0
 run "net channel list" "Ptt" "$CTL" net channel
 run "net channel clear (after set)" "All channel configurations cleared" "$CTL" net channel clear
