@@ -232,7 +232,7 @@ fn setup_ptt_tracks(
 /// PTT mode is automatically started when connected to the relay.
 fn spawn_moq_task(
     wifi: Option<(
-        esp_idf_svc::wifi::BlockingWifi<esp_idf_svc::wifi::EspWifi<'static>>,
+        esp_idf_svc::wifi::AsyncWifi<esp_idf_svc::wifi::EspWifi<'static>>,
         String,
         String,
     )>,
@@ -254,18 +254,11 @@ fn spawn_moq_task(
             let mut wifi_connected = false;
             let mut last_wifi_check = Instant::now();
 
-            // Initial WiFi connection
+            // Start WiFi (non-blocking: configure + start + trigger connect)
             if let Some((ref mut w, ref ssid, ref password)) = wifi {
-                info!("net: connecting to WiFi '{}'", ssid);
-                match connect_wifi(w, ssid, password) {
-                    Ok(()) => {
-                        info!("net: WiFi connected");
-                        wifi_connected = true;
-                        let _ = event_tx.send(MoqEvent::WifiConnected);
-                    }
-                    Err(e) => {
-                        warn!("net: WiFi connect failed: {:?}", e);
-                    }
+                info!("net: starting WiFi for '{}'", ssid);
+                if let Err(e) = start_wifi(w, ssid, password) {
+                    warn!("net: WiFi start failed: {:?}", e);
                 }
             }
 
@@ -477,13 +470,21 @@ fn spawn_moq_task(
                     }
                 }
 
-                // WiFi monitoring (every 5 seconds)
+                // WiFi monitoring (poll connection status every second)
                 if let Some((ref mut w, ref ssid, ref _password)) = wifi {
-                    if last_wifi_check.elapsed() >= Duration::from_secs(5) {
+                    if last_wifi_check.elapsed() >= Duration::from_secs(1) {
                         last_wifi_check = Instant::now();
-                        let is_up = w.is_connected().unwrap_or(false);
+                        let connected = w.is_connected().unwrap_or(false);
+                        let up = w.is_up().unwrap_or(false);
 
-                        if wifi_connected && !is_up {
+                        if !wifi_connected && connected && up {
+                            // Newly connected
+                            info!("net: WiFi connected");
+                            wifi_connected = true;
+                            last_reconnect_attempt = None;
+                            let _ = event_tx.send(MoqEvent::WifiConnected);
+                        } else if wifi_connected && !connected {
+                            // Disconnected
                             warn!("net: WiFi disconnected");
                             wifi_connected = false;
 
@@ -498,26 +499,10 @@ fn spawn_moq_task(
                                 let _ = event_tx.send(MoqEvent::Disconnected);
                             }
                             let _ = event_tx.send(MoqEvent::WifiDisconnected);
-                        }
 
-                        if !wifi_connected {
-                            info!("net: attempting WiFi reconnect to '{}'", ssid);
-                            match w.connect() {
-                                Ok(()) => match w.wait_netif_up() {
-                                    Ok(()) => {
-                                        info!("net: WiFi reconnected");
-                                        wifi_connected = true;
-                                        last_reconnect_attempt = None;
-                                        let _ = event_tx.send(MoqEvent::WifiConnected);
-                                    }
-                                    Err(e) => {
-                                        warn!("net: WiFi wait_netif_up failed: {:?}", e);
-                                    }
-                                },
-                                Err(e) => {
-                                    warn!("net: WiFi reconnect failed: {:?}", e);
-                                }
-                            }
+                            // Trigger reconnection (non-blocking)
+                            info!("net: triggering WiFi reconnect to '{}'", ssid);
+                            let _ = w.wifi_mut().connect();
                         }
                     }
                 }
@@ -837,14 +822,15 @@ fn main() {
 
     info!("net: UARTs initialized");
 
-    // Initialize WiFi
+    // Initialize WiFi (AsyncWifi for non-blocking connect/reconnect)
     let wifi = esp_idf_svc::wifi::EspWifi::new(
         peripherals.modem,
         sys_loop.clone(),
         Some(nvs_partition.clone()),
     )
     .unwrap();
-    let wifi = esp_idf_svc::wifi::BlockingWifi::wrap(wifi, sys_loop).unwrap();
+    let timer_service = esp_idf_svc::timer::EspTaskTimerService::new().unwrap();
+    let wifi = esp_idf_svc::wifi::AsyncWifi::wrap(wifi, sys_loop, timer_service).unwrap();
 
     // Open NVS for storage
     let nvs = match EspNvs::new(nvs_partition.clone(), NVS_NAMESPACE, true) {
@@ -1067,9 +1053,10 @@ fn set_led_color<R: OutputPin, G: OutputPin, B: OutputPin>(
     }
 }
 
-/// Connect to WiFi network
-fn connect_wifi(
-    wifi: &mut esp_idf_svc::wifi::BlockingWifi<esp_idf_svc::wifi::EspWifi<'static>>,
+/// Start WiFi (non-blocking: configure + start driver + trigger connect).
+/// Connection completes asynchronously; poll `wifi_mut().is_connected()` to detect it.
+fn start_wifi(
+    wifi: &mut esp_idf_svc::wifi::AsyncWifi<esp_idf_svc::wifi::EspWifi<'static>>,
     ssid: &str,
     password: &str,
 ) -> Result<(), esp_idf_svc::sys::EspError> {
@@ -1084,10 +1071,9 @@ fn connect_wifi(
         ..Default::default()
     });
 
-    wifi.set_configuration(&config)?;
-    wifi.start()?;
-    wifi.connect()?;
-    wifi.wait_netif_up()?;
+    wifi.wifi_mut().set_configuration(&config)?;
+    wifi.wifi_mut().start()?;
+    wifi.wifi_mut().connect()?;
 
     Ok(())
 }

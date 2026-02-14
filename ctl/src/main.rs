@@ -523,7 +523,10 @@ async fn connect(
         return Ok((app, port_name));
     }
 
-    // Fall back to manual selection
+    // Fall back to manual selection (only if stdin is a terminal)
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        return Err("No Link device found".into());
+    }
     let (mut core, port_name) = manually_select_port(baud)?;
     core.init_port(delay_ms).await;
 
