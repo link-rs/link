@@ -616,8 +616,10 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         self.drain();
 
         // Poll for bootloader ready (up to 2 seconds)
+        // Track elapsed time via delay count instead of std::time::Instant,
+        // which is not available on wasm32-unknown-unknown.
         use crate::timing::bootloader::{PROBE_RETRY_INTERVAL_MS, MAX_WAIT_MS};
-        let start = std::time::Instant::now();
+        let mut elapsed_ms: u64 = 0;
         loop {
             // Probe for bootloader. This consumes the init byte (0x7F → ACK),
             // so callers should pass skip_init=true to flash_mgmt/get_mgmt_bootloader_info.
@@ -625,11 +627,12 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
                 return MgmtBootloaderEntry::AutoReset;
             }
 
-            if start.elapsed().as_millis() as u64 > MAX_WAIT_MS {
+            if elapsed_ms >= MAX_WAIT_MS {
                 return MgmtBootloaderEntry::NotDetected;
             }
 
             delay_ms(PROBE_RETRY_INTERVAL_MS).await;
+            elapsed_ms += PROBE_RETRY_INTERVAL_MS;
         }
     }
 
@@ -1000,35 +1003,52 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
     where
         F: FnMut(FlashPhase, usize, usize),
     {
-        let ui_tunnel = TunnelPort::new(self.port_mut());
-        let mut bl = Bootloader::new(ui_tunnel);
+        // Drain any stale data from the serial stream before starting.
+        // UART glitches during the UI chip reset and baud rate mismatch between
+        // MGMT and UI can leave stale FromUi TLVs in the stream that would
+        // contaminate the bootloader protocol (shifting ACK/data alignment).
+        self.port_mut().drain_port().await;
 
-        // Initialize communication
-        bl.init().await?;
-
-        // Erase sectors needed for firmware (STM32F405RG has variable sector sizes)
+        let total = firmware.len();
+        let base_address: u32 = FLASH_BASE;
         let sectors_needed = sectors_for_size_f405(firmware.len());
 
-        for sector in 0..sectors_needed {
-            progress(FlashPhase::Erasing, sector, sectors_needed);
-            bl.extended_erase(Some(&[sector as u16]), None).await?;
-        }
-        progress(FlashPhase::Erasing, sectors_needed, sectors_needed);
+        // Init + Erase + Write phase
+        {
+            let ui_tunnel = TunnelPort::new(self.port_mut());
+            let mut bl = Bootloader::new(ui_tunnel);
 
-        // Write firmware in 256-byte chunks
-        let total = firmware.len();
-        let mut written = 0;
-        let base_address: u32 = FLASH_BASE;
+            // Initialize communication
+            bl.init().await?;
 
-        for chunk in firmware.chunks(F405_WRITE_CHUNK_SIZE) {
-            let address = base_address + written as u32;
-            bl.write_memory(address, chunk).await?;
-            written += chunk.len();
-            progress(FlashPhase::Writing, written, total);
+            // Erase sectors needed for firmware (STM32F405RG has variable sector sizes)
+            for sector in 0..sectors_needed {
+                progress(FlashPhase::Erasing, sector, sectors_needed);
+                bl.extended_erase(Some(&[sector as u16]), None).await?;
+            }
+            progress(FlashPhase::Erasing, sectors_needed, sectors_needed);
+
+            // Write firmware in 256-byte chunks
+            let mut written = 0;
+            for chunk in firmware.chunks(F405_WRITE_CHUNK_SIZE) {
+                let address = base_address + written as u32;
+                bl.write_memory(address, chunk).await?;
+                written += chunk.len();
+                progress(FlashPhase::Writing, written, total);
+            }
         }
 
         // Verify by reading back (optional)
         if verify {
+            // Drain between write and verify to clear any accumulated stale data.
+            // During the write phase, ACK-only responses are self-correcting if
+            // shifted, but verification reads 256 data bytes per chunk where any
+            // alignment shift would cause mismatches.
+            self.port_mut().drain_port().await;
+
+            let ui_tunnel = TunnelPort::new(self.port_mut());
+            let mut bl = Bootloader::new(ui_tunnel);
+
             let mut verified = 0;
             let mut read_buf = [0u8; F405_WRITE_CHUNK_SIZE];
 

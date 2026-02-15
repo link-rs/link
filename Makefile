@@ -45,7 +45,7 @@ ctl: FORCE
 
 # Flash targets
 flash-ui: $(UI_BIN)
-	cd ctl && cargo run -- ui flash ../$(UI_BIN) --no-verify
+	cd ctl && cargo run -- ui flash ../$(UI_BIN)
 
 flash-mgmt: $(MGMT_BIN)
 	cd ctl && cargo run -- mgmt flash ../$(MGMT_BIN)
