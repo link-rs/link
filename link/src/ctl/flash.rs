@@ -869,6 +869,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         D: Fn(u64) -> F,
         F: core::future::Future<Output = ()>,
     {
+        // Switch MGMT-UI UART to bootloader baud rate (115200)
+        let _ = self.set_ui_baud_rate(uart_config::STM32_BOOTLOADER.baudrate).await;
+
         // Drain any stale data from buffers
         self.drain();
 
@@ -883,6 +886,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
 
         // Always reset UI chip back to user mode
         let _ = self.reset_ui_to_user(&delay_ms).await;
+
+        // Switch MGMT-UI UART back to normal operation baud rate
+        let _ = self.set_ui_baud_rate(uart_config::HIGH_SPEED.baudrate).await;
 
         result
     }
