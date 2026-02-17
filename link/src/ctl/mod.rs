@@ -23,7 +23,7 @@ pub mod stm;
 
 // espflash integration (requires ctl feature with std)
 #[cfg(feature = "ctl")]
-pub mod espflash;
+pub use ::espflash;
 
 // Flashing support (requires ctl feature)
 #[cfg(feature = "ctl")]
@@ -35,6 +35,6 @@ pub use crate::shared::ChannelConfig;
 
 // Re-export espflash types for CLI usage
 #[cfg(feature = "ctl")]
-pub use self::espflash::flasher::{DeviceInfo, FlashSize, SecurityInfo};
+pub use espflash::flasher::{DeviceInfo, FlashSize, SecurityInfo};
 #[cfg(feature = "ctl")]
-pub use self::espflash::target::{DefaultProgressCallback, ProgressCallbacks, XtalFrequency};
+pub use espflash::target::{DefaultProgressCallback, ProgressCallbacks, XtalFrequency};

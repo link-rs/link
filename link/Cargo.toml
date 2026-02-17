@@ -22,19 +22,7 @@ ctl = [
     "std",
     "dep:log",
     "dep:thiserror",
-    # espflash dependencies (now embedded)
-    "dep:base64",
-    "dep:bitflags",
-    "dep:bytemuck",
-    "dep:esp-idf-part",
-    "dep:gimli",
-    "dep:miette",
-    "dep:object",
-    "dep:strum",
-    "dep:reed-solomon",
-    "dep:regex",
-    "dep:slip-codec",
-    "dep:toml",
+    "dep:espflash",
     "dep:libc",
 ]
 
@@ -71,19 +59,8 @@ audio-codec-algorithms = { version = "0.7", default-features = false }
 # CTL dependencies
 log = { version = "0.4", optional = true }
 thiserror = { version = "2", optional = true }
-# Embedded espflash dependencies
-base64 = { version = "0.22", optional = true }
-bitflags = { version = "2.9", optional = true }
-bytemuck = { version = "1.23", features = ["derive"], optional = true }
-esp-idf-part = { version = "0.6", optional = true }
-gimli = { version = "0.32.3", optional = true }
-miette = { version = "7.6", optional = true }
-object = { version = "0.38", optional = true }
-strum = { version = "0.27", features = ["derive"], optional = true }
-reed-solomon = { version = "0.2.1", optional = true }
-regex = { version = "1.11", optional = true }
-slip-codec = { version = "0.4", optional = true }
-toml = { version = "0.9", optional = true }
+# espflash (vendor crate for ESP32 flashing)
+espflash = { path = "../../link-vendor/espflash/espflash", default-features = false, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2.174", optional = true }

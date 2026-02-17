@@ -3,7 +3,7 @@
 //! This module provides async flashing methods for CtlCore. It requires the `ctl` feature.
 
 use super::core::CtlCore;
-use super::espflash::connection::{ClearBufferType, SerialInterface, SerialPortError};
+use espflash::connection::{ClearBufferType, SerialInterface, SerialPortError};
 use super::port::{CtlPort, SetBaudRate, SetTimeout};
 use super::stm::{self, Bootloader};
 use crate::shared::{CtlToMgmt, MgmtToCtl, HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD};
@@ -1083,12 +1083,12 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
 // NET chip (ESP32) flashing implementation
 // ============================================================================
 
-use super::espflash::connection::{
+use espflash::connection::{
     Connection, PortInfo, ResetAfterOperation, ResetBeforeOperation,
 };
-use super::espflash::flasher::{FlashData, FlashSettings, Flasher};
-use super::espflash::image_format::idf::IdfBootloaderFormat;
-use super::espflash::target::{Chip, ProgressCallbacks};
+use espflash::flasher::{FlashData, FlashSettings, Flasher};
+use espflash::image_format::idf::IdfBootloaderFormat;
+use espflash::target::{Chip, ProgressCallbacks};
 
 /// Errors that can occur during ESP32 flash operations.
 #[derive(Debug)]
@@ -1121,9 +1121,9 @@ impl From<std::io::Error> for EspflashError {
 #[derive(Debug)]
 pub struct EspflashDeviceInfo {
     /// Core device info (chip type, flash size, etc).
-    pub device_info: super::espflash::flasher::DeviceInfo,
+    pub device_info: espflash::flasher::DeviceInfo,
     /// Security info (secure boot, flash encryption status).
-    pub security_info: super::espflash::flasher::SecurityInfo,
+    pub security_info: espflash::flasher::SecurityInfo,
 }
 
 /// NET chip (ESP32) flashing methods for CtlCore.

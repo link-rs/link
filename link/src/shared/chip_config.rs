@@ -52,15 +52,6 @@ pub mod stm32 {
     }
 }
 
-/// ESP32 chip constants
-pub mod esp32 {
-    /// ESP32-S3 constants (NET chip)
-    pub mod s3 {
-        /// Maximum partition size (16 MB in decimal - matches ESP32 conventions)
-        /// Note: ESP32 ecosystem uses decimal MB (1000*1000), not binary MiB (1024*1024)
-        pub const MAX_PARTITION_SIZE: u32 = 16 * 1000 * 1024;
-    }
-}
 
 /// TLV protocol buffer constants
 pub mod tlv {
