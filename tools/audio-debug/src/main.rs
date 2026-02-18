@@ -12,7 +12,7 @@ mod wm8960;
 
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    bind_interrupts,
+    bind_interrupts, dma,
     exti::ExtiInput,
     gpio::{Input, Level, Output, Pull, Speed},
     i2c::I2c,
@@ -87,6 +87,7 @@ impl<'d> AudioSystem<'d> {
         tx_buf: &'d mut [u16; I2S_BUF_SIZE],
         dma_rx: Peri<'d, peripherals::DMA1_CH0>,
         rx_buf: &'d mut [u16; I2S_BUF_SIZE],
+        irqs: Irqs,
         i2c: &mut I,
         delay: &mut D,
     ) -> Self {
@@ -109,7 +110,7 @@ impl<'d> AudioSystem<'d> {
         config.clock_polarity = i2s::ClockPolarity::IdleLow;
 
         let i2s = I2S::new_full_duplex(
-            spi, ws, ck, sd_tx, sd_rx, dma_tx, tx_buf, dma_rx, rx_buf, config,
+            spi, ws, ck, sd_tx, sd_rx, dma_tx, tx_buf, dma_rx, rx_buf, irqs, config,
         );
 
         Self { i2s }
@@ -124,9 +125,10 @@ impl<'d> AudioSystem<'d> {
     }
 }
 
-bind_interrupts!(
-    struct Irqs {}
-);
+bind_interrupts!(struct Irqs {
+    DMA1_STREAM0 => dma::InterruptHandler<peripherals::DMA1_CH0>;
+    DMA1_STREAM7 => dma::InterruptHandler<peripherals::DMA1_CH7>;
+});
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -204,7 +206,7 @@ async fn main(spawner: Spawner) {
     // Audio system: initializes codec via I2C, then constructs I2S
     let mut audio_system = AudioSystem::new(
         p.SPI3, p.PA15, p.PC10, p.PB5, p.PB4, p.DMA1_CH7, i2s_tx_buf, p.DMA1_CH0, i2s_rx_buf,
-        &mut i2c, &mut delay,
+        Irqs, &mut i2c, &mut delay,
     );
 
     audio_system.start();

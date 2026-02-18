@@ -134,8 +134,6 @@ impl Frame {
 pub enum AudioError {
     /// Audio overrun - data was lost.
     Overrun,
-    /// DMA became unsynchronized with the ring buffer.
-    DmaUnsynced,
 }
 
 /// Unified audio system trait - combines codec control and audio streaming.

@@ -43,10 +43,14 @@ serde-wasm-bindgen = "0.6"
 async-channel = "2"
 
 # Embedded IO traits
-embedded-io-async = "0.6"
+embedded-io-async = "0.7"
 
 # Hex encoding
 hex = "0.4"
+
+[patch.crates-io]
+embassy-sync = { path = "../../link-vendor/embassy/embassy-sync" }
+embassy-futures = { path = "../../link-vendor/embassy/embassy-futures" }
 
 [profile.release]
 opt-level = "s"

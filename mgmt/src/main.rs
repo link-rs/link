@@ -4,7 +4,7 @@
 use cortex_m::singleton;
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    bind_interrupts,
+    bind_interrupts, dma,
     gpio::{Level, Output, Speed},
     mode::Async,
     peripherals,
@@ -101,13 +101,13 @@ impl<'d> SetBaudRate for UartRxWrapper<'d> {
     }
 }
 
-bind_interrupts!(
-    struct Irqs {
-        USART1 => usart::InterruptHandler<peripherals::USART1>;
-        USART2 => usart::InterruptHandler<peripherals::USART2>;
-        USART3_4 => usart::InterruptHandler<peripherals::USART3>;
-    }
-);
+bind_interrupts!(struct Irqs {
+    USART1 => usart::InterruptHandler<peripherals::USART1>;
+    USART2 => usart::InterruptHandler<peripherals::USART2>;
+    USART3_4 => usart::InterruptHandler<peripherals::USART3>;
+    DMA1_CHANNEL2_3 => dma::InterruptHandler<peripherals::DMA1_CH2>, dma::InterruptHandler<peripherals::DMA1_CH3>;
+    DMA1_CHANNEL4_5_6_7 => dma::InterruptHandler<peripherals::DMA1_CH4>, dma::InterruptHandler<peripherals::DMA1_CH5>, dma::InterruptHandler<peripherals::DMA1_CH6>, dma::InterruptHandler<peripherals::DMA1_CH7>;
+});
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -166,7 +166,7 @@ async fn main(_spawner: Spawner) {
 
     // UART to CTL (uses even parity for bootloader compatibility)
     let (to_ctl, from_ctl) = Uart::new(
-        p.USART1, p.PA10, p.PA9, Irqs, p.DMA1_CH2, p.DMA1_CH3, ctl_config,
+        p.USART1, p.PA10, p.PA9, p.DMA1_CH2, p.DMA1_CH3, Irqs, ctl_config,
     )
     .unwrap()
     .split();
@@ -175,7 +175,7 @@ async fn main(_spawner: Spawner) {
 
     // UART to UI (uses even parity for bootloader compatibility)
     let (to_ui, from_ui) = Uart::new(
-        p.USART2, p.PA3, p.PA2, Irqs, p.DMA1_CH4, p.DMA1_CH5, ui_config,
+        p.USART2, p.PA3, p.PA2, p.DMA1_CH4, p.DMA1_CH5, Irqs, ui_config,
     )
     .unwrap()
     .split();
@@ -184,7 +184,7 @@ async fn main(_spawner: Spawner) {
 
     // UART to NET (no parity)
     let (to_net, from_net) = Uart::new(
-        p.USART3, p.PB11, p.PB10, Irqs, p.DMA1_CH7, p.DMA1_CH6, net_config,
+        p.USART3, p.PB11, p.PB10, p.DMA1_CH7, p.DMA1_CH6, Irqs, net_config,
     )
     .unwrap()
     .split();

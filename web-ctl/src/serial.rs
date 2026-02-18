@@ -36,6 +36,8 @@ impl core::fmt::Display for WebSerialError {
     }
 }
 
+impl std::error::Error for WebSerialError {}
+
 impl embedded_io_async::Error for WebSerialError {
     fn kind(&self) -> embedded_io_async::ErrorKind {
         embedded_io_async::ErrorKind::Other

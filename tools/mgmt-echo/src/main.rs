@@ -4,7 +4,7 @@
 use cortex_m::singleton;
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    bind_interrupts,
+    bind_interrupts, dma,
     mode::Async,
     peripherals,
     time::Hertz,
@@ -15,11 +15,10 @@ use embassy_time::{Duration, Timer};
 use heapless::String;
 use {defmt_rtt as _, panic_probe as _};
 
-bind_interrupts!(
-    struct Irqs {
-        USART1 => usart::InterruptHandler<peripherals::USART1>;
-    }
-);
+bind_interrupts!(struct Irqs {
+    USART1 => usart::InterruptHandler<peripherals::USART1>;
+    DMA1_CHANNEL2_3 => dma::InterruptHandler<peripherals::DMA1_CH2>, dma::InterruptHandler<peripherals::DMA1_CH3>;
+});
 
 const BAUD_RATE: usize = 460800;
 const DMA_BUF_SIZE: usize = 256;
@@ -108,9 +107,9 @@ async fn main(spawner: Spawner) {
         p.USART1,
         p.PA10,
         p.PA9,
-        Irqs,
         p.DMA1_CH2,
         p.DMA1_CH3,
+        Irqs,
         uart_config,
     )
     .unwrap();

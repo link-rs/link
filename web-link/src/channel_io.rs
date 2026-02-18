@@ -20,6 +20,8 @@ impl core::fmt::Display for ChannelError {
     }
 }
 
+impl core::error::Error for ChannelError {}
+
 impl embedded_io_async::Error for ChannelError {
     fn kind(&self) -> embedded_io_async::ErrorKind {
         embedded_io_async::ErrorKind::Other

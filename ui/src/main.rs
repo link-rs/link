@@ -6,12 +6,12 @@ mod wm8960;
 use cortex_m::singleton;
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    bind_interrupts,
-    exti::ExtiInput,
+    bind_interrupts, dma,
+    exti::{self, ExtiInput},
     gpio::{Level, Output, Pull, Speed},
     i2c::I2c,
     i2s::{self, I2S},
-    peripherals,
+    interrupt, peripherals,
     time::Hertz,
     usart::{self, Config, DataBits, Parity, StopBits, Uart},
     Peri,
@@ -68,7 +68,7 @@ pub struct BoardAudioSystem<'d> {
 }
 
 impl<'d> BoardAudioSystem<'d> {
-    pub fn new<I: I2cTrait, D: DelayNs>(
+    fn new<I: I2cTrait, D: DelayNs>(
         spi: Peri<'d, peripherals::SPI3>,
         ws: Peri<'d, peripherals::PA15>,
         ck: Peri<'d, peripherals::PC10>,
@@ -78,6 +78,7 @@ impl<'d> BoardAudioSystem<'d> {
         tx_buf: &'d mut [u16; I2S_BUF_SIZE],
         dma_rx: Peri<'d, peripherals::DMA1_CH0>,
         rx_buf: &'d mut [u16; I2S_BUF_SIZE],
+        irqs: Irqs,
         i2c: &mut I,
         delay: &mut D,
     ) -> Self {
@@ -100,7 +101,7 @@ impl<'d> BoardAudioSystem<'d> {
         config.clock_polarity = i2s::ClockPolarity::IdleLow;
 
         let i2s = I2S::new_full_duplex(
-            spi, ws, ck, sd_tx, sd_rx, dma_tx, tx_buf, dma_rx, rx_buf, config,
+            spi, ws, ck, sd_tx, sd_rx, dma_tx, tx_buf, dma_rx, rx_buf, irqs, config,
         );
 
         Self { i2s }
@@ -132,7 +133,6 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
         match self.i2s.read_write(&tx.0, &mut rx.0).await {
             Ok(_) => Ok(()),
             Err(i2s::Error::Overrun) => Err(AudioError::Overrun),
-            Err(i2s::Error::DmaUnsynced) => Err(AudioError::DmaUnsynced),
             Err(_) => Err(AudioError::Overrun),
         }
     }
@@ -147,6 +147,15 @@ const DMA_BUF_SIZE: usize = link::MAX_VALUE_SIZE;
 bind_interrupts!(struct Irqs {
     USART1 => usart::InterruptHandler<peripherals::USART1>;
     USART2 => usart::InterruptHandler<peripherals::USART2>;
+    DMA1_STREAM0 => dma::InterruptHandler<peripherals::DMA1_CH0>;
+    DMA1_STREAM5 => dma::InterruptHandler<peripherals::DMA1_CH5>;
+    DMA1_STREAM6 => dma::InterruptHandler<peripherals::DMA1_CH6>;
+    DMA1_STREAM7 => dma::InterruptHandler<peripherals::DMA1_CH7>;
+    DMA2_STREAM2 => dma::InterruptHandler<peripherals::DMA2_CH2>;
+    DMA2_STREAM7 => dma::InterruptHandler<peripherals::DMA2_CH7>;
+    EXTI0 => exti::InterruptHandler<interrupt::typelevel::EXTI0>;
+    EXTI1 => exti::InterruptHandler<interrupt::typelevel::EXTI1>;
+    EXTI4 => exti::InterruptHandler<interrupt::typelevel::EXTI4>;
 });
 
 #[embassy_executor::main]
@@ -208,9 +217,9 @@ async fn main(_spawner: Spawner) {
         p.USART1,
         p.PA10,
         p.PA9,
-        Irqs,
         p.DMA2_CH7,
         p.DMA2_CH2,
+        Irqs,
         mgmt_config,
     )
     .unwrap()
@@ -219,7 +228,7 @@ async fn main(_spawner: Spawner) {
 
     // UART to NET (USART2: PA3 RX, PA2 TX)
     let (to_net, from_net) = Uart::new(
-        p.USART2, p.PA3, p.PA2, Irqs, p.DMA1_CH6, p.DMA1_CH5, net_config,
+        p.USART2, p.PA3, p.PA2, p.DMA1_CH6, p.DMA1_CH5, Irqs, net_config,
     )
     .unwrap()
     .split();
@@ -233,9 +242,9 @@ async fn main(_spawner: Spawner) {
     );
 
     // Buttons
-    let button_a = ExtiInput::new(p.PC0, p.EXTI0, Pull::Up);
-    let button_b = ExtiInput::new(p.PC1, p.EXTI1, Pull::Up);
-    let button_mic = ExtiInput::new(p.PA4, p.EXTI4, Pull::Up);
+    let button_a = ExtiInput::new(p.PC0, p.EXTI0, Pull::Up, Irqs);
+    let button_b = ExtiInput::new(p.PC1, p.EXTI1, Pull::Up, Irqs);
+    let button_mic = ExtiInput::new(p.PA4, p.EXTI4, Pull::Up, Irqs);
 
     // Shared I2C bus for EEPROM and audio codec (I2C1: PB6 SCL, PB7 SDA)
     let mut i2c = {
@@ -255,7 +264,7 @@ async fn main(_spawner: Spawner) {
     // Audio system: initializes codec via I2C, then constructs I2S
     let audio_system = BoardAudioSystem::new(
         p.SPI3, p.PA15, p.PC10, p.PB5, p.PB4, p.DMA1_CH7, i2s_tx_buf, p.DMA1_CH0, i2s_rx_buf,
-        &mut i2c, &mut delay,
+        Irqs, &mut i2c, &mut delay,
     );
 
     link::ui::run(
