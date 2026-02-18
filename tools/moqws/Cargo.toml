@@ -9,7 +9,7 @@ name = "moqws"
 path = "src/main.rs"
 
 [dependencies]
-quicr = { path = "../../vendor/quicr", default-features = false, features = ["std", "openssl"] }
+quicr = { path = "../../../link-vendor/quicr-rs", default-features = false, features = ["std", "openssl"] }
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"

@@ -9,7 +9,7 @@ name = "moq-sub"
 path = "src/main.rs"
 
 [dependencies]
-quicr = { path = "../../vendor/quicr", default-features = false, features = ["std", "openssl"] }
+quicr = { path = "../../../link-vendor/quicr-rs", default-features = false, features = ["std", "openssl"] }
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3.4"
 env_logger = "0.11"
