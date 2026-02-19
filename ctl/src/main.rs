@@ -382,7 +382,9 @@ async fn try_connect(port_name: &str, baud: u32) -> Option<Core> {
     core.init_port(delay_ms).await;
 
     // Set short timeout for hello check
-    core.port_mut().set_timeout(Duration::from_millis(500)).ok()?;
+    core.port_mut()
+        .set_timeout(Duration::from_millis(500))
+        .ok()?;
 
     let challenge: [u8; 4] = rand::rng().random();
     if core.hello(&challenge).await {
@@ -520,11 +522,6 @@ async fn connect(
     let (mut core, port_name) = manually_select_port(baud)?;
     core.init_port(delay_ms).await;
 
-    // Wait for MGMT to boot and be ready
-    if !core.wait_for_mgmt_ready(50).await {
-        return Err("MGMT chip not responding after reset".into());
-    }
-
     // Clear any stale data from buffers after hello exchanges
     core.drain();
 
@@ -538,7 +535,10 @@ async fn dispatch(cmd: Command, core: &mut Core) -> Result<(), Box<dyn std::erro
         Command::Net { action } => handlers::handle_net(action, core).await,
         Command::Hello => {
             let challenge: [u8; 4] = rand::rng().random();
-            println!("Sending hello with challenge: {:02x}{:02x}{:02x}{:02x}", challenge[0], challenge[1], challenge[2], challenge[3]);
+            println!(
+                "Sending hello with challenge: {:02x}{:02x}{:02x}{:02x}",
+                challenge[0], challenge[1], challenge[2], challenge[3]
+            );
             if core.hello(&challenge).await {
                 println!("Hello OK!");
             } else {
@@ -570,36 +570,50 @@ fn mgmt_handler(
     let action = MgmtAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
 
-    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(dispatch(Command::Mgmt { action }, core)))
-        .map(|()| None)
-        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(dispatch(Command::Mgmt { action }, core))
+    })
+    .map(|()| None)
+    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
 
-fn ui_handler(args: ArgMatches, core: &mut Core) -> Result<Option<String>, reedline_repl_rs::Error> {
+fn ui_handler(
+    args: ArgMatches,
+    core: &mut Core,
+) -> Result<Option<String>, reedline_repl_rs::Error> {
     let action = UiAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
 
-    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(dispatch(Command::Ui { action }, core)))
-        .map(|()| None)
-        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(dispatch(Command::Ui { action }, core))
+    })
+    .map(|()| None)
+    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
 
-fn net_handler(args: ArgMatches, core: &mut Core) -> Result<Option<String>, reedline_repl_rs::Error> {
+fn net_handler(
+    args: ArgMatches,
+    core: &mut Core,
+) -> Result<Option<String>, reedline_repl_rs::Error> {
     let action = NetAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
 
-    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(dispatch(Command::Net { action }, core)))
-        .map(|()| None)
-        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(dispatch(Command::Net { action }, core))
+    })
+    .map(|()| None)
+    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
 
 fn hello_handler(
     _args: ArgMatches,
     core: &mut Core,
 ) -> Result<Option<String>, reedline_repl_rs::Error> {
-    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(dispatch(Command::Hello, core)))
-        .map(|()| None)
-        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(dispatch(Command::Hello, core))
+    })
+    .map(|()| None)
+    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
 
 fn circular_ping_handler(
@@ -612,18 +626,23 @@ fn circular_ping_handler(
         .cloned()
         .unwrap_or_else(|| "hello".to_string());
 
-    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(dispatch(Command::CircularPing { reverse, data }, core)))
-        .map(|()| None)
-        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current()
+            .block_on(dispatch(Command::CircularPing { reverse, data }, core))
+    })
+    .map(|()| None)
+    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
 
 fn exit_handler(
     _args: ArgMatches,
     core: &mut Core,
 ) -> Result<Option<String>, reedline_repl_rs::Error> {
-    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(dispatch(Command::Exit, core)))
-        .map(|()| None)
-        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(dispatch(Command::Exit, core))
+    })
+    .map(|()| None)
+    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
 }
 
 fn run_repl(core: Core, port_name: &str) -> Result<(), reedline_repl_rs::Error> {
