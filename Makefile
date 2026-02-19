@@ -94,6 +94,7 @@ test-ctl: ctl
 	./ctl/test.sh
 
 clean:
+	cd link && cargo clean
 	cd ui && cargo clean
 	cd mgmt && cargo clean
 	cd net && cargo clean
