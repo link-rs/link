@@ -29,16 +29,16 @@ opt-level = "s"
 debug = 2
 
 [patch.crates-io]
-embassy-embedded-hal = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-executor = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-executor-macros = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-futures = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-hal-internal = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-stm32 = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-sync = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-time = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-time-driver = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-time-queue-utils = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-usb-driver = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-usb-synopsys-otg = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-net-driver = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
+embassy-embedded-hal = { git = "https://github.com/link-rs/embassy.git" }
+embassy-executor = { git = "https://github.com/link-rs/embassy.git" }
+embassy-executor-macros = { git = "https://github.com/link-rs/embassy.git" }
+embassy-futures = { git = "https://github.com/link-rs/embassy.git" }
+embassy-hal-internal = { git = "https://github.com/link-rs/embassy.git" }
+embassy-stm32 = { git = "https://github.com/link-rs/embassy.git" }
+embassy-sync = { git = "https://github.com/link-rs/embassy.git" }
+embassy-time = { git = "https://github.com/link-rs/embassy.git" }
+embassy-time-driver = { git = "https://github.com/link-rs/embassy.git" }
+embassy-time-queue-utils = { git = "https://github.com/link-rs/embassy.git" }
+embassy-usb-driver = { git = "https://github.com/link-rs/embassy.git" }
+embassy-usb-synopsys-otg = { git = "https://github.com/link-rs/embassy.git" }
+embassy-net-driver = { git = "https://github.com/link-rs/embassy.git" }

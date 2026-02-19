@@ -56,8 +56,8 @@ serde-wasm-bindgen = "0.6"
 hex = "0.4"
 
 [patch.crates-io]
-embassy-sync = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
-embassy-futures = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
+embassy-sync = { git = "https://github.com/link-rs/embassy.git" }
+embassy-futures = { git = "https://github.com/link-rs/embassy.git" }
 espflash = { git = "https://github.com/link-rs/espflash.git", rev = "9697703" }
 
 [profile.release]
