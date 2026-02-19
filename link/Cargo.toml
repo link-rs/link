@@ -60,7 +60,7 @@ audio-codec-algorithms = { version = "0.7", default-features = false }
 log = { version = "0.4", optional = true }
 thiserror = { version = "2", optional = true }
 # espflash (vendor crate for ESP32 flashing)
-espflash = { path = "../../link-vendor/espflash/espflash", default-features = false, optional = true }
+espflash = { version = "4.3.0", default-features = false, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2.174", optional = true }
@@ -71,3 +71,6 @@ nix = { version = "0.30", features = ["time"], optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["console"] }
+
+[patch.crates-io]
+espflash = { git = "https://github.com/link-rs/espflash.git", rev = "9697703" }

@@ -49,8 +49,8 @@ embedded-io-async = "0.7"
 hex = "0.4"
 
 [patch.crates-io]
-embassy-sync = { path = "../../link-vendor/embassy/embassy-sync" }
-embassy-futures = { path = "../../link-vendor/embassy/embassy-futures" }
+embassy-sync = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
+embassy-futures = { git = "https://github.com/link-rs/embassy.git", rev = "cf6f9d2" }
 
 [profile.release]
 opt-level = "s"
