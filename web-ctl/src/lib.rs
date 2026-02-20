@@ -6,10 +6,11 @@
 mod serial;
 
 use link::ctl::espflash::target::ProgressCallbacks;
-use link::ctl::flash::{AsyncDelay, FlashPhase, MgmtBootloaderEntry};
+use link::ctl::flash::{AsyncDelay, MgmtBootloaderEntry};
 use link::ctl::stm;
-use link::ctl::{CtlCore, CtlError, SetTimeout};
-use link::{MgmtToCtl, NetLoopbackMode, UiLoopbackMode};
+use link::ctl::{CtlCore, CtlError, SetTimeout, escape_non_ascii};
+use link::protocol_config::timeouts;
+use link::{ChannelId, MgmtToCtl, NetLoopbackMode, UiLoopbackMode};
 use serde::{Deserialize, Serialize};
 use serial::{WebSerial, WebSerialAdapter};
 use wasm_bindgen::prelude::*;
@@ -182,17 +183,8 @@ impl LinkController {
         let key_bytes = hex::decode(key_hex)
             .map_err(|e| JsValue::from_str(&format!("Invalid hex string: {}", e)))?;
 
-        if key_bytes.len() != 16 {
-            return Err(JsValue::from_str(
-                "SFrame key must be 16 bytes (32 hex chars)",
-            ));
-        }
-
-        let mut key = [0u8; 16];
-        key.copy_from_slice(&key_bytes);
-
         let core = self.core_mut()?;
-        core.set_sframe_key(&key).await.map_err(ctl_error_to_js)
+        core.set_sframe_key(&key_bytes).await.map_err(ctl_error_to_js)
     }
 
     /// Get the relay URL from NET chip storage.
@@ -340,13 +332,7 @@ impl LinkController {
     pub async fn get_ui_loopback_mode(&mut self) -> Result<String, JsValue> {
         let core = self.core_mut()?;
         let mode = core.ui_get_loopback().await.map_err(ctl_error_to_js)?;
-        let mode_str = match mode {
-            UiLoopbackMode::Off => "off",
-            UiLoopbackMode::Raw => "raw",
-            UiLoopbackMode::Alaw => "alaw",
-            UiLoopbackMode::Sframe => "sframe",
-        };
-        Ok(mode_str.to_string())
+        Ok(mode.to_string())
     }
 
     /// Set UI chip loopback mode.
@@ -377,12 +363,7 @@ impl LinkController {
     pub async fn get_net_loopback_mode(&mut self) -> Result<String, JsValue> {
         let core = self.core_mut()?;
         let mode = core.net_get_loopback().await.map_err(ctl_error_to_js)?;
-        let mode_str = match mode {
-            NetLoopbackMode::Off => "off",
-            NetLoopbackMode::Raw => "raw",
-            NetLoopbackMode::Moq => "moq",
-        };
-        Ok(mode_str.to_string())
+        Ok(mode.to_string())
     }
 
     /// Set NET chip loopback mode.
@@ -517,14 +498,86 @@ impl LinkController {
         js_sys::Reflect::set(
             &obj,
             &"state".into(),
-            &(if stats.state == 0 {
-                "buffering"
-            } else {
-                "playing"
-            })
-            .into(),
+            &stats.state.to_string().to_lowercase().into(),
         )?;
         Ok(obj.into())
+    }
+
+    // ==================== CHANNEL MANAGEMENT ====================
+
+    /// Get configuration for a specific channel.
+    /// Returns JSON with {channelId, enabled, relayUrl}.
+    #[wasm_bindgen]
+    pub async fn get_channel_config(&mut self, channel_id: u8) -> Result<JsValue, JsValue> {
+        let core = self.core_mut()?;
+        let config = core.get_channel_config(channel_id).await.map_err(ctl_error_to_js)?;
+
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"channelId".into(), &config.channel_id.into())?;
+        js_sys::Reflect::set(&obj, &"enabled".into(), &config.enabled.into())?;
+        js_sys::Reflect::set(&obj, &"relayUrl".into(), &config.relay_url.as_str().into())?;
+        Ok(obj.into())
+    }
+
+    /// Set configuration for a channel.
+    /// Takes channel_id, enabled, and relay_url.
+    #[wasm_bindgen]
+    pub async fn set_channel_config(
+        &mut self,
+        channel_id: u8,
+        enabled: bool,
+        relay_url: &str,
+    ) -> Result<(), JsValue> {
+        let config = link::ctl::ChannelConfig {
+            channel_id,
+            enabled,
+            relay_url: relay_url.try_into().map_err(|_| JsValue::from_str("relay_url too long"))?,
+        };
+        let core = self.core_mut()?;
+        core.set_channel_config(&config).await.map_err(ctl_error_to_js)
+    }
+
+    /// Clear all channel configurations.
+    #[wasm_bindgen]
+    pub async fn clear_channel_configs(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.clear_channel_configs().await.map_err(ctl_error_to_js)
+    }
+
+    /// Get all channel configurations.
+    /// Returns a JSON array of channel config objects.
+    #[wasm_bindgen]
+    pub async fn get_all_channel_configs(&mut self) -> Result<JsValue, JsValue> {
+        let core = self.core_mut()?;
+        let configs = js_sys::Array::new();
+        for &id in ChannelId::ALL {
+            let channel_id_u8: u8 = id.into();
+            if let Ok(config) = core.get_channel_config(channel_id_u8).await {
+                let obj = js_sys::Object::new();
+                js_sys::Reflect::set(&obj, &"channelId".into(), &config.channel_id.into())?;
+                js_sys::Reflect::set(&obj, &"channelName".into(), &id.to_string().into())?;
+                js_sys::Reflect::set(&obj, &"enabled".into(), &config.enabled.into())?;
+                js_sys::Reflect::set(&obj, &"relayUrl".into(), &config.relay_url.as_str().into())?;
+                configs.push(&obj);
+            }
+        }
+        Ok(configs.into())
+    }
+
+    // ==================== RESET HOLD ====================
+
+    /// Hold the UI chip in reset.
+    #[wasm_bindgen]
+    pub async fn hold_ui_reset(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.hold_ui_reset().await.map_err(ctl_error_to_js)
+    }
+
+    /// Hold the NET chip in reset.
+    #[wasm_bindgen]
+    pub async fn hold_net_reset(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.hold_net_reset().await.map_err(ctl_error_to_js)
     }
 
     // ==================== FLASHING ====================
@@ -613,7 +666,7 @@ impl LinkController {
         // Set short timeout for probing
         let _ = core
             .port_mut()
-            .set_timeout(std::time::Duration::from_millis(200));
+            .set_timeout(std::time::Duration::from_millis(timeouts::BOOTLOADER_PROBE_MS));
 
         let result = core
             .try_enter_mgmt_bootloader(|ms| js_sleep(ms as u32))
@@ -622,7 +675,7 @@ impl LinkController {
         // Restore normal timeout
         let _ = core
             .port_mut()
-            .set_timeout(std::time::Duration::from_secs(3));
+            .set_timeout(std::time::Duration::from_secs(timeouts::NORMAL_SECS));
 
         match result {
             MgmtBootloaderEntry::AutoReset => Ok("auto_reset".to_string()),
@@ -664,15 +717,10 @@ impl LinkController {
         let core = self.core_mut()?;
 
         core.flash_mgmt(&firmware_data, skip_init, |phase, current, total| {
-            let phase_str = match phase {
-                FlashPhase::Compressing => "compressing",
-                FlashPhase::Erasing => "erasing",
-                FlashPhase::Writing => "writing",
-                FlashPhase::Verifying => "verifying",
-            };
+            let phase_str = phase.to_string();
             let _ = progress_callback.call3(
                 &JsValue::NULL,
-                &JsValue::from_str(phase_str),
+                &JsValue::from_str(&phase_str),
                 &JsValue::from(current as u32),
                 &JsValue::from(total as u32),
             );
@@ -697,15 +745,10 @@ impl LinkController {
         let core = self.core_mut()?;
 
         core.flash_mgmt(&firmware_data, false, |phase, current, total| {
-            let phase_str = match phase {
-                FlashPhase::Compressing => "compressing",
-                FlashPhase::Erasing => "erasing",
-                FlashPhase::Writing => "writing",
-                FlashPhase::Verifying => "verifying",
-            };
+            let phase_str = phase.to_string();
             let _ = progress_callback.call3(
                 &JsValue::NULL,
-                &JsValue::from_str(phase_str),
+                &JsValue::from_str(&phase_str),
                 &JsValue::from(current as u32),
                 &JsValue::from(total as u32),
             );
@@ -788,15 +831,10 @@ impl LinkController {
             |ms| js_sleep(ms as u32),
             verify,
             |phase, current, total| {
-                let phase_str = match phase {
-                    FlashPhase::Compressing => "compressing",
-                    FlashPhase::Erasing => "erasing",
-                    FlashPhase::Writing => "writing",
-                    FlashPhase::Verifying => "verifying",
-                };
+                let phase_str = phase.to_string();
                 let _ = progress_callback.call3(
                     &JsValue::NULL,
-                    &JsValue::from_str(phase_str),
+                    &JsValue::from_str(&phase_str),
                     &JsValue::from(current as u32),
                     &JsValue::from(total as u32),
                 );
@@ -848,9 +886,7 @@ impl LinkController {
         }
 
         // Security info
-        let security = &info.security_info;
-        let secure_boot = (security.flags & 1) != 0;
-        let flash_encryption = security.flash_crypt_cnt.count_ones() % 2 != 0;
+        let (secure_boot, flash_encryption) = link::ctl::interpret_esp32_security(&info.security_info);
         js_sys::Reflect::set(&obj, &"secureBoot".into(), &secure_boot.into())?;
         js_sys::Reflect::set(&obj, &"flashEncryption".into(), &flash_encryption.into())?;
 
@@ -860,14 +896,18 @@ impl LinkController {
     /// Flash firmware to the NET chip (ESP32).
     ///
     /// Pass an ELF file as Uint8Array - it will be converted to ESP-IDF bootloader format.
+    /// Optionally pass a partition table as Uint8Array (CSV or binary format, auto-detected
+    /// by espflash). When `None`, espflash uses its default single-app layout at 0x10000.
     /// The progress callback receives (phase: string, current: number, total: number).
     #[wasm_bindgen]
     pub async fn flash_net(
         &mut self,
         elf_data: js_sys::Uint8Array,
+        partition_table: Option<js_sys::Uint8Array>,
         progress_callback: js_sys::Function,
     ) -> Result<(), JsValue> {
         let elf_bytes = elf_data.to_vec();
+        let partition_table_bytes = partition_table.map(|pt| pt.to_vec());
         let core = self.core_mut()?;
 
         // Create a progress callback adapter
@@ -935,7 +975,7 @@ impl LinkController {
             total: 0,
             verifying: false,
         };
-        core.flash_net(&elf_bytes, None, &mut progress, JsDelay, 1_000_000)
+        core.flash_net(&elf_bytes, partition_table_bytes.as_deref(), &mut progress, JsDelay, link::uart_config::HIGH_SPEED.baudrate)
             .await
             .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
@@ -957,17 +997,17 @@ impl LinkController {
         let core = self.core_mut()?;
         let _ = core
             .port_mut()
-            .set_timeout(std::time::Duration::from_millis(100));
+            .set_timeout(std::time::Duration::from_millis(timeouts::MONITOR_MS));
         Ok(())
     }
 
-    /// Restore port read timeout to 3s (normal operation).
+    /// Restore port read timeout to normal operation.
     #[wasm_bindgen]
     pub fn restore_timeout(&mut self) -> Result<(), JsValue> {
         let core = self.core_mut()?;
         let _ = core
             .port_mut()
-            .set_timeout(std::time::Duration::from_secs(3));
+            .set_timeout(std::time::Duration::from_secs(timeouts::NORMAL_SECS));
         Ok(())
     }
 
@@ -991,15 +1031,7 @@ impl LinkController {
         match core.read_tlv_raw().await {
             Ok(Some(tlv)) => {
                 if tlv.tlv_type == MgmtToCtl::FromNet {
-                    let bytes = tlv.value.as_slice();
-                    let text = match core::str::from_utf8(bytes) {
-                        Ok(s) => s.to_string(),
-                        Err(_) => bytes
-                            .iter()
-                            .map(|b| format!("{:02X}", b))
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                    };
+                    let text = escape_non_ascii(&tlv.value);
                     Ok(JsValue::from_str(&text))
                 } else {
                     // Not a FromNet TLV, ignore
