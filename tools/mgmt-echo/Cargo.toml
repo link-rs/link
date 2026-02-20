@@ -1,0 +1,45 @@
+[package]
+name = "mgmt-echo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread", "defmt"] }
+embassy-stm32 = { version = "0.5", features = ["defmt", "stm32f072cb", "memory-x", "exti", "time-driver-any"] }
+embassy-sync = { version = "0.7", features = ["defmt"] }
+embassy-time = { version = "0.5", features = ["defmt"] }
+heapless = "0.9"
+defmt = "1"
+defmt-rtt = "1"
+panic-probe = { version = "1", features = ["print-defmt"] }
+
+[build-dependencies]
+built = "0.7"
+
+[profile.dev]
+opt-level = "s"     # Optimize for size in dev builds
+lto = true
+codegen-units = 1
+
+[profile.release]
+opt-level = "z"     # Optimize for size
+lto = true
+codegen-units = 1
+
+[patch.crates-io]
+embassy-embedded-hal = { path = "../../../link-vendor/embassy/embassy-embedded-hal" }
+embassy-executor = { path = "../../../link-vendor/embassy/embassy-executor" }
+embassy-executor-macros = { path = "../../../link-vendor/embassy/embassy-executor-macros" }
+embassy-executor-timer-queue = { path = "../../../link-vendor/embassy/embassy-executor-timer-queue" }
+embassy-futures = { path = "../../../link-vendor/embassy/embassy-futures" }
+embassy-hal-internal = { path = "../../../link-vendor/embassy/embassy-hal-internal" }
+embassy-stm32 = { path = "../../../link-vendor/embassy/embassy-stm32" }
+embassy-sync = { path = "../../../link-vendor/embassy/embassy-sync" }
+embassy-time = { path = "../../../link-vendor/embassy/embassy-time" }
+embassy-time-driver = { path = "../../../link-vendor/embassy/embassy-time-driver" }
+embassy-time-queue-utils = { path = "../../../link-vendor/embassy/embassy-time-queue-utils" }
+embassy-usb-driver = { path = "../../../link-vendor/embassy/embassy-usb-driver" }
+embassy-usb-synopsys-otg = { path = "../../../link-vendor/embassy/embassy-usb-synopsys-otg" }
+embassy-net-driver = { path = "../../../link-vendor/embassy/embassy-net-driver" }

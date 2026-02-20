@@ -1,0 +1,27 @@
+[package]
+name = "moqws"
+version = "0.1.0"
+edition = "2021"
+description = "WebSocket-to-MOQT bridge server"
+
+[[bin]]
+name = "moqws"
+path = "src/main.rs"
+
+[dependencies]
+quicr = { path = "../../../link-vendor/quicr-rs", default-features = false, features = ["std", "openssl"] }
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+
+# Embassy runtime for quicr
+embassy-executor = { version = "0.9", features = ["arch-std", "executor-thread"] }
+embassy-time = { version = "0.5", features = ["std"] }
+embassy-futures = "0.1"
