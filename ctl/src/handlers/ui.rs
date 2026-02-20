@@ -4,7 +4,8 @@ use super::Core;
 use crate::{GetSetHex, GetSetU32, LoopbackAction, PinAction, PinLevel, ResetAction, StackAction, UiAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::FlashPhase;
-use link::ctl::{CtlError, SetTimeout};
+use link::ctl::SetTimeout;
+use link::protocol_config::timeouts;
 use link::{PinValue, UiLoopbackMode};
 use std::io::Write;
 use std::time::Duration;
@@ -26,11 +27,9 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             let info = core.get_ui_bootloader_info(delay).await
                 .map_err(|_| "Failed to get bootloader info")?;
 
-            let major = info.bootloader_version >> 4;
-            let minor = info.bootloader_version & 0x0F;
             println!(
                 "Bootloader Version: {}.{} (0x{:02X})",
-                major, minor, info.bootloader_version
+                info.version_major(), info.version_minor(), info.bootloader_version
             );
             println!(
                 "Chip ID: 0x{:04X} ({})",
@@ -55,17 +54,17 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                 }
                 println!();
 
-                let sp = u32::from_le_bytes([flash[0], flash[1], flash[2], flash[3]]);
-                let reset = u32::from_le_bytes([flash[4], flash[5], flash[6], flash[7]]);
-
                 println!("\nVector Table Analysis:");
-                println!("  Initial SP:      0x{:08X}", sp);
-                println!("  Reset Handler:   0x{:08X}", reset);
-
-                if (0x2000_0000..0x2002_0000).contains(&sp) {
+                if let Some(sp) = info.sp() {
+                    println!("  Initial SP:      0x{:08X}", sp);
+                }
+                if let Some(reset) = info.reset_handler() {
+                    println!("  Reset Handler:   0x{:08X}", reset);
+                }
+                if info.sp_valid() {
                     println!("  (SP appears valid - points to SRAM)");
                 }
-                if (0x0800_0000..0x0810_0000).contains(&reset) && (reset & 1) == 1 {
+                if info.reset_valid() {
                     println!("  (Reset handler appears valid - points to Flash, Thumb mode)");
                 }
             } else {
@@ -157,12 +156,7 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             }
             GetSetHex::Set { value } => {
                 let key_bytes = hex::decode(&value).map_err(|_| "Invalid hex string")?;
-                if key_bytes.len() != 16 {
-                    return Err("SFrame key must be exactly 32 hex characters (16 bytes)".into());
-                }
-                let mut key_array = [0u8; 16];
-                key_array.copy_from_slice(&key_bytes);
-                core.set_sframe_key(&key_array).await?;
+                core.set_sframe_key(&key_bytes).await?;
                 println!("SFrame key set to {}", value);
                 Ok(())
             }
@@ -254,7 +248,7 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             println!("Monitoring UI chip logs (ESC to stop)...\n");
 
             // Set a short timeout for non-blocking reads
-            if let Err(e) = core.port_mut().set_timeout(Duration::from_millis(100)) {
+            if let Err(e) = core.port_mut().set_timeout(Duration::from_millis(timeouts::MONITOR_MS)) {
                 eprintln!("Warning: couldn't set timeout: {}", e);
             }
 
@@ -287,12 +281,8 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                             // Timeout or non-log TLV, continue
                         }
                         Err(e) => {
-                            // Check if it's a timeout error (can happen during read_exact)
-                            if let CtlError::Port(msg) = &e {
-                                if msg.contains("TimedOut") || msg.contains("timeout") {
-                                    // Timeout during partial read, continue
-                                    continue;
-                                }
+                            if e.is_timeout() {
+                                continue;
                             }
                             return Err(format!("Read error: {:?}", e).into());
                         }
@@ -303,8 +293,8 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             // Always restore terminal mode and timeout
             terminal::disable_raw_mode()?;
 
-            // Restore timeout to normal (3 seconds)
-            if let Err(e) = core.port_mut().set_timeout(Duration::from_secs(3)) {
+            // Restore timeout to normal
+            if let Err(e) = core.port_mut().set_timeout(Duration::from_secs(timeouts::NORMAL_SECS)) {
                 eprintln!("Warning: couldn't restore timeout: {}", e);
             }
 

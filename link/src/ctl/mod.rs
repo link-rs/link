@@ -12,7 +12,7 @@ pub mod port;
 pub mod core;
 
 // Re-export core types
-pub use self::core::{CtlCore, CtlError};
+pub use self::core::{CtlCore, CtlError, escape_non_ascii};
 pub use self::port::CtlPort;
 
 #[cfg(feature = "std")]
@@ -38,3 +38,13 @@ pub use crate::shared::ChannelConfig;
 pub use espflash::flasher::{DeviceInfo, FlashSize, SecurityInfo};
 #[cfg(feature = "ctl")]
 pub use espflash::target::{DefaultProgressCallback, ProgressCallbacks, XtalFrequency};
+
+/// Interpret ESP32 security fuse bits.
+///
+/// Returns `(secure_boot, flash_encryption)`.
+#[cfg(feature = "ctl")]
+pub fn interpret_esp32_security(info: &SecurityInfo) -> (bool, bool) {
+    let secure_boot = (info.flags & 1) != 0;
+    let flash_encryption = info.flash_crypt_cnt.count_ones() % 2 != 0;
+    (secure_boot, flash_encryption)
+}

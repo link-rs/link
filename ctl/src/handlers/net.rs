@@ -7,9 +7,9 @@ use crate::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::StdDelay;
-use link::ctl::{ChannelConfig, CtlError, ProgressCallbacks, SetTimeout};
-use link::protocol_config::channels::{PTT, PTT_AI, CHAT_AI};
-use link::{NetLoopbackMode, Pin, PinValue};
+use link::ctl::{ChannelConfig, ProgressCallbacks, SetTimeout, escape_non_ascii};
+use link::protocol_config::timeouts;
+use link::{ChannelId, NetLoopbackMode, Pin, PinValue};
 
 /// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
 struct FlashProgress {
@@ -145,6 +145,10 @@ pub async fn handle_net(
                 sec.key_purposes[6]
             );
 
+            let (secure_boot, flash_encryption) = link::ctl::interpret_esp32_security(sec);
+            println!("Secure Boot:       {}", if secure_boot { "enabled" } else { "disabled" });
+            println!("Flash Encryption:  {}", if flash_encryption { "enabled" } else { "disabled" });
+
             println!("\nNET chip reset back to user mode.");
             println!("Done!");
             Ok(())
@@ -211,7 +215,7 @@ pub async fn handle_net(
                     partition_table_data.as_deref(),
                     &mut progress,
                     StdDelay,
-                    1_000_000,
+                    link::uart_config::HIGH_SPEED.baudrate,
                 )
                 .await;
 
@@ -229,11 +233,7 @@ pub async fn handle_net(
         NetAction::Loopback { mode } => match mode.unwrap_or_default() {
             NetLoopbackAction::Get => {
                 let loopback = core.net_get_loopback().await?;
-                match loopback {
-                    NetLoopbackMode::Off => println!("off"),
-                    NetLoopbackMode::Raw => println!("raw"),
-                    NetLoopbackMode::Moq => println!("moq"),
-                }
+                println!("{}", loopback);
                 Ok(())
             }
             NetLoopbackAction::Off => {
@@ -329,7 +329,7 @@ pub async fn handle_net(
             // Set a short timeout for non-blocking reads
             if let Err(e) = core
                 .port_mut()
-                .set_timeout(std::time::Duration::from_millis(100))
+                .set_timeout(std::time::Duration::from_millis(timeouts::MONITOR_MS))
             {
                 eprintln!("Warning: couldn't set timeout: {}", e);
             }
@@ -357,7 +357,8 @@ pub async fn handle_net(
                     match core.read_tlv_raw().await {
                         Ok(Some(tlv)) => {
                             if tlv.tlv_type == link::MgmtToCtl::FromNet {
-                                std::io::stdout().write_all(&tlv.value).ok();
+                                let text = escape_non_ascii(&tlv.value);
+                                print!("{}", text);
                                 std::io::stdout().flush().ok();
                             }
                         }
@@ -365,12 +366,8 @@ pub async fn handle_net(
                             // Timeout, continue
                         }
                         Err(e) => {
-                            // Check if it's a timeout error (can happen during read_exact)
-                            if let CtlError::Port(msg) = &e {
-                                if msg.contains("TimedOut") || msg.contains("timeout") {
-                                    // Timeout during partial read, continue
-                                    continue;
-                                }
+                            if e.is_timeout() {
+                                continue;
                             }
                             return Err(format!("Read error: {:?}", e).into());
                         }
@@ -382,10 +379,10 @@ pub async fn handle_net(
             // Always restore terminal mode and timeout
             terminal::disable_raw_mode()?;
 
-            // Restore timeout to normal (3 seconds)
+            // Restore timeout to normal
             if let Err(e) = core
                 .port_mut()
-                .set_timeout(std::time::Duration::from_secs(3))
+                .set_timeout(std::time::Duration::from_secs(timeouts::NORMAL_SECS))
             {
                 eprintln!("Warning: couldn't restore timeout: {}", e);
             }
@@ -397,31 +394,21 @@ pub async fn handle_net(
         NetAction::Channel { action } => match action {
             None => {
                 // List all channel configs by querying each known channel
-                let channel_ids = [PTT, PTT_AI, CHAT_AI];
                 let mut found_any = false;
-                for &id in &channel_ids {
-                    match core.get_channel_config(id).await {
+                for &id in ChannelId::ALL {
+                    let channel_id_u8: u8 = id.into();
+                    match core.get_channel_config(channel_id_u8).await {
                         Ok(config) => {
                             if !found_any {
                                 println!("Channel configurations:");
                                 found_any = true;
                             }
-                            let channel_name = match config.channel_id {
-                                0 => "Ptt",
-                                1 => "PttAi",
-                                3 => "ChatAi",
-                                _ => "Unknown",
-                            };
                             println!(
                                 "  {} ({}): enabled={}, relay_url={}",
                                 config.channel_id,
-                                channel_name,
+                                id,
                                 config.enabled,
-                                if config.relay_url.is_empty() {
-                                    "(global)"
-                                } else {
-                                    config.relay_url.as_str()
-                                }
+                                config.relay_url_display()
                             );
                         }
                         Err(_) => {
@@ -436,22 +423,12 @@ pub async fn handle_net(
             }
             Some(ChannelAction::Get { channel_id }) => {
                 let config = core.get_channel_config(channel_id).await?;
-                let channel_name = match config.channel_id {
-                    0 => "Ptt",
-                    1 => "PttAi",
-                    3 => "ChatAi",
-                    _ => "Unknown",
-                };
+                let channel_name = ChannelId::try_from(config.channel_id)
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|_| "Unknown".to_string());
                 println!("Channel {} ({}):", config.channel_id, channel_name);
                 println!("  enabled: {}", config.enabled);
-                println!(
-                    "  relay_url: {}",
-                    if config.relay_url.is_empty() {
-                        "(global)"
-                    } else {
-                        config.relay_url.as_str()
-                    }
-                );
+                println!("  relay_url: {}", config.relay_url_display());
                 Ok(())
             }
             Some(ChannelAction::Set {
@@ -479,17 +456,9 @@ pub async fn handle_net(
         },
         NetAction::JitterStats { channel_id } => {
             let stats = core.get_jitter_stats(channel_id).await?;
-            let channel_name = match channel_id {
-                0 => "Ptt",
-                1 => "PttAi",
-                3 => "ChatAi",
-                _ => "Unknown",
-            };
-            let state_name = match stats.state {
-                0 => "Buffering",
-                1 => "Playing",
-                _ => "Unknown",
-            };
+            let channel_name = ChannelId::try_from(channel_id)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|_| "Unknown".to_string());
             println!(
                 "Jitter buffer stats for channel {} ({}):",
                 channel_id, channel_name
@@ -499,7 +468,7 @@ pub async fn handle_net(
             println!("  underruns: {}", stats.underruns);
             println!("  overruns:  {}", stats.overruns);
             println!("  level:     {}", stats.level);
-            println!("  state:     {} ({})", stats.state, state_name);
+            println!("  state:     {}", stats.state);
             Ok(())
         }
     }

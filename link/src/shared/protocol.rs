@@ -18,6 +18,21 @@ pub enum ChannelId {
     ChatAi = 3,
 }
 
+impl ChannelId {
+    /// All defined channel IDs.
+    pub const ALL: &[ChannelId] = &[ChannelId::Ptt, ChannelId::PttAi, ChannelId::ChatAi];
+}
+
+impl core::fmt::Display for ChannelId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ChannelId::Ptt => write!(f, "Ptt"),
+            ChannelId::PttAi => write!(f, "PttAi"),
+            ChannelId::ChatAi => write!(f, "ChatAi"),
+        }
+    }
+}
+
 /// Message type within a chunk (matches hactar ui_net_link.hh)
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -47,6 +62,17 @@ pub enum UiLoopbackMode {
     Sframe = 3,
 }
 
+impl core::fmt::Display for UiLoopbackMode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            UiLoopbackMode::Off => write!(f, "off"),
+            UiLoopbackMode::Raw => write!(f, "raw"),
+            UiLoopbackMode::Alaw => write!(f, "alaw"),
+            UiLoopbackMode::Sframe => write!(f, "sframe"),
+        }
+    }
+}
+
 /// Loopback mode for the NET chip.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -59,6 +85,16 @@ pub enum NetLoopbackMode {
     Raw = 1,
     /// MoQ loopback - audio to MoQ, DON'T filter self-echo (hear own audio via relay)
     Moq = 2,
+}
+
+impl core::fmt::Display for NetLoopbackMode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            NetLoopbackMode::Off => write!(f, "off"),
+            NetLoopbackMode::Raw => write!(f, "raw"),
+            NetLoopbackMode::Moq => write!(f, "moq"),
+        }
+    }
 }
 
 /// Pin identifiers for SetPin command.
@@ -251,6 +287,25 @@ impl StackInfo {
     }
 }
 
+/// Jitter buffer state.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum JitterState {
+    #[default]
+    Buffering = 0,
+    Playing = 1,
+}
+
+impl core::fmt::Display for JitterState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            JitterState::Buffering => write!(f, "Buffering"),
+            JitterState::Playing => write!(f, "Playing"),
+        }
+    }
+}
+
 /// Jitter buffer statistics (wire format, postcard-serialized).
 ///
 /// This is the wire-format struct used for TLV communication.
@@ -269,8 +324,8 @@ pub struct JitterStatsInfo {
     pub overruns: u32,
     /// Current buffer level.
     pub level: u16,
-    /// Current state (0=Buffering, 1=Playing).
-    pub state: u8,
+    /// Current state.
+    pub state: JitterState,
 }
 
 impl JitterStatsInfo {

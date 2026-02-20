@@ -35,6 +35,9 @@ pub mod timeouts {
     /// Monitor mode timeout (non-blocking reads, in milliseconds)
     pub const MONITOR_MS: u64 = 100;
 
+    /// Short timeout for bootloader probing (in milliseconds)
+    pub const BOOTLOADER_PROBE_MS: u64 = 200;
+
     // Duration constants - only available with std
     #[cfg(feature = "std")]
     mod durations {
@@ -43,6 +46,7 @@ pub mod timeouts {
         pub const NORMAL: Duration = Duration::from_secs(super::NORMAL_SECS);
         pub const SHORT: Duration = Duration::from_millis(super::SHORT_MS);
         pub const MONITOR: Duration = Duration::from_millis(super::MONITOR_MS);
+        pub const BOOTLOADER_PROBE: Duration = Duration::from_millis(super::BOOTLOADER_PROBE_MS);
     }
 
     #[cfg(feature = "std")]

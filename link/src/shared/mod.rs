@@ -46,7 +46,7 @@ pub(crate) use logging::info;
 // Jitter buffer types - for net firmware or tests
 #[cfg(any(feature = "net", test))]
 #[allow(unused_imports)] // Re-exported for public API
-pub use jitter_buffer::{JitterBuffer, JitterState, JitterStats, BUFFER_FRAMES, MIN_START_LEVEL};
+pub use jitter_buffer::{JitterBuffer, JitterStats, BUFFER_FRAMES, MIN_START_LEVEL};
 
 // LED types - used by all
 pub use led::{Color, InvertedPin, Led};

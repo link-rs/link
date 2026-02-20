@@ -31,6 +31,40 @@ pub struct MgmtBootloaderInfo {
     pub flash_sample: Option<[u8; 32]>,
 }
 
+impl MgmtBootloaderInfo {
+    /// Major version number (upper nibble of bootloader_version).
+    pub fn version_major(&self) -> u8 {
+        self.bootloader_version >> 4
+    }
+
+    /// Minor version number (lower nibble of bootloader_version).
+    pub fn version_minor(&self) -> u8 {
+        self.bootloader_version & 0x0F
+    }
+
+    /// Initial stack pointer from the vector table, if flash sample is available.
+    pub fn sp(&self) -> Option<u32> {
+        self.flash_sample.map(|f| u32::from_le_bytes([f[0], f[1], f[2], f[3]]))
+    }
+
+    /// Reset handler address from the vector table, if flash sample is available.
+    pub fn reset_handler(&self) -> Option<u32> {
+        self.flash_sample.map(|f| u32::from_le_bytes([f[4], f[5], f[6], f[7]]))
+    }
+
+    /// Whether the initial SP appears valid (points to SRAM).
+    pub fn sp_valid(&self) -> bool {
+        self.sp().map_or(false, |sp| (0x2000_0000..0x2002_0000).contains(&sp))
+    }
+
+    /// Whether the reset handler appears valid (points to Flash, Thumb mode).
+    pub fn reset_valid(&self) -> bool {
+        self.reset_handler().map_or(false, |reset| {
+            (0x0800_0000..0x0810_0000).contains(&reset) && (reset & 1) == 1
+        })
+    }
+}
+
 /// Phase of the flash operation, reported to progress callbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlashPhase {
@@ -42,6 +76,17 @@ pub enum FlashPhase {
     Writing,
     /// Verifying written data.
     Verifying,
+}
+
+impl core::fmt::Display for FlashPhase {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            FlashPhase::Compressing => write!(f, "compressing"),
+            FlashPhase::Erasing => write!(f, "erasing"),
+            FlashPhase::Writing => write!(f, "writing"),
+            FlashPhase::Verifying => write!(f, "verifying"),
+        }
+    }
 }
 
 /// Errors that can occur during flash operations.

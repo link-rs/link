@@ -94,6 +94,17 @@ impl core::fmt::Display for CtlError {
     }
 }
 
+impl CtlError {
+    /// Returns true if this error represents a timeout.
+    pub fn is_timeout(&self) -> bool {
+        match self {
+            CtlError::Timeout => true,
+            CtlError::Port(msg) => msg.contains("TimedOut") || msg.contains("timeout"),
+            _ => false,
+        }
+    }
+}
+
 #[cfg(feature = "std")]
 impl std::error::Error for CtlError {}
 
@@ -695,7 +706,15 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Set the SFrame key stored in UI chip EEPROM.
-    pub async fn set_sframe_key(&mut self, key: &[u8; 16]) -> Result<(), CtlError> {
+    ///
+    /// The key must be exactly 16 bytes. Returns `InvalidLength` if not.
+    pub async fn set_sframe_key(&mut self, key: &[u8]) -> Result<(), CtlError> {
+        if key.len() != 16 {
+            return Err(CtlError::InvalidLength {
+                expected: 16,
+                actual: key.len(),
+            });
+        }
         self.write_tlv_ui(CtlToUi::SetSFrameKey, key).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
         if tlv.tlv_type != UiToCtl::Ack {
@@ -1215,4 +1234,23 @@ impl<P: CtlPort> CtlCore<P> {
         }
         Ok(())
     }
+}
+
+/// Escape non-ASCII bytes as `\xAB` while passing ASCII through.
+pub fn escape_non_ascii(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for &b in bytes {
+        if b.is_ascii() && !b.is_ascii_control() {
+            out.push(b as char);
+        } else if b == b'\n' {
+            out.push('\n');
+        } else if b == b'\r' {
+            out.push('\r');
+        } else if b == b'\t' {
+            out.push('\t');
+        } else {
+            out.push_str(&format!("\\x{:02X}", b));
+        }
+    }
+    out
 }

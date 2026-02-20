@@ -5,9 +5,56 @@ use crate::{MgmtAction, StackAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
 use link::ctl::flash::{FlashPhase, MgmtBootloaderEntry};
+use link::protocol_config::timeouts;
 use std::io::Write;
 use std::time::Duration;
 use tokio_serial::SerialPort;
+
+/// Enter MGMT bootloader mode, handling auto-reset and manual fallback.
+///
+/// Returns whether init should be skipped (true if auto-reset succeeded).
+async fn enter_mgmt_bootloader(core: &mut Core) -> Result<bool, Box<dyn std::error::Error>> {
+    // Switch to bootloader baud rate
+    println!("Switching to bootloader baud rate (115200)...");
+    core.port_mut().get_mut().set_baud_rate(115200)?;
+
+    print!("Attempting automatic bootloader entry... ");
+    std::io::stdout().flush()?;
+
+    // Set short timeout for probing
+    let _ = core.port_mut().set_timeout(Duration::from_millis(timeouts::BOOTLOADER_PROBE_MS));
+
+    let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
+    let skip_init = match core.try_enter_mgmt_bootloader(delay_ms).await {
+        MgmtBootloaderEntry::AutoReset => {
+            println!("success (EV16 detected)");
+            true
+        }
+        MgmtBootloaderEntry::AlreadyActive => {
+            println!("bootloader already active");
+            true
+        }
+        MgmtBootloaderEntry::NotDetected => {
+            println!("not detected");
+            println!("\nAutomatic reset failed. Manual bootloader entry required.");
+            println!("Please follow these steps:");
+            println!("  1. Set the BOOT0 pin high on the MGMT chip");
+            println!("  2. Reset the MGMT chip");
+            println!();
+            print!("Press Enter when ready (or Ctrl+C to cancel)... ");
+            std::io::stdout().flush()?;
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            false
+        }
+    };
+
+    // Restore normal timeout
+    let _ = core.port_mut().set_timeout(Duration::from_secs(timeouts::NORMAL_SECS));
+
+    Ok(skip_init)
+}
 
 pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     match action {
@@ -21,46 +68,7 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             println!("MGMT Bootloader Info");
             println!("====================\n");
 
-            // STM32 bootloader requires 115200 baud with even parity
-            // Switch to bootloader baud rate
-            println!("Switching to bootloader baud rate (115200)...");
-            core.port_mut().get_mut().set_baud_rate(115200)?;
-
-            // Try automatic bootloader entry (EV16) or detect if already in bootloader
-            print!("Attempting automatic bootloader entry... ");
-            std::io::stdout().flush()?;
-
-            // Set short timeout for probing
-            let _ = core.port_mut().set_timeout(Duration::from_millis(200));
-
-            let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
-            let skip_init = match core.try_enter_mgmt_bootloader(delay_ms).await {
-                MgmtBootloaderEntry::AutoReset => {
-                    println!("success (EV16 detected)");
-                    true
-                }
-                MgmtBootloaderEntry::AlreadyActive => {
-                    println!("bootloader already active");
-                    true
-                }
-                MgmtBootloaderEntry::NotDetected => {
-                    println!("not detected");
-                    println!("\nAutomatic reset failed. Manual bootloader entry required.");
-                    println!("Please follow these steps:");
-                    println!("  1. Set the BOOT0 pin high on the MGMT chip");
-                    println!("  2. Reset the MGMT chip");
-                    println!();
-                    print!("Press Enter when ready (or Ctrl+C to cancel)... ");
-                    std::io::stdout().flush()?;
-
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input)?;
-                    false
-                }
-            };
-
-            // Restore normal timeout
-            let _ = core.port_mut().set_timeout(Duration::from_secs(3));
+            let skip_init = enter_mgmt_bootloader(core).await?;
 
             println!("Querying bootloader information...\n");
 
@@ -75,11 +83,9 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
                 }
             };
 
-            let major = info.bootloader_version >> 4;
-            let minor = info.bootloader_version & 0x0F;
             println!(
                 "Bootloader Version: {}.{} (0x{:02X})",
-                major, minor, info.bootloader_version
+                info.version_major(), info.version_minor(), info.bootloader_version
             );
             println!(
                 "Chip ID: 0x{:04X} ({})",
@@ -104,17 +110,17 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
                 }
                 println!();
 
-                let sp = u32::from_le_bytes([flash[0], flash[1], flash[2], flash[3]]);
-                let reset = u32::from_le_bytes([flash[4], flash[5], flash[6], flash[7]]);
-
                 println!("\nVector Table Analysis:");
-                println!("  Initial SP:      0x{:08X}", sp);
-                println!("  Reset Handler:   0x{:08X}", reset);
-
-                if (0x2000_0000..0x2002_0000).contains(&sp) {
+                if let Some(sp) = info.sp() {
+                    println!("  Initial SP:      0x{:08X}", sp);
+                }
+                if let Some(reset) = info.reset_handler() {
+                    println!("  Reset Handler:   0x{:08X}", reset);
+                }
+                if info.sp_valid() {
                     println!("  (SP appears valid - points to SRAM)");
                 }
-                if (0x0800_0000..0x0810_0000).contains(&reset) && (reset & 1) == 1 {
+                if info.reset_valid() {
                     println!("  (Reset handler appears valid - points to Flash, Thumb mode)");
                 }
             } else {
@@ -125,9 +131,9 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
             core.exit_mgmt_bootloader(delay_ms).await;
 
-            // Switch back to normal operation baud rate (1000000)
-            println!("Switching to normal operation baud rate (1000000)...");
-            core.port_mut().get_mut().set_baud_rate(1000000)?;
+            // Switch back to normal operation baud rate
+            println!("Switching to normal operation baud rate ({})...", link::uart_config::HIGH_SPEED.baudrate);
+            core.port_mut().get_mut().set_baud_rate(link::uart_config::HIGH_SPEED.baudrate)?;
 
             println!("\nDone!");
             Ok(())
@@ -139,41 +145,7 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             let firmware = std::fs::read(&file)?;
             println!("Firmware: {} ({} bytes)", file.display(), firmware.len());
 
-            // Try automatic bootloader entry (EV16) or detect if already in bootloader
-            print!("Attempting automatic bootloader entry... ");
-            std::io::stdout().flush()?;
-
-            // Set short timeout for probing
-            let _ = core.port_mut().set_timeout(Duration::from_millis(200));
-
-            let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
-            let skip_init = match core.try_enter_mgmt_bootloader(delay_ms).await {
-                MgmtBootloaderEntry::AutoReset => {
-                    println!("success (EV16 detected)");
-                    true
-                }
-                MgmtBootloaderEntry::AlreadyActive => {
-                    println!("bootloader already active");
-                    true
-                }
-                MgmtBootloaderEntry::NotDetected => {
-                    println!("not detected");
-                    println!("\nAutomatic reset failed. Manual bootloader entry required.");
-                    println!("Please follow these steps:");
-                    println!("  1. Set the BOOT0 pin high on the MGMT chip");
-                    println!("  2. Reset the MGMT chip");
-                    println!();
-                    print!("Press Enter when ready (or Ctrl+C to cancel)... ");
-                    std::io::stdout().flush()?;
-
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input)?;
-                    false
-                }
-            };
-
-            // Restore normal timeout for flashing
-            let _ = core.port_mut().set_timeout(Duration::from_secs(3));
+            let skip_init = enter_mgmt_bootloader(core).await?;
 
             let pb = ProgressBar::new(firmware.len() as u64);
             let bytes_style = ProgressStyle::default_bar()
@@ -221,7 +193,7 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
                     core.exit_mgmt_bootloader(delay_ms).await;
 
                     println!("\nFlash complete!");
-                    println!("The MGMT chip should now be running the new firmware at 1000000 baud.");
+                    println!("The MGMT chip should now be running the new firmware at {} baud.", link::uart_config::HIGH_SPEED.baudrate);
                     Ok(())
                 }
                 Err(e) => {

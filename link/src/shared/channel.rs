@@ -26,6 +26,17 @@ pub struct ChannelConfig {
     pub relay_url: String<MAX_CHANNEL_URL_LEN>,
 }
 
+impl ChannelConfig {
+    /// Returns the relay URL for display, showing "(global)" if empty.
+    pub fn relay_url_display(&self) -> &str {
+        if self.relay_url.is_empty() {
+            "(global)"
+        } else {
+            self.relay_url.as_str()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

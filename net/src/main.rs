@@ -1290,7 +1290,7 @@ fn handle_mgmt_message(
                     underruns: s.underruns as u32,
                     overruns: s.overruns as u32,
                     level: s.level as u16,
-                    state: s.state as u8,
+                    state: s.state,
                 };
                 let mut buf = [0u8; 64];
                 if let Ok(serialized) = postcard::to_slice(&info, &mut buf) {

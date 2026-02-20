@@ -6,23 +6,14 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
+use super::protocol::JitterState;
+
 /// Maximum number of frames the buffer can hold.
 pub const BUFFER_FRAMES: usize = 32; // 640ms at 20ms/frame
 
 /// Target buffer level before starting playback.
 /// 5 frames = 100ms at 20ms/frame (matches HACTAR jitter buffer).
 pub const MIN_START_LEVEL: usize = 5;
-
-/// Jitter buffer state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum JitterState {
-    /// Initial buffering - accumulating frames before playback starts.
-    #[default]
-    Buffering,
-    /// Normal playback - outputting frames at steady rate.
-    Playing,
-}
 
 /// Fixed jitter buffer for audio frames.
 #[derive(Debug)]
