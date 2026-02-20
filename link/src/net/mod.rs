@@ -12,8 +12,8 @@ pub use storage::{
 
 use crate::info;
 use crate::shared::{
-    Channel, Color, CriticalSectionRawMutex, Led, CtlToNet, NetToCtl, NetToUi, RawMutex,
-    Receiver, Sender, Tlv, UiToNet, WriteTlv, read_tlv_loop,
+    Channel, Color, CriticalSectionRawMutex, Led, CtlToNet, NetLoopbackMode, NetToCtl, NetToUi,
+    RawMutex, Receiver, Sender, Tlv, UiToNet, WriteTlv, read_tlv_loop,
 };
 #[cfg(feature = "ui")]
 use crate::shared::ChannelId;
@@ -177,7 +177,7 @@ where
     #[cfg(feature = "ui")]
     let handle_task = async {
         let mut ws_mode = WsMode::Normal;
-        let mut loopback = false;
+        let mut loopback = NetLoopbackMode::Off;
         let mut wifi_connected = false;
         let mut ws_connected = false;
         // Per-channel jitter buffers
@@ -205,7 +205,7 @@ where
                                     underruns: s.underruns,
                                     overruns: s.overruns,
                                     level: s.level as u16,
-                                    state: s.state as u8,
+                                    state: s.state,
                                 };
                                 let mut buf = [0u8; 32];
                                 if let Some(serialized) = info.to_bytes(&mut buf) {
@@ -271,7 +271,7 @@ where
     #[cfg(not(feature = "ui"))]
     let handle_task = async {
         let mut ws_mode = WsMode::Normal;
-        let mut loopback = false;
+        let mut loopback = NetLoopbackMode::Off;
         let mut wifi_connected = false;
         let mut ws_connected = false;
         info!("net: ready to handle events");
@@ -320,7 +320,7 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
     storage: &mut NetStorage<F>,
     ws_cmd_tx: &Sender<'a, RM, WsCommand, N>,
     _ws_mode: &mut WsMode,
-    loopback: &mut bool,
+    loopback: &mut NetLoopbackMode,
 ) where
     M: WriteTlv<NetToCtl>,
     U: WriteTlv<NetToUi>,
@@ -413,9 +413,13 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
         CtlToNet::SetLoopback => {
-            let enabled = tlv.value.first().copied().unwrap_or(0) != 0;
-            info!("net: set loopback = {}", enabled);
-            *loopback = enabled;
+            let mode = match tlv.value.first().copied().unwrap_or(0) {
+                1 => NetLoopbackMode::Raw,
+                2 => NetLoopbackMode::Moq,
+                _ => NetLoopbackMode::Off,
+            };
+            info!("net: set loopback = {}", mode);
+            *loopback = mode;
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
         CtlToNet::GetLoopback => {
@@ -504,7 +508,7 @@ async fn handle_ui<'a, M, RM: RawMutex, const N: usize>(
     tlv: Tlv<UiToNet>,
     to_mgmt: &mut M,
     ws_cmd_tx: &Sender<'a, RM, WsCommand, N>,
-    loopback: bool,
+    loopback: NetLoopbackMode,
 ) -> Option<heapless::Vec<u8, MAX_WS_PAYLOAD>>
 where
     M: WriteTlv<NetToCtl>,
@@ -525,7 +529,7 @@ where
                 return None;
             };
 
-            if loopback {
+            if loopback != NetLoopbackMode::Off {
                 // Return audio data for loopback to jitter buffer
                 Some(payload)
             } else {
@@ -807,7 +811,7 @@ mod tests {
             value: audio_data,
         };
 
-        let result = handle_ui(tlv, &mut to_mgmt, &channel.sender(), false).await;
+        let result = handle_ui(tlv, &mut to_mgmt, &channel.sender(), NetLoopbackMode::Off).await;
 
         // Should not return loopback audio when loopback is disabled
         assert!(result.is_none());
@@ -832,7 +836,7 @@ mod tests {
             value: audio_data,
         };
 
-        let result = handle_ui(tlv, &mut to_mgmt, &channel.sender(), true).await;
+        let result = handle_ui(tlv, &mut to_mgmt, &channel.sender(), NetLoopbackMode::Raw).await;
 
         // Should return loopback audio when loopback is enabled
         assert!(result.is_some());
@@ -850,7 +854,7 @@ mod tests {
         let mut storage = NetStorage::new(MockFlash::new(), 0);
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
         let mut ws_mode = WsMode::Normal;
-        let mut loopback = false;
+        let mut loopback = NetLoopbackMode::Off;
 
         let tlv = Tlv {
             tlv_type: CtlToNet::Ping,
@@ -880,7 +884,7 @@ mod tests {
         let mut storage = NetStorage::new(MockFlash::new(), 0);
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
         let mut ws_mode = WsMode::Normal;
-        let mut loopback = false;
+        let mut loopback = NetLoopbackMode::Off;
 
         let tlv = Tlv {
             tlv_type: CtlToNet::SetRelayUrl,
@@ -922,7 +926,7 @@ mod tests {
         storage.set_relay_url("wss://test.relay").unwrap();
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
         let mut ws_mode = WsMode::Normal;
-        let mut loopback = false;
+        let mut loopback = NetLoopbackMode::Off;
 
         let tlv = Tlv {
             tlv_type: CtlToNet::GetRelayUrl,

@@ -6,14 +6,14 @@
 
 #![cfg(all(feature = "ctl", feature = "mgmt", feature = "net", feature = "ui"))]
 
-use crate::ctl::CtlCore;
+use crate::ctl::{ChannelConfig, CtlCore};
 use crate::shared::mocks::{
     GpioOp, MockAsyncDelay, MockAudioStream, MockButton, MockCtlPort, MockDelay, MockFlash,
     MockPin, TrackingPin, async_async_channel, ctl_async_channel, mock_i2c_with_eeprom,
     mock_led_pins,
 };
 use crate::shared::NoOpStackMonitor;
-use crate::{mgmt, net, ui};
+use crate::{NetLoopbackMode, PinValue, UiLoopbackMode, mgmt, net, ui};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use std::sync::{Arc, Mutex};
@@ -400,6 +400,304 @@ async fn reset_net_to_user_gpio_sequence() {
         assert_eq!(ops[2], ("NET_BOOT", GpioOp::SetHigh));
         assert_eq!(ops[3], ("NET_RST", GpioOp::SetLow));
         assert_eq!(ops[4], ("NET_RST", GpioOp::SetHigh));
+    })
+    .await;
+}
+
+// ── Hello handshake ──
+
+#[tokio::test]
+async fn hello_handshake() {
+    device_test(|mut ctl| async move {
+        let challenge = [0x01, 0x02, 0x03, 0x04];
+        assert!(ctl.hello(&challenge).await);
+    })
+    .await;
+}
+
+// ── MGMT stack operations ──
+
+#[tokio::test]
+async fn mgmt_stack_info() {
+    device_test(|mut ctl| async move {
+        let info = ctl.mgmt_get_stack_info().await.unwrap();
+        // NoOpStackMonitor returns zeros for everything
+        assert_eq!(info.stack_size, 0);
+        assert_eq!(info.stack_used, 0);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mgmt_stack_repaint() {
+    device_test(|mut ctl| async move {
+        ctl.mgmt_repaint_stack().await.unwrap();
+    })
+    .await;
+}
+
+// ── UI loopback ──
+
+#[tokio::test]
+async fn ui_loopback_default_off() {
+    device_test(|mut ctl| async move {
+        let mode = ctl.ui_get_loopback().await.unwrap();
+        assert_eq!(mode, UiLoopbackMode::Off);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn ui_loopback_set_raw() {
+    device_test(|mut ctl| async move {
+        ctl.ui_set_loopback(UiLoopbackMode::Raw).await.unwrap();
+        let mode = ctl.ui_get_loopback().await.unwrap();
+        assert_eq!(mode, UiLoopbackMode::Raw);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn ui_loopback_set_alaw() {
+    device_test(|mut ctl| async move {
+        ctl.ui_set_loopback(UiLoopbackMode::Alaw).await.unwrap();
+        let mode = ctl.ui_get_loopback().await.unwrap();
+        assert_eq!(mode, UiLoopbackMode::Alaw);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn ui_loopback_set_sframe() {
+    device_test(|mut ctl| async move {
+        ctl.ui_set_loopback(UiLoopbackMode::Sframe).await.unwrap();
+        let mode = ctl.ui_get_loopback().await.unwrap();
+        assert_eq!(mode, UiLoopbackMode::Sframe);
+    })
+    .await;
+}
+
+// ── UI pin control (with GPIO tracking) ──
+
+#[tokio::test]
+async fn set_ui_boot0_gpio() {
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
+        ctl.set_ui_boot0(PinValue::High).await.unwrap();
+        ctl.set_ui_boot0(PinValue::Low).await.unwrap();
+
+        let ops = gpio_ops.lock().unwrap();
+        // First 2 ops are MGMT startup, then our explicit pin sets
+        assert_eq!(ops[2], ("UI_BOOT0", GpioOp::SetHigh));
+        assert_eq!(ops[3], ("UI_BOOT0", GpioOp::SetLow));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn set_ui_boot1_gpio() {
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
+        ctl.set_ui_boot1(PinValue::High).await.unwrap();
+        ctl.set_ui_boot1(PinValue::Low).await.unwrap();
+
+        let ops = gpio_ops.lock().unwrap();
+        assert_eq!(ops[2], ("UI_BOOT1", GpioOp::SetHigh));
+        assert_eq!(ops[3], ("UI_BOOT1", GpioOp::SetLow));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn set_ui_rst_gpio() {
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
+        ctl.set_ui_rst(PinValue::Low).await.unwrap();
+        ctl.set_ui_rst(PinValue::High).await.unwrap();
+
+        let ops = gpio_ops.lock().unwrap();
+        assert_eq!(ops[2], ("UI_RST", GpioOp::SetLow));
+        assert_eq!(ops[3], ("UI_RST", GpioOp::SetHigh));
+    })
+    .await;
+}
+
+// ── UI reset hold/release (with GPIO tracking) ──
+
+#[tokio::test]
+async fn hold_ui_reset_gpio() {
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
+        ctl.hold_ui_reset().await.unwrap();
+
+        let ops = gpio_ops.lock().unwrap();
+        // MGMT startup: UI_RST high, NET_RST high; then hold sets UI_RST low
+        assert_eq!(ops[2], ("UI_RST", GpioOp::SetLow));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn release_ui_reset_gpio() {
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
+        ctl.hold_ui_reset().await.unwrap();
+        ctl.set_ui_rst(PinValue::High).await.unwrap();
+
+        let ops = gpio_ops.lock().unwrap();
+        assert_eq!(ops[2], ("UI_RST", GpioOp::SetLow)); // hold
+        assert_eq!(ops[3], ("UI_RST", GpioOp::SetHigh)); // release
+    })
+    .await;
+}
+
+// ── UI stack operations ──
+
+#[tokio::test]
+async fn ui_stack_info() {
+    device_test(|mut ctl| async move {
+        let info = ctl.ui_get_stack_info().await.unwrap();
+        assert_eq!(info.stack_size, 0);
+        assert_eq!(info.stack_used, 0);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn ui_stack_repaint() {
+    device_test(|mut ctl| async move {
+        ctl.ui_repaint_stack().await.unwrap();
+    })
+    .await;
+}
+
+// ── NET loopback ──
+
+#[tokio::test]
+async fn net_loopback_default_off() {
+    device_test(|mut ctl| async move {
+        let mode = ctl.net_get_loopback().await.unwrap();
+        assert_eq!(mode, NetLoopbackMode::Off);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn net_loopback_set_raw() {
+    device_test(|mut ctl| async move {
+        ctl.net_set_loopback(NetLoopbackMode::Raw).await.unwrap();
+        let mode = ctl.net_get_loopback().await.unwrap();
+        assert_eq!(mode, NetLoopbackMode::Raw);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn net_loopback_set_moq() {
+    device_test(|mut ctl| async move {
+        ctl.net_set_loopback(NetLoopbackMode::Moq).await.unwrap();
+        let mode = ctl.net_get_loopback().await.unwrap();
+        assert_eq!(mode, NetLoopbackMode::Moq);
+    })
+    .await;
+}
+
+// ── NET pin control (with GPIO tracking) ──
+
+#[tokio::test]
+async fn set_net_boot_gpio() {
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
+        ctl.set_net_boot(PinValue::Low).await.unwrap();
+        ctl.set_net_boot(PinValue::High).await.unwrap();
+
+        let ops = gpio_ops.lock().unwrap();
+        assert_eq!(ops[2], ("NET_BOOT", GpioOp::SetLow));
+        assert_eq!(ops[3], ("NET_BOOT", GpioOp::SetHigh));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn set_net_rst_gpio() {
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
+        ctl.set_net_rst(PinValue::Low).await.unwrap();
+        ctl.set_net_rst(PinValue::High).await.unwrap();
+
+        let ops = gpio_ops.lock().unwrap();
+        assert_eq!(ops[2], ("NET_RST", GpioOp::SetLow));
+        assert_eq!(ops[3], ("NET_RST", GpioOp::SetHigh));
+    })
+    .await;
+}
+
+// ── NET reset hold/release (with GPIO tracking) ──
+
+#[tokio::test]
+async fn hold_net_reset_gpio() {
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
+        ctl.hold_net_reset().await.unwrap();
+
+        let ops = gpio_ops.lock().unwrap();
+        assert_eq!(ops[2], ("NET_RST", GpioOp::SetLow));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn release_net_reset_gpio() {
+    device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
+        ctl.hold_net_reset().await.unwrap();
+        ctl.set_net_rst(PinValue::High).await.unwrap();
+
+        let ops = gpio_ops.lock().unwrap();
+        assert_eq!(ops[2], ("NET_RST", GpioOp::SetLow)); // hold
+        assert_eq!(ops[3], ("NET_RST", GpioOp::SetHigh)); // release
+    })
+    .await;
+}
+
+// ── Channel config ──
+
+#[tokio::test]
+async fn set_and_get_channel_config() {
+    device_test(|mut ctl| async move {
+        let config = ChannelConfig {
+            channel_id: 0,
+            enabled: true,
+            relay_url: "https://r.example.com".try_into().unwrap(),
+        };
+        ctl.set_channel_config(&config).await.unwrap();
+        let result = ctl.get_channel_config(0).await.unwrap();
+        assert_eq!(result.channel_id, 0);
+        assert!(result.enabled);
+        assert_eq!(result.relay_url.as_str(), "https://r.example.com");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn clear_channel_configs() {
+    device_test(|mut ctl| async move {
+        let config = ChannelConfig {
+            channel_id: 0,
+            enabled: true,
+            relay_url: "https://r.example.com".try_into().unwrap(),
+        };
+        ctl.set_channel_config(&config).await.unwrap();
+        ctl.clear_channel_configs().await.unwrap();
+        // After clearing, get should return a disabled/default config
+        let result = ctl.get_channel_config(0).await.unwrap();
+        assert!(!result.enabled);
+    })
+    .await;
+}
+
+// ── Jitter stats ──
+
+#[tokio::test]
+async fn get_jitter_stats_default() {
+    device_test(|mut ctl| async move {
+        let stats = ctl.get_jitter_stats(0).await.unwrap();
+        assert_eq!(stats.received, 0);
+        assert_eq!(stats.output, 0);
+        assert_eq!(stats.underruns, 0);
+        assert_eq!(stats.overruns, 0);
+        assert_eq!(stats.level, 0);
     })
     .await;
 }
