@@ -8,3 +8,4 @@ clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "io-util"] }
 tokio-serial = "5"
 crossterm = "0.28"
+rand = "0.8"

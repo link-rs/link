@@ -19,8 +19,18 @@ struct Cli {
     port: String,
 
     /// Baud rate
-    #[arg(short, long, default_value = "115200")]
+    #[arg(short, long, default_value = "1000000")]
     baud: u32,
+}
+
+/// Build a TLV message: sync word "LINK" + type (2 bytes BE) + length (4 bytes BE) + value.
+fn build_tlv(tlv_type: u16, value: &[u8]) -> Vec<u8> {
+    let mut msg = Vec::new();
+    msg.extend_from_slice(b"LINK");
+    msg.extend_from_slice(&tlv_type.to_be_bytes());
+    msg.extend_from_slice(&(value.len() as u32).to_be_bytes());
+    msg.extend_from_slice(value);
+    msg
 }
 
 /// Set the terminal scroll region (DECSTBM). top and bottom are 1-based.
@@ -88,6 +98,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         AsyncWriteExt::write_all(&mut port, &[0x00, 0xFF]).await?;
                         AsyncWriteExt::flush(&mut port).await?;
                     }
+                    KeyCode::Char('h') | KeyCode::Char('H') => {
+                        // Send CtlToMgmt::Hello TLV with 4 random bytes
+                        let nonce: [u8; 4] = rand::random();
+                        let msg = build_tlv(0x0002, &nonce);
+                        AsyncWriteExt::write_all(&mut port, &msg).await?;
+                        AsyncWriteExt::flush(&mut port).await?;
+                    }
+                    KeyCode::Char('p') | KeyCode::Char('P') => {
+                        // Send CtlToMgmt::Ping TLV with empty value
+                        let msg = build_tlv(0x0000, &[]);
+                        AsyncWriteExt::write_all(&mut port, &msg).await?;
+                        AsyncWriteExt::flush(&mut port).await?;
+                    }
                     KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
                         break;
                     }
@@ -141,7 +164,7 @@ fn draw_header(
     execute!(stdout, cursor::SavePosition, cursor::MoveTo(0, 0))?;
     write!(
         stdout,
-        "\x1b[7m {port}  |  DTR={dtr:<5}  RTS={rts:<5}  |  F/D=DTR  J/K=RTS  S=0x7F  G=0x00FF  Q=Quit \x1b[0m\x1b[K",
+        "\x1b[7m {port}  |  DTR={dtr:<5}  RTS={rts:<5}  |  F/D=DTR  J/K=RTS  S=0x7F  G=0x00FF  H=Hello  P=Ping  Q=Quit \x1b[0m\x1b[K",
     )?;
     execute!(stdout, cursor::RestorePosition)?;
     stdout.flush()?;
