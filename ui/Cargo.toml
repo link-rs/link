@@ -29,30 +29,30 @@ opt-level = "s"
 debug = 2
 
 [patch.crates-io]
-embassy-embedded-hal = { path = "../../link-vendor/embassy/embassy-embedded-hal" }
-embassy-executor = { path = "../../link-vendor/embassy/embassy-executor" }
-embassy-executor-macros = { path = "../../link-vendor/embassy/embassy-executor-macros" }
-embassy-futures = { path = "../../link-vendor/embassy/embassy-futures" }
-embassy-hal-internal = { path = "../../link-vendor/embassy/embassy-hal-internal" }
-embassy-stm32 = { path = "../../link-vendor/embassy/embassy-stm32" }
-embassy-sync = { path = "../../link-vendor/embassy/embassy-sync" }
-embassy-time = { path = "../../link-vendor/embassy/embassy-time" }
-embassy-time-driver = { path = "../../link-vendor/embassy/embassy-time-driver" }
-embassy-time-queue-utils = { path = "../../link-vendor/embassy/embassy-time-queue-utils" }
-embassy-usb-driver = { path = "../../link-vendor/embassy/embassy-usb-driver" }
-embassy-usb-synopsys-otg = { path = "../../link-vendor/embassy/embassy-usb-synopsys-otg" }
-embassy-net-driver = { path = "../../link-vendor/embassy/embassy-net-driver" }
-# To switch back to git:
-# embassy-embedded-hal = { git = "https://github.com/link-rs/embassy.git" }
-# embassy-executor = { git = "https://github.com/link-rs/embassy.git" }
-# embassy-executor-macros = { git = "https://github.com/link-rs/embassy.git" }
-# embassy-futures = { git = "https://github.com/link-rs/embassy.git" }
-# embassy-hal-internal = { git = "https://github.com/link-rs/embassy.git" }
-# embassy-stm32 = { git = "https://github.com/link-rs/embassy.git" }
-# embassy-sync = { git = "https://github.com/link-rs/embassy.git" }
-# embassy-time = { git = "https://github.com/link-rs/embassy.git" }
-# embassy-time-driver = { git = "https://github.com/link-rs/embassy.git" }
-# embassy-time-queue-utils = { git = "https://github.com/link-rs/embassy.git" }
-# embassy-usb-driver = { git = "https://github.com/link-rs/embassy.git" }
-# embassy-usb-synopsys-otg = { git = "https://github.com/link-rs/embassy.git" }
-# embassy-net-driver = { git = "https://github.com/link-rs/embassy.git" }
+embassy-embedded-hal = { git = "https://github.com/link-rs/embassy.git" }
+embassy-executor = { git = "https://github.com/link-rs/embassy.git" }
+embassy-executor-macros = { git = "https://github.com/link-rs/embassy.git" }
+embassy-futures = { git = "https://github.com/link-rs/embassy.git" }
+embassy-hal-internal = { git = "https://github.com/link-rs/embassy.git" }
+embassy-stm32 = { git = "https://github.com/link-rs/embassy.git" }
+embassy-sync = { git = "https://github.com/link-rs/embassy.git" }
+embassy-time = { git = "https://github.com/link-rs/embassy.git" }
+embassy-time-driver = { git = "https://github.com/link-rs/embassy.git" }
+embassy-time-queue-utils = { git = "https://github.com/link-rs/embassy.git" }
+embassy-usb-driver = { git = "https://github.com/link-rs/embassy.git" }
+embassy-usb-synopsys-otg = { git = "https://github.com/link-rs/embassy.git" }
+embassy-net-driver = { git = "https://github.com/link-rs/embassy.git" }
+# To switch to local path:
+# embassy-embedded-hal = { path = "../../link-vendor/embassy/embassy-embedded-hal" }
+# embassy-executor = { path = "../../link-vendor/embassy/embassy-executor" }
+# embassy-executor-macros = { path = "../../link-vendor/embassy/embassy-executor-macros" }
+# embassy-futures = { path = "../../link-vendor/embassy/embassy-futures" }
+# embassy-hal-internal = { path = "../../link-vendor/embassy/embassy-hal-internal" }
+# embassy-stm32 = { path = "../../link-vendor/embassy/embassy-stm32" }
+# embassy-sync = { path = "../../link-vendor/embassy/embassy-sync" }
+# embassy-time = { path = "../../link-vendor/embassy/embassy-time" }
+# embassy-time-driver = { path = "../../link-vendor/embassy/embassy-time-driver" }
+# embassy-time-queue-utils = { path = "../../link-vendor/embassy/embassy-time-queue-utils" }
+# embassy-usb-driver = { path = "../../link-vendor/embassy/embassy-usb-driver" }
+# embassy-usb-synopsys-otg = { path = "../../link-vendor/embassy/embassy-usb-synopsys-otg" }
+# embassy-net-driver = { path = "../../link-vendor/embassy/embassy-net-driver" }
