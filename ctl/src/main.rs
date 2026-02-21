@@ -29,9 +29,11 @@ fn new_core(port: TokioSerialPort) -> Core {
 #[command(name = "ctl")]
 #[command(about = "Control interface for the link device", long_about = None)]
 struct Cli {
+    /// Serial port to connect to (auto-detected if omitted)
     #[arg(short, long)]
     port: Option<String>,
 
+    /// Baud rate for the serial connection
     #[arg(short, long, default_value_t = link::uart_config::HIGH_SPEED.baudrate)]
     baud: u32,
 
@@ -48,24 +50,30 @@ struct ReplCli {
 
 #[derive(Debug, Clone, Subcommand)]
 enum Command {
+    /// Commands for the MGMT chip
     Mgmt {
         #[command(subcommand)]
         action: MgmtAction,
     },
 
+    /// Commands for the UI chip
     Ui {
         #[command(subcommand)]
         action: UiAction,
     },
 
+    /// Commands for the NET chip
     Net {
         #[command(subcommand)]
         action: NetAction,
     },
 
+    /// Send a hello handshake to verify connectivity
     Hello,
 
+    /// Send a ping that traverses all chips in a circle
     CircularPing {
+        /// Send NET-first instead of the default UI-first
         #[arg(short, long)]
         reverse: bool,
 
@@ -73,16 +81,20 @@ enum Command {
         data: String,
     },
 
+    /// Exit the REPL
     Exit,
 }
 
 #[derive(Debug, Clone, Subcommand)]
 enum MgmtAction {
+    /// Send a ping to the MGMT chip
     Ping {
         #[arg(default_value = "hello")]
         data: String,
     },
+    /// Get MGMT chip firmware info
     Info,
+    /// Flash firmware to the MGMT chip
     Flash {
         file: std::path::PathBuf,
     },
@@ -95,13 +107,16 @@ enum MgmtAction {
 
 #[derive(Debug, Clone, Subcommand)]
 enum UiAction {
+    /// Send a ping to the UI chip
     Ping {
         #[arg(default_value = "hello")]
         data: String,
     },
 
+    /// Get UI chip firmware info
     Info,
 
+    /// Flash firmware to the UI chip
     Flash {
         file: std::path::PathBuf,
         /// Skip verification after flashing
@@ -109,17 +124,20 @@ enum UiAction {
         no_verify: bool,
     },
 
+    /// Get or set the UI firmware version field
     Version {
         #[command(subcommand)]
         action: Option<GetSetU32>,
     },
 
+    /// Get or set the SFrame encryption key
     #[command(name = "sframe-key")]
     SFrameKey {
         #[command(subcommand)]
         action: Option<GetSetHex>,
     },
 
+    /// Get or set the UI audio loopback mode
     Loopback {
         #[command(subcommand)]
         action: Option<LoopbackAction>,
@@ -202,8 +220,10 @@ enum ResetAction {
 
 #[derive(Debug, Clone, Default, Subcommand)]
 enum GetSetU32 {
+    /// Get the current value
     #[default]
     Get,
+    /// Set a new value
     Set {
         value: u32,
     },
@@ -211,8 +231,10 @@ enum GetSetU32 {
 
 #[derive(Debug, Clone, Default, Subcommand)]
 enum GetSetHex {
+    /// Get the current value
     #[default]
     Get,
+    /// Set a new hex value
     Set {
         value: String,
     },
@@ -220,6 +242,7 @@ enum GetSetHex {
 
 #[derive(Debug, Clone, Default, Subcommand)]
 enum NetLoopbackAction {
+    /// Get the current loopback mode
     #[default]
     Get,
     /// Normal PTT operation - audio to MoQ, filter self-echo
@@ -232,8 +255,10 @@ enum NetLoopbackAction {
 
 #[derive(Debug, Clone, Default, Subcommand)]
 enum GetSetString {
+    /// Get the current value
     #[default]
     Get,
+    /// Set a new value
     Set {
         value: String,
     },
@@ -241,23 +266,31 @@ enum GetSetString {
 
 #[derive(Debug, Clone, Default, Subcommand)]
 enum LoopbackAction {
+    /// Get the current loopback mode
     #[default]
     Get,
+    /// Disable loopback (normal operation)
     Off,
+    /// Raw PCM loopback
     Raw,
+    /// A-law codec loopback
     Alaw,
+    /// SFrame encrypted loopback
     Sframe,
 }
 
 #[derive(Debug, Clone, Subcommand)]
 enum NetAction {
+    /// Send a ping to the NET chip
     Ping {
         #[arg(default_value = "hello")]
         data: String,
     },
 
+    /// Get NET chip firmware info
     Info,
 
+    /// Flash firmware to the NET chip
     Flash {
         file: std::path::PathBuf,
 
@@ -267,11 +300,13 @@ enum NetAction {
         partition_table: Option<std::path::PathBuf>,
     },
 
+    /// Manage saved Wi-Fi credentials
     Wifi {
         #[command(subcommand)]
         action: Option<WifiAction>,
     },
 
+    /// Get or set the MoQ relay URL
     #[command(name = "relay-url")]
     RelayUrl {
         #[command(subcommand)]
@@ -322,7 +357,9 @@ enum NetAction {
 
 #[derive(Debug, Clone, Subcommand)]
 enum WifiAction {
+    /// Add a Wi-Fi network
     Add { ssid: String, password: String },
+    /// Clear all saved Wi-Fi credentials
     Clear,
 }
 
