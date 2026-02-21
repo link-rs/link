@@ -290,8 +290,10 @@ impl<P: CtlPort> CtlCore<P> {
     /// Read a TLV from MGMT, skipping tunneled messages.
     ///
     /// Tunneled data (FromUi/FromNet) is appended to stream buffers for later parsing.
+    /// Limited to MAX_TLV_SKIP tunneled messages to prevent infinite looping when
+    /// NET/UI data arrives faster than it can be processed (especially in WASM).
     async fn read_tlv_mgmt(&mut self) -> Result<Tlv<MgmtToCtl>, CtlError> {
-        loop {
+        for _ in 0..MAX_TLV_SKIP {
             let tlv = self
                 .read_tlv::<MgmtToCtl>()
                 .await?
@@ -310,6 +312,7 @@ impl<P: CtlPort> CtlCore<P> {
                 _ => return Ok(tlv),
             }
         }
+        Err(CtlError::Timeout)
     }
 
     /// Read a TLV from UI tunnel stream.

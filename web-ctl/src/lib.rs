@@ -150,6 +150,14 @@ impl LinkController {
 
         let core = self.core_mut()?;
         let result = core.hello(&challenge).await;
+        if result {
+            // Clear stale data from buffers and the WebSerial stream after
+            // hello exchange, matching native ctl behavior. Without this,
+            // accumulated FromNet/FromUi data causes subsequent operations
+            // to hang or fail (read_tlv_mgmt spins through stale TLVs).
+            core.drain();
+            core.port_mut().drain().await.ok();
+        }
         Ok(result)
     }
 
@@ -289,23 +297,19 @@ impl LinkController {
     /// Set NET BOOT pin (GPIO0). 1 = high, 0 = low.
     #[wasm_bindgen]
     pub async fn set_net_boot(&mut self, high: bool) -> Result<(), JsValue> {
-        use link::{CtlToMgmt, Pin, PinValue};
+        use link::PinValue;
         let core = self.core_mut()?;
         let value = if high { PinValue::High } else { PinValue::Low };
-        core.write_tlv_raw(CtlToMgmt::SetPin, &[Pin::NetBoot as u8, value as u8])
-            .await
-            .map_err(ctl_error_to_js)
+        core.set_net_boot(value).await.map_err(ctl_error_to_js)
     }
 
     /// Set NET RST pin (EN). 1 = high, 0 = low.
     #[wasm_bindgen]
     pub async fn set_net_rst(&mut self, high: bool) -> Result<(), JsValue> {
-        use link::{CtlToMgmt, Pin, PinValue};
+        use link::PinValue;
         let core = self.core_mut()?;
         let value = if high { PinValue::High } else { PinValue::Low };
-        core.write_tlv_raw(CtlToMgmt::SetPin, &[Pin::NetRst as u8, value as u8])
-            .await
-            .map_err(ctl_error_to_js)
+        core.set_net_rst(value).await.map_err(ctl_error_to_js)
     }
 
     /// Reset the NET chip into bootloader mode.

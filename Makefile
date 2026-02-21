@@ -72,6 +72,7 @@ web-ctl: $(UI_BIN) $(MGMT_BIN) $(NET_BIN)
 	cp $(UI_BIN) web-ctl/www/firmware/
 	cp $(MGMT_BIN) web-ctl/www/firmware/
 	@if [ -f $(NET_BIN) ]; then cp $(NET_BIN) web-ctl/www/firmware/; fi
+	cp $(NET_PARTITIONS) web-ctl/www/firmware/
 
 # Build web-ctl without firmware (for quick iteration)
 web-ctl-quick:

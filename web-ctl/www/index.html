@@ -1032,6 +1032,7 @@
                     <div class="btn-group" style="margin-top: 0.5rem;">
                         <button class="btn-secondary" id="resetUiBootloaderBtn">Reset to Bootloader</button>
                         <button class="btn-secondary" id="resetUiUserBtn">Reset to User Mode</button>
+                        <button class="btn-secondary" id="holdUiResetBtn">Hold in Reset</button>
                     </div>
                 </div>
 
@@ -1044,6 +1045,7 @@
                     <div class="btn-group" style="margin-top: 0.5rem;">
                         <button class="btn-secondary" id="resetNetBootloaderBtn">Reset to Bootloader</button>
                         <button class="btn-secondary" id="resetNetUserBtn">Reset to User Mode</button>
+                        <button class="btn-secondary" id="holdNetResetBtn">Hold in Reset</button>
                     </div>
                 </div>
 
@@ -1934,6 +1936,16 @@
             }
         });
 
+        document.getElementById('holdUiResetBtn').addEventListener('click', async () => {
+            try {
+                await controller.hold_ui_reset();
+                updatePinBtn('uiRstBtn', 'RST', false);
+                log('UI chip held in reset', 'success');
+            } catch (e) {
+                log(`UI hold reset error: ${e}`, 'error');
+            }
+        });
+
         function updatePinBtn(btnId, label, high) {
             const btn = document.getElementById(btnId);
             btn.dataset.state = high ? 'high' : 'low';
@@ -2266,17 +2278,21 @@
                     netProgressContainer.classList.add('active');
                     netProgressText.textContent = 'Fetching firmware...';
 
-                    const response = await fetch('firmware/net');
-                    if (!response.ok) {
-                        throw new Error(`Failed to fetch firmware: ${response.status} ${response.statusText}`);
+                    const [fwResponse, ptResponse] = await Promise.all([
+                        fetch('firmware/net'),
+                        fetch('firmware/partitions.csv'),
+                    ]);
+                    if (!fwResponse.ok) {
+                        throw new Error(`Failed to fetch firmware: ${fwResponse.status} ${fwResponse.statusText}`);
                     }
-                    const firmware = new Uint8Array(await response.arrayBuffer());
-                    log(`Fetched net.bin (${firmware.length} bytes)`, 'info');
+                    const firmware = new Uint8Array(await fwResponse.arrayBuffer());
+                    const partitionTable = ptResponse.ok ? new Uint8Array(await ptResponse.arrayBuffer()) : null;
+                    log(`Fetched net firmware (${firmware.length} bytes)` + (partitionTable ? `, partition table (${partitionTable.length} bytes)` : ''), 'info');
 
                     netProgressText.textContent = 'Flashing...';
                     log(`Flashing NET firmware...`, 'info');
                     let wasSkipped = false;
-                    await controller.flash_net(firmware, (phase, current, total) => {
+                    await controller.flash_net(firmware, partitionTable, (phase, current, total) => {
                         if (phase === 'skipped') {
                             wasSkipped = true;
                             netProgressFill.style.width = '100%';
@@ -2362,6 +2378,16 @@
             }
         });
 
+        document.getElementById('holdNetResetBtn').addEventListener('click', async () => {
+            try {
+                await controller.hold_net_reset();
+                updatePinBtn('netRstBtn', 'RST', false);
+                log('NET chip held in reset', 'success');
+            } catch (e) {
+                log(`NET hold reset error: ${e}`, 'error');
+            }
+        });
+
         document.getElementById('getNetInfoBtn').addEventListener('click', async () => {
             const btn = document.getElementById('getNetInfoBtn');
             const statusIcon = document.getElementById('getNetInfoStatus');
@@ -2407,18 +2433,22 @@
             progressText.textContent = 'Fetching firmware...';
 
             try {
-                // Fetch firmware from server
-                const response = await fetch('firmware/net');
-                if (!response.ok) {
-                    throw new Error(`Failed to fetch firmware: ${response.status} ${response.statusText}`);
+                // Fetch firmware and partition table from server
+                const [fwResponse, ptResponse] = await Promise.all([
+                    fetch('firmware/net'),
+                    fetch('firmware/partitions.csv'),
+                ]);
+                if (!fwResponse.ok) {
+                    throw new Error(`Failed to fetch firmware: ${fwResponse.status} ${fwResponse.statusText}`);
                 }
-                const firmware = new Uint8Array(await response.arrayBuffer());
-                log(`Fetched net.bin (${firmware.length} bytes)`, 'info');
+                const firmware = new Uint8Array(await fwResponse.arrayBuffer());
+                const partitionTable = ptResponse.ok ? new Uint8Array(await ptResponse.arrayBuffer()) : null;
+                log(`Fetched net firmware (${firmware.length} bytes)` + (partitionTable ? `, partition table (${partitionTable.length} bytes)` : ''), 'info');
 
                 progressText.textContent = 'Flashing...';
                 log(`Flashing NET firmware...`, 'info');
                 let wasSkipped = false;
-                await controller.flash_net(firmware, (phase, current, total) => {
+                await controller.flash_net(firmware, partitionTable, (phase, current, total) => {
                     if (phase === 'skipped') {
                         wasSkipped = true;
                         progressFill.style.width = '100%';
