@@ -10,7 +10,7 @@ use link::ctl::flash::{AsyncDelay, MgmtBootloaderEntry};
 use link::ctl::stm;
 use link::ctl::{CtlCore, CtlError, SetTimeout, escape_non_ascii};
 use link::protocol_config::timeouts;
-use link::{ChannelId, MgmtToCtl, NetLoopbackMode, UiLoopbackMode};
+use link::{MgmtToCtl, NetLoopbackMode, UiLoopbackMode};
 use serde::{Deserialize, Serialize};
 use serial::{WebSerial, WebSerialAdapter};
 use wasm_bindgen::prelude::*;
@@ -505,67 +505,6 @@ impl LinkController {
             &stats.state.to_string().to_lowercase().into(),
         )?;
         Ok(obj.into())
-    }
-
-    // ==================== CHANNEL MANAGEMENT ====================
-
-    /// Get configuration for a specific channel.
-    /// Returns JSON with {channelId, enabled, relayUrl}.
-    #[wasm_bindgen]
-    pub async fn get_channel_config(&mut self, channel_id: u8) -> Result<JsValue, JsValue> {
-        let core = self.core_mut()?;
-        let config = core.get_channel_config(channel_id).await.map_err(ctl_error_to_js)?;
-
-        let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"channelId".into(), &config.channel_id.into())?;
-        js_sys::Reflect::set(&obj, &"enabled".into(), &config.enabled.into())?;
-        js_sys::Reflect::set(&obj, &"relayUrl".into(), &config.relay_url.as_str().into())?;
-        Ok(obj.into())
-    }
-
-    /// Set configuration for a channel.
-    /// Takes channel_id, enabled, and relay_url.
-    #[wasm_bindgen]
-    pub async fn set_channel_config(
-        &mut self,
-        channel_id: u8,
-        enabled: bool,
-        relay_url: &str,
-    ) -> Result<(), JsValue> {
-        let config = link::ctl::ChannelConfig {
-            channel_id,
-            enabled,
-            relay_url: relay_url.try_into().map_err(|_| JsValue::from_str("relay_url too long"))?,
-        };
-        let core = self.core_mut()?;
-        core.set_channel_config(&config).await.map_err(ctl_error_to_js)
-    }
-
-    /// Clear all channel configurations.
-    #[wasm_bindgen]
-    pub async fn clear_channel_configs(&mut self) -> Result<(), JsValue> {
-        let core = self.core_mut()?;
-        core.clear_channel_configs().await.map_err(ctl_error_to_js)
-    }
-
-    /// Get all channel configurations.
-    /// Returns a JSON array of channel config objects.
-    #[wasm_bindgen]
-    pub async fn get_all_channel_configs(&mut self) -> Result<JsValue, JsValue> {
-        let core = self.core_mut()?;
-        let configs = js_sys::Array::new();
-        for &id in ChannelId::ALL {
-            let channel_id_u8: u8 = id.into();
-            if let Ok(config) = core.get_channel_config(channel_id_u8).await {
-                let obj = js_sys::Object::new();
-                js_sys::Reflect::set(&obj, &"channelId".into(), &config.channel_id.into())?;
-                js_sys::Reflect::set(&obj, &"channelName".into(), &id.to_string().into())?;
-                js_sys::Reflect::set(&obj, &"enabled".into(), &config.enabled.into())?;
-                js_sys::Reflect::set(&obj, &"relayUrl".into(), &config.relay_url.as_str().into())?;
-                configs.push(&obj);
-            }
-        }
-        Ok(configs.into())
     }
 
     // ==================== RESET HOLD ====================

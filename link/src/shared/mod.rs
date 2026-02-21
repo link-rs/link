@@ -35,10 +35,6 @@ pub mod moq;
 #[cfg(any(feature = "ctl", feature = "net"))]
 pub mod wifi;
 
-// Channel configuration types - used by ctl and net
-#[cfg(any(feature = "ctl", feature = "net"))]
-pub mod channel;
-
 // Re-export the info macro (no-op when defmt is disabled)
 #[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 pub(crate) use logging::info;
@@ -73,11 +69,6 @@ pub use moq::{MoqError, MoqExampleType, MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAM
 #[cfg(any(feature = "ctl", feature = "net"))]
 #[allow(unused_imports)] // Re-exported for public API
 pub use wifi::WifiSsid;
-
-// Channel configuration types - used by ctl and net
-#[cfg(any(feature = "ctl", feature = "net"))]
-#[allow(unused_imports)] // Re-exported for public API
-pub use channel::{ChannelConfig, MAX_CHANNEL_URL_LEN};
 
 // Stack monitor trait - used by mgmt and ui firmware
 #[cfg(any(feature = "mgmt", feature = "ui"))]

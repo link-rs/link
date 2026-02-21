@@ -5,7 +5,7 @@ mod storage;
 // Re-export jitter buffer from shared
 pub use crate::shared::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
 pub use storage::{
-    ChannelConfig, MAX_CHANNELS, MAX_CHANNEL_URL_LEN, MAX_MOQ_NAMESPACE_LEN,
+    MAX_MOQ_NAMESPACE_LEN,
     MAX_MOQ_TRACK_NAME_LEN, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, MoqError, MoqExampleType,
     NetStorage, WifiSsid,
 };
@@ -427,71 +427,6 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             to_mgmt
                 .must_write_tlv(NetToCtl::Loopback, &[*loopback as u8])
                 .await;
-        }
-        // Channel configuration commands
-        CtlToNet::GetChannelConfig => {
-            info!("net: get channel config");
-            let channel_id = tlv.value.first().copied().unwrap_or(0);
-            if let Some(config) = storage.get_channel_config(channel_id) {
-                let mut buf = [0u8; 256];
-                if let Ok(serialized) = postcard::to_slice(config, &mut buf) {
-                    to_mgmt
-                        .must_write_tlv(NetToCtl::ChannelConfig, serialized)
-                        .await;
-                } else {
-                    to_mgmt
-                        .must_write_tlv(NetToCtl::Error, b"serialize")
-                        .await;
-                }
-            } else {
-                // Return default config for unconfigured channel
-                let default_config = ChannelConfig {
-                    channel_id,
-                    enabled: false,
-                    relay_url: heapless::String::new(),
-                };
-                let mut buf = [0u8; 256];
-                if let Ok(serialized) = postcard::to_slice(&default_config, &mut buf) {
-                    to_mgmt
-                        .must_write_tlv(NetToCtl::ChannelConfig, serialized)
-                        .await;
-                } else {
-                    to_mgmt
-                        .must_write_tlv(NetToCtl::Error, b"serialize")
-                        .await;
-                }
-            }
-        }
-        CtlToNet::SetChannelConfig => {
-            info!("net: set channel config");
-            let Ok(config): Result<ChannelConfig, _> = postcard::from_bytes(&tlv.value) else {
-                info!("net: failed to deserialize channel config");
-                to_mgmt
-                    .must_write_tlv(NetToCtl::Error, b"deserialize")
-                    .await;
-                return;
-            };
-            if storage.set_channel_config(config).is_err() {
-                info!("net: failed to set channel config");
-                to_mgmt.must_write_tlv(NetToCtl::Error, b"set").await;
-                return;
-            }
-            if storage.save().is_err() {
-                info!("net: failed to save storage");
-                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
-                return;
-            }
-            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
-        }
-        CtlToNet::ClearChannelConfigs => {
-            info!("net: clear channel configs");
-            storage.clear_channel_configs();
-            if storage.save().is_err() {
-                info!("net: failed to save storage");
-                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
-                return;
-            }
-            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
         CtlToNet::GetJitterStats => {
             // This is handled in the event loop when ui feature is enabled

@@ -6,7 +6,7 @@
 
 #![cfg(all(feature = "ctl", feature = "mgmt", feature = "net", feature = "ui"))]
 
-use crate::ctl::{ChannelConfig, CtlCore};
+use crate::ctl::CtlCore;
 use crate::shared::mocks::{
     GpioOp, MockAsyncDelay, MockAudioStream, MockButton, MockCtlPort, MockDelay, MockFlash,
     MockPin, TrackingPin, async_async_channel, ctl_async_channel, mock_i2c_with_eeprom,
@@ -647,42 +647,6 @@ async fn release_net_reset_gpio() {
         let ops = gpio_ops.lock().unwrap();
         assert_eq!(ops[2], ("NET_RST", GpioOp::SetLow)); // hold
         assert_eq!(ops[3], ("NET_RST", GpioOp::SetHigh)); // release
-    })
-    .await;
-}
-
-// ── Channel config ──
-
-#[tokio::test]
-async fn set_and_get_channel_config() {
-    device_test(|mut ctl| async move {
-        let config = ChannelConfig {
-            channel_id: 0,
-            enabled: true,
-            relay_url: "https://r.example.com".try_into().unwrap(),
-        };
-        ctl.set_channel_config(&config).await.unwrap();
-        let result = ctl.get_channel_config(0).await.unwrap();
-        assert_eq!(result.channel_id, 0);
-        assert!(result.enabled);
-        assert_eq!(result.relay_url.as_str(), "https://r.example.com");
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn clear_channel_configs() {
-    device_test(|mut ctl| async move {
-        let config = ChannelConfig {
-            channel_id: 0,
-            enabled: true,
-            relay_url: "https://r.example.com".try_into().unwrap(),
-        };
-        ctl.set_channel_config(&config).await.unwrap();
-        ctl.clear_channel_configs().await.unwrap();
-        // After clearing, get should return a disabled/default config
-        let result = ctl.get_channel_config(0).await.unwrap();
-        assert!(!result.enabled);
     })
     .await;
 }

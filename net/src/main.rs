@@ -20,7 +20,7 @@ use esp_idf_svc::{
 };
 use link::{
     net::{
-        ChannelConfig, JitterBuffer, JitterState, WifiSsid, MAX_CHANNELS, MAX_RELAY_URL_LEN,
+        JitterBuffer, JitterState, WifiSsid, MAX_RELAY_URL_LEN,
         MAX_WIFI_SSIDS,
     },
     uart_config, ChannelId, Color, CtlToNet, NetLoopbackMode, NetToCtl, NetToUi, UiToNet,
@@ -575,13 +575,11 @@ struct NvsStorage {
     nvs: Option<EspNvs<NvsDefault>>,
     wifi_ssids: heapless::Vec<WifiSsid, MAX_WIFI_SSIDS>,
     relay_url: String,
-    channels: heapless::Vec<ChannelConfig, MAX_CHANNELS>,
 }
 
 // NVS key names (max 15 chars)
 const NVS_KEY_WIFI_SSIDS: &str = "wifi_ssids";
 const NVS_KEY_RELAY_URL: &str = "relay_url";
-const NVS_KEY_CHANNELS: &str = "channels";
 
 impl NvsStorage {
     /// Load storage from NVS
@@ -590,7 +588,6 @@ impl NvsStorage {
             nvs,
             wifi_ssids: heapless::Vec::new(),
             relay_url: String::new(),
-            channels: heapless::Vec::new(),
         };
 
         // Load WiFi SSIDs
@@ -629,25 +626,6 @@ impl NvsStorage {
                 }
             }
 
-            // Load channel configurations
-            let mut channel_buf = [0u8; 512];
-            match nvs.get_blob(NVS_KEY_CHANNELS, &mut channel_buf) {
-                Ok(Some(data)) => {
-                    if let Ok(channels) =
-                        postcard::from_bytes::<heapless::Vec<ChannelConfig, MAX_CHANNELS>>(data)
-                    {
-                        storage.channels = channels;
-                        info!(
-                            "net: loaded {} channel configs from NVS",
-                            storage.channels.len()
-                        );
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    warn!("net: failed to read channel configs from NVS: {:?}", e);
-                }
-            }
         }
 
         storage
@@ -675,16 +653,6 @@ impl NvsStorage {
             let _ = nvs.remove(NVS_KEY_RELAY_URL);
         }
 
-        // Save channel configurations
-        if !self.channels.is_empty() {
-            if let Ok(serialized) = postcard::to_allocvec(&self.channels) {
-                nvs.set_blob(NVS_KEY_CHANNELS, &serialized)?;
-                info!("net: saved {} channel configs to NVS", self.channels.len());
-            }
-        } else {
-            let _ = nvs.remove(NVS_KEY_CHANNELS);
-        }
-
         Ok(())
     }
 
@@ -702,30 +670,6 @@ impl NvsStorage {
         Ok(())
     }
 
-    /// Get configuration for a specific channel.
-    fn get_channel_config(&self, channel_id: u8) -> Option<&ChannelConfig> {
-        self.channels.iter().find(|c| c.channel_id == channel_id)
-    }
-
-    /// Set configuration for a channel.
-    /// Replaces existing config for that channel_id or adds new one.
-    fn set_channel_config(&mut self, config: ChannelConfig) -> Result<(), ()> {
-        if let Some(existing) = self
-            .channels
-            .iter_mut()
-            .find(|c| c.channel_id == config.channel_id)
-        {
-            *existing = config;
-        } else {
-            self.channels.push(config).map_err(|_| ())?;
-        }
-        Ok(())
-    }
-
-    /// Clear all channel configurations.
-    fn clear_channel_configs(&mut self) {
-        self.channels.clear();
-    }
 }
 
 // ============================================================================
@@ -1229,52 +1173,6 @@ fn handle_mgmt_message(
         }
         CtlToNet::GetLoopback => {
             write_tlv(mgmt_uart, NetToCtl::Loopback, &[*loopback as u8]);
-        }
-        // Channel configuration commands
-        CtlToNet::GetChannelConfig => {
-            let channel_id = value.first().copied().unwrap_or(0);
-            if let Some(config) = storage.get_channel_config(channel_id) {
-                if let Ok(serialized) = postcard::to_allocvec(config) {
-                    write_tlv(mgmt_uart, NetToCtl::ChannelConfig, &serialized);
-                } else {
-                    write_tlv(mgmt_uart, NetToCtl::Error, b"serialize");
-                }
-            } else {
-                // Return default config for unconfigured channel
-                let default_config = ChannelConfig {
-                    channel_id,
-                    enabled: false,
-                    relay_url: heapless::String::new(),
-                };
-                if let Ok(serialized) = postcard::to_allocvec(&default_config) {
-                    write_tlv(mgmt_uart, NetToCtl::ChannelConfig, &serialized);
-                } else {
-                    write_tlv(mgmt_uart, NetToCtl::Error, b"serialize");
-                }
-            }
-        }
-        CtlToNet::SetChannelConfig => {
-            if let Ok(config) = postcard::from_bytes::<ChannelConfig>(value) {
-                if storage.set_channel_config(config).is_ok() {
-                    if storage.save().is_ok() {
-                        write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
-                    } else {
-                        write_tlv(mgmt_uart, NetToCtl::Error, b"save");
-                    }
-                } else {
-                    write_tlv(mgmt_uart, NetToCtl::Error, b"set");
-                }
-            } else {
-                write_tlv(mgmt_uart, NetToCtl::Error, b"deserialize");
-            }
-        }
-        CtlToNet::ClearChannelConfigs => {
-            storage.clear_channel_configs();
-            if storage.save().is_ok() {
-                write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
-            } else {
-                write_tlv(mgmt_uart, NetToCtl::Error, b"save");
-            }
         }
         CtlToNet::GetJitterStats => {
             let channel_id = value.first().copied().unwrap_or(0);

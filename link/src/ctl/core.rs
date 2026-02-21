@@ -9,7 +9,7 @@ use alloc::format;
 use alloc::string::String;
 
 use crate::shared::{
-    ChannelConfig, CtlToMgmt, CtlToNet, CtlToUi, JitterStatsInfo, MgmtToCtl, NetLoopbackMode,
+    CtlToMgmt, CtlToNet, CtlToUi, JitterStatsInfo, MgmtToCtl, NetLoopbackMode,
     NetToCtl, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid, HEADER_SIZE, MAX_VALUE_SIZE,
     SYNC_WORD,
 };
@@ -1058,50 +1058,6 @@ impl<P: CtlPort> CtlCore<P> {
     /// Set the relay URL in NET chip storage.
     pub async fn set_relay_url(&mut self, url: &str) -> Result<(), CtlError> {
         self.write_tlv_net(CtlToNet::SetRelayUrl, url.as_bytes())
-            .await?;
-        let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToCtl::Ack {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "Ack",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        Ok(())
-    }
-
-    /// Get configuration for a specific channel.
-    pub async fn get_channel_config(&mut self, channel_id: u8) -> Result<ChannelConfig, CtlError> {
-        self.write_tlv_net(CtlToNet::GetChannelConfig, &[channel_id])
-            .await?;
-        let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToCtl::ChannelConfig {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "ChannelConfig",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        postcard::from_bytes(&tlv.value).map_err(|_| CtlError::InvalidData)
-    }
-
-    /// Set configuration for a channel.
-    pub async fn set_channel_config(&mut self, config: &ChannelConfig) -> Result<(), CtlError> {
-        let mut buf = [0u8; 256];
-        let serialized = postcard::to_slice(config, &mut buf).map_err(|_| CtlError::TooLong)?;
-        self.write_tlv_net(CtlToNet::SetChannelConfig, serialized)
-            .await?;
-        let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToCtl::Ack {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "Ack",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        Ok(())
-    }
-
-    /// Clear all channel configurations.
-    pub async fn clear_channel_configs(&mut self) -> Result<(), CtlError> {
-        self.write_tlv_net(CtlToNet::ClearChannelConfigs, &[])
             .await?;
         let tlv = self.read_tlv_net().await?;
         if tlv.tlv_type != NetToCtl::Ack {

@@ -2,12 +2,12 @@
 
 use super::Core;
 use crate::{
-    ChannelAction, GetSetString, NetAction, NetLoopbackAction, PinAction, PinLevel, ResetAction,
+    GetSetString, NetAction, NetLoopbackAction, PinAction, PinLevel, ResetAction,
     WifiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::StdDelay;
-use link::ctl::{ChannelConfig, ProgressCallbacks, SetTimeout, escape_non_ascii};
+use link::ctl::{ProgressCallbacks, SetTimeout, escape_non_ascii};
 use link::protocol_config::timeouts;
 use link::{ChannelId, NetLoopbackMode, Pin, PinValue};
 
@@ -77,7 +77,6 @@ pub async fn handle_net(
             | NetAction::Wifi { .. }
             | NetAction::RelayUrl { .. }
             | NetAction::Loopback { .. }
-            | NetAction::Channel { .. }
             | NetAction::JitterStats { .. }
     );
 
@@ -391,69 +390,6 @@ pub async fn handle_net(
 
             result
         }
-        NetAction::Channel { action } => match action {
-            None => {
-                // List all channel configs by querying each known channel
-                let mut found_any = false;
-                for &id in ChannelId::ALL {
-                    let channel_id_u8: u8 = id.into();
-                    match core.get_channel_config(channel_id_u8).await {
-                        Ok(config) => {
-                            if !found_any {
-                                println!("Channel configurations:");
-                                found_any = true;
-                            }
-                            println!(
-                                "  {} ({}): enabled={}, relay_url={}",
-                                config.channel_id,
-                                id,
-                                config.enabled,
-                                config.relay_url_display()
-                            );
-                        }
-                        Err(_) => {
-                            // Channel not configured, skip
-                        }
-                    }
-                }
-                if !found_any {
-                    println!("No channel configurations");
-                }
-                Ok(())
-            }
-            Some(ChannelAction::Get { channel_id }) => {
-                let config = core.get_channel_config(channel_id).await?;
-                let channel_name = ChannelId::try_from(config.channel_id)
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|_| "Unknown".to_string());
-                println!("Channel {} ({}):", config.channel_id, channel_name);
-                println!("  enabled: {}", config.enabled);
-                println!("  relay_url: {}", config.relay_url_display());
-                Ok(())
-            }
-            Some(ChannelAction::Set {
-                channel_id,
-                enabled,
-                relay_url,
-            }) => {
-                let config = ChannelConfig {
-                    channel_id,
-                    enabled,
-                    relay_url: relay_url
-                        .as_str()
-                        .try_into()
-                        .map_err(|_| "relay_url too long")?,
-                };
-                core.set_channel_config(&config).await?;
-                println!("Channel {} configuration updated", channel_id);
-                Ok(())
-            }
-            Some(ChannelAction::Clear) => {
-                core.clear_channel_configs().await?;
-                println!("All channel configurations cleared");
-                Ok(())
-            }
-        },
         NetAction::JitterStats { channel_id } => {
             let stats = core.get_jitter_stats(channel_id).await?;
             let channel_name = ChannelId::try_from(channel_id)

@@ -312,12 +312,6 @@ enum NetAction {
         reset: bool,
     },
 
-    /// Manage channel configurations
-    Channel {
-        #[command(subcommand)]
-        action: Option<ChannelAction>,
-    },
-
     /// Get jitter buffer statistics for a channel
     #[command(name = "jitter-stats")]
     JitterStats {
@@ -329,28 +323,6 @@ enum NetAction {
 #[derive(Debug, Clone, Subcommand)]
 enum WifiAction {
     Add { ssid: String, password: String },
-    Clear,
-}
-
-#[derive(Debug, Clone, Subcommand)]
-enum ChannelAction {
-    /// Get configuration for a specific channel
-    Get {
-        /// Channel ID (0=Ptt, 1=PttAi)
-        channel_id: u8,
-    },
-    /// Set configuration for a channel
-    Set {
-        /// Channel ID (0=Ptt, 1=PttAi)
-        channel_id: u8,
-        /// Enable the channel
-        #[arg(long)]
-        enabled: bool,
-        /// Relay URL for this channel (empty = use global)
-        #[arg(long, default_value = "")]
-        relay_url: String,
-    },
-    /// Clear all channel configurations
     Clear,
 }
 

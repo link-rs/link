@@ -206,13 +206,6 @@ pub enum CtlToNet {
     SetLoopback,
     /// Get loopback mode
     GetLoopback,
-    // Channel configuration commands
-    /// Get channel configuration (value: channel_id u8)
-    GetChannelConfig,
-    /// Set channel configuration (value: postcard-serialized ChannelConfig)
-    SetChannelConfig,
-    /// Clear all channel configurations (no payload)
-    ClearChannelConfigs,
     /// Get jitter buffer stats for a channel (value: channel_id u8)
     GetJitterStats,
 }
@@ -228,9 +221,6 @@ pub enum NetToCtl {
     Error,
     /// Loopback mode status (1 byte: NetLoopbackMode - 0=Off, 1=Raw, 2=Moq)
     Loopback,
-    // Channel configuration responses
-    /// Channel configuration (value: postcard-serialized ChannelConfig)
-    ChannelConfig,
     /// Jitter buffer statistics (postcard-serialized JitterStatsInfo)
     JitterStats,
 }
