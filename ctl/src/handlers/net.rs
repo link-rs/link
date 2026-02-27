@@ -81,6 +81,7 @@ pub async fn handle_net(
             | NetAction::ConfigUrl { .. }
             | NetAction::AccessToken { .. }
             | NetAction::RefreshToken { .. }
+            | NetAction::TokenUrl { .. }
             | NetAction::Language { .. }
             | NetAction::Channel { .. }
     );
@@ -430,6 +431,13 @@ pub async fn handle_net(
             SetOnlyString::Set { value } => {
                 core.set_refresh_token(&value).await?;
                 println!("Refresh token set");
+                Ok(())
+            }
+        },
+        NetAction::TokenUrl { action } => match action {
+            SetOnlyString::Set { value } => {
+                core.set_token_url(&value).await?;
+                println!("Token URL set");
                 Ok(())
             }
         },

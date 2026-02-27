@@ -442,7 +442,8 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
         | CtlToNet::GetLanguage
         | CtlToNet::SetLanguage
         | CtlToNet::GetChannel
-        | CtlToNet::SetChannel => {
+        | CtlToNet::SetChannel
+        | CtlToNet::SetTokenUrl => {
             // Config commands handled by ESP-IDF firmware (net/src/main.rs), not embassy
             info!("net: config command not supported in embassy mode");
             to_mgmt

@@ -95,6 +95,23 @@ enum MoqEvent {
 }
 
 // ============================================================================
+// Config WebSocket Types
+// ============================================================================
+
+/// Events sent from the config WebSocket task back to the main loop.
+enum ConfigEvent {
+    /// New config JSON received from WebSocket.
+    NewConfig(String),
+    /// Token was refreshed successfully.
+    TokenRefreshed {
+        access_token: String,
+        refresh_token: String,
+    },
+    /// Error occurred.
+    Error(String),
+}
+
+// ============================================================================
 // MoQ Task
 // ============================================================================
 
@@ -682,6 +699,195 @@ fn spawn_moq_task(
 }
 
 // ============================================================================
+// Config WebSocket Task
+// ============================================================================
+
+/// Spawn the config WebSocket task in a separate thread.
+///
+/// Connects to the config WebSocket URL with an Authorization header,
+/// receives DeviceConfig JSON updates, and handles token refresh on
+/// authentication failures.
+fn spawn_config_task(
+    config_url: String,
+    access_token: String,
+    refresh_token: String,
+    token_url: String,
+    event_tx: Sender<ConfigEvent>,
+) {
+    use esp_idf_svc::ws::client::{
+        EspWebSocketClient, EspWebSocketClientConfig, WebSocketEventType,
+    };
+
+    thread::Builder::new()
+        .name("config".to_string())
+        .stack_size(8192)
+        .spawn(move || {
+            info!("config: task started, connecting to {}", config_url);
+
+            let mut current_access_token = access_token;
+            let mut current_refresh_token = refresh_token;
+            let mut backoff_secs = 5u64;
+
+            loop {
+                // Build WebSocket config with Authorization header
+                let auth_header = format!("Authorization: Bearer {}\r\n", current_access_token);
+                let ws_config = EspWebSocketClientConfig {
+                    headers: Some(&auth_header),
+                    ..Default::default()
+                };
+
+                // Connect to WebSocket using callback-based API
+                let event_tx_clone = event_tx.clone();
+                let ws_result = EspWebSocketClient::new(
+                    &config_url,
+                    &ws_config,
+                    Duration::from_secs(30),
+                    move |event| {
+                        if let Ok(event) = event {
+                            match &event.event_type {
+                                WebSocketEventType::Text(text) => {
+                                    let _ = event_tx_clone
+                                        .send(ConfigEvent::NewConfig(text.to_string()));
+                                }
+                                WebSocketEventType::Disconnected => {
+                                    info!("config: WebSocket disconnected");
+                                }
+                                WebSocketEventType::Connected => {
+                                    info!("config: WebSocket connected");
+                                }
+                                WebSocketEventType::Close(_) => {
+                                    info!("config: WebSocket closed");
+                                }
+                                _ => {}
+                            }
+                        }
+                    },
+                );
+
+                match ws_result {
+                    Ok(_client) => {
+                        info!("config: WebSocket client created, waiting for events");
+                        backoff_secs = 5; // Reset backoff on successful connection
+
+                        // Keep the client alive - ESP-IDF WebSocket client runs in its own task
+                        // and delivers events via the callback. We just need to keep the client
+                        // object alive. Sleep indefinitely.
+                        loop {
+                            thread::sleep(Duration::from_secs(60));
+                        }
+                    }
+                    Err(e) => {
+                        warn!("config: WebSocket connection failed: {:?}", e);
+                        let _ = event_tx.send(ConfigEvent::Error(format!("{:?}", e)));
+
+                        // Attempt token refresh if we have a token URL
+                        if !token_url.is_empty() && !current_refresh_token.is_empty() {
+                            info!("config: attempting token refresh");
+                            match refresh_access_token(&token_url, &current_refresh_token) {
+                                Ok((new_access, new_refresh)) => {
+                                    info!("config: token refresh successful");
+                                    let _ = event_tx.send(ConfigEvent::TokenRefreshed {
+                                        access_token: new_access.clone(),
+                                        refresh_token: new_refresh.clone(),
+                                    });
+                                    current_access_token = new_access;
+                                    if !new_refresh.is_empty() {
+                                        current_refresh_token = new_refresh;
+                                    }
+                                    backoff_secs = 5;
+                                    continue; // Retry immediately with new token
+                                }
+                                Err(e) => {
+                                    warn!("config: token refresh failed: {}", e);
+                                }
+                            }
+                        }
+
+                        // Exponential backoff
+                        info!("config: retrying in {}s", backoff_secs);
+                        thread::sleep(Duration::from_secs(backoff_secs));
+                        backoff_secs = (backoff_secs * 2).min(60);
+                    }
+                }
+            }
+        })
+        .expect("failed to spawn config thread");
+}
+
+/// Refresh the access token using an OAuth2 refresh_token grant.
+fn refresh_access_token(
+    token_url: &str,
+    refresh_token: &str,
+) -> Result<(String, String), String> {
+    use embedded_svc::http::client::Client as HttpClient;
+    use embedded_svc::io::Write as SvcWrite;
+    use esp_idf_svc::http::client::{Configuration as HttpConfig, EspHttpConnection};
+
+    let body = format!("grant_type=refresh_token&refresh_token={}", refresh_token);
+
+    let http_config = HttpConfig {
+        buffer_size: Some(2048),
+        buffer_size_tx: Some(1024),
+        ..Default::default()
+    };
+
+    let connection = EspHttpConnection::new(&http_config)
+        .map_err(|e| format!("HTTP connection error: {:?}", e))?;
+
+    let mut client = HttpClient::wrap(connection);
+
+    let content_length = format!("{}", body.len());
+    let headers = [
+        ("Content-Type", "application/x-www-form-urlencoded"),
+        ("Content-Length", content_length.as_str()),
+    ];
+
+    let mut request = client
+        .post(token_url, &headers)
+        .map_err(|e| format!("HTTP request error: {:?}", e))?;
+
+    request
+        .write_all(body.as_bytes())
+        .map_err(|e| format!("HTTP write error: {:?}", e))?;
+
+    request
+        .flush()
+        .map_err(|e| format!("HTTP flush error: {:?}", e))?;
+
+    let mut response = request
+        .submit()
+        .map_err(|e| format!("HTTP submit error: {:?}", e))?;
+
+    let status = response.status();
+    if status != 200 {
+        return Err(format!("Token refresh returned status {}", status));
+    }
+
+    let mut resp_buf = [0u8; 2048];
+    let bytes_read = embedded_svc::utils::io::try_read_full(&mut response, &mut resp_buf)
+        .map_err(|e| format!("HTTP read error: {:?}", e.0))?;
+
+    let resp_str = core::str::from_utf8(&resp_buf[..bytes_read])
+        .map_err(|_| "Invalid UTF-8 in token response".to_string())?;
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(resp_str).map_err(|e| format!("JSON parse error: {}", e))?;
+
+    let new_access = parsed["access_token"]
+        .as_str()
+        .ok_or("Missing access_token in response")?
+        .to_string();
+
+    let new_refresh = parsed
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Ok((new_access, new_refresh))
+}
+
+// ============================================================================
 // NVS Storage
 // ============================================================================
 
@@ -696,6 +902,7 @@ struct NvsStorage {
     config_url: String,
     access_token: String,
     refresh_token: String,
+    token_url: String,
     language: String,
     selected_channel: String,
     config_json: String,
@@ -707,6 +914,7 @@ const NVS_KEY_RELAY_URL: &str = "relay_url";
 const NVS_KEY_CONFIG_URL: &str = "config_url";
 const NVS_KEY_ACCESS_TOKEN: &str = "access_token";
 const NVS_KEY_REFRESH_TOKEN: &str = "refresh_token";
+const NVS_KEY_TOKEN_URL: &str = "token_url";
 const NVS_KEY_LANGUAGE: &str = "language";
 const NVS_KEY_SEL_CHANNEL: &str = "sel_channel";
 const NVS_KEY_CONFIG_JSON: &str = "config_json";
@@ -756,6 +964,7 @@ impl NvsStorage {
             config_url: String::new(),
             access_token: String::new(),
             refresh_token: String::new(),
+            token_url: String::new(),
             language: "en".to_string(),
             selected_channel: String::new(),
             config_json: String::new(),
@@ -786,6 +995,7 @@ impl NvsStorage {
             storage.config_url = Self::load_string(nvs, NVS_KEY_CONFIG_URL, MAX_RELAY_URL_LEN);
             storage.access_token = Self::load_string(nvs, NVS_KEY_ACCESS_TOKEN, 2048);
             storage.refresh_token = Self::load_string(nvs, NVS_KEY_REFRESH_TOKEN, 2048);
+            storage.token_url = Self::load_string(nvs, NVS_KEY_TOKEN_URL, MAX_RELAY_URL_LEN);
             let lang = Self::load_string(nvs, NVS_KEY_LANGUAGE, 8);
             if !lang.is_empty() {
                 storage.language = lang;
@@ -814,6 +1024,7 @@ impl NvsStorage {
         Self::save_string(nvs, NVS_KEY_CONFIG_URL, &self.config_url)?;
         Self::save_string(nvs, NVS_KEY_ACCESS_TOKEN, &self.access_token)?;
         Self::save_string(nvs, NVS_KEY_REFRESH_TOKEN, &self.refresh_token)?;
+        Self::save_string(nvs, NVS_KEY_TOKEN_URL, &self.token_url)?;
         Self::save_string(nvs, NVS_KEY_LANGUAGE, &self.language)?;
         Self::save_string(nvs, NVS_KEY_SEL_CHANNEL, &self.selected_channel)?;
         Self::save_string(nvs, NVS_KEY_CONFIG_JSON, &self.config_json)?;
@@ -999,6 +1210,23 @@ fn main() {
 
     spawn_moq_task(wifi_config, initial_relay_url, initial_track_params, moq_cmd_rx, moq_event_tx);
 
+    // Config WebSocket task
+    let (config_event_tx, config_event_rx) = mpsc::channel::<ConfigEvent>();
+    let mut config_task_running = false;
+
+    // Spawn config task if credentials are available
+    if !storage.config_url.is_empty() && !storage.access_token.is_empty() {
+        info!("net: spawning config task for {}", storage.config_url);
+        spawn_config_task(
+            storage.config_url.clone(),
+            storage.access_token.clone(),
+            storage.refresh_token.clone(),
+            storage.token_url.clone(),
+            config_event_tx.clone(),
+        );
+        config_task_running = true;
+    }
+
     // Loopback mode state
     let mut loopback = NetLoopbackMode::Off;
 
@@ -1033,6 +1261,24 @@ fn main() {
                     &ptt_buffer,
                     &ptt_ai_buffer,
                 );
+
+                // Spawn config task if SetConfigUrl/SetAccessToken provided credentials
+                if !config_task_running
+                    && (tlv_type == CtlToNet::SetConfigUrl
+                        || tlv_type == CtlToNet::SetAccessToken)
+                    && !storage.config_url.is_empty()
+                    && !storage.access_token.is_empty()
+                {
+                    info!("net: spawning config task for {}", storage.config_url);
+                    spawn_config_task(
+                        storage.config_url.clone(),
+                        storage.access_token.clone(),
+                        storage.refresh_token.clone(),
+                        storage.token_url.clone(),
+                        config_event_tx.clone(),
+                    );
+                    config_task_running = true;
+                }
             }
         }
 
@@ -1103,6 +1349,112 @@ fn main() {
             Err(TryRecvError::Disconnected) => {
                 warn!("net: MoQ event channel closed");
             }
+        }
+
+        // Config WebSocket event handling
+        match config_event_rx.try_recv() {
+            Ok(ConfigEvent::NewConfig(json)) => {
+                info!("net: received config update ({}B)", json.len());
+                match serde_json::from_str::<DeviceConfig>(&json) {
+                    Ok(config) => {
+                        // Store raw JSON in NVS
+                        storage.config_json = json.clone();
+                        let _ = storage.save_field(NVS_KEY_CONFIG_JSON, &json);
+
+                        // Relay URL: update if changed
+                        if config.relay_url != storage.relay_url {
+                            info!(
+                                "net: relay URL changed: {} -> {}",
+                                storage.relay_url, config.relay_url
+                            );
+                            storage.relay_url = config.relay_url.clone();
+                            let _ = storage.save_field(NVS_KEY_RELAY_URL, &config.relay_url);
+                            let _ = moq_cmd_tx
+                                .send(MoqCommand::SetRelayUrl(config.relay_url.clone()));
+                        }
+
+                        // WiFi networks: update if changed
+                        let config_ssids: Vec<String> = config
+                            .wifi_networks
+                            .iter()
+                            .map(|w| w.ssid.clone())
+                            .collect();
+                        let current_ssids: Vec<String> = storage
+                            .wifi_ssids
+                            .iter()
+                            .map(|w| w.ssid.clone())
+                            .collect();
+                        if config_ssids != current_ssids {
+                            info!("net: WiFi networks updated from config");
+                            storage.wifi_ssids.clear();
+                            for net in &config.wifi_networks {
+                                let _ = storage.add_wifi_ssid(
+                                    &net.ssid,
+                                    net.password.as_deref().unwrap_or(""),
+                                );
+                            }
+                            let _ = storage.save();
+                        }
+
+                        // Selected channel validity: fall back to first if not in config
+                        if !storage.selected_channel.is_empty()
+                            && !config
+                                .channels
+                                .iter()
+                                .any(|c| c.display_name == storage.selected_channel)
+                        {
+                            if let Some(first) = config.channels.first() {
+                                info!(
+                                    "net: selected channel '{}' not in config, falling back to '{}'",
+                                    storage.selected_channel, first.display_name
+                                );
+                                let channel_name = first.display_name.clone();
+                                storage.selected_channel = channel_name.clone();
+                                let _ = storage.save_field(
+                                    NVS_KEY_SEL_CHANNEL,
+                                    &channel_name,
+                                );
+                            }
+                        }
+
+                        // Track reconfiguration
+                        if let Some(params) = track_params_from_config(
+                            &config,
+                            &storage.language,
+                            &storage.selected_channel,
+                        ) {
+                            let _ = moq_cmd_tx.send(MoqCommand::Reconfigure {
+                                ptt_namespace: params.ptt_namespace,
+                                ptt_track_name: params.ptt_track_name,
+                                ai_pub_namespace: params.ai_pub_namespace,
+                                ai_pub_track_name: params.ai_pub_track_name,
+                                ai_sub_namespace: params.ai_sub_namespace,
+                                ai_sub_track_name: params.ai_sub_track_name,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        warn!("net: failed to parse config JSON: {:?}", e);
+                    }
+                }
+            }
+            Ok(ConfigEvent::TokenRefreshed {
+                access_token,
+                refresh_token,
+            }) => {
+                info!("net: tokens refreshed, saving to NVS");
+                storage.access_token = access_token.clone();
+                let _ = storage.save_field(NVS_KEY_ACCESS_TOKEN, &access_token);
+                if !refresh_token.is_empty() {
+                    storage.refresh_token = refresh_token.clone();
+                    let _ = storage.save_field(NVS_KEY_REFRESH_TOKEN, &refresh_token);
+                }
+            }
+            Ok(ConfigEvent::Error(msg)) => {
+                warn!("net: config task error: {}", msg);
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {}
         }
 
         // Timer tick - pop from jitter buffers every 20ms
@@ -1512,6 +1864,18 @@ fn handle_mgmt_message(
                     }
                 } else {
                     write_tlv(mgmt_uart, NetToCtl::Error, b"no config");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
+            }
+        }
+        CtlToNet::SetTokenUrl => {
+            if let Ok(url) = core::str::from_utf8(value) {
+                storage.token_url = url.to_string();
+                if storage.save_field(NVS_KEY_TOKEN_URL, url).is_ok() {
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"save");
                 }
             } else {
                 write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");

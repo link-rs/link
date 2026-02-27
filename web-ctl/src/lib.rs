@@ -530,6 +530,13 @@ impl LinkController {
         core.set_refresh_token(token).await.map_err(ctl_error_to_js)
     }
 
+    /// Set the OAuth token endpoint URL on the NET chip.
+    #[wasm_bindgen]
+    pub async fn set_token_url(&mut self, url: &str) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.set_token_url(url).await.map_err(ctl_error_to_js)
+    }
+
     /// Get the current language from the NET chip.
     #[wasm_bindgen]
     pub async fn get_language(&mut self) -> Result<String, JsValue> {

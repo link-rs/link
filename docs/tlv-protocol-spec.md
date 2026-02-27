@@ -228,6 +228,7 @@ Messages from CTL to NET chip (tunneled through MGMT).
 | 0x4E  | SetLanguage        | UTF-8 language code      | Ack                          |
 | 0x4F  | GetChannel         | (empty)                  | ChannelInfo                  |
 | 0x50  | SetChannel         | UTF-8 display name       | Ack                          |
+| 0x51  | SetTokenUrl        | UTF-8 URL string         | Ack                          |
 
 ### 6.6 NetToCtl (0x5X)
 

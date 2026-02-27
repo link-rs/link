@@ -222,6 +222,8 @@ pub enum CtlToNet {
     GetChannel,
     /// Set channel by display name (UTF-8 string)
     SetChannel,
+    /// Set OAuth token endpoint URL (UTF-8 string)
+    SetTokenUrl,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

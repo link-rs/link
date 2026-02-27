@@ -1141,6 +1141,24 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
+    /// Set OAuth token endpoint URL in NET chip storage.
+    pub async fn set_token_url(&mut self, url: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetTokenUrl, url.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("<invalid utf8>");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Get current language from NET chip.
     pub async fn get_language(&mut self) -> Result<String, CtlError> {
         self.write_tlv_net(CtlToNet::GetLanguage, &[]).await?;

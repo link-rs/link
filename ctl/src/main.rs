@@ -383,6 +383,13 @@ enum NetAction {
         action: SetOnlyString,
     },
 
+    /// Set the OAuth token endpoint URL
+    #[command(name = "token-url")]
+    TokenUrl {
+        #[command(subcommand)]
+        action: SetOnlyString,
+    },
+
     /// Get or set the language
     Language {
         #[command(subcommand)]
