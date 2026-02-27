@@ -71,6 +71,10 @@ enum MoqCommand {
         ai_sub_namespace: Vec<String>,
         ai_sub_track_name: String,
     },
+    /// Update WiFi networks; force reconnect if current SSID is no longer in the list.
+    UpdateWifi {
+        networks: Vec<(String, String)>,
+    },
 }
 
 /// Events sent from the MoQ task back to the main loop.
@@ -534,6 +538,49 @@ fn spawn_moq_task(
                     Ok(MoqCommand::SendChat { .. }) => {
                         // Chat not implemented
                     }
+                    Ok(MoqCommand::UpdateWifi { networks }) => {
+                        if let Some((ref mut w, ref mut ssid, ref mut password)) = wifi {
+                            // Check if current SSID is still in the new list
+                            let current_in_list = networks.iter().any(|(s, _)| s == ssid.as_str());
+                            if !current_in_list && !networks.is_empty() {
+                                info!(
+                                    "net: current SSID '{}' removed from config, forcing WiFi reconnect to '{}'",
+                                    ssid, networks[0].0
+                                );
+                                // Disconnect current WiFi
+                                let _ = w.wifi_mut().disconnect();
+                                wifi_connected = false;
+
+                                // Tear down MoQ (can't work without WiFi)
+                                if client.is_some() {
+                                    client = None;
+                                    ptt_ready = false;
+                                    ptt_pub_track = None;
+                                    ai_pub_track = None;
+                                    ptt_subscription = None;
+                                    ai_subscription = None;
+                                    let _ = event_tx.send(MoqEvent::Disconnected);
+                                }
+                                let _ = event_tx.send(MoqEvent::WifiDisconnected);
+
+                                // Update to first network in new list and reconnect
+                                *ssid = networks[0].0.clone();
+                                *password = networks[0].1.clone();
+                                info!("net: reconfiguring WiFi for '{}'", ssid);
+                                if let Err(e) = start_wifi(w, ssid, password) {
+                                    warn!("net: WiFi start failed after config update: {:?}", e);
+                                }
+                            } else {
+                                // Current SSID still valid; update stored password in case it changed
+                                if let Some((_, new_pw)) = networks.iter().find(|(s, _)| s == ssid.as_str()) {
+                                    if new_pw != password.as_str() {
+                                        info!("net: updating stored password for '{}'", ssid);
+                                        *password = new_pw.clone();
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Err(TryRecvError::Empty) => {}
                     Err(TryRecvError::Disconnected) => {
                         info!("MoQ: command channel closed, exiting");
@@ -707,6 +754,13 @@ fn spawn_moq_task(
 /// Connects to the config WebSocket URL with an Authorization header,
 /// receives DeviceConfig JSON updates, and handles token refresh on
 /// authentication failures.
+/// Internal events from the WebSocket callback to the config task's event loop.
+enum InnerEvent {
+    Connected,
+    Text(String),
+    Disconnected,
+}
+
 fn spawn_config_task(
     config_url: String,
     access_token: String,
@@ -736,79 +790,103 @@ fn spawn_config_task(
                     ..Default::default()
                 };
 
+                // Internal channel: callback sends events here, outer loop recv()s
+                let (inner_tx, inner_rx) = mpsc::channel::<InnerEvent>();
+
                 // Connect to WebSocket using callback-based API
-                let event_tx_clone = event_tx.clone();
-                let ws_result = EspWebSocketClient::new(
-                    &config_url,
-                    &ws_config,
-                    Duration::from_secs(30),
-                    move |event| {
-                        if let Ok(event) = event {
-                            match &event.event_type {
-                                WebSocketEventType::Text(text) => {
-                                    let _ = event_tx_clone
-                                        .send(ConfigEvent::NewConfig(text.to_string()));
+                let ws_result = {
+                    let inner_tx = inner_tx.clone();
+                    EspWebSocketClient::new(
+                        &config_url,
+                        &ws_config,
+                        Duration::from_secs(30),
+                        move |event| {
+                            if let Ok(event) = event {
+                                match &event.event_type {
+                                    WebSocketEventType::Connected => {
+                                        info!("config: WebSocket connected");
+                                        let _ = inner_tx.send(InnerEvent::Connected);
+                                    }
+                                    WebSocketEventType::Text(text) => {
+                                        let _ = inner_tx.send(InnerEvent::Text(text.to_string()));
+                                    }
+                                    WebSocketEventType::Disconnected => {
+                                        info!("config: WebSocket disconnected");
+                                        let _ = inner_tx.send(InnerEvent::Disconnected);
+                                    }
+                                    WebSocketEventType::Close(_) => {
+                                        info!("config: WebSocket closed");
+                                        let _ = inner_tx.send(InnerEvent::Disconnected);
+                                    }
+                                    _ => {}
                                 }
-                                WebSocketEventType::Disconnected => {
-                                    info!("config: WebSocket disconnected");
-                                }
-                                WebSocketEventType::Connected => {
-                                    info!("config: WebSocket connected");
-                                }
-                                WebSocketEventType::Close(_) => {
-                                    info!("config: WebSocket closed");
-                                }
-                                _ => {}
                             }
-                        }
-                    },
-                );
+                        },
+                    )
+                };
 
                 match ws_result {
                     Ok(_client) => {
                         info!("config: WebSocket client created, waiting for events");
                         backoff_secs = 5; // Reset backoff on successful connection
 
-                        // Keep the client alive - ESP-IDF WebSocket client runs in its own task
-                        // and delivers events via the callback. We just need to keep the client
-                        // object alive. Sleep indefinitely.
+                        // Block on inner channel — react to text messages and disconnects.
+                        // _client must stay alive (ESP-IDF WS runs in its own task).
                         loop {
-                            thread::sleep(Duration::from_secs(60));
+                            match inner_rx.recv() {
+                                Ok(InnerEvent::Connected) => {
+                                    info!("config: connection established");
+                                }
+                                Ok(InnerEvent::Text(json)) => {
+                                    let _ = event_tx.send(ConfigEvent::NewConfig(json));
+                                }
+                                Ok(InnerEvent::Disconnected) => {
+                                    warn!("config: WebSocket disconnected, will refresh token and reconnect");
+                                    break; // fall through to token refresh + backoff
+                                }
+                                Err(_) => {
+                                    // Channel closed (client dropped)
+                                    warn!("config: inner channel closed, will reconnect");
+                                    break;
+                                }
+                            }
                         }
+                        // Drop _client here (falls out of Ok arm)
                     }
                     Err(e) => {
                         warn!("config: WebSocket connection failed: {:?}", e);
                         let _ = event_tx.send(ConfigEvent::Error(format!("{:?}", e)));
-
-                        // Attempt token refresh if we have a token URL
-                        if !token_url.is_empty() && !current_refresh_token.is_empty() {
-                            info!("config: attempting token refresh");
-                            match refresh_access_token(&token_url, &current_refresh_token) {
-                                Ok((new_access, new_refresh)) => {
-                                    info!("config: token refresh successful");
-                                    let _ = event_tx.send(ConfigEvent::TokenRefreshed {
-                                        access_token: new_access.clone(),
-                                        refresh_token: new_refresh.clone(),
-                                    });
-                                    current_access_token = new_access;
-                                    if !new_refresh.is_empty() {
-                                        current_refresh_token = new_refresh;
-                                    }
-                                    backoff_secs = 5;
-                                    continue; // Retry immediately with new token
-                                }
-                                Err(e) => {
-                                    warn!("config: token refresh failed: {}", e);
-                                }
-                            }
-                        }
-
-                        // Exponential backoff
-                        info!("config: retrying in {}s", backoff_secs);
-                        thread::sleep(Duration::from_secs(backoff_secs));
-                        backoff_secs = (backoff_secs * 2).min(60);
                     }
                 }
+
+                // Token refresh + exponential backoff (shared by both connection
+                // failure and mid-session disconnect paths)
+                if !token_url.is_empty() && !current_refresh_token.is_empty() {
+                    info!("config: attempting token refresh");
+                    match refresh_access_token(&token_url, &current_refresh_token) {
+                        Ok((new_access, new_refresh)) => {
+                            info!("config: token refresh successful");
+                            let _ = event_tx.send(ConfigEvent::TokenRefreshed {
+                                access_token: new_access.clone(),
+                                refresh_token: new_refresh.clone(),
+                            });
+                            current_access_token = new_access;
+                            if !new_refresh.is_empty() {
+                                current_refresh_token = new_refresh;
+                            }
+                            backoff_secs = 5;
+                            continue; // Retry immediately with new token
+                        }
+                        Err(e) => {
+                            warn!("config: token refresh failed: {}", e);
+                        }
+                    }
+                }
+
+                // Exponential backoff
+                info!("config: retrying in {}s", backoff_secs);
+                thread::sleep(Duration::from_secs(backoff_secs));
+                backoff_secs = (backoff_secs * 2).min(60);
             }
         })
         .expect("failed to spawn config thread");
@@ -1386,6 +1464,20 @@ fn main() {
                             .collect();
                         if config_ssids != current_ssids {
                             info!("net: WiFi networks updated from config");
+                            // Build network list for MoQ task (SSID, password)
+                            let networks: Vec<(String, String)> = config
+                                .wifi_networks
+                                .iter()
+                                .map(|net| {
+                                    (
+                                        net.ssid.clone(),
+                                        net.password.as_deref().unwrap_or("").to_string(),
+                                    )
+                                })
+                                .collect();
+                            // Tell MoQ task to force WiFi reconnect if needed
+                            let _ = moq_cmd_tx
+                                .send(MoqCommand::UpdateWifi { networks });
                             storage.wifi_ssids.clear();
                             for net in &config.wifi_networks {
                                 let _ = storage.add_wifi_ssid(
