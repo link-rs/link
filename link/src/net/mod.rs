@@ -436,6 +436,19 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
                 .must_write_tlv(NetToCtl::Error, b"no jitter buffer")
                 .await;
         }
+        CtlToNet::SetConfigUrl
+        | CtlToNet::SetAccessToken
+        | CtlToNet::SetRefreshToken
+        | CtlToNet::GetLanguage
+        | CtlToNet::SetLanguage
+        | CtlToNet::GetChannel
+        | CtlToNet::SetChannel => {
+            // Config commands handled by ESP-IDF firmware (net/src/main.rs), not embassy
+            info!("net: config command not supported in embassy mode");
+            to_mgmt
+                .must_write_tlv(NetToCtl::Error, b"not supported")
+                .await;
+        }
     }
 }
 

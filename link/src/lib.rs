@@ -50,6 +50,10 @@ pub use shared::tlv::Tlv;
 #[cfg(feature = "ctl")]
 pub use shared::wifi::WifiSsid;
 
+// Re-export config types for net and ctl
+#[cfg(any(feature = "net", feature = "ctl"))]
+pub use shared::config;
+
 // Re-export protocol types
 pub use shared::protocol::{
     ChannelId, CtlToMgmt, CtlToNet, CtlToUi, JitterStatsInfo, MgmtToCtl, NetLoopbackMode,

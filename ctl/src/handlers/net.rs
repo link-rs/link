@@ -3,7 +3,7 @@
 use super::Core;
 use crate::{
     GetSetString, NetAction, NetLoopbackAction, PinAction, PinLevel, ResetAction,
-    WifiAction,
+    SetOnlyString, WifiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::StdDelay;
@@ -78,6 +78,11 @@ pub async fn handle_net(
             | NetAction::RelayUrl { .. }
             | NetAction::Loopback { .. }
             | NetAction::JitterStats { .. }
+            | NetAction::ConfigUrl { .. }
+            | NetAction::AccessToken { .. }
+            | NetAction::RefreshToken { .. }
+            | NetAction::Language { .. }
+            | NetAction::Channel { .. }
     );
 
     if needs_net_firmware {
@@ -407,5 +412,50 @@ pub async fn handle_net(
             println!("  state:     {}", stats.state);
             Ok(())
         }
+        NetAction::ConfigUrl { action } => match action {
+            SetOnlyString::Set { value } => {
+                core.set_config_url(&value).await?;
+                println!("Config URL set");
+                Ok(())
+            }
+        },
+        NetAction::AccessToken { action } => match action {
+            SetOnlyString::Set { value } => {
+                core.set_access_token(&value).await?;
+                println!("Access token set");
+                Ok(())
+            }
+        },
+        NetAction::RefreshToken { action } => match action {
+            SetOnlyString::Set { value } => {
+                core.set_refresh_token(&value).await?;
+                println!("Refresh token set");
+                Ok(())
+            }
+        },
+        NetAction::Language { action } => match action.unwrap_or_default() {
+            GetSetString::Get => {
+                let lang = core.get_language().await?;
+                println!("{}", lang);
+                Ok(())
+            }
+            GetSetString::Set { value } => {
+                core.set_language(&value).await?;
+                println!("Language set to {}", value);
+                Ok(())
+            }
+        },
+        NetAction::Channel { action } => match action.unwrap_or_default() {
+            GetSetString::Get => {
+                let (id, name) = core.get_channel().await?;
+                println!("{}\t{}", id, name);
+                Ok(())
+            }
+            GetSetString::Set { value } => {
+                core.set_channel(&value).await?;
+                println!("Channel set to {}", value);
+                Ok(())
+            }
+        },
     }
 }

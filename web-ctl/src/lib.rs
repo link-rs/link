@@ -507,6 +507,63 @@ impl LinkController {
         Ok(obj.into())
     }
 
+    // ==================== CONFIG / LANGUAGE / CHANNEL ====================
+
+    /// Set the config WebSocket URL on the NET chip.
+    #[wasm_bindgen]
+    pub async fn set_config_url(&mut self, url: &str) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.set_config_url(url).await.map_err(ctl_error_to_js)
+    }
+
+    /// Set the OAuth access token on the NET chip.
+    #[wasm_bindgen]
+    pub async fn set_access_token(&mut self, token: &str) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.set_access_token(token).await.map_err(ctl_error_to_js)
+    }
+
+    /// Set the OAuth refresh token on the NET chip.
+    #[wasm_bindgen]
+    pub async fn set_refresh_token(&mut self, token: &str) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.set_refresh_token(token).await.map_err(ctl_error_to_js)
+    }
+
+    /// Get the current language from the NET chip.
+    #[wasm_bindgen]
+    pub async fn get_language(&mut self) -> Result<String, JsValue> {
+        let core = self.core_mut()?;
+        core.get_language().await.map_err(ctl_error_to_js)
+    }
+
+    /// Set the language on the NET chip.
+    /// Valid values: "en", "de", "es", "hi", "no"
+    #[wasm_bindgen]
+    pub async fn set_language(&mut self, lang: &str) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.set_language(lang).await.map_err(ctl_error_to_js)
+    }
+
+    /// Get the current channel from the NET chip.
+    /// Returns a JSON object with {id, display_name}.
+    #[wasm_bindgen]
+    pub async fn get_channel(&mut self) -> Result<JsValue, JsValue> {
+        let core = self.core_mut()?;
+        let (id, display_name) = core.get_channel().await.map_err(ctl_error_to_js)?;
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"id".into(), &id.into())?;
+        js_sys::Reflect::set(&obj, &"displayName".into(), &display_name.into())?;
+        Ok(obj.into())
+    }
+
+    /// Set the active channel by display name on the NET chip.
+    #[wasm_bindgen]
+    pub async fn set_channel(&mut self, display_name: &str) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.set_channel(display_name).await.map_err(ctl_error_to_js)
+    }
+
     // ==================== RESET HOLD ====================
 
     /// Hold the UI chip in reset.

@@ -1,7 +1,7 @@
 # Link TLV Protocol Specification
 
-**Version:** 1.2
-**Date:** 2026-02-11
+**Version:** 1.3
+**Date:** 2026-02-26
 
 ## 1. Overview
 
@@ -221,6 +221,13 @@ Messages from CTL to NET chip (tunneled through MGMT).
 | 0x47  | SetLoopback        | 1 byte (NetLoopbackMode) | Ack                          |
 | 0x48  | GetLoopback        | (empty)                  | Loopback                     |
 | 0x49  | GetJitterStats     | 1 byte (channel_id)      | JitterStats                  |
+| 0x4A  | SetConfigUrl       | UTF-8 URL string         | Ack                          |
+| 0x4B  | SetAccessToken     | UTF-8 token string       | Ack                          |
+| 0x4C  | SetRefreshToken    | UTF-8 token string       | Ack                          |
+| 0x4D  | GetLanguage        | (empty)                  | Language                     |
+| 0x4E  | SetLanguage        | UTF-8 language code      | Ack                          |
+| 0x4F  | GetChannel         | (empty)                  | ChannelInfo                  |
+| 0x50  | SetChannel         | UTF-8 display name       | Ack                          |
 
 ### 6.6 NetToCtl (0x5X)
 
@@ -236,6 +243,8 @@ Messages from NET chip to CTL (forwarded through MGMT via MgmtToCtl::FromNet).
 | 0x55  | Error         | UTF-8 error message                 | Error response              |
 | 0x56  | Loopback      | 1 byte (NetLoopbackMode)            | Response to GetLoopback     |
 | 0x57  | JitterStats   | postcard-serialized JitterStatsInfo | Response to GetJitterStats  |
+| 0x58  | Language      | UTF-8 language code                 | Response to GetLanguage     |
+| 0x59  | ChannelInfo   | UTF-8 JSON {"id":"...","display_name":"..."} | Response to GetChannel |
 
 ### 6.7 UiToNet (0x6X)
 

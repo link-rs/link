@@ -264,6 +264,14 @@ enum GetSetString {
     },
 }
 
+#[derive(Debug, Clone, Subcommand)]
+enum SetOnlyString {
+    /// Set a new value
+    Set {
+        value: String,
+    },
+}
+
 #[derive(Debug, Clone, Default, Subcommand)]
 enum LoopbackAction {
     /// Get the current loopback mode
@@ -352,6 +360,39 @@ enum NetAction {
     JitterStats {
         /// Channel ID (0=Ptt, 1=PttAi)
         channel_id: u8,
+    },
+
+    /// Set the config WebSocket URL
+    #[command(name = "config-url")]
+    ConfigUrl {
+        #[command(subcommand)]
+        action: SetOnlyString,
+    },
+
+    /// Set the OAuth access token
+    #[command(name = "access-token")]
+    AccessToken {
+        #[command(subcommand)]
+        action: SetOnlyString,
+    },
+
+    /// Set the OAuth refresh token
+    #[command(name = "refresh-token")]
+    RefreshToken {
+        #[command(subcommand)]
+        action: SetOnlyString,
+    },
+
+    /// Get or set the language
+    Language {
+        #[command(subcommand)]
+        action: Option<GetSetString>,
+    },
+
+    /// Get or set the active channel
+    Channel {
+        #[command(subcommand)]
+        action: Option<GetSetString>,
     },
 }
 

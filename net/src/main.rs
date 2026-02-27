@@ -19,6 +19,7 @@ use esp_idf_svc::{
     nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
 };
 use link::{
+    config::{DeviceConfig, Language},
     net::{
         JitterBuffer, JitterState, WifiSsid, MAX_RELAY_URL_LEN,
         MAX_WIFI_SSIDS,
@@ -61,6 +62,15 @@ enum MoqCommand {
     SetPttChannel(PttChannel),
     /// Set loopback mode.
     SetLoopback(NetLoopbackMode),
+    /// Reconfigure MoQ tracks (channel/language change).
+    Reconfigure {
+        ptt_namespace: Vec<String>,
+        ptt_track_name: String,
+        ai_pub_namespace: Vec<String>,
+        ai_pub_track_name: String,
+        ai_sub_namespace: Vec<String>,
+        ai_sub_track_name: String,
+    },
 }
 
 /// Events sent from the MoQ task back to the main loop.
@@ -107,10 +117,89 @@ fn get_device_id_from_mac() -> u64 {
     (device_id << 2) >> 2
 }
 
+/// Track parameters for MoQ setup (derived from config + language + channel).
+#[derive(Clone)]
+struct TrackParams {
+    ptt_namespace: Vec<String>,
+    ptt_track_name: String,
+    ai_pub_namespace: Vec<String>,
+    ai_pub_track_name: String,
+    ai_sub_namespace: Vec<String>,
+    ai_sub_track_name: String,
+}
+
+/// Build default (hardcoded) track parameters as fallback when no config exists.
+fn default_track_params() -> TrackParams {
+    let ns_prefix = vec![
+        "moq://moq.ptt.arpa/v1".to_string(),
+        "org/acme".to_string(),
+        "store/1234".to_string(),
+    ];
+    let channel_name = "gardening";
+    let track_name = "pcm_en_8khz_mono_i16";
+
+    let mut ptt_ns = ns_prefix.clone();
+    ptt_ns.push(format!("channel/{}", channel_name));
+    ptt_ns.push("ptt".to_string());
+
+    let mut ai_ns = ns_prefix;
+    ai_ns.push("ai/audio".to_string());
+
+    let device_id_str = format!("{}", get_device_id_from_mac());
+
+    TrackParams {
+        ptt_namespace: ptt_ns,
+        ptt_track_name: track_name.to_string(),
+        ai_pub_namespace: ai_ns.clone(),
+        ai_pub_track_name: track_name.to_string(),
+        ai_sub_namespace: ai_ns,
+        ai_sub_track_name: device_id_str,
+    }
+}
+
+/// Derive track parameters from a DeviceConfig, language, and selected channel.
+fn track_params_from_config(
+    config: &DeviceConfig,
+    language: &str,
+    selected_channel: &str,
+) -> Option<TrackParams> {
+    // Find the selected channel
+    let channel = config
+        .channels
+        .iter()
+        .find(|c| c.display_name == selected_channel)
+        .or_else(|| config.channels.first())?;
+
+    // Get language-specific tracks (fall back to "en")
+    let lang_tracks = channel
+        .languages
+        .get(language)
+        .or_else(|| channel.languages.get("en"))?;
+
+    let device_id_str = format!("{}", get_device_id_from_mac());
+
+    // Get AI tracks for this language
+    let ai_lang = config
+        .ai
+        .languages
+        .get(language)
+        .or_else(|| config.ai.languages.get("en"))?;
+
+    Some(TrackParams {
+        ptt_namespace: lang_tracks.ptt.namespace.clone(),
+        ptt_track_name: lang_tracks.ptt.name.clone(),
+        ai_pub_namespace: ai_lang.namespace.clone(),
+        ai_pub_track_name: ai_lang.name.clone(),
+        ai_sub_namespace: config.ai.response_ns.clone(),
+        ai_sub_track_name: device_id_str,
+    })
+}
+
 /// Helper function to set up PTT tracks after connection.
 /// Returns true if setup was successful.
-fn setup_ptt_tracks(
+fn setup_tracks_from_params(
     client: &quicr::Client,
+    params: &TrackParams,
     ptt_pub_track: &mut Option<std::sync::Arc<quicr::PublishTrack>>,
     ai_pub_track: &mut Option<std::sync::Arc<quicr::PublishTrack>>,
     ptt_subscription: &mut Option<Subscription>,
@@ -120,40 +209,23 @@ fn setup_ptt_tracks(
     ai_group_id: &mut u64,
     ai_object_id: &mut u64,
 ) -> bool {
-    // Hactar track naming:
-    // Namespace prefix: moq://moq.ptt.arpa/v1/org/acme/store/1234
-    // PTT channel: .../channel/<name>/ptt + track pcm_en_8khz_mono_i16
-    // AI audio pub: .../ai/audio + track pcm_en_8khz_mono_i16
-    // AI audio sub: .../ai/audio + track <device_id>
-
-    let ns_prefix = &["moq://moq.ptt.arpa/v1", "org/acme", "store/1234"];
-    let channel_name = "gardening"; // TODO: make configurable
-    let track_name = "pcm_en_8khz_mono_i16";
-
-    // Register PTT namespace for publishing
-    let ptt_ns = TrackNamespace::from_strings(&[
-        ns_prefix[0],
-        ns_prefix[1],
-        ns_prefix[2],
-        &format!("channel/{}", channel_name),
-        "ptt",
-    ]);
+    let ptt_ns_strs: Vec<&str> = params.ptt_namespace.iter().map(|s| s.as_str()).collect();
+    let ptt_ns = TrackNamespace::from_strings(&ptt_ns_strs);
     client.publish_namespace(&ptt_ns);
 
-    // Register AI audio namespace for publishing
-    let ai_ns =
-        TrackNamespace::from_strings(&[ns_prefix[0], ns_prefix[1], ns_prefix[2], "ai/audio"]);
-    client.publish_namespace(&ai_ns);
+    let ai_pub_ns_strs: Vec<&str> = params.ai_pub_namespace.iter().map(|s| s.as_str()).collect();
+    let ai_pub_ns = TrackNamespace::from_strings(&ai_pub_ns_strs);
+    client.publish_namespace(&ai_pub_ns);
 
-    // Get device ID from MAC for group_id (janet uses this to route AI responses)
     let device_id = get_device_id_from_mac();
     info!("device id: {}", device_id);
 
     // Create PTT publish track
-    let ptt_track_name_full = FullTrackName::new(ptt_ns.clone(), track_name.as_bytes());
+    let ptt_track_name_full =
+        FullTrackName::new(ptt_ns.clone(), params.ptt_track_name.clone().into_bytes());
     info!(
         "MoQ PTT: publish namespace={}, track={} (device_id={})",
-        ptt_ns, track_name, device_id
+        ptt_ns, params.ptt_track_name, device_id
     );
     match block_on(client.publish(ptt_track_name_full)) {
         Ok(track) => {
@@ -172,8 +244,8 @@ fn setup_ptt_tracks(
     }
 
     // Create AI audio publish track
-    let ai_pub_track_name = FullTrackName::new(ai_ns.clone(), track_name.as_bytes());
-
+    let ai_pub_track_name =
+        FullTrackName::new(ai_pub_ns.clone(), params.ai_pub_track_name.clone().into_bytes());
     match block_on(client.publish(ai_pub_track_name)) {
         Ok(track) => {
             *ai_pub_track = Some(track);
@@ -190,10 +262,11 @@ fn setup_ptt_tracks(
     }
 
     // Subscribe to PTT channel (receive from others)
-    let ptt_sub_track_name = FullTrackName::new(ptt_ns.clone(), track_name.as_bytes());
+    let ptt_sub_track_name =
+        FullTrackName::new(ptt_ns.clone(), params.ptt_track_name.clone().into_bytes());
     info!(
         "MoQ PTT: subscribe namespace={}, track={}",
-        ptt_ns, track_name
+        ptt_ns, params.ptt_track_name
     );
     match block_on(client.subscribe(ptt_sub_track_name)) {
         Ok(sub) => {
@@ -205,16 +278,18 @@ fn setup_ptt_tracks(
         }
     }
 
-    // Subscribe to AI audio namespace first (to receive announcements for dynamic tracks)
-    client.subscribe_namespace(&ai_ns);
+    // Subscribe to AI audio namespace
+    let ai_sub_ns_strs: Vec<&str> = params.ai_sub_namespace.iter().map(|s| s.as_str()).collect();
+    let ai_sub_ns = TrackNamespace::from_strings(&ai_sub_ns_strs);
+    client.subscribe_namespace(&ai_sub_ns);
 
-    // Subscribe to AI audio responses (using device ID as track name)
-    let device_id_str = format!("{}", device_id);
+    // Subscribe to AI audio responses
     info!(
-        "MoQ PTT: subscribing to AI responses on ns={} track=\"{}\" track_bytes={:?} (device_id=0x{:012x})",
-        ai_ns, device_id_str, device_id_str.as_bytes(), device_id
+        "MoQ PTT: subscribing to AI responses on ns={} track=\"{}\" (device_id=0x{:012x})",
+        ai_sub_ns, params.ai_sub_track_name, device_id
     );
-    let ai_sub_track_name = FullTrackName::new(ai_ns, device_id_str.into_bytes());
+    let ai_sub_track_name =
+        FullTrackName::new(ai_sub_ns, params.ai_sub_track_name.clone().into_bytes());
     match block_on(client.subscribe(ai_sub_track_name)) {
         Ok(sub) => {
             *ai_subscription = Some(sub);
@@ -237,6 +312,7 @@ fn spawn_moq_task(
         String,
     )>,
     initial_relay_url: Option<String>,
+    initial_track_params: TrackParams,
     cmd_rx: Receiver<MoqCommand>,
     event_tx: Sender<MoqEvent>,
 ) {
@@ -283,6 +359,7 @@ fn spawn_moq_task(
             let mut ptt_recv_count: u64 = 0;
             let mut ai_recv_count: u64 = 0;
             let mut last_stats = Instant::now();
+            let mut track_params = initial_track_params;
 
             loop {
                 // Check for commands (non-blocking)
@@ -318,8 +395,9 @@ fn spawn_moq_task(
                                         let _ = event_tx.send(MoqEvent::Connected);
 
                                         // Auto-start PTT mode on connect
-                                        ptt_ready = setup_ptt_tracks(
+                                        ptt_ready = setup_tracks_from_params(
                                             &c,
+                                            &track_params,
                                             &mut ptt_pub_track,
                                             &mut ai_pub_track,
                                             &mut ptt_subscription,
@@ -344,6 +422,45 @@ fn spawn_moq_task(
                                 warn!("MoQ: failed to create client: {:?}", e);
                                 last_reconnect_attempt = Some(Instant::now());
                             }
+                        }
+                    }
+                    Ok(MoqCommand::Reconfigure {
+                        ptt_namespace,
+                        ptt_track_name,
+                        ai_pub_namespace,
+                        ai_pub_track_name,
+                        ai_sub_namespace,
+                        ai_sub_track_name,
+                    }) => {
+                        info!("MoQ: reconfiguring tracks");
+                        track_params = TrackParams {
+                            ptt_namespace,
+                            ptt_track_name,
+                            ai_pub_namespace,
+                            ai_pub_track_name,
+                            ai_sub_namespace,
+                            ai_sub_track_name,
+                        };
+                        // Tear down existing tracks
+                        ptt_pub_track = None;
+                        ai_pub_track = None;
+                        ptt_subscription = None;
+                        ai_subscription = None;
+                        ptt_ready = false;
+                        // Re-setup if connected
+                        if let Some(ref c) = client {
+                            ptt_ready = setup_tracks_from_params(
+                                c,
+                                &track_params,
+                                &mut ptt_pub_track,
+                                &mut ai_pub_track,
+                                &mut ptt_subscription,
+                                &mut ai_subscription,
+                                &mut ptt_group_id,
+                                &mut ptt_object_id,
+                                &mut ai_group_id,
+                                &mut ai_object_id,
+                            );
                         }
                     }
                     Ok(MoqCommand::SetPttChannel(channel)) => {
@@ -532,8 +649,9 @@ fn spawn_moq_task(
                                         let _ = event_tx.send(MoqEvent::Connected);
 
                                         // Auto-start PTT mode on reconnect
-                                        ptt_ready = setup_ptt_tracks(
+                                        ptt_ready = setup_tracks_from_params(
                                             &c,
+                                            &track_params,
                                             &mut ptt_pub_track,
                                             &mut ai_pub_track,
                                             &mut ptt_subscription,
@@ -575,23 +693,76 @@ struct NvsStorage {
     nvs: Option<EspNvs<NvsDefault>>,
     wifi_ssids: heapless::Vec<WifiSsid, MAX_WIFI_SSIDS>,
     relay_url: String,
+    config_url: String,
+    access_token: String,
+    refresh_token: String,
+    language: String,
+    selected_channel: String,
+    config_json: String,
 }
 
 // NVS key names (max 15 chars)
 const NVS_KEY_WIFI_SSIDS: &str = "wifi_ssids";
 const NVS_KEY_RELAY_URL: &str = "relay_url";
+const NVS_KEY_CONFIG_URL: &str = "config_url";
+const NVS_KEY_ACCESS_TOKEN: &str = "access_token";
+const NVS_KEY_REFRESH_TOKEN: &str = "refresh_token";
+const NVS_KEY_LANGUAGE: &str = "language";
+const NVS_KEY_SEL_CHANNEL: &str = "sel_channel";
+const NVS_KEY_CONFIG_JSON: &str = "config_json";
+
+/// Max size for config JSON blob in NVS
+const MAX_CONFIG_JSON_LEN: usize = 20480;
 
 impl NvsStorage {
+    /// Load a UTF-8 string from NVS blob.
+    fn load_string(nvs: &EspNvs<NvsDefault>, key: &str, max_len: usize) -> String {
+        let mut buf = vec![0u8; max_len];
+        match nvs.get_blob(key, &mut buf) {
+            Ok(Some(data)) => {
+                if let Ok(s) = core::str::from_utf8(data) {
+                    info!("net: loaded {} from NVS ({}B)", key, s.len());
+                    return s.to_string();
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!("net: failed to read {} from NVS: {:?}", key, e);
+            }
+        }
+        String::new()
+    }
+
+    /// Save a UTF-8 string to NVS blob, or remove key if empty.
+    fn save_string(
+        nvs: &mut EspNvs<NvsDefault>,
+        key: &str,
+        value: &str,
+    ) -> Result<(), esp_idf_svc::sys::EspError> {
+        if !value.is_empty() {
+            nvs.set_blob(key, value.as_bytes())?;
+        } else {
+            let _ = nvs.remove(key);
+        }
+        Ok(())
+    }
+
     /// Load storage from NVS
     fn load(nvs: Option<EspNvs<NvsDefault>>) -> Self {
         let mut storage = Self {
             nvs,
             wifi_ssids: heapless::Vec::new(),
             relay_url: String::new(),
+            config_url: String::new(),
+            access_token: String::new(),
+            refresh_token: String::new(),
+            language: "en".to_string(),
+            selected_channel: String::new(),
+            config_json: String::new(),
         };
 
-        // Load WiFi SSIDs
         if let Some(ref nvs) = storage.nvs {
+            // Load WiFi SSIDs
             let mut buf = [0u8; 512];
             match nvs.get_blob(NVS_KEY_WIFI_SSIDS, &mut buf) {
                 Ok(Some(data)) => {
@@ -611,27 +782,22 @@ impl NvsStorage {
                 }
             }
 
-            // Load relay URL
-            let mut url_buf = [0u8; MAX_RELAY_URL_LEN];
-            match nvs.get_blob(NVS_KEY_RELAY_URL, &mut url_buf) {
-                Ok(Some(data)) => {
-                    if let Ok(url) = core::str::from_utf8(data) {
-                        storage.relay_url = url.to_string();
-                        info!("net: loaded relay URL from NVS: {}", storage.relay_url);
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    warn!("net: failed to read relay URL from NVS: {:?}", e);
-                }
+            storage.relay_url = Self::load_string(nvs, NVS_KEY_RELAY_URL, MAX_RELAY_URL_LEN);
+            storage.config_url = Self::load_string(nvs, NVS_KEY_CONFIG_URL, MAX_RELAY_URL_LEN);
+            storage.access_token = Self::load_string(nvs, NVS_KEY_ACCESS_TOKEN, 2048);
+            storage.refresh_token = Self::load_string(nvs, NVS_KEY_REFRESH_TOKEN, 2048);
+            let lang = Self::load_string(nvs, NVS_KEY_LANGUAGE, 8);
+            if !lang.is_empty() {
+                storage.language = lang;
             }
-
+            storage.selected_channel = Self::load_string(nvs, NVS_KEY_SEL_CHANNEL, 128);
+            storage.config_json = Self::load_string(nvs, NVS_KEY_CONFIG_JSON, MAX_CONFIG_JSON_LEN);
         }
 
         storage
     }
 
-    /// Save storage to NVS
+    /// Save all storage to NVS.
     fn save(&mut self) -> Result<(), esp_idf_svc::sys::EspError> {
         let Some(ref mut nvs) = self.nvs else {
             warn!("net: NVS not available, cannot save");
@@ -644,16 +810,32 @@ impl NvsStorage {
             info!("net: saved {} WiFi SSIDs to NVS", self.wifi_ssids.len());
         }
 
-        // Save relay URL
-        if !self.relay_url.is_empty() {
-            nvs.set_blob(NVS_KEY_RELAY_URL, self.relay_url.as_bytes())?;
-            info!("net: saved relay URL to NVS");
-        } else {
-            // Remove the key if URL is empty
-            let _ = nvs.remove(NVS_KEY_RELAY_URL);
-        }
+        Self::save_string(nvs, NVS_KEY_RELAY_URL, &self.relay_url)?;
+        Self::save_string(nvs, NVS_KEY_CONFIG_URL, &self.config_url)?;
+        Self::save_string(nvs, NVS_KEY_ACCESS_TOKEN, &self.access_token)?;
+        Self::save_string(nvs, NVS_KEY_REFRESH_TOKEN, &self.refresh_token)?;
+        Self::save_string(nvs, NVS_KEY_LANGUAGE, &self.language)?;
+        Self::save_string(nvs, NVS_KEY_SEL_CHANNEL, &self.selected_channel)?;
+        Self::save_string(nvs, NVS_KEY_CONFIG_JSON, &self.config_json)?;
 
         Ok(())
+    }
+
+    /// Save a single field to NVS without rewriting everything.
+    fn save_field(&mut self, key: &str, value: &str) -> Result<(), esp_idf_svc::sys::EspError> {
+        let Some(ref mut nvs) = self.nvs else {
+            warn!("net: NVS not available, cannot save");
+            return Ok(());
+        };
+        Self::save_string(nvs, key, value)
+    }
+
+    /// Parse stored config_json into DeviceConfig.
+    fn parsed_config(&self) -> Option<DeviceConfig> {
+        if self.config_json.is_empty() {
+            return None;
+        }
+        serde_json::from_str(&self.config_json).ok()
     }
 
     fn add_wifi_ssid(&mut self, ssid: &str, password: &str) -> Result<(), ()> {
@@ -808,7 +990,14 @@ fn main() {
     } else {
         None
     };
-    spawn_moq_task(wifi_config, initial_relay_url, moq_cmd_rx, moq_event_tx);
+
+    // Derive initial track params from stored config (or use defaults)
+    let initial_track_params = storage
+        .parsed_config()
+        .and_then(|cfg| track_params_from_config(&cfg, &storage.language, &storage.selected_channel))
+        .unwrap_or_else(default_track_params);
+
+    spawn_moq_task(wifi_config, initial_relay_url, initial_track_params, moq_cmd_rx, moq_event_tx);
 
     // Loopback mode state
     let mut loopback = NetLoopbackMode::Off;
@@ -1198,6 +1387,134 @@ fn handle_mgmt_message(
                 }
             } else {
                 write_tlv(mgmt_uart, NetToCtl::Error, b"invalid channel");
+            }
+        }
+        CtlToNet::SetConfigUrl => {
+            if let Ok(url) = core::str::from_utf8(value) {
+                storage.config_url = url.to_string();
+                if storage.save_field(NVS_KEY_CONFIG_URL, url).is_ok() {
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
+            }
+        }
+        CtlToNet::SetAccessToken => {
+            if let Ok(token) = core::str::from_utf8(value) {
+                storage.access_token = token.to_string();
+                if storage.save_field(NVS_KEY_ACCESS_TOKEN, token).is_ok() {
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
+            }
+        }
+        CtlToNet::SetRefreshToken => {
+            if let Ok(token) = core::str::from_utf8(value) {
+                storage.refresh_token = token.to_string();
+                if storage.save_field(NVS_KEY_REFRESH_TOKEN, token).is_ok() {
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
+            }
+        }
+        CtlToNet::GetLanguage => {
+            write_tlv(mgmt_uart, NetToCtl::Language, storage.language.as_bytes());
+        }
+        CtlToNet::SetLanguage => {
+            if let Ok(lang) = core::str::from_utf8(value) {
+                if Language::from_str_code(lang).is_some() {
+                    storage.language = lang.to_string();
+                    if storage.save_field(NVS_KEY_LANGUAGE, lang).is_ok() {
+                        // Trigger reconfiguration if we have a config
+                        if let Some(cfg) = storage.parsed_config() {
+                            if let Some(params) = track_params_from_config(
+                                &cfg,
+                                &storage.language,
+                                &storage.selected_channel,
+                            ) {
+                                let _ = moq_cmd_tx.send(MoqCommand::Reconfigure {
+                                    ptt_namespace: params.ptt_namespace,
+                                    ptt_track_name: params.ptt_track_name,
+                                    ai_pub_namespace: params.ai_pub_namespace,
+                                    ai_pub_track_name: params.ai_pub_track_name,
+                                    ai_sub_namespace: params.ai_sub_namespace,
+                                    ai_sub_track_name: params.ai_sub_track_name,
+                                });
+                            }
+                        }
+                        write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                    } else {
+                        write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+                    }
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"invalid language");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
+            }
+        }
+        CtlToNet::GetChannel => {
+            if let Some(cfg) = storage.parsed_config() {
+                // Find the selected channel (or first)
+                let channel = cfg
+                    .channels
+                    .iter()
+                    .find(|c| c.display_name == storage.selected_channel)
+                    .or_else(|| cfg.channels.first());
+                if let Some(ch) = channel {
+                    let json = format!(
+                        "{{\"id\":\"{}\",\"display_name\":\"{}\"}}",
+                        ch.id, ch.display_name
+                    );
+                    write_tlv(mgmt_uart, NetToCtl::ChannelInfo, json.as_bytes());
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"no channels");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"no config");
+            }
+        }
+        CtlToNet::SetChannel => {
+            if let Ok(name) = core::str::from_utf8(value) {
+                if let Some(cfg) = storage.parsed_config() {
+                    if cfg.channels.iter().any(|c| c.display_name == name) {
+                        storage.selected_channel = name.to_string();
+                        if storage.save_field(NVS_KEY_SEL_CHANNEL, name).is_ok() {
+                            // Trigger reconfiguration
+                            if let Some(params) = track_params_from_config(
+                                &cfg,
+                                &storage.language,
+                                &storage.selected_channel,
+                            ) {
+                                let _ = moq_cmd_tx.send(MoqCommand::Reconfigure {
+                                    ptt_namespace: params.ptt_namespace,
+                                    ptt_track_name: params.ptt_track_name,
+                                    ai_pub_namespace: params.ai_pub_namespace,
+                                    ai_pub_track_name: params.ai_pub_track_name,
+                                    ai_sub_namespace: params.ai_sub_namespace,
+                                    ai_sub_track_name: params.ai_sub_track_name,
+                                });
+                            }
+                            write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                        } else {
+                            write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+                        }
+                    } else {
+                        write_tlv(mgmt_uart, NetToCtl::Error, b"channel not found");
+                    }
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"no config");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
             }
         }
     }

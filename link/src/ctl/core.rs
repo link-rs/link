@@ -1087,6 +1087,147 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(stats)
     }
 
+    /// Set config WebSocket URL in NET chip storage.
+    pub async fn set_config_url(&mut self, url: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetConfigUrl, url.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("<invalid utf8>");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Set OAuth access token in NET chip storage.
+    pub async fn set_access_token(&mut self, token: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetAccessToken, token.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("<invalid utf8>");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Set OAuth refresh token in NET chip storage.
+    pub async fn set_refresh_token(&mut self, token: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetRefreshToken, token.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("<invalid utf8>");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get current language from NET chip.
+    pub async fn get_language(&mut self) -> Result<String, CtlError> {
+        self.write_tlv_net(CtlToNet::GetLanguage, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("<invalid utf8>");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Language {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Language",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        let lang = core::str::from_utf8(&tlv.value).map_err(|_| CtlError::InvalidUtf8)?;
+        Ok(lang.into())
+    }
+
+    /// Set language on NET chip.
+    pub async fn set_language(&mut self, lang: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetLanguage, lang.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("<invalid utf8>");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get current channel from NET chip. Returns (id, display_name).
+    pub async fn get_channel(&mut self) -> Result<(String, String), CtlError> {
+        self.write_tlv_net(CtlToNet::GetChannel, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("<invalid utf8>");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::ChannelInfo {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "ChannelInfo",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        // Parse JSON: {"id":"...","display_name":"..."}
+        let json_str = core::str::from_utf8(&tlv.value).map_err(|_| CtlError::InvalidUtf8)?;
+        // Simple manual parse to avoid adding serde_json dependency to link crate
+        let id = Self::extract_json_string(json_str, "id")
+            .ok_or(CtlError::InvalidData)?;
+        let display_name = Self::extract_json_string(json_str, "display_name")
+            .ok_or(CtlError::InvalidData)?;
+        Ok((id, display_name))
+    }
+
+    /// Set channel by display name on NET chip.
+    pub async fn set_channel(&mut self, display_name: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetChannel, display_name.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("<invalid utf8>");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Extract a string value from simple JSON like {"key":"value",...}.
+    fn extract_json_string(json: &str, key: &str) -> Option<String> {
+        let pattern = format!("\"{}\":\"", key);
+        let start = json.find(&pattern)? + pattern.len();
+        let rest = &json[start..];
+        let end = rest.find('"')?;
+        Some(rest[..end].into())
+    }
+
     /// Set NET chip BOOT pin directly.
     pub async fn set_net_boot(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;

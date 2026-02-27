@@ -3,6 +3,9 @@
 #[cfg(feature = "ctl")]
 pub mod chip_config;
 pub mod chunk;
+// Config types - used by net and ctl (requires alloc)
+#[cfg(any(feature = "net", feature = "ctl"))]
+pub mod config;
 #[cfg(feature = "ctl")]
 pub mod protocol_config;
 #[cfg(any(feature = "mgmt", feature = "ui"))]

@@ -208,6 +208,20 @@ pub enum CtlToNet {
     GetLoopback,
     /// Get jitter buffer stats for a channel (value: channel_id u8)
     GetJitterStats,
+    /// Set config WebSocket URL (UTF-8 string)
+    SetConfigUrl,
+    /// Set OAuth access token (UTF-8 string)
+    SetAccessToken,
+    /// Set OAuth refresh token (UTF-8 string)
+    SetRefreshToken,
+    /// Get current language
+    GetLanguage,
+    /// Set language (UTF-8: "en"|"de"|"es"|"hi"|"no")
+    SetLanguage,
+    /// Get current channel
+    GetChannel,
+    /// Set channel by display name (UTF-8 string)
+    SetChannel,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -223,6 +237,10 @@ pub enum NetToCtl {
     Loopback,
     /// Jitter buffer statistics (postcard-serialized JitterStatsInfo)
     JitterStats,
+    /// Current language (UTF-8 string)
+    Language,
+    /// Channel info (UTF-8 JSON: {"id":"...","display_name":"..."})
+    ChannelInfo,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
