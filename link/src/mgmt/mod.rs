@@ -430,8 +430,8 @@ where
             BaudRateChange::None
         }
         CtlToMgmt::SetUiBaudRate => {
-            // Parse 4-byte BE u32 baud rate
-            let baud_rate = u32::from_be_bytes([
+            // Parse 4-byte LE u32 baud rate
+            let baud_rate = u32::from_le_bytes([
                 tlv.value.get(0).copied().unwrap_or(0),
                 tlv.value.get(1).copied().unwrap_or(0),
                 tlv.value.get(2).copied().unwrap_or(0),

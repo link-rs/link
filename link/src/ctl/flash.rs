@@ -179,8 +179,8 @@ impl<P: CtlPort<Error = std::io::Error>> CtlPort for TunnelPort<'_, P> {
             let _ = temp_buf.extend_from_slice(&header);
 
             // Parse header to get length
-            let raw_type = u16::from_be_bytes([header[0], header[1]]);
-            let length = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
+            let raw_type = u16::from_le_bytes([header[0], header[1]]);
+            let length = u32::from_le_bytes([header[2], header[3], header[4], header[5]]) as usize;
 
             if length > MAX_VALUE_SIZE {
                 return Err(IoError::new(
@@ -230,8 +230,8 @@ impl<P: CtlPort<Error = std::io::Error>> CtlPort for TunnelPort<'_, P> {
         // Build complete packet to send atomically
         let mut packet = heapless::Vec::<u8, { SYNC_WORD.len() + 2 + 4 + MAX_VALUE_SIZE }>::new();
         let _ = packet.extend_from_slice(&SYNC_WORD);
-        let _ = packet.extend_from_slice(&tlv_type.to_be_bytes());
-        let _ = packet.extend_from_slice(&(buf.len() as u32).to_be_bytes());
+        let _ = packet.extend_from_slice(&tlv_type.to_le_bytes());
+        let _ = packet.extend_from_slice(&(buf.len() as u32).to_le_bytes());
         let _ = packet.extend_from_slice(buf);
 
         self.port.write_all(&packet).await
@@ -440,8 +440,8 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
         // Build complete packet to send atomically
         let mut packet = heapless::Vec::<u8, { SYNC_WORD.len() + 2 + 4 + MAX_VALUE_SIZE }>::new();
         let _ = packet.extend_from_slice(&SYNC_WORD);
-        let _ = packet.extend_from_slice(&tlv_type.to_be_bytes());
-        let _ = packet.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let _ = packet.extend_from_slice(&tlv_type.to_le_bytes());
+        let _ = packet.extend_from_slice(&(data.len() as u32).to_le_bytes());
         let _ = packet.extend_from_slice(data);
 
         self.port.write_all(&packet).await
@@ -458,8 +458,8 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
         // Build complete packet
         let mut packet = heapless::Vec::<u8, { SYNC_WORD.len() + 2 + 4 + MAX_VALUE_SIZE }>::new();
         let _ = packet.extend_from_slice(&SYNC_WORD);
-        let _ = packet.extend_from_slice(&tlv_type.to_be_bytes());
-        let _ = packet.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        let _ = packet.extend_from_slice(&tlv_type.to_le_bytes());
+        let _ = packet.extend_from_slice(&(value.len() as u32).to_le_bytes());
         let _ = packet.extend_from_slice(value);
 
         self.port.write_all(&packet).await?;

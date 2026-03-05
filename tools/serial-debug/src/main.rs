@@ -23,12 +23,12 @@ struct Cli {
     baud: u32,
 }
 
-/// Build a TLV message: sync word "LINK" + type (2 bytes BE) + length (4 bytes BE) + value.
+/// Build a TLV message: sync word "LINK" + type (2 bytes LE) + length (4 bytes LE) + value.
 fn build_tlv(tlv_type: u16, value: &[u8]) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(b"LINK");
-    msg.extend_from_slice(&tlv_type.to_be_bytes());
-    msg.extend_from_slice(&(value.len() as u32).to_be_bytes());
+    msg.extend_from_slice(&tlv_type.to_le_bytes());
+    msg.extend_from_slice(&(value.len() as u32).to_le_bytes());
     msg.extend_from_slice(value);
     msg
 }
