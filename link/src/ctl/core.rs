@@ -223,8 +223,8 @@ impl<P: CtlPort> CtlCore<P> {
             .map_err(|e| CtlError::Port(format!("{:?}", e)))?;
 
         // Decode header
-        let raw_type = u16::from_be_bytes([header[0], header[1]]);
-        let length = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
+        let raw_type = u16::from_le_bytes([header[0], header[1]]);
+        let length = u32::from_le_bytes([header[2], header[3], header[4], header[5]]) as usize;
 
         // Check type first
         let Ok(tlv_type) = T::try_from(raw_type) else {
@@ -257,8 +257,8 @@ impl<P: CtlPort> CtlCore<P> {
         let total_len = SYNC_WORD.len() + HEADER_SIZE + value.len();
         let mut buf = Vec::new();
         let _ = buf.extend_from_slice(&SYNC_WORD);
-        let _ = buf.extend_from_slice(&type_val.to_be_bytes());
-        let _ = buf.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        let _ = buf.extend_from_slice(&type_val.to_le_bytes());
+        let _ = buf.extend_from_slice(&(value.len() as u32).to_le_bytes());
         let _ = buf.extend_from_slice(value);
 
         debug_assert_eq!(buf.len(), total_len);
@@ -603,7 +603,7 @@ impl<P: CtlPort> CtlCore<P> {
     /// This changes the baud rate between MGMT and UI chips.
     /// The MGMT chip changes both TX and RX baud rates unilaterally.
     pub async fn set_ui_baud_rate(&mut self, baud_rate: u32) -> Result<(), CtlError> {
-        self.write_tlv(CtlToMgmt::SetUiBaudRate, &baud_rate.to_be_bytes())
+        self.write_tlv(CtlToMgmt::SetUiBaudRate, &baud_rate.to_le_bytes())
             .await?;
         let tlv = self.read_tlv_mgmt().await?;
         if tlv.tlv_type != MgmtToCtl::Ack {
@@ -665,7 +665,7 @@ impl<P: CtlPort> CtlCore<P> {
                 actual: tlv.value.len(),
             });
         }
-        Ok(u32::from_be_bytes([
+        Ok(u32::from_le_bytes([
             tlv.value[0],
             tlv.value[1],
             tlv.value[2],
@@ -675,7 +675,7 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Set the version stored in UI chip EEPROM.
     pub async fn set_version(&mut self, version: u32) -> Result<(), CtlError> {
-        self.write_tlv_ui(CtlToUi::SetVersion, &version.to_be_bytes())
+        self.write_tlv_ui(CtlToUi::SetVersion, &version.to_le_bytes())
             .await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
         if tlv.tlv_type != UiToCtl::Ack {

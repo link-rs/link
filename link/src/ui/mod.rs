@@ -400,7 +400,7 @@ async fn handle_mgmt<M, N, I, D, SM>(
                 info!("ui: failed to read version from EEPROM");
                 return;
             };
-            let value = version.to_be_bytes();
+            let value = version.to_le_bytes();
             to_mgmt.must_write_tlv(UiToCtl::Version, &value).await;
         }
         CtlToUi::SetVersion => {
@@ -411,7 +411,7 @@ async fn handle_mgmt<M, N, I, D, SM>(
                 return;
             }
             let version =
-                u32::from_be_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]);
+                u32::from_le_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]);
             let mut eeprom = Eeprom::new(i2c, delay);
             if eeprom.set_version(version).is_err() {
                 info!("ui: failed to write version to EEPROM");
@@ -584,7 +584,8 @@ mod tests {
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, UiToCtl::Version);
-        assert_eq!(to_mgmt.written[0].1, &[0xaa, 0xbb, 0xcc, 0xdd]);
+        // Version 0xaabbccdd sent as little-endian bytes
+        assert_eq!(to_mgmt.written[0].1, &[0xdd, 0xcc, 0xbb, 0xaa]);
     }
 
     #[tokio::test]
@@ -594,9 +595,9 @@ mod tests {
         let mut i2c = mock_i2c_with_eeprom();
         let mut delay = MockDelay;
 
-        // Create SetVersion TLV with version 0x11223344
+        // Create SetVersion TLV with version 0x11223344 (little-endian bytes)
         let mut value: Value = Value::new();
-        value.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]).unwrap();
+        value.extend_from_slice(&[0x44, 0x33, 0x22, 0x11]).unwrap();
         let tlv = Tlv {
             tlv_type: CtlToUi::SetVersion,
             value,

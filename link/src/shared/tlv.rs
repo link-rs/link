@@ -31,8 +31,8 @@ pub const SYNC_WORD: [u8; 4] = [0x4C, 0x49, 0x4E, 0x4B];
 ///
 /// This is the canonical header decoding function used by all modules.
 fn decode_header_bytes(header: &[u8; HEADER_SIZE]) -> (u16, usize) {
-    let raw_type = u16::from_be_bytes([header[0], header[1]]);
-    let length = u32::from_be_bytes([header[2], header[3], header[4], header[5]]);
+    let raw_type = u16::from_le_bytes([header[0], header[1]]);
+    let length = u32::from_le_bytes([header[2], header[3], header[4], header[5]]);
     (raw_type, length as usize)
 }
 
@@ -41,8 +41,8 @@ fn decode_header_bytes(header: &[u8; HEADER_SIZE]) -> (u16, usize) {
 /// This is the canonical header encoding function used by all modules.
 fn encode_header_bytes(tlv_type: u16, length: usize) -> [u8; HEADER_SIZE] {
     let mut header = [0u8; HEADER_SIZE];
-    header[0..2].copy_from_slice(&tlv_type.to_be_bytes());
-    header[2..6].copy_from_slice(&(length as u32).to_be_bytes());
+    header[0..2].copy_from_slice(&tlv_type.to_le_bytes());
+    header[2..6].copy_from_slice(&(length as u32).to_le_bytes());
     header
 }
 
@@ -370,12 +370,12 @@ mod test {
     #[tokio::test]
     async fn encode_tlv_known_answer() {
         // CtlToMgmt::Ping = 0x0000, value = "hi" (2 bytes)
-        // Expected: type=0x0000, length=0x00000002, value=0x68 0x69
+        // Expected: type=0x0000 (LE), length=0x00000002 (LE), value=0x68 0x69
         let encoded = Tlv::encode(CtlToMgmt::Ping, b"hi");
 
         let expected = [
-            0x00, 0x00, // type: CtlToMgmt::Ping = 0x0000
-            0x00, 0x00, 0x00, 0x02, // length: 2
+            0x00, 0x00, // type: CtlToMgmt::Ping = 0x0000 (LE)
+            0x02, 0x00, 0x00, 0x00, // length: 2 (LE)
             0x68, 0x69, // value: "hi"
         ];
         assert_eq!(encoded.as_slice(), &expected);
@@ -439,7 +439,7 @@ mod test {
         writer
             .write_all(&[
                 0xFF, 0xFF, // invalid type
-                0x00, 0x00, 0x00, 0x01, // length: 1
+                0x01, 0x00, 0x00, 0x00, // length: 1 (LE)
                 0x42, // value
             ])
             .await
@@ -464,7 +464,7 @@ mod test {
         writer
             .write_all(&[
                 0x00, 0x00, // type: CtlToMgmt::Ping
-                0x00, 0x00, 0x10, 0x00, // length: 4096 (exceeds MAX_VALUE_SIZE=640)
+                0x00, 0x10, 0x00, 0x00, // length: 4096 (LE, exceeds MAX_VALUE_SIZE=640)
             ])
             .await
             .unwrap();
@@ -508,7 +508,7 @@ mod test {
         let mut data = Vec::new();
         data.extend_from_slice(&SYNC_WORD);
         data.extend_from_slice(&[0x00, 0x00]); // type: CtlToMgmt::Ping
-        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // length: 2
+        data.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]); // length: 2 (LE)
         data.extend_from_slice(b"hi");
 
         let result = try_parse_from_buffer::<CtlToMgmt>(&data).unwrap();
@@ -522,7 +522,7 @@ mod test {
         let mut data = Vec::new();
         data.extend_from_slice(&SYNC_WORD);
         data.extend_from_slice(&[0x00, 0x00]);
-        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // length: 2
+        data.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]); // length: 2 (LE)
         data.push(b'h'); // Only 1 byte of value
 
         let result = try_parse_from_buffer::<CtlToMgmt>(&data).unwrap();
@@ -532,7 +532,7 @@ mod test {
         let mut data = Vec::new();
         data.extend_from_slice(&SYNC_WORD);
         data.extend_from_slice(&[0xFF, 0xFF]); // invalid type
-        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        data.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // length: 1 (LE)
         data.push(0x42);
 
         let result = try_parse_from_buffer::<CtlToMgmt>(&data);
@@ -543,7 +543,7 @@ mod test {
         data.extend_from_slice(b"garbage");
         data.extend_from_slice(&SYNC_WORD);
         data.extend_from_slice(&[0x00, 0x00]);
-        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]);
+        data.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]); // length: 2 (LE)
         data.extend_from_slice(b"hi");
 
         let result = try_parse_from_buffer::<CtlToMgmt>(&data).unwrap();
@@ -560,7 +560,7 @@ mod test {
         let mut data = Vec::new();
         data.extend_from_slice(&SYNC_WORD);
         data.extend_from_slice(&[0x00, 0x00]); // CtlToMgmt::Ping
-        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x03]);
+        data.extend_from_slice(&[0x03, 0x00, 0x00, 0x00]); // length: 3 (LE)
         data.extend_from_slice(b"foo");
 
         let (tlv, consumed) = try_parse_from_buffer::<CtlToMgmt>(&data).unwrap().unwrap();

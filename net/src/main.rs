@@ -1058,8 +1058,8 @@ fn try_read_tlv(
             return None;
         }
 
-        let msg_type = u16::from_be_bytes([buf[4], buf[5]]);
-        let length = u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]) as usize;
+        let msg_type = u16::from_le_bytes([buf[4], buf[5]]);
+        let length = u32::from_le_bytes([buf[6], buf[7], buf[8], buf[9]]) as usize;
 
         if length > MAX_VALUE_SIZE {
             buf.copy_within(4..*pos, 0);
@@ -1091,8 +1091,8 @@ fn write_tlv<T: Into<u16>>(uart: &UartDriver, msg_type: T, value: &[u8]) {
     let mut buf = vec![0u8; total_len];
 
     buf[0..4].copy_from_slice(&SYNC_WORD);
-    buf[4..6].copy_from_slice(&msg_type.to_be_bytes());
-    buf[6..10].copy_from_slice(&(value.len() as u32).to_be_bytes());
+    buf[4..6].copy_from_slice(&msg_type.to_le_bytes());
+    buf[6..10].copy_from_slice(&(value.len() as u32).to_le_bytes());
     if !value.is_empty() {
         buf[10..].copy_from_slice(value);
     }
