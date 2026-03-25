@@ -1171,6 +1171,102 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
+    /// Get NET chip language setting.
+    pub async fn net_get_language(&mut self) -> Result<String, CtlError> {
+        self.write_tlv_net(CtlToNet::GetLanguage, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type != NetToCtl::Language {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Language",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        let lang = core::str::from_utf8(&tlv.value).map_err(|_| CtlError::InvalidUtf8)?;
+        Ok(lang.into())
+    }
+
+    /// Set NET chip language setting.
+    pub async fn net_set_language(&mut self, language: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetLanguage, language.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get NET chip channel configuration.
+    pub async fn net_get_channel(&mut self) -> Result<String, CtlError> {
+        self.write_tlv_net(CtlToNet::GetChannel, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type != NetToCtl::Channel {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Channel",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        let channel = core::str::from_utf8(&tlv.value).map_err(|_| CtlError::InvalidUtf8)?;
+        Ok(channel.into())
+    }
+
+    /// Set NET chip channel configuration.
+    pub async fn net_set_channel(&mut self, channel: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetChannel, channel.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get NET chip AI configuration.
+    pub async fn net_get_ai_config(&mut self) -> Result<String, CtlError> {
+        self.write_tlv_net(CtlToNet::GetAiConfig, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type != NetToCtl::AiConfig {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "AiConfig",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        let config = core::str::from_utf8(&tlv.value).map_err(|_| CtlError::InvalidUtf8)?;
+        Ok(config.into())
+    }
+
+    /// Set NET chip AI configuration.
+    pub async fn net_set_ai_config(&mut self, config: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetAiConfig, config.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Set NET chip BOOT pin directly.
     pub async fn set_net_boot(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;

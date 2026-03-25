@@ -79,6 +79,9 @@ pub async fn handle_net(
             | NetAction::Loopback { .. }
             | NetAction::JitterStats { .. }
             | NetAction::Logs { .. }
+            | NetAction::Language { .. }
+            | NetAction::Channel { .. }
+            | NetAction::AiConfig { .. }
             | NetAction::ClearStorage
     );
 
@@ -427,6 +430,42 @@ pub async fn handle_net(
             LogsAction::Off => {
                 core.net_set_logs_enabled(false).await?;
                 println!("NET logs: off");
+                Ok(())
+            }
+        },
+        NetAction::Language { action } => match action.unwrap_or_default() {
+            GetSetString::Get => {
+                let lang = core.net_get_language().await?;
+                println!("{}", lang);
+                Ok(())
+            }
+            GetSetString::Set { value } => {
+                core.net_set_language(&value).await?;
+                println!("Language set to {}", value);
+                Ok(())
+            }
+        },
+        NetAction::Channel { action } => match action.unwrap_or_default() {
+            GetSetString::Get => {
+                let channel = core.net_get_channel().await?;
+                println!("{}", channel);
+                Ok(())
+            }
+            GetSetString::Set { value } => {
+                core.net_set_channel(&value).await?;
+                println!("Channel set");
+                Ok(())
+            }
+        },
+        NetAction::AiConfig { action } => match action.unwrap_or_default() {
+            GetSetString::Get => {
+                let config = core.net_get_ai_config().await?;
+                println!("{}", config);
+                Ok(())
+            }
+            GetSetString::Set { value } => {
+                core.net_set_ai_config(&value).await?;
+                println!("AI config set");
                 Ok(())
             }
         },

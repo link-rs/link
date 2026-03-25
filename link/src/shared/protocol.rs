@@ -222,6 +222,18 @@ pub enum CtlToNet {
     SetLogsEnabled,
     /// Clear all stored configuration (NVS)
     ClearStorage,
+    /// Get language setting (returns Language)
+    GetLanguage,
+    /// Set language setting (UTF-8 string, e.g. "en-US")
+    SetLanguage,
+    /// Get channel configuration (returns Channel)
+    GetChannel,
+    /// Set channel configuration (JSON array: ["relay","org","channel","ptt"])
+    SetChannel,
+    /// Get AI configuration (returns AiConfig)
+    GetAiConfig,
+    /// Set AI configuration (JSON object: {"query":[...],"audio":[...],"cmd":[...]})
+    SetAiConfig,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -239,6 +251,12 @@ pub enum NetToCtl {
     JitterStats,
     /// Logs enabled state (1 byte: 0=disabled, 1=enabled)
     LogsEnabled,
+    /// Language setting (UTF-8 string)
+    Language,
+    /// Channel configuration (JSON array)
+    Channel,
+    /// AI configuration (JSON object)
+    AiConfig,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

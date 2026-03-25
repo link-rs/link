@@ -460,6 +460,44 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             }
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
+        CtlToNet::GetLanguage => {
+            info!("net: get language");
+            // Stub: return default language "en-US"
+            to_mgmt.must_write_tlv(NetToCtl::Language, b"en-US").await;
+        }
+        CtlToNet::SetLanguage => {
+            let lang = core::str::from_utf8(&tlv.value).unwrap_or("en-US");
+            info!("net: set language = {}", lang);
+            // Stub: no-op, just acknowledge
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
+        }
+        CtlToNet::GetChannel => {
+            info!("net: get channel");
+            // Stub: return empty channel config
+            to_mgmt
+                .must_write_tlv(NetToCtl::Channel, b"[\"\",\"\",\"\",\"\"]")
+                .await;
+        }
+        CtlToNet::SetChannel => {
+            info!("net: set channel");
+            // Stub: no-op, just acknowledge
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
+        }
+        CtlToNet::GetAiConfig => {
+            info!("net: get ai config");
+            // Stub: return empty AI config
+            to_mgmt
+                .must_write_tlv(
+                    NetToCtl::AiConfig,
+                    b"{\"query\":[],\"audio\":[],\"cmd\":[]}",
+                )
+                .await;
+        }
+        CtlToNet::SetAiConfig => {
+            info!("net: set ai config");
+            // Stub: no-op, just acknowledge
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
+        }
     }
 }
 

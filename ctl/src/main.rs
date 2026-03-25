@@ -346,6 +346,25 @@ enum NetAction {
         action: Option<LogsAction>,
     },
 
+    /// Language setting (e.g. "en-US")
+    Language {
+        #[command(subcommand)]
+        action: Option<GetSetString>,
+    },
+
+    /// Channel configuration (JSON array: ["relay","org","channel","ptt"])
+    Channel {
+        #[command(subcommand)]
+        action: Option<GetSetString>,
+    },
+
+    /// AI configuration (JSON object)
+    #[command(name = "ai-config")]
+    AiConfig {
+        #[command(subcommand)]
+        action: Option<GetSetString>,
+    },
+
     /// Clear all stored configuration (NVS)
     #[command(name = "clear-storage")]
     ClearStorage,
