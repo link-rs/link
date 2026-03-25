@@ -234,6 +234,8 @@ pub enum CtlToNet {
     GetAiConfig,
     /// Set AI configuration (JSON object: {"query":[...],"audio":[...],"cmd":[...]})
     SetAiConfig,
+    /// Burn JTAG/USB disable efuse (IRREVERSIBLE!)
+    BurnJtagEfuse,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

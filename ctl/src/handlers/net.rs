@@ -10,6 +10,7 @@ use link::ctl::flash::StdDelay;
 use link::ctl::{ProgressCallbacks, SetTimeout, escape_non_ascii};
 use link::protocol_config::timeouts;
 use link::{ChannelId, NetLoopbackMode, Pin, PinValue};
+use std::io::Write;
 
 /// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
 struct FlashProgress {
@@ -83,6 +84,7 @@ pub async fn handle_net(
             | NetAction::Channel { .. }
             | NetAction::AiConfig { .. }
             | NetAction::ClearStorage
+            | NetAction::BurnJtagEfuse { .. }
     );
 
     if needs_net_firmware {
@@ -473,6 +475,34 @@ pub async fn handle_net(
             core.net_clear_storage().await?;
             println!("NET storage cleared");
             Ok(())
+        }
+        NetAction::BurnJtagEfuse { yes } => {
+            if !yes {
+                println!("WARNING: This operation is IRREVERSIBLE!");
+                println!("It will permanently disable JTAG/USB debugging on this device.");
+                println!("");
+                print!("Type 'BURN' to confirm: ");
+                std::io::stdout().flush()?;
+
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+
+                if input.trim() != "BURN" {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            }
+
+            match core.net_burn_jtag_efuse().await {
+                Ok(()) => {
+                    println!("JTAG/USB disable efuse burned successfully.");
+                    Ok(())
+                }
+                Err(e) => {
+                    println!("Failed to burn efuse: {}", e);
+                    Err(e.into())
+                }
+            }
         }
     }
 }

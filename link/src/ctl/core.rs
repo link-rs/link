@@ -1267,6 +1267,26 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
+    /// Burn JTAG/USB disable efuse on NET chip (IRREVERSIBLE!).
+    ///
+    /// This permanently disables JTAG and USB debugging on the ESP32-S3.
+    /// Use with extreme caution!
+    pub async fn net_burn_jtag_efuse(&mut self) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::BurnJtagEfuse, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Set NET chip BOOT pin directly.
     pub async fn set_net_boot(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;

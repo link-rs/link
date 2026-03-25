@@ -368,6 +368,14 @@ enum NetAction {
     /// Clear all stored configuration (NVS)
     #[command(name = "clear-storage")]
     ClearStorage,
+
+    /// Burn JTAG/USB disable efuse (IRREVERSIBLE!)
+    #[command(name = "burn-jtag-efuse")]
+    BurnJtagEfuse {
+        /// Skip confirmation prompt (dangerous!)
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]

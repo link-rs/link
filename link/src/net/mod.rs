@@ -498,6 +498,13 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             // Stub: no-op, just acknowledge
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
+        CtlToNet::BurnJtagEfuse => {
+            info!("net: burn jtag efuse");
+            // Stub: return error - actual implementation would burn efuse
+            to_mgmt
+                .must_write_tlv(NetToCtl::Error, b"not implemented")
+                .await;
+        }
     }
 }
 
