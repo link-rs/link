@@ -214,8 +214,6 @@ pub enum CtlToNet {
     SetLoopback,
     /// Get loopback mode
     GetLoopback,
-    /// Get jitter buffer stats for a channel (value: channel_id u8)
-    GetJitterStats,
     /// Get logs enabled state (returns LogsEnabled)
     GetLogsEnabled,
     /// Set logs enabled state (1 byte: 0=disabled, 1=enabled)
@@ -249,8 +247,6 @@ pub enum NetToCtl {
     Error,
     /// Loopback mode status (1 byte: NetLoopbackMode - 0=Off, 1=Raw, 2=Moq)
     Loopback,
-    /// Jitter buffer statistics (postcard-serialized JitterStatsInfo)
-    JitterStats,
     /// Logs enabled state (1 byte: 0=disabled, 1=enabled)
     LogsEnabled,
     /// Language setting (UTF-8 string)
@@ -340,38 +336,5 @@ impl core::fmt::Display for JitterState {
             JitterState::Buffering => write!(f, "Buffering"),
             JitterState::Playing => write!(f, "Playing"),
         }
-    }
-}
-
-/// Jitter buffer statistics (wire format, postcard-serialized).
-///
-/// This is the wire-format struct used for TLV communication.
-/// The internal `JitterStats` in jitter_buffer.rs uses `usize` for level
-/// and gets converted to this when serializing for the wire.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct JitterStatsInfo {
-    /// Total frames received.
-    pub received: u32,
-    /// Total frames output.
-    pub output: u32,
-    /// Number of underruns (had to output silence).
-    pub underruns: u32,
-    /// Number of overruns (had to drop frames).
-    pub overruns: u32,
-    /// Current buffer level.
-    pub level: u16,
-    /// Current state.
-    pub state: JitterState,
-}
-
-impl JitterStatsInfo {
-    /// Serialize to postcard into the provided buffer.
-    pub fn to_bytes<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
-        postcard::to_slice(self, buf).ok().map(|s| &*s)
-    }
-    /// Deserialize from postcard bytes.
-    pub fn from_bytes(data: &[u8]) -> Option<Self> {
-        postcard::from_bytes(data).ok()
     }
 }

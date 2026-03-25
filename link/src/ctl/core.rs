@@ -13,8 +13,8 @@ use crate::shared::timing::bootloader::HELLO_TIMEOUT_MS;
 use crate::shared::timing::reset::ESP32_RESET_HOLD_MS;
 use crate::shared::tlv::{buffer, tunnel};
 use crate::shared::{
-    CtlToMgmt, CtlToNet, CtlToUi, HEADER_SIZE, JitterStatsInfo, MAX_VALUE_SIZE, MgmtToCtl,
-    NetLoopbackMode, NetToCtl, SYNC_WORD, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid,
+    CtlToMgmt, CtlToNet, CtlToUi, HEADER_SIZE, MAX_VALUE_SIZE, MgmtToCtl, NetLoopbackMode,
+    NetToCtl, SYNC_WORD, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid,
 };
 
 use super::port::CtlPort;
@@ -1109,21 +1109,6 @@ impl<P: CtlPort> CtlCore<P> {
             });
         }
         Ok(())
-    }
-
-    /// Get jitter buffer statistics for a channel.
-    pub async fn get_jitter_stats(&mut self, channel_id: u8) -> Result<JitterStatsInfo, CtlError> {
-        self.write_tlv_net(CtlToNet::GetJitterStats, &[channel_id])
-            .await?;
-        let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToCtl::JitterStats {
-            return Err(CtlError::UnexpectedResponse {
-                expected: "JitterStats",
-                actual: format!("{:?}", tlv.tlv_type),
-            });
-        }
-        let stats = JitterStatsInfo::from_bytes(&tlv.value).ok_or(CtlError::InvalidData)?;
-        Ok(stats)
     }
 
     /// Get NET chip logs enabled state.

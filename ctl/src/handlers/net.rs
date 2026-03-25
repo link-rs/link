@@ -9,7 +9,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::StdDelay;
 use link::ctl::{ProgressCallbacks, SetTimeout, escape_non_ascii};
 use link::protocol_config::timeouts;
-use link::{ChannelId, NetLoopbackMode, Pin, PinValue};
+use link::{NetLoopbackMode, Pin, PinValue};
 use std::io::Write;
 
 /// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
@@ -78,7 +78,6 @@ pub async fn handle_net(
             | NetAction::Wifi { .. }
             | NetAction::RelayUrl { .. }
             | NetAction::Loopback { .. }
-            | NetAction::JitterStats { .. }
             | NetAction::Logs { .. }
             | NetAction::Language { .. }
             | NetAction::Channel { .. }
@@ -400,23 +399,6 @@ pub async fn handle_net(
             println!("\nMonitor stopped.");
 
             result
-        }
-        NetAction::JitterStats { channel_id } => {
-            let stats = core.get_jitter_stats(channel_id).await?;
-            let channel_name = ChannelId::try_from(channel_id)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|_| "Unknown".to_string());
-            println!(
-                "Jitter buffer stats for channel {} ({}):",
-                channel_id, channel_name
-            );
-            println!("  received:  {}", stats.received);
-            println!("  output:    {}", stats.output);
-            println!("  underruns: {}", stats.underruns);
-            println!("  overruns:  {}", stats.overruns);
-            println!("  level:     {}", stats.level);
-            println!("  state:     {}", stats.state);
-            Ok(())
         }
         NetAction::Logs { action } => match action.unwrap_or_default() {
             LogsAction::Get => {

@@ -333,13 +333,6 @@ enum NetAction {
         reset: bool,
     },
 
-    /// Get jitter buffer statistics for a channel
-    #[command(name = "jitter-stats")]
-    JitterStats {
-        /// Channel ID (0=Ptt, 1=PttAi)
-        channel_id: u8,
-    },
-
     /// Logs enabled control
     Logs {
         #[command(subcommand)]

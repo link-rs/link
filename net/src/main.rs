@@ -19,10 +19,7 @@ use esp_idf_svc::{
     nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
 };
 use link::{
-    net::{
-        JitterBuffer, JitterState, WifiSsid, MAX_RELAY_URL_LEN,
-        MAX_WIFI_SSIDS,
-    },
+    net::{JitterBuffer, JitterState, WifiSsid, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS},
     uart_config, ChannelId, Color, CtlToNet, NetLoopbackMode, NetToCtl, NetToUi, UiToNet,
     HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD,
 };
@@ -625,7 +622,6 @@ impl NvsStorage {
                     warn!("net: failed to read relay URL from NVS: {:?}", e);
                 }
             }
-
         }
 
         storage
@@ -669,7 +665,6 @@ impl NvsStorage {
         self.wifi_ssids.push(wifi).map_err(|_| ())?;
         Ok(())
     }
-
 }
 
 // ============================================================================
@@ -1173,32 +1168,6 @@ fn handle_mgmt_message(
         }
         CtlToNet::GetLoopback => {
             write_tlv(mgmt_uart, NetToCtl::Loopback, &[*loopback as u8]);
-        }
-        CtlToNet::GetJitterStats => {
-            let channel_id = value.first().copied().unwrap_or(0);
-            let stats = match ChannelId::try_from(channel_id) {
-                Ok(ChannelId::Ptt) => Some(ptt_buffer.stats()),
-                Ok(ChannelId::PttAi) => Some(ptt_ai_buffer.stats()),
-                _ => None,
-            };
-            if let Some(s) = stats {
-                let info = link::JitterStatsInfo {
-                    received: s.received as u32,
-                    output: s.output as u32,
-                    underruns: s.underruns as u32,
-                    overruns: s.overruns as u32,
-                    level: s.level as u16,
-                    state: s.state,
-                };
-                let mut buf = [0u8; 64];
-                if let Ok(serialized) = postcard::to_slice(&info, &mut buf) {
-                    write_tlv(mgmt_uart, NetToCtl::JitterStats, serialized);
-                } else {
-                    write_tlv(mgmt_uart, NetToCtl::Error, b"serialize");
-                }
-            } else {
-                write_tlv(mgmt_uart, NetToCtl::Error, b"invalid channel");
-            }
         }
     }
 }

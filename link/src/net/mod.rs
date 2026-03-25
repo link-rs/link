@@ -188,47 +188,16 @@ where
             match select(channel.receive(), ticker.next()).await {
                 Either::First(event) => match event {
                     Event::Mgmt(tlv) => {
-                        // Handle GetJitterStats specially since it needs buffer access
-                        if tlv.tlv_type == CtlToNet::GetJitterStats {
-                            let channel_id = tlv.value.first().copied().unwrap_or(0);
-                            let stats = match ChannelId::try_from(channel_id) {
-                                Ok(ChannelId::Ptt) => Some(ptt_buffer.stats()),
-                                Ok(ChannelId::PttAi) => Some(ptt_ai_buffer.stats()),
-                                _ => None,
-                            };
-                            if let Some(s) = stats {
-                                use crate::shared::JitterStatsInfo;
-                                let info = JitterStatsInfo {
-                                    received: s.received,
-                                    output: s.output,
-                                    underruns: s.underruns,
-                                    overruns: s.overruns,
-                                    level: s.level as u16,
-                                    state: s.state,
-                                };
-                                let mut buf = [0u8; 32];
-                                if let Some(serialized) = info.to_bytes(&mut buf) {
-                                    to_mgmt
-                                        .must_write_tlv(NetToCtl::JitterStats, serialized)
-                                        .await;
-                                }
-                            } else {
-                                to_mgmt
-                                    .must_write_tlv(NetToCtl::Error, b"invalid channel")
-                                    .await;
-                            }
-                        } else {
-                            handle_mgmt(
-                                tlv,
-                                &mut to_mgmt,
-                                &mut to_ui,
-                                &mut storage,
-                                &ws_cmd_tx,
-                                &mut ws_mode,
-                                &mut loopback,
-                            )
-                            .await
-                        }
+                        handle_mgmt(
+                            tlv,
+                            &mut to_mgmt,
+                            &mut to_ui,
+                            &mut storage,
+                            &ws_cmd_tx,
+                            &mut ws_mode,
+                            &mut loopback,
+                        )
+                        .await
                     }
                     Event::Ui(tlv) => {
                         if let Some(audio) =
@@ -429,14 +398,6 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             info!("net: get loopback = {}", *loopback);
             to_mgmt
                 .must_write_tlv(NetToCtl::Loopback, &[*loopback as u8])
-                .await;
-        }
-        CtlToNet::GetJitterStats => {
-            // This is handled in the event loop when ui feature is enabled
-            // Without ui feature, return error
-            info!("net: jitter stats not available (ui feature disabled)");
-            to_mgmt
-                .must_write_tlv(NetToCtl::Error, b"no jitter buffer")
                 .await;
         }
         CtlToNet::GetLogsEnabled => {

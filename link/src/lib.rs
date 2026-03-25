@@ -52,8 +52,8 @@ pub use shared::wifi::WifiSsid;
 
 // Re-export protocol types
 pub use shared::protocol::{
-    ChannelId, CtlToMgmt, CtlToNet, CtlToUi, JitterStatsInfo, MgmtToCtl, NetLoopbackMode, NetToCtl,
-    NetToUi, Pin, PinValue, StackInfo, UiLoopbackMode, UiToCtl, UiToNet,
+    ChannelId, CtlToMgmt, CtlToNet, CtlToUi, MgmtToCtl, NetLoopbackMode, NetToCtl, NetToUi, Pin,
+    PinValue, StackInfo, UiLoopbackMode, UiToCtl, UiToNet,
 };
 
 // Re-export logging macros (crate-internal, no-op when defmt disabled)
