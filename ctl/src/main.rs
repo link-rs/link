@@ -167,6 +167,10 @@ enum UiAction {
         #[command(subcommand)]
         action: Option<LogsAction>,
     },
+
+    /// Clear all stored configuration (EEPROM)
+    #[command(name = "clear-storage")]
+    ClearStorage,
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
@@ -341,6 +345,10 @@ enum NetAction {
         #[command(subcommand)]
         action: Option<LogsAction>,
     },
+
+    /// Clear all stored configuration (NVS)
+    #[command(name = "clear-storage")]
+    ClearStorage,
 }
 
 #[derive(Debug, Clone, Subcommand)]

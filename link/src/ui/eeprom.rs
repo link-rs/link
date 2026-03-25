@@ -62,6 +62,15 @@ where
         self.delay.delay_ns(Self::WRITE_DELAY_NS);
         Ok(())
     }
+
+    /// Clear all stored configuration (reset to factory defaults).
+    ///
+    /// Sets version to 0xFFFFFFFF and SFrame key to all 0xFF.
+    pub fn clear(&mut self) -> Result<(), I::Error> {
+        self.set_version(0xFFFFFFFF)?;
+        self.set_sframe_key(&[0xFF; 16])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

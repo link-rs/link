@@ -495,6 +495,19 @@ async fn handle_mgmt<M, N, I, D, SM>(
             // Stub: no-op, just acknowledge
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
+        CtlToUi::ClearStorage => {
+            info!("ui: clear storage");
+            // Clear all EEPROM-stored configuration
+            let mut eeprom = Eeprom::new(i2c, delay);
+            if eeprom.clear().is_err() {
+                info!("ui: failed to clear EEPROM");
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"eeprom").await;
+                return;
+            }
+            // Reset SFrame state to default key
+            sframe_state.reset(&[0xff; 16], 0);
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
+        }
     }
 }
 

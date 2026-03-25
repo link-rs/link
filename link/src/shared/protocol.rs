@@ -177,6 +177,8 @@ pub enum CtlToUi {
     GetLogsEnabled,
     /// Set logs enabled state (1 byte: 0=disabled, 1=enabled)
     SetLogsEnabled,
+    /// Clear all stored configuration (EEPROM)
+    ClearStorage,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -218,6 +220,8 @@ pub enum CtlToNet {
     GetLogsEnabled,
     /// Set logs enabled state (1 byte: 0=disabled, 1=enabled)
     SetLogsEnabled,
+    /// Clear all stored configuration (NVS)
+    ClearStorage,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

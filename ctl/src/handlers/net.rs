@@ -79,6 +79,7 @@ pub async fn handle_net(
             | NetAction::Loopback { .. }
             | NetAction::JitterStats { .. }
             | NetAction::Logs { .. }
+            | NetAction::ClearStorage
     );
 
     if needs_net_firmware {
@@ -429,5 +430,10 @@ pub async fn handle_net(
                 Ok(())
             }
         },
+        NetAction::ClearStorage => {
+            core.net_clear_storage().await?;
+            println!("NET storage cleared");
+            Ok(())
+        }
     }
 }

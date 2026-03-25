@@ -368,5 +368,10 @@ pub async fn handle_ui(
                 Ok(())
             }
         },
+        UiAction::ClearStorage => {
+            core.ui_clear_storage().await?;
+            println!("UI storage cleared");
+            Ok(())
+        }
     }
 }

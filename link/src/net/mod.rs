@@ -450,6 +450,16 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             // Stub: no-op, just acknowledge
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
+        CtlToNet::ClearStorage => {
+            info!("net: clear storage");
+            storage.clear();
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
+                return;
+            }
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
+        }
     }
 }
 

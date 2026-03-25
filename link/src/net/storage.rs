@@ -148,6 +148,11 @@ where
         self.data.relay_url = String::try_from(url).map_err(|_| ())?;
         Ok(())
     }
+
+    /// Clear all stored configuration (reset to factory defaults).
+    pub fn clear(&mut self) {
+        self.data = NetStorageData::default();
+    }
 }
 
 #[cfg(test)]
