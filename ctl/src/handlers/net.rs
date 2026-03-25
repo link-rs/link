@@ -2,7 +2,7 @@
 
 use super::Core;
 use crate::{
-    GetSetString, NetAction, NetLoopbackAction, PinAction, PinLevel, ResetAction,
+    GetSetString, LogsAction, NetAction, NetLoopbackAction, PinAction, PinLevel, ResetAction,
     WifiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
@@ -78,6 +78,7 @@ pub async fn handle_net(
             | NetAction::RelayUrl { .. }
             | NetAction::Loopback { .. }
             | NetAction::JitterStats { .. }
+            | NetAction::Logs { .. }
     );
 
     if needs_net_firmware {
@@ -145,8 +146,18 @@ pub async fn handle_net(
             );
 
             let (secure_boot, flash_encryption) = link::ctl::interpret_esp32_security(sec);
-            println!("Secure Boot:       {}", if secure_boot { "enabled" } else { "disabled" });
-            println!("Flash Encryption:  {}", if flash_encryption { "enabled" } else { "disabled" });
+            println!(
+                "Secure Boot:       {}",
+                if secure_boot { "enabled" } else { "disabled" }
+            );
+            println!(
+                "Flash Encryption:  {}",
+                if flash_encryption {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
 
             println!("\nNET chip reset back to user mode.");
             println!("Done!");
@@ -258,11 +269,8 @@ pub async fn handle_net(
                 PinLevel::High => PinValue::High,
                 PinLevel::Low => PinValue::Low,
             };
-            core.write_tlv_raw(
-                link::CtlToMgmt::SetPin,
-                &[Pin::NetBoot as u8, value as u8],
-            )
-            .await?;
+            core.write_tlv_raw(link::CtlToMgmt::SetPin, &[Pin::NetBoot as u8, value as u8])
+                .await?;
             println!("NET BOOT: {:?}", value);
             Ok(())
         }
@@ -273,11 +281,8 @@ pub async fn handle_net(
                 PinLevel::High => PinValue::High,
                 PinLevel::Low => PinValue::Low,
             };
-            core.write_tlv_raw(
-                link::CtlToMgmt::SetPin,
-                &[Pin::NetRst as u8, value as u8],
-            )
-            .await?;
+            core.write_tlv_raw(link::CtlToMgmt::SetPin, &[Pin::NetRst as u8, value as u8])
+                .await?;
             println!("NET RST: {:?}", value);
             Ok(())
         }
@@ -407,5 +412,22 @@ pub async fn handle_net(
             println!("  state:     {}", stats.state);
             Ok(())
         }
+        NetAction::Logs { action } => match action.unwrap_or_default() {
+            LogsAction::Get => {
+                let enabled = core.net_get_logs_enabled().await?;
+                println!("{}", if enabled { "on" } else { "off" });
+                Ok(())
+            }
+            LogsAction::On => {
+                core.net_set_logs_enabled(true).await?;
+                println!("NET logs: on");
+                Ok(())
+            }
+            LogsAction::Off => {
+                core.net_set_logs_enabled(false).await?;
+                println!("NET logs: off");
+                Ok(())
+            }
+        },
     }
 }

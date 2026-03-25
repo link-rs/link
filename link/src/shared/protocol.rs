@@ -173,6 +173,10 @@ pub enum CtlToUi {
     GetStackInfo,
     /// Repaint the stack with the paint pattern
     RepaintStack,
+    /// Get logs enabled state (returns LogsEnabled)
+    GetLogsEnabled,
+    /// Set logs enabled state (1 byte: 0=disabled, 1=enabled)
+    SetLogsEnabled,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -190,6 +194,8 @@ pub enum UiToCtl {
     Log,
     /// Stack usage information (postcard-serialized StackInfo)
     StackInfo,
+    /// Logs enabled state (1 byte: 0=disabled, 1=enabled)
+    LogsEnabled,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -208,6 +214,10 @@ pub enum CtlToNet {
     GetLoopback,
     /// Get jitter buffer stats for a channel (value: channel_id u8)
     GetJitterStats,
+    /// Get logs enabled state (returns LogsEnabled)
+    GetLogsEnabled,
+    /// Set logs enabled state (1 byte: 0=disabled, 1=enabled)
+    SetLogsEnabled,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -223,6 +233,8 @@ pub enum NetToCtl {
     Loopback,
     /// Jitter buffer statistics (postcard-serialized JitterStatsInfo)
     JitterStats,
+    /// Logs enabled state (1 byte: 0=disabled, 1=enabled)
+    LogsEnabled,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -278,7 +290,18 @@ impl StackInfo {
 }
 
 /// Jitter buffer state.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive, Serialize, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Debug,
+    Default,
+    IntoPrimitive,
+    TryFromPrimitive,
+    Serialize,
+    Deserialize,
+)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum JitterState {

@@ -8,15 +8,14 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::String;
 
-use crate::shared::{
-    CtlToMgmt, CtlToNet, CtlToUi, JitterStatsInfo, MgmtToCtl, NetLoopbackMode,
-    NetToCtl, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid, HEADER_SIZE, MAX_VALUE_SIZE,
-    SYNC_WORD,
-};
 use crate::shared::protocol_config::retries::MAX_TLV_SKIP;
 use crate::shared::timing::bootloader::HELLO_TIMEOUT_MS;
 use crate::shared::timing::reset::ESP32_RESET_HOLD_MS;
 use crate::shared::tlv::{buffer, tunnel};
+use crate::shared::{
+    CtlToMgmt, CtlToNet, CtlToUi, HEADER_SIZE, JitterStatsInfo, MAX_VALUE_SIZE, MgmtToCtl,
+    NetLoopbackMode, NetToCtl, SYNC_WORD, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid,
+};
 
 use super::port::CtlPort;
 
@@ -422,9 +421,7 @@ impl<P: CtlPort> CtlCore<P> {
                 }
                 Ok(None)
             }
-            Err(buffer::ParseError::InvalidType(raw_type)) => {
-                Err(CtlError::InvalidType(raw_type))
-            }
+            Err(buffer::ParseError::InvalidType(raw_type)) => Err(CtlError::InvalidType(raw_type)),
             Err(buffer::ParseError::TooLong) => {
                 // Invalid length - discard one byte and retry next time
                 buffer.copy_within(1.., 0);
@@ -791,10 +788,39 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
+    /// Get UI chip logs enabled state.
+    pub async fn ui_get_logs_enabled(&mut self) -> Result<bool, CtlError> {
+        self.write_tlv_ui(CtlToUi::GetLogsEnabled, &[]).await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::LogsEnabled {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "LogsEnabled",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        let enabled = tlv.value.first().copied().unwrap_or(0);
+        Ok(enabled != 0)
+    }
+
+    /// Set UI chip logs enabled state.
+    pub async fn ui_set_logs_enabled(&mut self, enabled: bool) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::SetLogsEnabled, &[enabled as u8])
+            .await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Set UI chip BOOT0 pin directly.
     pub async fn set_ui_boot0(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::UiBoot0 as u8, value as u8]).await?;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::UiBoot0 as u8, value as u8])
+            .await?;
         let tlv = self.read_tlv_mgmt().await?;
         if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
@@ -808,7 +834,8 @@ impl<P: CtlPort> CtlCore<P> {
     /// Set UI chip BOOT1 pin directly.
     pub async fn set_ui_boot1(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::UiBoot1 as u8, value as u8]).await?;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::UiBoot1 as u8, value as u8])
+            .await?;
         let tlv = self.read_tlv_mgmt().await?;
         if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
@@ -822,7 +849,8 @@ impl<P: CtlPort> CtlCore<P> {
     /// Set UI chip RST pin directly.
     pub async fn set_ui_rst(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::UiRst as u8, value as u8]).await?;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::UiRst as u8, value as u8])
+            .await?;
         let tlv = self.read_tlv_mgmt().await?;
         if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
@@ -909,10 +937,7 @@ impl<P: CtlPort> CtlCore<P> {
                 match core::str::from_utf8(&tlv.value) {
                     Ok(msg) => return Ok(Some(msg.into())),
                     Err(_) => {
-                        return Ok(Some(format!(
-                            "<invalid utf8: {:?}>",
-                            tlv.value.as_slice()
-                        )))
+                        return Ok(Some(format!("<invalid utf8: {:?}>", tlv.value.as_slice())));
                     }
                 }
             }
@@ -1070,10 +1095,7 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Get jitter buffer statistics for a channel.
-    pub async fn get_jitter_stats(
-        &mut self,
-        channel_id: u8,
-    ) -> Result<JitterStatsInfo, CtlError> {
+    pub async fn get_jitter_stats(&mut self, channel_id: u8) -> Result<JitterStatsInfo, CtlError> {
         self.write_tlv_net(CtlToNet::GetJitterStats, &[channel_id])
             .await?;
         let tlv = self.read_tlv_net().await?;
@@ -1087,10 +1109,39 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(stats)
     }
 
+    /// Get NET chip logs enabled state.
+    pub async fn net_get_logs_enabled(&mut self) -> Result<bool, CtlError> {
+        self.write_tlv_net(CtlToNet::GetLogsEnabled, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type != NetToCtl::LogsEnabled {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "LogsEnabled",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        let enabled = tlv.value.first().copied().unwrap_or(0);
+        Ok(enabled != 0)
+    }
+
+    /// Set NET chip logs enabled state.
+    pub async fn net_set_logs_enabled(&mut self, enabled: bool) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetLogsEnabled, &[enabled as u8])
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Set NET chip BOOT pin directly.
     pub async fn set_net_boot(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetBoot as u8, value as u8]).await?;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetBoot as u8, value as u8])
+            .await?;
         let tlv = self.read_tlv_mgmt().await?;
         if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
@@ -1104,7 +1155,8 @@ impl<P: CtlPort> CtlCore<P> {
     /// Set NET chip RST pin directly.
     pub async fn set_net_rst(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;
-        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, value as u8]).await?;
+        self.write_tlv(CtlToMgmt::SetPin, &[Pin::NetRst as u8, value as u8])
+            .await?;
         let tlv = self.read_tlv_mgmt().await?;
         if tlv.tlv_type != MgmtToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {

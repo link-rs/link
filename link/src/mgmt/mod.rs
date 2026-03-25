@@ -462,7 +462,9 @@ where
             };
             let mut buf = [0u8; 32];
             if let Some(serialized) = info.to_bytes(&mut buf) {
-                to_ctl.must_write_tlv(MgmtToCtl::StackInfo, serialized).await;
+                to_ctl
+                    .must_write_tlv(MgmtToCtl::StackInfo, serialized)
+                    .await;
             }
             BaudRateChange::None
         }

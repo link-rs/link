@@ -161,6 +161,12 @@ enum UiAction {
         #[command(subcommand)]
         action: Option<StackAction>,
     },
+
+    /// Logs enabled control
+    Logs {
+        #[command(subcommand)]
+        action: Option<LogsAction>,
+    },
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
@@ -170,6 +176,17 @@ enum StackAction {
     Info,
     /// Repaint the stack with the known pattern
     Repaint,
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+enum LogsAction {
+    /// Get logs enabled state
+    #[default]
+    Get,
+    /// Enable logs
+    On,
+    /// Disable logs
+    Off,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -317,6 +334,12 @@ enum NetAction {
     JitterStats {
         /// Channel ID (0=Ptt, 1=PttAi)
         channel_id: u8,
+    },
+
+    /// Logs enabled control
+    Logs {
+        #[command(subcommand)]
+        action: Option<LogsAction>,
     },
 }
 

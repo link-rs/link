@@ -1,16 +1,22 @@
 //! UI chip command handlers.
 
 use super::Core;
-use crate::{GetSetHex, GetSetU32, LoopbackAction, PinAction, PinLevel, ResetAction, StackAction, UiAction};
+use crate::{
+    GetSetHex, GetSetU32, LogsAction, LoopbackAction, PinAction, PinLevel, ResetAction,
+    StackAction, UiAction,
+};
 use indicatif::{ProgressBar, ProgressStyle};
-use link::ctl::flash::FlashPhase;
 use link::ctl::SetTimeout;
+use link::ctl::flash::FlashPhase;
 use link::protocol_config::timeouts;
 use link::{PinValue, UiLoopbackMode};
 use std::io::Write;
 use std::time::Duration;
 
-pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn handle_ui(
+    action: UiAction,
+    core: &mut Core,
+) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         UiAction::Ping { data } => {
             println!("Sending UI ping with data: {}", data);
@@ -24,12 +30,16 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             println!("Resetting UI chip to bootloader mode...");
 
             let delay = |ms| tokio::time::sleep(Duration::from_millis(ms));
-            let info = core.get_ui_bootloader_info(delay).await
+            let info = core
+                .get_ui_bootloader_info(delay)
+                .await
                 .map_err(|_| "Failed to get bootloader info")?;
 
             println!(
                 "Bootloader Version: {}.{} (0x{:02X})",
-                info.version_major(), info.version_minor(), info.bootloader_version
+                info.version_major(),
+                info.version_minor(),
+                info.bootloader_version
             );
             println!(
                 "Chip ID: 0x{:04X} ({})",
@@ -101,29 +111,31 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             let mut current_phase = None;
             let delay = |ms| tokio::time::sleep(Duration::from_millis(ms));
             let verify = !no_verify;
-            let result = core.flash_ui(&firmware, delay, verify, |phase, progress, total| {
-                if current_phase != Some(phase) {
-                    current_phase = Some(phase);
-                    match phase {
-                        FlashPhase::Compressing => {}
-                        FlashPhase::Erasing => {
-                            pb.set_style(sectors_style.clone());
-                            pb.set_prefix("Erasing");
+            let result = core
+                .flash_ui(&firmware, delay, verify, |phase, progress, total| {
+                    if current_phase != Some(phase) {
+                        current_phase = Some(phase);
+                        match phase {
+                            FlashPhase::Compressing => {}
+                            FlashPhase::Erasing => {
+                                pb.set_style(sectors_style.clone());
+                                pb.set_prefix("Erasing");
+                            }
+                            FlashPhase::Writing => {
+                                pb.set_style(bytes_style.clone());
+                                pb.set_prefix("Writing");
+                            }
+                            FlashPhase::Verifying => {
+                                pb.set_style(bytes_style.clone());
+                                pb.set_prefix("Verifying");
+                            }
                         }
-                        FlashPhase::Writing => {
-                            pb.set_style(bytes_style.clone());
-                            pb.set_prefix("Writing");
-                        }
-                        FlashPhase::Verifying => {
-                            pb.set_style(bytes_style.clone());
-                            pb.set_prefix("Verifying");
-                        }
+                        pb.set_length(total as u64);
+                        pb.set_position(0);
                     }
-                    pb.set_length(total as u64);
-                    pb.set_position(0);
-                }
-                pb.set_position(progress as u64);
-            }).await;
+                    pb.set_position(progress as u64);
+                })
+                .await;
 
             pb.finish_and_clear();
 
@@ -188,7 +200,9 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                 Ok(())
             }
         },
-        UiAction::Boot0 { action: PinAction::Set { level } } => {
+        UiAction::Boot0 {
+            action: PinAction::Set { level },
+        } => {
             let value = match level {
                 PinLevel::High => PinValue::High,
                 PinLevel::Low => PinValue::Low,
@@ -197,7 +211,9 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             println!("UI BOOT0: {:?}", value);
             Ok(())
         }
-        UiAction::Boot1 { action: PinAction::Set { level } } => {
+        UiAction::Boot1 {
+            action: PinAction::Set { level },
+        } => {
             let value = match level {
                 PinLevel::High => PinValue::High,
                 PinLevel::Low => PinValue::Low,
@@ -206,7 +222,9 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             println!("UI BOOT1: {:?}", value);
             Ok(())
         }
-        UiAction::Rst { action: PinAction::Set { level } } => {
+        UiAction::Rst {
+            action: PinAction::Set { level },
+        } => {
             let value = match level {
                 PinLevel::High => PinValue::High,
                 PinLevel::Low => PinValue::Low,
@@ -248,7 +266,10 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
             println!("Monitoring UI chip logs (ESC to stop)...\n");
 
             // Set a short timeout for non-blocking reads
-            if let Err(e) = core.port_mut().set_timeout(Duration::from_millis(timeouts::MONITOR_MS)) {
+            if let Err(e) = core
+                .port_mut()
+                .set_timeout(Duration::from_millis(timeouts::MONITOR_MS))
+            {
                 eprintln!("Warning: couldn't set timeout: {}", e);
             }
 
@@ -288,13 +309,17 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                         }
                     }
                 }
-            }.await;
+            }
+            .await;
 
             // Always restore terminal mode and timeout
             terminal::disable_raw_mode()?;
 
             // Restore timeout to normal
-            if let Err(e) = core.port_mut().set_timeout(Duration::from_secs(timeouts::NORMAL_SECS)) {
+            if let Err(e) = core
+                .port_mut()
+                .set_timeout(Duration::from_secs(timeouts::NORMAL_SECS))
+            {
                 eprintln!("Warning: couldn't restore timeout: {}", e);
             }
 
@@ -307,14 +332,39 @@ pub async fn handle_ui(action: UiAction, core: &mut Core) -> Result<(), Box<dyn 
                 let info = core.ui_get_stack_info().await?;
                 println!("Stack Base:  0x{:08X}", info.stack_base);
                 println!("Stack Top:   0x{:08X}", info.stack_top);
-                println!("Stack Size:  {} bytes ({:.1} KB)", info.stack_size, info.stack_size as f64 / 1024.0);
-                println!("Stack Used:  {} bytes ({:.1}%)", info.stack_used, info.usage_percent());
+                println!(
+                    "Stack Size:  {} bytes ({:.1} KB)",
+                    info.stack_size,
+                    info.stack_size as f64 / 1024.0
+                );
+                println!(
+                    "Stack Used:  {} bytes ({:.1}%)",
+                    info.stack_used,
+                    info.usage_percent()
+                );
                 println!("Stack Free:  {} bytes", info.stack_free());
                 Ok(())
             }
             StackAction::Repaint => {
                 core.ui_repaint_stack().await?;
                 println!("Stack repainted");
+                Ok(())
+            }
+        },
+        UiAction::Logs { action } => match action.unwrap_or_default() {
+            LogsAction::Get => {
+                let enabled = core.ui_get_logs_enabled().await?;
+                println!("{}", if enabled { "on" } else { "off" });
+                Ok(())
+            }
+            LogsAction::On => {
+                core.ui_set_logs_enabled(true).await?;
+                println!("UI logs: on");
+                Ok(())
+            }
+            LogsAction::Off => {
+                core.ui_set_logs_enabled(false).await?;
+                println!("UI logs: off");
                 Ok(())
             }
         },

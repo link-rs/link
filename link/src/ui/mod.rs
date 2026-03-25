@@ -8,15 +8,15 @@ mod sframe;
 pub use sframe::SFrameState;
 
 pub use audio::{
-    AudioError, AudioSystem, Frame, StereoFrame, ENCODED_FRAME_SIZE, FRAME_SIZE, STEREO_FRAME_SIZE,
+    AudioError, AudioSystem, ENCODED_FRAME_SIZE, FRAME_SIZE, Frame, STEREO_FRAME_SIZE, StereoFrame,
 };
 pub use eeprom::Eeprom;
 pub use log::{LogMessage, LogSender, MAX_LOG_SIZE};
 
 use crate::info;
 use crate::shared::{
-    chunk, read_tlv_loop, Channel, ChannelId, Color, CriticalSectionRawMutex, Led, UiLoopbackMode,
-    CtlToUi, NetToUi, Sender, Tlv, UiToCtl, UiToNet, WriteTlv,
+    Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi, Led, NetToUi, Sender, Tlv,
+    UiLoopbackMode, UiToCtl, UiToNet, WriteTlv, chunk, read_tlv_loop,
 };
 use crate::tlv_log;
 use embedded_hal::delay::DelayNs;
@@ -484,6 +484,17 @@ async fn handle_mgmt<M, N, I, D, SM>(
             stack_monitor.repaint_stack();
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
+        CtlToUi::GetLogsEnabled => {
+            info!("ui: get logs enabled");
+            // Stub: always return enabled (1)
+            to_mgmt.must_write_tlv(UiToCtl::LogsEnabled, &[1]).await;
+        }
+        CtlToUi::SetLogsEnabled => {
+            let enabled = tlv.value.first().copied().unwrap_or(1);
+            info!("ui: set logs enabled = {}", enabled);
+            // Stub: no-op, just acknowledge
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
+        }
     }
 }
 
@@ -513,7 +524,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::mocks::{mock_i2c_with_eeprom, MockDelay};
+    use crate::shared::mocks::{MockDelay, mock_i2c_with_eeprom};
     use crate::shared::{Tlv, Value};
 
     /// Mock writer that captures TLVs
@@ -779,12 +790,12 @@ mod tests {
 #[cfg(test)]
 mod audio_streaming_tests {
     use super::*;
-    use crate::shared::mocks::{
-        mock_i2c_with_eeprom, mock_led_pins, ControllableButton, MockAudioStream, MockButton,
-        MockDelay,
-    };
     use crate::shared::NoOpStackMonitor;
     use crate::shared::ReadTlv;
+    use crate::shared::mocks::{
+        ControllableButton, MockAudioStream, MockButton, MockDelay, mock_i2c_with_eeprom,
+        mock_led_pins,
+    };
     use embedded_io_adapters::futures_03::FromFutures;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -1208,7 +1219,7 @@ mod audio_streaming_tests {
         frame: &crate::ui::Frame,
         sframe: &mut sframe::SFrameState,
     ) -> heapless::Vec<u8, 256> {
-        use crate::shared::{chunk, ChannelId};
+        use crate::shared::{ChannelId, chunk};
 
         // Serialize frame into chunk format
         let mut chunk_buf = [0u8; 200];
@@ -1231,7 +1242,7 @@ mod audio_streaming_tests {
     #[tokio::test]
     async fn net_audio_frame_plays_out() {
         use crate::shared::mocks::CapturingAudioStream;
-        use crate::shared::{WriteTlv, MIN_START_LEVEL};
+        use crate::shared::{MIN_START_LEVEL, WriteTlv};
         use audio_codec_algorithms::{decode_alaw, encode_alaw};
 
         let (ui_to_mgmt, _mgmt_from_ui) = channel();
@@ -1316,7 +1327,7 @@ mod audio_streaming_tests {
     #[tokio::test]
     async fn multiple_net_audio_frames_play_in_order() {
         use crate::shared::mocks::CapturingAudioStream;
-        use crate::shared::{WriteTlv, MIN_START_LEVEL};
+        use crate::shared::{MIN_START_LEVEL, WriteTlv};
         use audio_codec_algorithms::{decode_alaw, encode_alaw};
 
         let (ui_to_mgmt, _mgmt_from_ui) = channel();
