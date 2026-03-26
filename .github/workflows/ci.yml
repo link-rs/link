@@ -52,6 +52,8 @@ jobs:
           curl -L https://github.com/esp-rs/espup/releases/latest/download/espup-x86_64-unknown-linux-gnu -o espup
           chmod +x espup
           ./espup install
+          # Add espup environment to GITHUB_ENV for subsequent steps
+          cat $HOME/export-esp.sh >> $GITHUB_ENV
 
       - name: Install Rust toolchain
         if: ${{ !matrix.espup }}
@@ -66,11 +68,7 @@ jobs:
 
       - name: Format
         shell: bash
-        run: |
-          if [[ "${{ matrix.espup }}" == "true" ]]; then
-            source $HOME/export-esp.sh
-          fi
-          cargo fmt --manifest-path ${{ matrix.crate }}/Cargo.toml -- --check
+        run: cargo fmt --manifest-path ${{ matrix.crate }}/Cargo.toml -- --check
 
       - name: Clippy
         if: ${{ !matrix.skip-clippy }}
@@ -86,10 +84,6 @@ jobs:
         if: ${{ !matrix.wasm-pack }}
         shell: bash
         run: |
-          if [[ "${{ matrix.espup }}" == "true" ]]; then
-            source $HOME/export-esp.sh
-            echo "Using Rust from: $(which rustc)"
-          fi
           cargo build --manifest-path ${{ matrix.crate }}/Cargo.toml \
             ${{ matrix.target != 'x86_64-unknown-linux-gnu' && format('--target {0}', matrix.target) || '' }} \
             ${{ matrix.features || '' }} \
