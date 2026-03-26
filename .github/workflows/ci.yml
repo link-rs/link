@@ -65,24 +65,26 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Format
+        shell: bash
         run: |
-          ${{ matrix.espup && '. $HOME/export-esp.sh &&' || '' }} \
+          [[ "${{ matrix.espup }}" == "true" ]] && source $HOME/export-esp.sh
           cargo fmt --manifest-path ${{ matrix.crate }}/Cargo.toml -- --check
 
       - name: Clippy
         if: ${{ !matrix.skip-clippy }}
+        shell: bash
         env:
           RUSTFLAGS: ${{ matrix.rustflags || '' }}
         run: |
-          ${{ matrix.espup && '. $HOME/export-esp.sh &&' || '' }} \
           cargo clippy --manifest-path ${{ matrix.crate }}/Cargo.toml \
             ${{ matrix.target != 'x86_64-unknown-linux-gnu' && format('--target {0}', matrix.target) || '' }} \
             ${{ matrix.features || '' }}
 
       - name: Build
         if: ${{ !matrix.wasm-pack }}
+        shell: bash
         run: |
-          ${{ matrix.espup && '. $HOME/export-esp.sh &&' || '' }} \
+          [[ "${{ matrix.espup }}" == "true" ]] && source $HOME/export-esp.sh
           cargo build --manifest-path ${{ matrix.crate }}/Cargo.toml \
             ${{ matrix.target != 'x86_64-unknown-linux-gnu' && format('--target {0}', matrix.target) || '' }} \
             ${{ matrix.features || '' }} \
