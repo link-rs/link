@@ -27,6 +27,7 @@ jobs:
           - crate: web-ctl
             target: wasm32-unknown-unknown
             wasm-pack: true
+            rustflags: "--cfg=web_sys_unstable_apis"
           - crate: mgmt
             target: thumbv6m-none-eabi
             release: true
@@ -50,8 +51,6 @@ jobs:
           curl -L https://github.com/esp-rs/espup/releases/latest/download/espup-x86_64-unknown-linux-gnu -o espup
           chmod +x espup
           ./espup install
-          # Extract environment variables from export-esp.sh
-          grep -E '^export ' $HOME/export-esp.sh | sed 's/^export //' >> $GITHUB_ENV
 
       - name: Install Rust toolchain
         if: ${{ !matrix.espup }}
@@ -65,10 +64,15 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Format
-        run: cargo fmt --manifest-path ${{ matrix.crate }}/Cargo.toml -- --check
+        run: |
+          ${{ matrix.espup && '. $HOME/export-esp.sh &&' || '' }} \
+          cargo fmt --manifest-path ${{ matrix.crate }}/Cargo.toml -- --check
 
       - name: Clippy
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags || '' }}
         run: |
+          ${{ matrix.espup && '. $HOME/export-esp.sh &&' || '' }} \
           cargo clippy --manifest-path ${{ matrix.crate }}/Cargo.toml \
             ${{ matrix.target != 'x86_64-unknown-linux-gnu' && format('--target {0}', matrix.target) || '' }} \
             ${{ matrix.features || '' }}
@@ -76,6 +80,7 @@ jobs:
       - name: Build
         if: ${{ !matrix.wasm-pack }}
         run: |
+          ${{ matrix.espup && '. $HOME/export-esp.sh &&' || '' }} \
           cargo build --manifest-path ${{ matrix.crate }}/Cargo.toml \
             ${{ matrix.target != 'x86_64-unknown-linux-gnu' && format('--target {0}', matrix.target) || '' }} \
             ${{ matrix.features || '' }} \
