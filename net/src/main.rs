@@ -19,10 +19,7 @@ use esp_idf_svc::{
     nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
 };
 use link::{
-    net::{
-        JitterBuffer, JitterState, WifiSsid, MAX_RELAY_URL_LEN,
-        MAX_WIFI_SSIDS,
-    },
+    net::{JitterBuffer, JitterState, WifiSsid, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS},
     uart_config, ChannelId, Color, CtlToNet, NetLoopbackMode, NetToCtl, NetToUi, UiToNet,
     HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD,
 };
@@ -625,7 +622,6 @@ impl NvsStorage {
                     warn!("net: failed to read relay URL from NVS: {:?}", e);
                 }
             }
-
         }
 
         storage
@@ -669,7 +665,6 @@ impl NvsStorage {
         self.wifi_ssids.push(wifi).map_err(|_| ())?;
         Ok(())
     }
-
 }
 
 // ============================================================================
