@@ -34,4 +34,3 @@ pub mod bootloader {
     /// Maximum time to wait for bootloader ready (polling timeout)
     pub const MAX_WAIT_MS: u64 = 2000;
 }
-

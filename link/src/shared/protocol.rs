@@ -278,7 +278,18 @@ impl StackInfo {
 }
 
 /// Jitter buffer state.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive, Serialize, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Debug,
+    Default,
+    IntoPrimitive,
+    TryFromPrimitive,
+    Serialize,
+    Deserialize,
+)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum JitterState {

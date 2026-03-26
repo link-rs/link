@@ -192,7 +192,9 @@ impl LinkController {
             .map_err(|e| JsValue::from_str(&format!("Invalid hex string: {}", e)))?;
 
         let core = self.core_mut()?;
-        core.set_sframe_key(&key_bytes).await.map_err(ctl_error_to_js)
+        core.set_sframe_key(&key_bytes)
+            .await
+            .map_err(ctl_error_to_js)
     }
 
     /// Get the relay URL from NET chip storage.
@@ -609,7 +611,9 @@ impl LinkController {
         // Set short timeout for probing
         let _ = core
             .port_mut()
-            .set_timeout(std::time::Duration::from_millis(timeouts::BOOTLOADER_PROBE_MS));
+            .set_timeout(std::time::Duration::from_millis(
+                timeouts::BOOTLOADER_PROBE_MS,
+            ));
 
         let result = core
             .try_enter_mgmt_bootloader(|ms| js_sleep(ms as u32))
@@ -659,15 +663,20 @@ impl LinkController {
         let firmware_data = firmware.to_vec();
         let core = self.core_mut()?;
 
-        core.flash_mgmt(&firmware_data, skip_init, |phase, current, total| {
-            let phase_str = phase.to_string();
-            let _ = progress_callback.call3(
-                &JsValue::NULL,
-                &JsValue::from_str(&phase_str),
-                &JsValue::from(current as u32),
-                &JsValue::from(total as u32),
-            );
-        }, |ms| js_sleep(ms as u32))
+        core.flash_mgmt(
+            &firmware_data,
+            skip_init,
+            |phase, current, total| {
+                let phase_str = phase.to_string();
+                let _ = progress_callback.call3(
+                    &JsValue::NULL,
+                    &JsValue::from_str(&phase_str),
+                    &JsValue::from(current as u32),
+                    &JsValue::from(total as u32),
+                );
+            },
+            |ms| js_sleep(ms as u32),
+        )
         .await
         .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
@@ -687,15 +696,20 @@ impl LinkController {
         let firmware_data = firmware.to_vec();
         let core = self.core_mut()?;
 
-        core.flash_mgmt(&firmware_data, false, |phase, current, total| {
-            let phase_str = phase.to_string();
-            let _ = progress_callback.call3(
-                &JsValue::NULL,
-                &JsValue::from_str(&phase_str),
-                &JsValue::from(current as u32),
-                &JsValue::from(total as u32),
-            );
-        }, |ms| js_sleep(ms as u32))
+        core.flash_mgmt(
+            &firmware_data,
+            false,
+            |phase, current, total| {
+                let phase_str = phase.to_string();
+                let _ = progress_callback.call3(
+                    &JsValue::NULL,
+                    &JsValue::from_str(&phase_str),
+                    &JsValue::from(current as u32),
+                    &JsValue::from(total as u32),
+                );
+            },
+            |ms| js_sleep(ms as u32),
+        )
         .await
         .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
@@ -829,7 +843,8 @@ impl LinkController {
         }
 
         // Security info
-        let (secure_boot, flash_encryption) = link::ctl::interpret_esp32_security(&info.security_info);
+        let (secure_boot, flash_encryption) =
+            link::ctl::interpret_esp32_security(&info.security_info);
         js_sys::Reflect::set(&obj, &"secureBoot".into(), &secure_boot.into())?;
         js_sys::Reflect::set(&obj, &"flashEncryption".into(), &flash_encryption.into())?;
 
@@ -918,9 +933,15 @@ impl LinkController {
             total: 0,
             verifying: false,
         };
-        core.flash_net(&elf_bytes, partition_table_bytes.as_deref(), &mut progress, JsDelay, link::uart_config::HIGH_SPEED.baudrate)
-            .await
-            .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
+        core.flash_net(
+            &elf_bytes,
+            partition_table_bytes.as_deref(),
+            &mut progress,
+            JsDelay,
+            link::uart_config::HIGH_SPEED.baudrate,
+        )
+        .await
+        .map_err(|e| JsValue::from_str(&format!("Flash error: {:?}", e)))
     }
 
     /// Erase the entire NET chip (ESP32) flash.

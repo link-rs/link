@@ -8,8 +8,8 @@
 extern crate alloc;
 
 // Core async implementation (available with ctl-core feature)
-pub mod port;
 pub mod core;
+pub mod port;
 
 // Re-export core types
 pub use self::core::{CtlCore, CtlError, escape_non_ascii};

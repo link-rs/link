@@ -36,22 +36,21 @@ pub mod stm32 {
 
         /// Flash sector sizes (sectors 0-11)
         pub const SECTOR_SIZES: [usize; 12] = [
-            16 * KB,   // Sector 0
-            16 * KB,   // Sector 1
-            16 * KB,   // Sector 2
-            16 * KB,   // Sector 3
-            64 * KB,   // Sector 4
-            128 * KB,  // Sector 5
-            128 * KB,  // Sector 6
-            128 * KB,  // Sector 7
-            128 * KB,  // Sector 8
-            128 * KB,  // Sector 9
-            128 * KB,  // Sector 10
-            128 * KB,  // Sector 11
+            16 * KB,  // Sector 0
+            16 * KB,  // Sector 1
+            16 * KB,  // Sector 2
+            16 * KB,  // Sector 3
+            64 * KB,  // Sector 4
+            128 * KB, // Sector 5
+            128 * KB, // Sector 6
+            128 * KB, // Sector 7
+            128 * KB, // Sector 8
+            128 * KB, // Sector 9
+            128 * KB, // Sector 10
+            128 * KB, // Sector 11
         ];
     }
 }
-
 
 /// TLV protocol buffer constants
 pub mod tlv {

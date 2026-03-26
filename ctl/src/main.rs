@@ -95,9 +95,7 @@ enum MgmtAction {
     /// Get MGMT chip firmware info
     Info,
     /// Flash firmware to the MGMT chip
-    Flash {
-        file: std::path::PathBuf,
-    },
+    Flash { file: std::path::PathBuf },
     /// Stack usage measurement
     Stack {
         #[command(subcommand)]
@@ -224,9 +222,7 @@ enum GetSetU32 {
     #[default]
     Get,
     /// Set a new value
-    Set {
-        value: u32,
-    },
+    Set { value: u32 },
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
@@ -235,9 +231,7 @@ enum GetSetHex {
     #[default]
     Get,
     /// Set a new hex value
-    Set {
-        value: String,
-    },
+    Set { value: String },
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
@@ -259,9 +253,7 @@ enum GetSetString {
     #[default]
     Get,
     /// Set a new value
-    Set {
-        value: String,
-    },
+    Set { value: String },
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]

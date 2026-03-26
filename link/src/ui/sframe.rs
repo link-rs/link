@@ -9,7 +9,10 @@ use aes_gcm::{
     aead::{AeadInPlace, Buffer, KeyInit},
 };
 use heapless::Vec;
-use hkdf::{Hkdf, hmac::{Hmac, Mac}};
+use hkdf::{
+    Hkdf,
+    hmac::{Hmac, Mac},
+};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;

@@ -735,5 +735,3 @@ pub fn ctl_async_channel() -> (MockCtlPort, (AsyncReader, AsyncWriter)) {
 
     (ctl_port, mgmt_end)
 }
-
-
