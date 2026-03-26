@@ -10,61 +10,111 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  fmt:
-    name: Format
+  link:
+    name: link
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - name: Check formatting (link)
+          components: rustfmt, clippy
+      - name: Format
         run: cargo fmt --manifest-path link/Cargo.toml -- --check
-      - name: Check formatting (ctl)
-        run: cargo fmt --manifest-path ctl/Cargo.toml -- --check
-      - name: Check formatting (web-ctl)
-        run: cargo fmt --manifest-path web-ctl/Cargo.toml -- --check
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - name: Clippy (link with std)
+      - name: Clippy
         run: cargo clippy --manifest-path link/Cargo.toml --features std
-      - name: Clippy (ctl)
-        run: cargo clippy --manifest-path ctl/Cargo.toml
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Run tests (link)
+      - name: Build
+        run: cargo build --manifest-path link/Cargo.toml --features std
+      - name: Test
         run: cargo test --manifest-path link/Cargo.toml --features std
 
-  build:
-    name: Build
+  ctl:
+    name: ctl
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libudev-dev
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build (link with std)
-        run: cargo build --manifest-path link/Cargo.toml --features std
-      - name: Build (ctl)
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --manifest-path ctl/Cargo.toml -- --check
+      - name: Clippy
+        run: cargo clippy --manifest-path ctl/Cargo.toml
+      - name: Build
         run: cargo build --manifest-path ctl/Cargo.toml
 
-  # Firmware builds require special toolchains and are not yet automated.
-  # - mgmt: thumbv6m-none-eabi (STM32F072)
-  # - ui: thumbv7em-none-eabihf (STM32F405)
-  # - net: xtensa-esp32s3-none-elf (ESP32-S3, requires espup)
+  web-ctl:
+    name: web-ctl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Format
+        run: cargo fmt --manifest-path web-ctl/Cargo.toml -- --check
+      - name: Clippy
+        run: cargo clippy --manifest-path web-ctl/Cargo.toml --target wasm32-unknown-unknown
+      - name: Build
+        run: wasm-pack build web-ctl --target web --out-dir www/pkg
+
+  mgmt:
+    name: mgmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv6m-none-eabi
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --manifest-path mgmt/Cargo.toml -- --check
+      - name: Clippy
+        run: cargo clippy --manifest-path mgmt/Cargo.toml --target thumbv6m-none-eabi
+      - name: Build
+        run: cargo build --manifest-path mgmt/Cargo.toml --target thumbv6m-none-eabi --release
+
+  ui:
+    name: ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --manifest-path ui/Cargo.toml -- --check
+      - name: Clippy
+        run: cargo clippy --manifest-path ui/Cargo.toml --target thumbv7em-none-eabihf
+      - name: Build
+        run: cargo build --manifest-path ui/Cargo.toml --target thumbv7em-none-eabihf --release
+
+  net:
+    name: net
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install espup
+        run: |
+          curl -L https://github.com/esp-rs/espup/releases/latest/download/espup-x86_64-unknown-linux-gnu -o espup
+          chmod +x espup
+          ./espup install
+      - name: Format
+        run: |
+          source ~/export-esp.sh
+          cargo fmt --manifest-path net/Cargo.toml -- --check
+      - name: Clippy
+        run: |
+          source ~/export-esp.sh
+          cargo clippy --manifest-path net/Cargo.toml
+      - name: Build
+        run: |
+          source ~/export-esp.sh
+          cargo build --manifest-path net/Cargo.toml --release
