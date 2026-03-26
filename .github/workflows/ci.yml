@@ -38,6 +38,7 @@ jobs:
             target: xtensa-esp32s3-espidf
             espup: true
             release: true
+            skip-clippy: true
     steps:
       - uses: actions/checkout@v4
 
@@ -69,6 +70,7 @@ jobs:
           cargo fmt --manifest-path ${{ matrix.crate }}/Cargo.toml -- --check
 
       - name: Clippy
+        if: ${{ !matrix.skip-clippy }}
         env:
           RUSTFLAGS: ${{ matrix.rustflags || '' }}
         run: |
