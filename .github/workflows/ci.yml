@@ -67,7 +67,9 @@ jobs:
       - name: Format
         shell: bash
         run: |
-          [[ "${{ matrix.espup }}" == "true" ]] && source $HOME/export-esp.sh
+          if [[ "${{ matrix.espup }}" == "true" ]]; then
+            source $HOME/export-esp.sh
+          fi
           cargo fmt --manifest-path ${{ matrix.crate }}/Cargo.toml -- --check
 
       - name: Clippy
@@ -84,7 +86,10 @@ jobs:
         if: ${{ !matrix.wasm-pack }}
         shell: bash
         run: |
-          [[ "${{ matrix.espup }}" == "true" ]] && source $HOME/export-esp.sh
+          if [[ "${{ matrix.espup }}" == "true" ]]; then
+            source $HOME/export-esp.sh
+            echo "Using Rust from: $(which rustc)"
+          fi
           cargo build --manifest-path ${{ matrix.crate }}/Cargo.toml \
             ${{ matrix.target != 'x86_64-unknown-linux-gnu' && format('--target {0}', matrix.target) || '' }} \
             ${{ matrix.features || '' }} \
