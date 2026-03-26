@@ -3,16 +3,18 @@
 //! This module provides async flashing methods for CtlCore. It requires the `ctl` feature.
 
 use super::core::CtlCore;
-use espflash::connection::{ClearBufferType, SerialInterface, SerialPortError};
 use super::port::{CtlPort, SetBaudRate, SetTimeout};
 use super::stm::{self, Bootloader};
-use crate::shared::{CtlToMgmt, MgmtToCtl, HEADER_SIZE, MAX_VALUE_SIZE, SYNC_WORD};
-use crate::shared::chip_config::stm32::f405::{SECTOR_SIZES, VERIFY_CHUNK_SIZE, FLASH_BASE};
+use crate::shared::chip_config::stm32::f072::{
+    FLASH_BASE as F072_FLASH_BASE, PAGE_SIZE, WRITE_CHUNK_SIZE as F072_WRITE_CHUNK_SIZE,
+};
 use crate::shared::chip_config::stm32::f405::WRITE_CHUNK_SIZE as F405_WRITE_CHUNK_SIZE;
-use crate::shared::chip_config::stm32::f072::{PAGE_SIZE, WRITE_CHUNK_SIZE as F072_WRITE_CHUNK_SIZE, FLASH_BASE as F072_FLASH_BASE};
+use crate::shared::chip_config::stm32::f405::{FLASH_BASE, SECTOR_SIZES, VERIFY_CHUNK_SIZE};
 use crate::shared::chip_config::tlv::PADDING_BYTES;
 use crate::shared::tlv::buffer;
 use crate::shared::uart_config;
+use crate::shared::{CtlToMgmt, HEADER_SIZE, MAX_VALUE_SIZE, MgmtToCtl, SYNC_WORD};
+use espflash::connection::{ClearBufferType, SerialInterface, SerialPortError};
 use std::io::{Error as IoError, ErrorKind};
 use std::time::Duration;
 
@@ -44,17 +46,20 @@ impl MgmtBootloaderInfo {
 
     /// Initial stack pointer from the vector table, if flash sample is available.
     pub fn sp(&self) -> Option<u32> {
-        self.flash_sample.map(|f| u32::from_le_bytes([f[0], f[1], f[2], f[3]]))
+        self.flash_sample
+            .map(|f| u32::from_le_bytes([f[0], f[1], f[2], f[3]]))
     }
 
     /// Reset handler address from the vector table, if flash sample is available.
     pub fn reset_handler(&self) -> Option<u32> {
-        self.flash_sample.map(|f| u32::from_le_bytes([f[4], f[5], f[6], f[7]]))
+        self.flash_sample
+            .map(|f| u32::from_le_bytes([f[4], f[5], f[6], f[7]]))
     }
 
     /// Whether the initial SP appears valid (points to SRAM).
     pub fn sp_valid(&self) -> bool {
-        self.sp().map_or(false, |sp| (0x2000_0000..0x2002_0000).contains(&sp))
+        self.sp()
+            .map_or(false, |sp| (0x2000_0000..0x2002_0000).contains(&sp))
     }
 
     /// Whether the reset handler appears valid (points to Flash, Thumb mode).
@@ -152,7 +157,8 @@ impl<P: CtlPort<Error = std::io::Error>> CtlPort for TunnelPort<'_, P> {
         while self.buffer.is_empty() {
             // Read a complete TLV from the port
             // We need to accumulate bytes into a temporary buffer for parsing
-            let mut temp_buf = heapless::Vec::<u8, { SYNC_WORD.len() + HEADER_SIZE + MAX_VALUE_SIZE }>::new();
+            let mut temp_buf =
+                heapless::Vec::<u8, { SYNC_WORD.len() + HEADER_SIZE + MAX_VALUE_SIZE }>::new();
 
             // Scan for sync word
             let mut matched = 0usize;
@@ -183,19 +189,13 @@ impl<P: CtlPort<Error = std::io::Error>> CtlPort for TunnelPort<'_, P> {
             let length = u32::from_le_bytes([header[2], header[3], header[4], header[5]]) as usize;
 
             if length > MAX_VALUE_SIZE {
-                return Err(IoError::new(
-                    ErrorKind::InvalidData,
-                    "TLV too long",
-                ));
+                return Err(IoError::new(ErrorKind::InvalidData, "TLV too long"));
             }
 
             // Read value
             let mut value = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
             if value.resize(length, 0).is_err() {
-                return Err(IoError::new(
-                    ErrorKind::InvalidData,
-                    "TLV too long",
-                ));
+                return Err(IoError::new(ErrorKind::InvalidData, "TLV too long"));
             }
             self.port.read_exact(&mut value).await?;
 
@@ -246,10 +246,7 @@ impl<P: CtlPort<Error = std::io::Error>> CtlPort for TunnelPort<'_, P> {
         while filled < buf.len() {
             let n = self.read(&mut buf[filled..]).await?;
             if n == 0 {
-                return Err(IoError::new(
-                    ErrorKind::UnexpectedEof,
-                    "unexpected EOF",
-                ));
+                return Err(IoError::new(ErrorKind::UnexpectedEof, "unexpected EOF"));
             }
             filled += n;
         }
@@ -326,7 +323,7 @@ impl<P, D> TunnelSerialInterface<P, D> {
             delay,
             raw_buffer: heapless::Vec::new(),
             buffer: heapless::Vec::new(),
-            timeout: Duration::from_secs(30),  // Increased for large flash operations
+            timeout: Duration::from_secs(30), // Increased for large flash operations
             baud_rate,
         }
     }
@@ -465,7 +462,6 @@ impl<P: CtlPort<Error = std::io::Error>, D: AsyncDelay> TunnelSerialInterface<P,
         self.port.write_all(&packet).await?;
         self.port.flush().await
     }
-
 }
 
 impl<P: CtlPort<Error = std::io::Error> + SetTimeout + SetBaudRate + 'static, D: AsyncDelay>
@@ -642,7 +638,10 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         P: crate::ctl::SetBaudRate,
     {
         // Set to bootloader baud rate
-        let _ = self.port_mut().set_baud_rate(uart_config::STM32_BOOTLOADER.baudrate).await;
+        let _ = self
+            .port_mut()
+            .set_baud_rate(uart_config::STM32_BOOTLOADER.baudrate)
+            .await;
 
         self.drain();
 
@@ -663,7 +662,7 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         // Poll for bootloader ready (up to 2 seconds)
         // Track elapsed time via delay count instead of std::time::Instant,
         // which is not available on wasm32-unknown-unknown.
-        use crate::timing::bootloader::{PROBE_RETRY_INTERVAL_MS, MAX_WAIT_MS};
+        use crate::timing::bootloader::{MAX_WAIT_MS, PROBE_RETRY_INTERVAL_MS};
         let mut elapsed_ms: u64 = 0;
         loop {
             // Probe for bootloader. This consumes the init byte (0x7F → ACK),
@@ -709,7 +708,6 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
             Err(_) => false,
         }
     }
-
 
     /// Exit the MGMT bootloader and return to user code.
     ///
@@ -804,7 +802,10 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         P: crate::ctl::SetTimeout + crate::ctl::SetBaudRate,
     {
         // Switch to bootloader baud rate BEFORE any bootloader interaction
-        let _ = self.port_mut().set_baud_rate(uart_config::STM32_BOOTLOADER.baudrate).await;
+        let _ = self
+            .port_mut()
+            .set_baud_rate(uart_config::STM32_BOOTLOADER.baudrate)
+            .await;
 
         // Perform the flash operation, capturing the result
         let result = async {
@@ -878,7 +879,10 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         .await;
 
         // Always restore CTL-MGMT UART to normal operation baud rate (1000000)
-        let _ = self.port_mut().set_baud_rate(uart_config::HIGH_SPEED.baudrate).await;
+        let _ = self
+            .port_mut()
+            .set_baud_rate(uart_config::HIGH_SPEED.baudrate)
+            .await;
 
         // On success, do a hardware reset to ensure peripherals are properly initialized
         if result.is_ok() {
@@ -915,7 +919,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         F: core::future::Future<Output = ()>,
     {
         // Switch MGMT-UI UART to bootloader baud rate (115200)
-        let _ = self.set_ui_baud_rate(uart_config::STM32_BOOTLOADER.baudrate).await;
+        let _ = self
+            .set_ui_baud_rate(uart_config::STM32_BOOTLOADER.baudrate)
+            .await;
 
         // Drain any stale data from buffers
         self.drain();
@@ -933,7 +939,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         let _ = self.reset_ui_to_user(&delay_ms).await;
 
         // Switch MGMT-UI UART back to normal operation baud rate
-        let _ = self.set_ui_baud_rate(uart_config::HIGH_SPEED.baudrate).await;
+        let _ = self
+            .set_ui_baud_rate(uart_config::HIGH_SPEED.baudrate)
+            .await;
 
         result
     }
@@ -1001,7 +1009,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         Fut: core::future::Future<Output = ()>,
     {
         // Switch MGMT-UI UART to bootloader baud rate (115200)
-        let _ = self.set_ui_baud_rate(uart_config::STM32_BOOTLOADER.baudrate).await;
+        let _ = self
+            .set_ui_baud_rate(uart_config::STM32_BOOTLOADER.baudrate)
+            .await;
 
         // Drain any stale data from buffers to prevent contamination
         // when tunneling UI bootloader commands through MGMT.
@@ -1030,7 +1040,9 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
         let _ = self.reset_net_to_user(&delay_ms).await;
 
         // Switch MGMT-UI UART back to normal operation baud rate (1000000)
-        let _ = self.set_ui_baud_rate(uart_config::HIGH_SPEED.baudrate).await;
+        let _ = self
+            .set_ui_baud_rate(uart_config::HIGH_SPEED.baudrate)
+            .await;
 
         result
     }
@@ -1128,9 +1140,7 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
 // NET chip (ESP32) flashing implementation
 // ============================================================================
 
-use espflash::connection::{
-    Connection, PortInfo, ResetAfterOperation, ResetBeforeOperation,
-};
+use espflash::connection::{Connection, PortInfo, ResetAfterOperation, ResetBeforeOperation};
 use espflash::flasher::{FlashData, FlashSettings, Flasher};
 use espflash::image_format::idf::IdfBootloaderFormat;
 use espflash::target::{Chip, ProgressCallbacks};
@@ -1239,19 +1249,15 @@ where
 
         // Connect to ESP32 bootloader at max_baud
         // use_stub=false uses ROM bootloader (stub upload fails through tunnel)
-        let mut flasher =
-            match Flasher::connect(connection, false, false, true, None, None).await {
-                Ok(f) => f,
-                Err((connection, e)) => {
-                    // Recover port from the returned connection
-                    self.recover_port_from_connection(connection).await;
-                    let _ = self.reset_ui_to_user(&delay_fn).await;
-                    return Err(EspflashError::Espflash(format!(
-                        "connect: {:?}",
-                        e
-                    )));
-                }
-            };
+        let mut flasher = match Flasher::connect(connection, false, false, true, None, None).await {
+            Ok(f) => f,
+            Err((connection, e)) => {
+                // Recover port from the returned connection
+                self.recover_port_from_connection(connection).await;
+                let _ = self.reset_ui_to_user(&delay_fn).await;
+                return Err(EspflashError::Espflash(format!("connect: {:?}", e)));
+            }
+        };
 
         // Get device info for flash settings
         let info = match flasher.device_info().await {
@@ -1339,7 +1345,8 @@ where
 
         // Take the port out of CtlCore
         let port = self.take_port();
-        let serial_interface = TunnelSerialInterface::new(port, uart_config::STM32_BOOTLOADER.baudrate, delay);
+        let serial_interface =
+            TunnelSerialInterface::new(port, uart_config::STM32_BOOTLOADER.baudrate, delay);
 
         let port_info = PortInfo {
             vid: 0,
@@ -1411,7 +1418,8 @@ where
 
         // Take the port out of CtlCore
         let port = self.take_port();
-        let serial_interface = TunnelSerialInterface::new(port, uart_config::STM32_BOOTLOADER.baudrate, delay);
+        let serial_interface =
+            TunnelSerialInterface::new(port, uart_config::STM32_BOOTLOADER.baudrate, delay);
 
         let port_info = PortInfo {
             vid: 0x303A,

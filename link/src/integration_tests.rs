@@ -7,12 +7,12 @@
 #![cfg(all(feature = "ctl", feature = "mgmt", feature = "net", feature = "ui"))]
 
 use crate::ctl::CtlCore;
+use crate::shared::NoOpStackMonitor;
 use crate::shared::mocks::{
     GpioOp, MockAsyncDelay, MockAudioStream, MockButton, MockCtlPort, MockDelay, MockFlash,
     MockPin, TrackingPin, async_async_channel, ctl_async_channel, mock_i2c_with_eeprom,
     mock_led_pins,
 };
-use crate::shared::NoOpStackMonitor;
 use crate::{NetLoopbackMode, PinValue, UiLoopbackMode, mgmt, net, ui};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -670,4 +670,3 @@ async fn get_jitter_stats_default() {
 // uses tokio::select! with futures::join! which doesn't work well with tokio::time::sleep.
 // The audio functionality is tested in the ui::audio_streaming_tests module instead,
 // and the NET unit tests verify the WebSocket forwarding logic.
-

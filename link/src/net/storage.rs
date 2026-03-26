@@ -282,5 +282,4 @@ mod tests {
         // Should fail when full
         assert!(storage.add_wifi_ssid("Overflow", "Pass").is_err());
     }
-
 }

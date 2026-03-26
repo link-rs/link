@@ -42,7 +42,7 @@ pub(crate) use logging::info;
 // Jitter buffer types - for net firmware or tests
 #[cfg(any(feature = "net", test))]
 #[allow(unused_imports)] // Re-exported for public API
-pub use jitter_buffer::{JitterBuffer, JitterStats, BUFFER_FRAMES, MIN_START_LEVEL};
+pub use jitter_buffer::{BUFFER_FRAMES, JitterBuffer, JitterStats, MIN_START_LEVEL};
 
 // LED types - used by all
 pub use led::{Color, InvertedPin, Led};
@@ -51,7 +51,7 @@ pub use led::{Color, InvertedPin, Led};
 pub use protocol::*;
 
 // TLV types - core types used by all
-pub use tlv::{Tlv, MAX_VALUE_SIZE};
+pub use tlv::{MAX_VALUE_SIZE, Tlv};
 // Sync TLV constants - used by ctl and net (bare-metal firmware uses async traits)
 #[cfg(any(feature = "ctl", feature = "net"))]
 pub use tlv::{HEADER_SIZE, SYNC_WORD};
@@ -63,7 +63,7 @@ pub use tlv::{ReadTlv, Value, WriteTlv};
 // MoQ types - used by net
 #[cfg(feature = "net")]
 #[allow(unused_imports)] // Re-exported for public API
-pub use moq::{MoqError, MoqExampleType, MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN};
+pub use moq::{MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampleType};
 
 // WiFi types - WifiSsid used by ctl and net
 #[cfg(any(feature = "ctl", feature = "net"))]

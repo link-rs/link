@@ -183,4 +183,3 @@ impl SetBaudRate for TokioSerialPort {
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
     }
 }
-

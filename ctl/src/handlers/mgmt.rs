@@ -22,7 +22,9 @@ async fn enter_mgmt_bootloader(core: &mut Core) -> Result<bool, Box<dyn std::err
     std::io::stdout().flush()?;
 
     // Set short timeout for probing
-    let _ = core.port_mut().set_timeout(Duration::from_millis(timeouts::BOOTLOADER_PROBE_MS));
+    let _ = core
+        .port_mut()
+        .set_timeout(Duration::from_millis(timeouts::BOOTLOADER_PROBE_MS));
 
     let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
     let skip_init = match core.try_enter_mgmt_bootloader(delay_ms).await {
@@ -51,12 +53,17 @@ async fn enter_mgmt_bootloader(core: &mut Core) -> Result<bool, Box<dyn std::err
     };
 
     // Restore normal timeout
-    let _ = core.port_mut().set_timeout(Duration::from_secs(timeouts::NORMAL_SECS));
+    let _ = core
+        .port_mut()
+        .set_timeout(Duration::from_secs(timeouts::NORMAL_SECS));
 
     Ok(skip_init)
 }
 
-pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn handle_mgmt(
+    action: MgmtAction,
+    core: &mut Core,
+) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         MgmtAction::Ping { data } => {
             println!("Sending MGMT ping with data: {}", data);
@@ -85,7 +92,9 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
 
             println!(
                 "Bootloader Version: {}.{} (0x{:02X})",
-                info.version_major(), info.version_minor(), info.bootloader_version
+                info.version_major(),
+                info.version_minor(),
+                info.bootloader_version
             );
             println!(
                 "Chip ID: 0x{:04X} ({})",
@@ -132,8 +141,13 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
             core.exit_mgmt_bootloader(delay_ms).await;
 
             // Switch back to normal operation baud rate
-            println!("Switching to normal operation baud rate ({})...", link::uart_config::HIGH_SPEED.baudrate);
-            core.port_mut().get_mut().set_baud_rate(link::uart_config::HIGH_SPEED.baudrate)?;
+            println!(
+                "Switching to normal operation baud rate ({})...",
+                link::uart_config::HIGH_SPEED.baudrate
+            );
+            core.port_mut()
+                .get_mut()
+                .set_baud_rate(link::uart_config::HIGH_SPEED.baudrate)?;
 
             println!("\nDone!");
             Ok(())
@@ -160,29 +174,36 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
 
             let mut current_phase = None;
             let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
-            let result = core.flash_mgmt(&firmware, skip_init, |phase, progress, total| {
-                if current_phase != Some(phase) {
-                    current_phase = Some(phase);
-                    match phase {
-                        FlashPhase::Compressing => {}
-                        FlashPhase::Erasing => {
-                            pb.set_style(pages_style.clone());
-                            pb.set_prefix("Erasing");
+            let result = core
+                .flash_mgmt(
+                    &firmware,
+                    skip_init,
+                    |phase, progress, total| {
+                        if current_phase != Some(phase) {
+                            current_phase = Some(phase);
+                            match phase {
+                                FlashPhase::Compressing => {}
+                                FlashPhase::Erasing => {
+                                    pb.set_style(pages_style.clone());
+                                    pb.set_prefix("Erasing");
+                                }
+                                FlashPhase::Writing => {
+                                    pb.set_style(bytes_style.clone());
+                                    pb.set_prefix("Writing");
+                                }
+                                FlashPhase::Verifying => {
+                                    pb.set_style(bytes_style.clone());
+                                    pb.set_prefix("Verifying");
+                                }
+                            }
+                            pb.set_length(total as u64);
+                            pb.set_position(0);
                         }
-                        FlashPhase::Writing => {
-                            pb.set_style(bytes_style.clone());
-                            pb.set_prefix("Writing");
-                        }
-                        FlashPhase::Verifying => {
-                            pb.set_style(bytes_style.clone());
-                            pb.set_prefix("Verifying");
-                        }
-                    }
-                    pb.set_length(total as u64);
-                    pb.set_position(0);
-                }
-                pb.set_position(progress as u64);
-            }, delay_ms).await;
+                        pb.set_position(progress as u64);
+                    },
+                    delay_ms,
+                )
+                .await;
 
             pb.finish_and_clear();
 
@@ -193,7 +214,10 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
                     core.exit_mgmt_bootloader(delay_ms).await;
 
                     println!("\nFlash complete!");
-                    println!("The MGMT chip should now be running the new firmware at {} baud.", link::uart_config::HIGH_SPEED.baudrate);
+                    println!(
+                        "The MGMT chip should now be running the new firmware at {} baud.",
+                        link::uart_config::HIGH_SPEED.baudrate
+                    );
                     Ok(())
                 }
                 Err(e) => {
@@ -210,8 +234,16 @@ pub async fn handle_mgmt(action: MgmtAction, core: &mut Core) -> Result<(), Box<
                 let info = core.mgmt_get_stack_info().await?;
                 println!("Stack Base:  0x{:08X}", info.stack_base);
                 println!("Stack Top:   0x{:08X}", info.stack_top);
-                println!("Stack Size:  {} bytes ({:.1} KB)", info.stack_size, info.stack_size as f64 / 1024.0);
-                println!("Stack Used:  {} bytes ({:.1}%)", info.stack_used, info.usage_percent());
+                println!(
+                    "Stack Size:  {} bytes ({:.1} KB)",
+                    info.stack_size,
+                    info.stack_size as f64 / 1024.0
+                );
+                println!(
+                    "Stack Used:  {} bytes ({:.1}%)",
+                    info.stack_used,
+                    info.usage_percent()
+                );
                 println!("Stack Free:  {} bytes", info.stack_free());
                 Ok(())
             }

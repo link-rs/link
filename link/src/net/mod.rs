@@ -5,18 +5,17 @@ mod storage;
 // Re-export jitter buffer from shared
 pub use crate::shared::{BUFFER_FRAMES, JitterBuffer, JitterState, JitterStats, MIN_START_LEVEL};
 pub use storage::{
-    MAX_MOQ_NAMESPACE_LEN,
-    MAX_MOQ_TRACK_NAME_LEN, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, MoqError, MoqExampleType,
-    NetStorage, WifiSsid,
+    MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MAX_RELAY_URL_LEN, MAX_WIFI_SSIDS, MoqError,
+    MoqExampleType, NetStorage, WifiSsid,
 };
 
 use crate::info;
-use crate::shared::{
-    Channel, Color, CriticalSectionRawMutex, Led, CtlToNet, NetLoopbackMode, NetToCtl, NetToUi,
-    RawMutex, Receiver, Sender, Tlv, UiToNet, WriteTlv, read_tlv_loop,
-};
 #[cfg(feature = "ui")]
 use crate::shared::ChannelId;
+use crate::shared::{
+    Channel, Color, CriticalSectionRawMutex, CtlToNet, Led, NetLoopbackMode, NetToCtl, NetToUi,
+    RawMutex, Receiver, Sender, Tlv, UiToNet, WriteTlv, read_tlv_loop,
+};
 #[cfg(feature = "ui")]
 use embassy_futures::select::{Either, select};
 use embedded_hal::digital::StatefulOutputPin;
@@ -209,10 +208,14 @@ where
                                 };
                                 let mut buf = [0u8; 32];
                                 if let Some(serialized) = info.to_bytes(&mut buf) {
-                                    to_mgmt.must_write_tlv(NetToCtl::JitterStats, serialized).await;
+                                    to_mgmt
+                                        .must_write_tlv(NetToCtl::JitterStats, serialized)
+                                        .await;
                                 }
                             } else {
-                                to_mgmt.must_write_tlv(NetToCtl::Error, b"invalid channel").await;
+                                to_mgmt
+                                    .must_write_tlv(NetToCtl::Error, b"invalid channel")
+                                    .await;
                             }
                         } else {
                             handle_mgmt(

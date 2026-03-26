@@ -4,7 +4,6 @@
 #[cfg(any(feature = "mgmt", feature = "net", feature = "ui"))]
 use embedded_io_async::{Read, ReadExactError, Write};
 
-
 type Type = u16;
 type Length = u32;
 
@@ -215,11 +214,7 @@ mod async_tlv {
             self.flush().await
         }
 
-        async fn write_tlv_parts(
-            &mut self,
-            tlv_type: T,
-            parts: &[&[u8]],
-        ) -> Result<(), W::Error> {
+        async fn write_tlv_parts(&mut self, tlv_type: T, parts: &[&[u8]]) -> Result<(), W::Error> {
             let type_val: u16 = tlv_type.into();
             let total_len: usize = parts.iter().map(|p| p.len()).sum();
             self.write_all(&SYNC_WORD).await?;
@@ -319,16 +314,15 @@ pub mod buffer {
         }
 
         // Parse type
-        let tlv_type = T::try_from(tlv_type_raw).map_err(|_| ParseError::InvalidType(tlv_type_raw))?;
+        let tlv_type =
+            T::try_from(tlv_type_raw).map_err(|_| ParseError::InvalidType(tlv_type_raw))?;
 
         // Extract value
         let value_bytes = &buffer[value_start..value_start + length];
-        let value = heapless::Vec::try_from(value_bytes)
-            .map_err(|_| ParseError::TooLong)?;
+        let value = heapless::Vec::try_from(value_bytes).map_err(|_| ParseError::TooLong)?;
 
         Ok(Some((Tlv { tlv_type, value }, total_len)))
     }
-
 }
 
 // ============================================================================
@@ -357,7 +351,6 @@ pub mod tunnel {
         result.extend_from_slice(inner_value);
         result
     }
-
 }
 
 #[cfg(test)]
@@ -536,7 +529,10 @@ mod test {
         data.push(0x42);
 
         let result = try_parse_from_buffer::<CtlToMgmt>(&data);
-        assert!(matches!(result, Err(buffer::ParseError::InvalidType(0xFFFF))));
+        assert!(matches!(
+            result,
+            Err(buffer::ParseError::InvalidType(0xFFFF))
+        ));
 
         // TLV with garbage prefix
         let mut data = Vec::new();
@@ -597,7 +593,9 @@ mod test {
         assert_eq!(&nested[0..4], &SYNC_WORD);
 
         // Verify can be parsed back
-        let (decoded, _) = buffer::try_parse_from_buffer::<CtlToUi>(&nested).unwrap().unwrap();
+        let (decoded, _) = buffer::try_parse_from_buffer::<CtlToUi>(&nested)
+            .unwrap()
+            .unwrap();
         assert_eq!(decoded.tlv_type, original_type);
         assert_eq!(decoded.value.as_slice(), original_value);
     }

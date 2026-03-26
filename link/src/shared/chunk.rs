@@ -247,7 +247,10 @@ mod tests {
         assert!(!parsed.last_chunk);
         assert_eq!(parsed.audio_offset, 6);
         assert_eq!(parsed.audio_length, 4);
-        assert_eq!(&buf[parsed.audio_offset..parsed.audio_offset + parsed.audio_length], &audio);
+        assert_eq!(
+            &buf[parsed.audio_offset..parsed.audio_offset + parsed.audio_length],
+            &audio
+        );
     }
 
     #[test]
