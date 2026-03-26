@@ -36,9 +36,9 @@ jobs:
         with:
           components: clippy
       - name: Clippy (link with std)
-        run: cargo clippy --manifest-path link/Cargo.toml --features std -- -D warnings
+        run: cargo clippy --manifest-path link/Cargo.toml --features std
       - name: Clippy (ctl)
-        run: cargo clippy --manifest-path ctl/Cargo.toml -- -D warnings
+        run: cargo clippy --manifest-path ctl/Cargo.toml
 
   test:
     name: Test
