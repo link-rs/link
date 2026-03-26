@@ -39,6 +39,7 @@ jobs:
             espup: true
             release: true
             skip-clippy: true
+            skip-build: true  # ESP-IDF build requires full SDK setup
     steps:
       - uses: actions/checkout@v4
 
@@ -84,7 +85,7 @@ jobs:
             ${{ matrix.features || '' }}
 
       - name: Build
-        if: ${{ !matrix.wasm-pack }}
+        if: ${{ !matrix.wasm-pack && !matrix.skip-build }}
         shell: bash
         working-directory: ${{ matrix.crate }}
         run: |
