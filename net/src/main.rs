@@ -572,6 +572,9 @@ struct NvsStorage {
     nvs: Option<EspNvs<NvsDefault>>,
     wifi_ssids: heapless::Vec<WifiSsid, MAX_WIFI_SSIDS>,
     relay_url: String,
+    language: String,
+    channel: String,
+    ai_config: String,
 }
 
 // NVS key names (max 15 chars)
@@ -585,6 +588,9 @@ impl NvsStorage {
             nvs,
             wifi_ssids: heapless::Vec::new(),
             relay_url: String::new(),
+            language: String::new(),
+            channel: String::new(),
+            ai_config: String::new(),
         };
 
         // Load WiFi SSIDs
@@ -664,6 +670,14 @@ impl NvsStorage {
 
         self.wifi_ssids.push(wifi).map_err(|_| ())?;
         Ok(())
+    }
+
+    fn clear(&mut self) {
+        self.wifi_ssids.clear();
+        self.relay_url.clear();
+        self.language.clear();
+        self.channel.clear();
+        self.ai_config.clear();
     }
 }
 
@@ -1168,6 +1182,71 @@ fn handle_mgmt_message(
         }
         CtlToNet::GetLoopback => {
             write_tlv(mgmt_uart, NetToCtl::Loopback, &[*loopback as u8]);
+        }
+        CtlToNet::GetLogsEnabled => {
+            // Stub: logs always enabled
+            write_tlv(mgmt_uart, NetToCtl::LogsEnabled, &[1]);
+        }
+        CtlToNet::SetLogsEnabled => {
+            // Stub: ignore, just ack
+            write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+        }
+        CtlToNet::ClearStorage => {
+            storage.clear();
+            if storage.save().is_ok() {
+                write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+            }
+        }
+        CtlToNet::GetLanguage => {
+            write_tlv(mgmt_uart, NetToCtl::Language, storage.language.as_bytes());
+        }
+        CtlToNet::SetLanguage => {
+            if let Ok(lang) = core::str::from_utf8(value) {
+                storage.language = lang.to_string();
+                if storage.save().is_ok() {
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
+            }
+        }
+        CtlToNet::GetChannel => {
+            write_tlv(mgmt_uart, NetToCtl::Channel, storage.channel.as_bytes());
+        }
+        CtlToNet::SetChannel => {
+            if let Ok(channel) = core::str::from_utf8(value) {
+                storage.channel = channel.to_string();
+                if storage.save().is_ok() {
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
+            }
+        }
+        CtlToNet::GetAiConfig => {
+            write_tlv(mgmt_uart, NetToCtl::AiConfig, storage.ai_config.as_bytes());
+        }
+        CtlToNet::SetAiConfig => {
+            if let Ok(config) = core::str::from_utf8(value) {
+                storage.ai_config = config.to_string();
+                if storage.save().is_ok() {
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
+            }
+        }
+        CtlToNet::BurnJtagEfuse => {
+            // Stub: return error - this is a dangerous operation
+            write_tlv(mgmt_uart, NetToCtl::Error, b"not implemented");
         }
     }
 }
