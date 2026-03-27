@@ -1,14 +1,14 @@
 //! WebSerial transport for embedded-io-async.
 
 use embedded_io_async::{ErrorType, Read, Write};
-use futures::future::{select, Either};
+use futures::future::{Either, select};
 use futures::pin_mut;
 use js_sys::{Object, Reflect, Uint8Array};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{ReadableStreamDefaultReader, SerialPort, WritableStreamDefaultWriter};
 
@@ -180,7 +180,7 @@ impl WebSerial {
             port,
             reader,
             writer,
-            read_buffer: VecDeque::new(),  // Clear buffer - MGMT has reset
+            read_buffer: VecDeque::new(), // Clear buffer - MGMT has reset
             read_timeout_ms,
             current_baud_rate: baud_rate,
         });
@@ -230,7 +230,7 @@ impl WebSerial {
             port,
             reader,
             writer,
-            read_buffer: VecDeque::new(),  // Clear buffer - MGMT has reset
+            read_buffer: VecDeque::new(), // Clear buffer - MGMT has reset
             read_timeout_ms,
             current_baud_rate: baud_rate,
         });
@@ -314,7 +314,11 @@ impl WebSerial {
 
     /// Get the read timeout duration.
     pub fn read_timeout(&self) -> std::time::Duration {
-        let ms = self.state.borrow().as_ref().map_or(3000, |s| s.read_timeout_ms);
+        let ms = self
+            .state
+            .borrow()
+            .as_ref()
+            .map_or(3000, |s| s.read_timeout_ms);
         std::time::Duration::from_millis(ms as u64)
     }
 
