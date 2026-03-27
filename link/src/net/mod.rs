@@ -402,13 +402,20 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
         }
         CtlToNet::GetLogsEnabled => {
             info!("net: get logs enabled");
-            // Stub: always return enabled (1)
-            to_mgmt.must_write_tlv(NetToCtl::LogsEnabled, &[1]).await;
+            let enabled = storage.get_logs_enabled();
+            to_mgmt
+                .must_write_tlv(NetToCtl::LogsEnabled, &[enabled as u8])
+                .await;
         }
         CtlToNet::SetLogsEnabled => {
-            let enabled = tlv.value.first().copied().unwrap_or(1);
+            let enabled = tlv.value.first().copied().unwrap_or(1) != 0;
             info!("net: set logs enabled = {}", enabled);
-            // Stub: no-op, just acknowledge
+            storage.set_logs_enabled(enabled);
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
+                return;
+            }
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
         CtlToNet::ClearStorage => {
@@ -423,40 +430,68 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
         }
         CtlToNet::GetLanguage => {
             info!("net: get language");
-            // Stub: return default language "en-US"
-            to_mgmt.must_write_tlv(NetToCtl::Language, b"en-US").await;
+            let lang = storage.get_language();
+            to_mgmt
+                .must_write_tlv(NetToCtl::Language, lang.as_bytes())
+                .await;
         }
         CtlToNet::SetLanguage => {
-            let lang = core::str::from_utf8(&tlv.value).unwrap_or("en-US");
+            let lang = core::str::from_utf8(&tlv.value).unwrap_or("");
             info!("net: set language = {}", lang);
-            // Stub: no-op, just acknowledge
+            if storage.set_language(lang).is_err() {
+                info!("net: failed to set language (too long)");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"length").await;
+                return;
+            }
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
+                return;
+            }
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
         CtlToNet::GetChannel => {
             info!("net: get channel");
-            // Stub: return empty channel config
+            let channel = storage.get_channel();
             to_mgmt
-                .must_write_tlv(NetToCtl::Channel, b"[\"\",\"\",\"\",\"\"]")
+                .must_write_tlv(NetToCtl::Channel, channel.as_bytes())
                 .await;
         }
         CtlToNet::SetChannel => {
+            let channel = core::str::from_utf8(&tlv.value).unwrap_or("");
             info!("net: set channel");
-            // Stub: no-op, just acknowledge
+            if storage.set_channel(channel).is_err() {
+                info!("net: failed to set channel (too long)");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"length").await;
+                return;
+            }
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
+                return;
+            }
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
         CtlToNet::GetAiConfig => {
             info!("net: get ai config");
-            // Stub: return empty AI config
+            let config = storage.get_ai_config();
             to_mgmt
-                .must_write_tlv(
-                    NetToCtl::AiConfig,
-                    b"{\"query\":[],\"audio\":[],\"cmd\":[]}",
-                )
+                .must_write_tlv(NetToCtl::AiConfig, config.as_bytes())
                 .await;
         }
         CtlToNet::SetAiConfig => {
+            let config = core::str::from_utf8(&tlv.value).unwrap_or("");
             info!("net: set ai config");
-            // Stub: no-op, just acknowledge
+            if storage.set_ai_config(config).is_err() {
+                info!("net: failed to set ai config (too long)");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"length").await;
+                return;
+            }
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
+                return;
+            }
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
         CtlToNet::BurnJtagEfuse => {

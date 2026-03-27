@@ -12,6 +12,13 @@ pub use crate::shared::moq::{
     MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampleType,
 };
 
+/// Max length for language string (e.g., "en-US")
+pub const MAX_LANGUAGE_LEN: usize = 16;
+/// Max length for channel config JSON
+pub const MAX_CHANNEL_LEN: usize = 256;
+/// Max length for AI config JSON
+pub const MAX_AI_CONFIG_LEN: usize = 512;
+
 /// Persistent storage data for the NET chip.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 // Note: Only derive defmt::Format when not using alloc (WifiSsid contains String when alloc is enabled)
@@ -19,6 +26,10 @@ pub use crate::shared::moq::{
 pub struct NetStorageData {
     pub wifi_ssids: Vec<WifiSsid, MAX_WIFI_SSIDS>,
     pub relay_url: String<MAX_RELAY_URL_LEN>,
+    pub language: String<MAX_LANGUAGE_LEN>,
+    pub channel: String<MAX_CHANNEL_LEN>,
+    pub ai_config: String<MAX_AI_CONFIG_LEN>,
+    pub logs_enabled: bool,
 }
 
 /// Flash storage interface for the NET chip.
@@ -32,8 +43,8 @@ pub struct NetStorage<F> {
 const MAGIC: [u8; 4] = *b"LNKS";
 
 /// Storage format version.
-/// V3 removes channel configurations (unused).
-const VERSION: u8 = 3;
+/// V4 adds language, channel, ai_config, logs_enabled.
+const VERSION: u8 = 4;
 
 /// Header size: 4 bytes magic + 1 byte version + 2 bytes length.
 const HEADER_SIZE: usize = 7;
@@ -147,6 +158,49 @@ where
     pub fn set_relay_url(&mut self, url: &str) -> Result<(), ()> {
         self.data.relay_url = String::try_from(url).map_err(|_| ())?;
         Ok(())
+    }
+
+    /// Get the language setting.
+    pub fn get_language(&self) -> &str {
+        &self.data.language
+    }
+
+    /// Set the language setting.
+    pub fn set_language(&mut self, lang: &str) -> Result<(), ()> {
+        self.data.language = String::try_from(lang).map_err(|_| ())?;
+        Ok(())
+    }
+
+    /// Get the channel configuration.
+    pub fn get_channel(&self) -> &str {
+        &self.data.channel
+    }
+
+    /// Set the channel configuration.
+    pub fn set_channel(&mut self, channel: &str) -> Result<(), ()> {
+        self.data.channel = String::try_from(channel).map_err(|_| ())?;
+        Ok(())
+    }
+
+    /// Get the AI configuration.
+    pub fn get_ai_config(&self) -> &str {
+        &self.data.ai_config
+    }
+
+    /// Set the AI configuration.
+    pub fn set_ai_config(&mut self, config: &str) -> Result<(), ()> {
+        self.data.ai_config = String::try_from(config).map_err(|_| ())?;
+        Ok(())
+    }
+
+    /// Get logs enabled state.
+    pub fn get_logs_enabled(&self) -> bool {
+        self.data.logs_enabled
+    }
+
+    /// Set logs enabled state.
+    pub fn set_logs_enabled(&mut self, enabled: bool) {
+        self.data.logs_enabled = enabled;
     }
 
     /// Clear all stored configuration (reset to factory defaults).

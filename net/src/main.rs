@@ -1118,8 +1118,8 @@ fn handle_mgmt_message(
     storage: &mut NvsStorage,
     loopback: &mut NetLoopbackMode,
     moq_cmd_tx: &Sender<MoqCommand>,
-    ptt_buffer: &JitterBuffer,
-    ptt_ai_buffer: &JitterBuffer,
+    _ptt_buffer: &JitterBuffer,
+    _ptt_ai_buffer: &JitterBuffer,
 ) {
     match msg_type {
         CtlToNet::Ping => {
