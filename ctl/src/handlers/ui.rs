@@ -2,7 +2,8 @@
 
 use super::Core;
 use crate::{
-    GetSetHex, GetSetU32, LoopbackAction, PinAction, PinLevel, ResetAction, StackAction, UiAction,
+    GetSetHex, GetSetU32, LogsAction, LoopbackAction, PinAction, PinLevel, ResetAction,
+    StackAction, UiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
@@ -350,5 +351,27 @@ pub async fn handle_ui(
                 Ok(())
             }
         },
+        UiAction::Logs { action } => match action.unwrap_or_default() {
+            LogsAction::Get => {
+                let enabled = core.ui_get_logs_enabled().await?;
+                println!("{}", if enabled { "on" } else { "off" });
+                Ok(())
+            }
+            LogsAction::On => {
+                core.ui_set_logs_enabled(true).await?;
+                println!("UI logs: on");
+                Ok(())
+            }
+            LogsAction::Off => {
+                core.ui_set_logs_enabled(false).await?;
+                println!("UI logs: off");
+                Ok(())
+            }
+        },
+        UiAction::ClearStorage => {
+            core.ui_clear_storage().await?;
+            println!("UI storage cleared");
+            Ok(())
+        }
     }
 }

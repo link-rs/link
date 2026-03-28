@@ -651,21 +651,6 @@ async fn release_net_reset_gpio() {
     .await;
 }
 
-// ── Jitter stats ──
-
-#[tokio::test]
-async fn get_jitter_stats_default() {
-    device_test(|mut ctl| async move {
-        let stats = ctl.get_jitter_stats(0).await.unwrap();
-        assert_eq!(stats.received, 0);
-        assert_eq!(stats.output, 0);
-        assert_eq!(stats.underruns, 0);
-        assert_eq!(stats.overruns, 0);
-        assert_eq!(stats.level, 0);
-    })
-    .await;
-}
-
 // NOTE: Audio/WebSocket integration tests are not included because the test harness
 // uses tokio::select! with futures::join! which doesn't work well with tokio::time::sleep.
 // The audio functionality is tested in the ui::audio_streaming_tests module instead,

@@ -188,47 +188,16 @@ where
             match select(channel.receive(), ticker.next()).await {
                 Either::First(event) => match event {
                     Event::Mgmt(tlv) => {
-                        // Handle GetJitterStats specially since it needs buffer access
-                        if tlv.tlv_type == CtlToNet::GetJitterStats {
-                            let channel_id = tlv.value.first().copied().unwrap_or(0);
-                            let stats = match ChannelId::try_from(channel_id) {
-                                Ok(ChannelId::Ptt) => Some(ptt_buffer.stats()),
-                                Ok(ChannelId::PttAi) => Some(ptt_ai_buffer.stats()),
-                                _ => None,
-                            };
-                            if let Some(s) = stats {
-                                use crate::shared::JitterStatsInfo;
-                                let info = JitterStatsInfo {
-                                    received: s.received,
-                                    output: s.output,
-                                    underruns: s.underruns,
-                                    overruns: s.overruns,
-                                    level: s.level as u16,
-                                    state: s.state,
-                                };
-                                let mut buf = [0u8; 32];
-                                if let Some(serialized) = info.to_bytes(&mut buf) {
-                                    to_mgmt
-                                        .must_write_tlv(NetToCtl::JitterStats, serialized)
-                                        .await;
-                                }
-                            } else {
-                                to_mgmt
-                                    .must_write_tlv(NetToCtl::Error, b"invalid channel")
-                                    .await;
-                            }
-                        } else {
-                            handle_mgmt(
-                                tlv,
-                                &mut to_mgmt,
-                                &mut to_ui,
-                                &mut storage,
-                                &ws_cmd_tx,
-                                &mut ws_mode,
-                                &mut loopback,
-                            )
-                            .await
-                        }
+                        handle_mgmt(
+                            tlv,
+                            &mut to_mgmt,
+                            &mut to_ui,
+                            &mut storage,
+                            &ws_cmd_tx,
+                            &mut ws_mode,
+                            &mut loopback,
+                        )
+                        .await
                     }
                     Event::Ui(tlv) => {
                         if let Some(audio) =
@@ -431,12 +400,105 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
                 .must_write_tlv(NetToCtl::Loopback, &[*loopback as u8])
                 .await;
         }
-        CtlToNet::GetJitterStats => {
-            // This is handled in the event loop when ui feature is enabled
-            // Without ui feature, return error
-            info!("net: jitter stats not available (ui feature disabled)");
+        CtlToNet::GetLogsEnabled => {
+            info!("net: get logs enabled");
+            let enabled = storage.get_logs_enabled();
             to_mgmt
-                .must_write_tlv(NetToCtl::Error, b"no jitter buffer")
+                .must_write_tlv(NetToCtl::LogsEnabled, &[enabled as u8])
+                .await;
+        }
+        CtlToNet::SetLogsEnabled => {
+            let enabled = tlv.value.first().copied().unwrap_or(1) != 0;
+            info!("net: set logs enabled = {}", enabled);
+            storage.set_logs_enabled(enabled);
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
+                return;
+            }
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
+        }
+        CtlToNet::ClearStorage => {
+            info!("net: clear storage");
+            storage.clear();
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
+                return;
+            }
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
+        }
+        CtlToNet::GetLanguage => {
+            info!("net: get language");
+            let lang = storage.get_language();
+            to_mgmt
+                .must_write_tlv(NetToCtl::Language, lang.as_bytes())
+                .await;
+        }
+        CtlToNet::SetLanguage => {
+            let lang = core::str::from_utf8(&tlv.value).unwrap_or("");
+            info!("net: set language = {}", lang);
+            if storage.set_language(lang).is_err() {
+                info!("net: failed to set language (too long)");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"length").await;
+                return;
+            }
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
+                return;
+            }
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
+        }
+        CtlToNet::GetChannel => {
+            info!("net: get channel");
+            let channel = storage.get_channel();
+            to_mgmt
+                .must_write_tlv(NetToCtl::Channel, channel.as_bytes())
+                .await;
+        }
+        CtlToNet::SetChannel => {
+            let channel = core::str::from_utf8(&tlv.value).unwrap_or("");
+            info!("net: set channel");
+            if storage.set_channel(channel).is_err() {
+                info!("net: failed to set channel (too long)");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"length").await;
+                return;
+            }
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
+                return;
+            }
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
+        }
+        CtlToNet::GetAi => {
+            info!("net: get ai");
+            let config = storage.get_ai();
+            to_mgmt
+                .must_write_tlv(NetToCtl::Ai, config.as_bytes())
+                .await;
+        }
+        CtlToNet::SetAi => {
+            let config = core::str::from_utf8(&tlv.value).unwrap_or("");
+            info!("net: set ai");
+            if storage.set_ai(config).is_err() {
+                info!("net: failed to set ai (too long)");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"length").await;
+                return;
+            }
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
+                return;
+            }
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
+        }
+        CtlToNet::BurnJtagEfuse => {
+            info!("net: burn jtag efuse");
+            // Stub: return error - actual implementation would burn efuse
+            to_mgmt
+                .must_write_tlv(NetToCtl::Error, b"not implemented")
                 .await;
         }
     }

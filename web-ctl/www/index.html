@@ -1233,48 +1233,6 @@
                 </div>
 
                 <div class="card-section">
-                    <h3>Jitter Buffer Stats</h3>
-                    <div class="inline-form" style="margin-bottom: 0.75rem;">
-                        <div class="form-group" style="flex: 0 0 auto; width: 120px;">
-                            <label>Channel</label>
-                            <select id="jitterChannelSelect" style="width: 100%; padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 1rem;">
-                                <option value="0">PTT (0)</option>
-                                <option value="1">PTT AI (1)</option>
-                                <option value="3">Chat AI (3)</option>
-                            </select>
-                        </div>
-                        <button class="btn-secondary" id="getJitterStatsBtn">Get Stats</button>
-                        <span class="status-icon" id="jitterStatsStatus"></span>
-                    </div>
-                    <div class="info-display" id="jitterStatsDisplay">
-                        <div class="info-row">
-                            <span class="info-label">Received</span>
-                            <span class="info-value" id="jitterReceived">-</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-label">Output</span>
-                            <span class="info-value" id="jitterOutput">-</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-label">Underruns</span>
-                            <span class="info-value" id="jitterUnderruns">-</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-label">Overruns</span>
-                            <span class="info-value" id="jitterOverruns">-</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-label">Level</span>
-                            <span class="info-value" id="jitterLevel">-</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-label">State</span>
-                            <span class="info-value" id="jitterState">-</span>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card-section">
                     <h3>Bootloader Info</h3>
                     <div class="btn-group" style="margin-bottom: 0.75rem;">
                         <button class="btn-secondary" id="getNetInfoBtn">Read Bootloader Info</button>
@@ -2599,31 +2557,6 @@
                 log('UI stack repainted (watermark reset)', 'success');
             } catch (e) {
                 log(`Repaint UI stack error: ${e}`, 'error');
-            }
-        });
-
-        // ==================== JITTER STATS ====================
-
-        document.getElementById('getJitterStatsBtn').addEventListener('click', async () => {
-            const btn = document.getElementById('getJitterStatsBtn');
-            const statusIcon = document.getElementById('jitterStatsStatus');
-            const display = document.getElementById('jitterStatsDisplay');
-            try {
-                const channelId = parseInt(document.getElementById('jitterChannelSelect').value);
-                const stats = await runWithStatus(btn, statusIcon, async () => {
-                    return await controller.get_jitter_stats(channelId);
-                });
-                document.getElementById('jitterReceived').textContent = stats.received;
-                document.getElementById('jitterOutput').textContent = stats.output;
-                document.getElementById('jitterUnderruns').textContent = stats.underruns;
-                document.getElementById('jitterOverruns').textContent = stats.overruns;
-                document.getElementById('jitterLevel').textContent = stats.level;
-                document.getElementById('jitterState').textContent = stats.state;
-                display.classList.add('visible');
-                log(`Jitter stats (ch ${channelId}): received=${stats.received}, output=${stats.output}, underruns=${stats.underruns}, overruns=${stats.overruns}`, 'success');
-            } catch (e) {
-                display.classList.remove('visible');
-                log(`Get jitter stats error: ${e}`, 'error');
             }
         });
 

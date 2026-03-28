@@ -572,11 +572,16 @@ struct NvsStorage {
     nvs: Option<EspNvs<NvsDefault>>,
     wifi_ssids: heapless::Vec<WifiSsid, MAX_WIFI_SSIDS>,
     relay_url: String,
+    language: String,
+    channel: String,
+    ai: String,
+    logs_enabled: bool,
 }
 
 // NVS key names (max 15 chars)
 const NVS_KEY_WIFI_SSIDS: &str = "wifi_ssids";
 const NVS_KEY_RELAY_URL: &str = "relay_url";
+const NVS_KEY_LOGS: &str = "logs_enabled";
 
 impl NvsStorage {
     /// Load storage from NVS
@@ -585,6 +590,10 @@ impl NvsStorage {
             nvs,
             wifi_ssids: heapless::Vec::new(),
             relay_url: String::new(),
+            language: String::new(),
+            channel: String::new(),
+            ai: String::new(),
+            logs_enabled: true,
         };
 
         // Load WiFi SSIDs
@@ -622,6 +631,21 @@ impl NvsStorage {
                     warn!("net: failed to read relay URL from NVS: {:?}", e);
                 }
             }
+
+            // Load logs_enabled
+            match nvs.get_u8(NVS_KEY_LOGS) {
+                Ok(Some(val)) => {
+                    storage.logs_enabled = val != 0;
+                    info!(
+                        "net: loaded logs_enabled from NVS: {}",
+                        storage.logs_enabled
+                    );
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("net: failed to read logs_enabled from NVS: {:?}", e);
+                }
+            }
         }
 
         storage
@@ -649,6 +673,9 @@ impl NvsStorage {
             let _ = nvs.remove(NVS_KEY_RELAY_URL);
         }
 
+        // Save logs_enabled
+        nvs.set_u8(NVS_KEY_LOGS, self.logs_enabled as u8)?;
+
         Ok(())
     }
 
@@ -664,6 +691,15 @@ impl NvsStorage {
 
         self.wifi_ssids.push(wifi).map_err(|_| ())?;
         Ok(())
+    }
+
+    fn clear(&mut self) {
+        self.wifi_ssids.clear();
+        self.relay_url.clear();
+        self.language.clear();
+        self.channel.clear();
+        self.ai.clear();
+        self.logs_enabled = true;
     }
 }
 
@@ -786,6 +822,11 @@ fn main() {
         "net: loaded {} WiFi SSIDs from NVS",
         storage.wifi_ssids.len()
     );
+
+    // Apply stored log level
+    if !storage.logs_enabled {
+        log::set_max_level(log::LevelFilter::Off);
+    }
 
     // MoQ + WiFi task (combined thread handles WiFi connection, monitoring, and MoQ)
     let (moq_cmd_tx, moq_cmd_rx) = mpsc::channel::<MoqCommand>();
@@ -1104,8 +1145,8 @@ fn handle_mgmt_message(
     storage: &mut NvsStorage,
     loopback: &mut NetLoopbackMode,
     moq_cmd_tx: &Sender<MoqCommand>,
-    ptt_buffer: &JitterBuffer,
-    ptt_ai_buffer: &JitterBuffer,
+    _ptt_buffer: &JitterBuffer,
+    _ptt_ai_buffer: &JitterBuffer,
 ) {
     match msg_type {
         CtlToNet::Ping => {
@@ -1169,30 +1210,128 @@ fn handle_mgmt_message(
         CtlToNet::GetLoopback => {
             write_tlv(mgmt_uart, NetToCtl::Loopback, &[*loopback as u8]);
         }
-        CtlToNet::GetJitterStats => {
-            let channel_id = value.first().copied().unwrap_or(0);
-            let stats = match ChannelId::try_from(channel_id) {
-                Ok(ChannelId::Ptt) => Some(ptt_buffer.stats()),
-                Ok(ChannelId::PttAi) => Some(ptt_ai_buffer.stats()),
-                _ => None,
-            };
-            if let Some(s) = stats {
-                let info = link::JitterStatsInfo {
-                    received: s.received as u32,
-                    output: s.output as u32,
-                    underruns: s.underruns as u32,
-                    overruns: s.overruns as u32,
-                    level: s.level as u16,
-                    state: s.state,
-                };
-                let mut buf = [0u8; 64];
-                if let Ok(serialized) = postcard::to_slice(&info, &mut buf) {
-                    write_tlv(mgmt_uart, NetToCtl::JitterStats, serialized);
+        CtlToNet::GetLogsEnabled => {
+            write_tlv(
+                mgmt_uart,
+                NetToCtl::LogsEnabled,
+                &[storage.logs_enabled as u8],
+            );
+        }
+        CtlToNet::SetLogsEnabled => {
+            let enabled = value.first().copied().unwrap_or(1) != 0;
+            storage.logs_enabled = enabled;
+            // Apply log level immediately
+            if enabled {
+                log::set_max_level(log::LevelFilter::Info);
+            } else {
+                log::set_max_level(log::LevelFilter::Off);
+            }
+            if storage.save().is_ok() {
+                write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+            }
+        }
+        CtlToNet::ClearStorage => {
+            storage.clear();
+            if storage.save().is_ok() {
+                write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+            }
+        }
+        CtlToNet::GetLanguage => {
+            write_tlv(mgmt_uart, NetToCtl::Language, storage.language.as_bytes());
+        }
+        CtlToNet::SetLanguage => {
+            if let Ok(lang) = core::str::from_utf8(value) {
+                storage.language = lang.to_string();
+                if storage.save().is_ok() {
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
                 } else {
-                    write_tlv(mgmt_uart, NetToCtl::Error, b"serialize");
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"save");
                 }
             } else {
-                write_tlv(mgmt_uart, NetToCtl::Error, b"invalid channel");
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
+            }
+        }
+        CtlToNet::GetChannel => {
+            write_tlv(mgmt_uart, NetToCtl::Channel, storage.channel.as_bytes());
+        }
+        CtlToNet::SetChannel => {
+            if let Ok(channel) = core::str::from_utf8(value) {
+                storage.channel = channel.to_string();
+                if storage.save().is_ok() {
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
+            }
+        }
+        CtlToNet::GetAi => {
+            write_tlv(mgmt_uart, NetToCtl::Ai, storage.ai.as_bytes());
+        }
+        CtlToNet::SetAi => {
+            if let Ok(config) = core::str::from_utf8(value) {
+                storage.ai = config.to_string();
+                if storage.save().is_ok() {
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                } else {
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+                }
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
+            }
+        }
+        CtlToNet::BurnJtagEfuse => {
+            // IRREVERSIBLE: Burn efuse to disable USB JTAG debugging
+            // This matches hactar's implementation in efuse_burner.cc
+            use core::ptr::addr_of_mut;
+            use esp_idf_svc::sys::{
+                esp_efuse_batch_write_begin, esp_efuse_batch_write_cancel,
+                esp_efuse_batch_write_commit, esp_efuse_read_field_bit, esp_efuse_write_field_bit,
+                ESP_EFUSE_DIS_USB_JTAG, ESP_OK,
+            };
+
+            unsafe {
+                // Check if already burned
+                if esp_efuse_read_field_bit(addr_of_mut!(ESP_EFUSE_DIS_USB_JTAG) as *mut _) {
+                    info!("net: efuse for DIS_USB_JTAG is already burned");
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                    return;
+                }
+
+                info!("net: starting efuse burning process to disable USB JTAG (IRREVERSIBLE!)");
+
+                // Begin batch write
+                let err = esp_efuse_batch_write_begin();
+                if err != ESP_OK {
+                    warn!("net: failed to start batch write: {}", err);
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"batch begin failed");
+                    return;
+                }
+
+                // Write the efuse bit
+                let err = esp_efuse_write_field_bit(addr_of_mut!(ESP_EFUSE_DIS_USB_JTAG) as *mut _);
+                if err != ESP_OK {
+                    warn!("net: failed to write efuse field: {}", err);
+                    esp_efuse_batch_write_cancel();
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"write failed");
+                    return;
+                }
+
+                // Commit the changes
+                let err = esp_efuse_batch_write_commit();
+                if err != ESP_OK {
+                    warn!("net: failed to commit efuse changes: {}", err);
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"commit failed");
+                    return;
+                }
+
+                info!("net: successfully burned efuse to disable USB JTAG");
+                write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
             }
         }
     }

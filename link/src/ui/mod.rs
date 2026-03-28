@@ -102,6 +102,9 @@ where
     // Shared loopback mode (atomic for cross-task access)
     let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
 
+    // Shared logs enabled state
+    let logs_enabled = AtomicBool::new(true);
+
     // Shared button state - true when any button is pressed
     // This allows audio_task to skip sending frames when no button is held
     let button_active = AtomicBool::new(false);
@@ -129,6 +132,7 @@ where
                         &mut i2c,
                         &mut delay,
                         &loopback_mode,
+                        &logs_enabled,
                         &mut sframe_state,
                         &stack_monitor,
                     )
@@ -252,9 +256,11 @@ where
                 }
             }
 
-            // Drain any pending log messages
+            // Drain any pending log messages (only send if logs enabled)
             while let Ok(msg) = log_channel.try_receive() {
-                to_mgmt.must_write_tlv(UiToCtl::Log, msg.as_bytes()).await;
+                if logs_enabled.load(Ordering::Relaxed) {
+                    to_mgmt.must_write_tlv(UiToCtl::Log, msg.as_bytes()).await;
+                }
             }
         }
     };
@@ -373,6 +379,7 @@ async fn handle_mgmt<M, N, I, D, SM>(
     i2c: &mut I,
     delay: &mut D,
     loopback_mode: &AtomicU8,
+    logs_enabled: &AtomicBool,
     sframe_state: &mut sframe::SFrameState,
     stack_monitor: &SM,
 ) where
@@ -484,6 +491,32 @@ async fn handle_mgmt<M, N, I, D, SM>(
             stack_monitor.repaint_stack();
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
+        CtlToUi::GetLogsEnabled => {
+            info!("ui: get logs enabled");
+            let enabled = logs_enabled.load(Ordering::Relaxed);
+            to_mgmt
+                .must_write_tlv(UiToCtl::LogsEnabled, &[enabled as u8])
+                .await;
+        }
+        CtlToUi::SetLogsEnabled => {
+            let enabled = tlv.value.first().copied().unwrap_or(1) != 0;
+            info!("ui: set logs enabled = {}", enabled);
+            logs_enabled.store(enabled, Ordering::Relaxed);
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
+        }
+        CtlToUi::ClearStorage => {
+            info!("ui: clear storage");
+            // Clear all EEPROM-stored configuration
+            let mut eeprom = Eeprom::new(i2c, delay);
+            if eeprom.clear().is_err() {
+                info!("ui: failed to clear EEPROM");
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"eeprom").await;
+                return;
+            }
+            // Reset SFrame state to default key
+            sframe_state.reset(&[0xff; 16], 0);
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
+        }
     }
 }
 
@@ -569,6 +602,7 @@ mod tests {
         };
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
+        let logs_enabled = AtomicBool::new(true);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -577,6 +611,7 @@ mod tests {
             &mut i2c,
             &mut delay,
             &loopback_mode,
+            &logs_enabled,
             &mut sframe_state,
             &crate::shared::NoOpStackMonitor,
         )
@@ -604,6 +639,7 @@ mod tests {
         };
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
+        let logs_enabled = AtomicBool::new(true);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -612,6 +648,7 @@ mod tests {
             &mut i2c,
             &mut delay,
             &loopback_mode,
+            &logs_enabled,
             &mut sframe_state,
             &crate::shared::NoOpStackMonitor,
         )
@@ -645,6 +682,7 @@ mod tests {
         };
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
+        let logs_enabled = AtomicBool::new(true);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -653,6 +691,7 @@ mod tests {
             &mut i2c,
             &mut delay,
             &loopback_mode,
+            &logs_enabled,
             &mut sframe_state,
             &crate::shared::NoOpStackMonitor,
         )
@@ -683,6 +722,7 @@ mod tests {
         };
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
+        let logs_enabled = AtomicBool::new(true);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -691,6 +731,7 @@ mod tests {
             &mut i2c,
             &mut delay,
             &loopback_mode,
+            &logs_enabled,
             &mut sframe_state,
             &crate::shared::NoOpStackMonitor,
         )
@@ -719,6 +760,7 @@ mod tests {
         };
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
+        let logs_enabled = AtomicBool::new(true);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -727,6 +769,7 @@ mod tests {
             &mut i2c,
             &mut delay,
             &loopback_mode,
+            &logs_enabled,
             &mut sframe_state,
             &crate::shared::NoOpStackMonitor,
         )
@@ -755,6 +798,7 @@ mod tests {
         };
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
+        let logs_enabled = AtomicBool::new(true);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -763,6 +807,7 @@ mod tests {
             &mut i2c,
             &mut delay,
             &loopback_mode,
+            &logs_enabled,
             &mut sframe_state,
             &crate::shared::NoOpStackMonitor,
         )

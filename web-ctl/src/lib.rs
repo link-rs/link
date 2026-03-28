@@ -483,32 +483,6 @@ impl LinkController {
             .map_err(ctl_error_to_js)
     }
 
-    // ==================== JITTER STATS ====================
-
-    /// Get jitter buffer statistics for a channel.
-    /// Returns JSON with {received, output, underruns, overruns, level, state}.
-    #[wasm_bindgen]
-    pub async fn get_jitter_stats(&mut self, channel_id: u8) -> Result<JsValue, JsValue> {
-        let core = self.core_mut()?;
-        let stats = core
-            .get_jitter_stats(channel_id)
-            .await
-            .map_err(ctl_error_to_js)?;
-
-        let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"received".into(), &stats.received.into())?;
-        js_sys::Reflect::set(&obj, &"output".into(), &stats.output.into())?;
-        js_sys::Reflect::set(&obj, &"underruns".into(), &stats.underruns.into())?;
-        js_sys::Reflect::set(&obj, &"overruns".into(), &stats.overruns.into())?;
-        js_sys::Reflect::set(&obj, &"level".into(), &stats.level.into())?;
-        js_sys::Reflect::set(
-            &obj,
-            &"state".into(),
-            &stats.state.to_string().to_lowercase().into(),
-        )?;
-        Ok(obj.into())
-    }
-
     // ==================== RESET HOLD ====================
 
     /// Hold the UI chip in reset.

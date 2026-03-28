@@ -13,8 +13,8 @@ use crate::shared::timing::bootloader::HELLO_TIMEOUT_MS;
 use crate::shared::timing::reset::ESP32_RESET_HOLD_MS;
 use crate::shared::tlv::{buffer, tunnel};
 use crate::shared::{
-    CtlToMgmt, CtlToNet, CtlToUi, HEADER_SIZE, JitterStatsInfo, MAX_VALUE_SIZE, MgmtToCtl,
-    NetLoopbackMode, NetToCtl, SYNC_WORD, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid,
+    CtlToMgmt, CtlToNet, CtlToUi, HEADER_SIZE, MAX_VALUE_SIZE, MgmtToCtl, NetLoopbackMode,
+    NetToCtl, SYNC_WORD, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid,
 };
 
 use super::port::CtlPort;
@@ -788,6 +788,51 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
+    /// Get UI chip logs enabled state.
+    pub async fn ui_get_logs_enabled(&mut self) -> Result<bool, CtlError> {
+        self.write_tlv_ui(CtlToUi::GetLogsEnabled, &[]).await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::LogsEnabled {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "LogsEnabled",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        let enabled = tlv.value.first().copied().unwrap_or(0);
+        Ok(enabled != 0)
+    }
+
+    /// Set UI chip logs enabled state.
+    pub async fn ui_set_logs_enabled(&mut self, enabled: bool) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::SetLogsEnabled, &[enabled as u8])
+            .await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Clear all UI chip stored configuration.
+    pub async fn ui_clear_storage(&mut self) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::ClearStorage, &[]).await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type == UiToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != UiToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Set UI chip BOOT0 pin directly.
     pub async fn set_ui_boot0(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;
@@ -1066,19 +1111,165 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
-    /// Get jitter buffer statistics for a channel.
-    pub async fn get_jitter_stats(&mut self, channel_id: u8) -> Result<JitterStatsInfo, CtlError> {
-        self.write_tlv_net(CtlToNet::GetJitterStats, &[channel_id])
-            .await?;
+    /// Get NET chip logs enabled state.
+    pub async fn net_get_logs_enabled(&mut self) -> Result<bool, CtlError> {
+        self.write_tlv_net(CtlToNet::GetLogsEnabled, &[]).await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToCtl::JitterStats {
+        if tlv.tlv_type != NetToCtl::LogsEnabled {
             return Err(CtlError::UnexpectedResponse {
-                expected: "JitterStats",
+                expected: "LogsEnabled",
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        let stats = JitterStatsInfo::from_bytes(&tlv.value).ok_or(CtlError::InvalidData)?;
-        Ok(stats)
+        let enabled = tlv.value.first().copied().unwrap_or(0);
+        Ok(enabled != 0)
+    }
+
+    /// Set NET chip logs enabled state.
+    pub async fn net_set_logs_enabled(&mut self, enabled: bool) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetLogsEnabled, &[enabled as u8])
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Clear all NET chip stored configuration.
+    pub async fn net_clear_storage(&mut self) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::ClearStorage, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get NET chip language setting.
+    pub async fn net_get_language(&mut self) -> Result<String, CtlError> {
+        self.write_tlv_net(CtlToNet::GetLanguage, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type != NetToCtl::Language {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Language",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        let lang = core::str::from_utf8(&tlv.value).map_err(|_| CtlError::InvalidUtf8)?;
+        Ok(lang.into())
+    }
+
+    /// Set NET chip language setting.
+    pub async fn net_set_language(&mut self, language: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetLanguage, language.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get NET chip channel configuration.
+    pub async fn net_get_channel(&mut self) -> Result<String, CtlError> {
+        self.write_tlv_net(CtlToNet::GetChannel, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type != NetToCtl::Channel {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Channel",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        let channel = core::str::from_utf8(&tlv.value).map_err(|_| CtlError::InvalidUtf8)?;
+        Ok(channel.into())
+    }
+
+    /// Set NET chip channel configuration.
+    pub async fn net_set_channel(&mut self, channel: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetChannel, channel.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get NET chip AI configuration.
+    pub async fn net_get_ai(&mut self) -> Result<String, CtlError> {
+        self.write_tlv_net(CtlToNet::GetAi, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type != NetToCtl::Ai {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ai",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        let config = core::str::from_utf8(&tlv.value).map_err(|_| CtlError::InvalidUtf8)?;
+        Ok(config.into())
+    }
+
+    /// Set NET chip AI configuration.
+    pub async fn net_set_ai(&mut self, config: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetAi, config.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Burn JTAG/USB disable efuse on NET chip (IRREVERSIBLE!).
+    ///
+    /// This permanently disables JTAG and USB debugging on the ESP32-S3.
+    /// Use with extreme caution!
+    pub async fn net_burn_jtag_efuse(&mut self) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::BurnJtagEfuse, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Set NET chip BOOT pin directly.

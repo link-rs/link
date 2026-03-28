@@ -2,13 +2,15 @@
 
 use super::Core;
 use crate::{
-    GetSetString, NetAction, NetLoopbackAction, PinAction, PinLevel, ResetAction, WifiAction,
+    GetSetString, LogsAction, NetAction, NetLoopbackAction, PinAction, PinLevel, ResetAction,
+    WifiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::StdDelay;
 use link::ctl::{ProgressCallbacks, SetTimeout, escape_non_ascii};
 use link::protocol_config::timeouts;
-use link::{ChannelId, NetLoopbackMode, Pin, PinValue};
+use link::{NetLoopbackMode, Pin, PinValue};
+use std::io::Write;
 
 /// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
 struct FlashProgress {
@@ -76,7 +78,12 @@ pub async fn handle_net(
             | NetAction::Wifi { .. }
             | NetAction::RelayUrl { .. }
             | NetAction::Loopback { .. }
-            | NetAction::JitterStats { .. }
+            | NetAction::Logs { .. }
+            | NetAction::Language { .. }
+            | NetAction::Channel { .. }
+            | NetAction::Ai { .. }
+            | NetAction::ClearStorage
+            | NetAction::BurnJtagEfuse { .. }
     );
 
     if needs_net_firmware {
@@ -393,22 +400,91 @@ pub async fn handle_net(
 
             result
         }
-        NetAction::JitterStats { channel_id } => {
-            let stats = core.get_jitter_stats(channel_id).await?;
-            let channel_name = ChannelId::try_from(channel_id)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|_| "Unknown".to_string());
-            println!(
-                "Jitter buffer stats for channel {} ({}):",
-                channel_id, channel_name
-            );
-            println!("  received:  {}", stats.received);
-            println!("  output:    {}", stats.output);
-            println!("  underruns: {}", stats.underruns);
-            println!("  overruns:  {}", stats.overruns);
-            println!("  level:     {}", stats.level);
-            println!("  state:     {}", stats.state);
+        NetAction::Logs { action } => match action.unwrap_or_default() {
+            LogsAction::Get => {
+                let enabled = core.net_get_logs_enabled().await?;
+                println!("{}", if enabled { "on" } else { "off" });
+                Ok(())
+            }
+            LogsAction::On => {
+                core.net_set_logs_enabled(true).await?;
+                println!("NET logs: on");
+                Ok(())
+            }
+            LogsAction::Off => {
+                core.net_set_logs_enabled(false).await?;
+                println!("NET logs: off");
+                Ok(())
+            }
+        },
+        NetAction::Language { action } => match action.unwrap_or_default() {
+            GetSetString::Get => {
+                let lang = core.net_get_language().await?;
+                println!("{}", lang);
+                Ok(())
+            }
+            GetSetString::Set { value } => {
+                core.net_set_language(&value).await?;
+                println!("Language set to {}", value);
+                Ok(())
+            }
+        },
+        NetAction::Channel { action } => match action.unwrap_or_default() {
+            GetSetString::Get => {
+                let channel = core.net_get_channel().await?;
+                println!("{}", channel);
+                Ok(())
+            }
+            GetSetString::Set { value } => {
+                core.net_set_channel(&value).await?;
+                println!("Channel set");
+                Ok(())
+            }
+        },
+        NetAction::Ai { action } => match action.unwrap_or_default() {
+            GetSetString::Get => {
+                let config = core.net_get_ai().await?;
+                println!("{}", config);
+                Ok(())
+            }
+            GetSetString::Set { value } => {
+                core.net_set_ai(&value).await?;
+                println!("AI config set");
+                Ok(())
+            }
+        },
+        NetAction::ClearStorage => {
+            core.net_clear_storage().await?;
+            println!("NET storage cleared");
             Ok(())
+        }
+        NetAction::BurnJtagEfuse { yes } => {
+            if !yes {
+                println!("WARNING: This operation is IRREVERSIBLE!");
+                println!("It will permanently disable JTAG/USB debugging on this device.");
+                println!("");
+                print!("Type 'BURN' to confirm: ");
+                std::io::stdout().flush()?;
+
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+
+                if input.trim() != "BURN" {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            }
+
+            match core.net_burn_jtag_efuse().await {
+                Ok(()) => {
+                    println!("JTAG/USB disable efuse burned successfully.");
+                    Ok(())
+                }
+                Err(e) => {
+                    println!("Failed to burn efuse: {}", e);
+                    Err(e.into())
+                }
+            }
         }
     }
 }
