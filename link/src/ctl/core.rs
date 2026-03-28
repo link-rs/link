@@ -544,7 +544,11 @@ impl<P: CtlPort> CtlCore<P> {
             let _ = port.set_timeout(std::time::Duration::from_secs(timeout_secs));
         }
 
+        // Clear all buffers and drain any stale data from serial port
+        self.ui_buffer.clear();
         self.net_buffer.clear();
+        self.port_mut().drain_port().await;
+
         let result = self.net_ping(b"ready").await.is_ok();
 
         if let (Some(port), Some(timeout)) = (&mut self.port, original_timeout) {

@@ -87,9 +87,8 @@ pub async fn handle_net(
     );
 
     if needs_net_firmware {
-        // NET chip (ESP32-S3) takes several seconds to boot after MGMT releases
-        // it from reset. Wait up to 30 seconds for WiFi connection + initialization.
-        if !core.wait_for_net_ready(30).await {
+        // NET chip (ESP32-S3) takes a moment to boot after MGMT releases it from reset.
+        if !core.wait_for_net_ready(2).await {
             return Err("NET chip did not respond (is firmware flashed?)".into());
         }
     }
