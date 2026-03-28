@@ -65,10 +65,10 @@ where
 
     /// Clear all stored configuration (reset to factory defaults).
     ///
-    /// Sets version to 0xFFFFFFFF and SFrame key to all 0xFF.
+    /// Sets version to 0 and SFrame key to all zeros.
     pub fn clear(&mut self) -> Result<(), I::Error> {
-        self.set_version(0xFFFFFFFF)?;
-        self.set_sframe_key(&[0xFF; 16])?;
+        self.set_version(0)?;
+        self.set_sframe_key(&[0x00; 16])?;
         Ok(())
     }
 }

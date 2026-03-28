@@ -513,8 +513,8 @@ async fn handle_mgmt<M, N, I, D, SM>(
                 to_mgmt.must_write_tlv(UiToCtl::Error, b"eeprom").await;
                 return;
             }
-            // Reset SFrame state to default key
-            sframe_state.reset(&[0xff; 16], 0);
+            // Reset SFrame state to cleared key
+            sframe_state.reset(&[0x00; 16], 0);
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
     }
