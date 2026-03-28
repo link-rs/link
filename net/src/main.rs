@@ -574,12 +574,14 @@ struct NvsStorage {
     relay_url: String,
     language: String,
     channel: String,
-    ai_config: String,
+    ai: String,
+    logs_enabled: bool,
 }
 
 // NVS key names (max 15 chars)
 const NVS_KEY_WIFI_SSIDS: &str = "wifi_ssids";
 const NVS_KEY_RELAY_URL: &str = "relay_url";
+const NVS_KEY_LOGS: &str = "logs_enabled";
 
 impl NvsStorage {
     /// Load storage from NVS
@@ -590,7 +592,8 @@ impl NvsStorage {
             relay_url: String::new(),
             language: String::new(),
             channel: String::new(),
-            ai_config: String::new(),
+            ai: String::new(),
+            logs_enabled: true,
         };
 
         // Load WiFi SSIDs
@@ -628,6 +631,18 @@ impl NvsStorage {
                     warn!("net: failed to read relay URL from NVS: {:?}", e);
                 }
             }
+
+            // Load logs_enabled
+            match nvs.get_u8(NVS_KEY_LOGS) {
+                Ok(Some(val)) => {
+                    storage.logs_enabled = val != 0;
+                    info!("net: loaded logs_enabled from NVS: {}", storage.logs_enabled);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("net: failed to read logs_enabled from NVS: {:?}", e);
+                }
+            }
         }
 
         storage
@@ -655,6 +670,9 @@ impl NvsStorage {
             let _ = nvs.remove(NVS_KEY_RELAY_URL);
         }
 
+        // Save logs_enabled
+        nvs.set_u8(NVS_KEY_LOGS, self.logs_enabled as u8)?;
+
         Ok(())
     }
 
@@ -677,7 +695,8 @@ impl NvsStorage {
         self.relay_url.clear();
         self.language.clear();
         self.channel.clear();
-        self.ai_config.clear();
+        self.ai.clear();
+        self.logs_enabled = true;
     }
 }
 
@@ -800,6 +819,11 @@ fn main() {
         "net: loaded {} WiFi SSIDs from NVS",
         storage.wifi_ssids.len()
     );
+
+    // Apply stored log level
+    if !storage.logs_enabled {
+        log::set_max_level(log::LevelFilter::Off);
+    }
 
     // MoQ + WiFi task (combined thread handles WiFi connection, monitoring, and MoQ)
     let (moq_cmd_tx, moq_cmd_rx) = mpsc::channel::<MoqCommand>();
@@ -1184,12 +1208,22 @@ fn handle_mgmt_message(
             write_tlv(mgmt_uart, NetToCtl::Loopback, &[*loopback as u8]);
         }
         CtlToNet::GetLogsEnabled => {
-            // Stub: logs always enabled
-            write_tlv(mgmt_uart, NetToCtl::LogsEnabled, &[1]);
+            write_tlv(mgmt_uart, NetToCtl::LogsEnabled, &[storage.logs_enabled as u8]);
         }
         CtlToNet::SetLogsEnabled => {
-            // Stub: ignore, just ack
-            write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+            let enabled = value.first().copied().unwrap_or(1) != 0;
+            storage.logs_enabled = enabled;
+            // Apply log level immediately
+            if enabled {
+                log::set_max_level(log::LevelFilter::Info);
+            } else {
+                log::set_max_level(log::LevelFilter::Off);
+            }
+            if storage.save().is_ok() {
+                write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+            } else {
+                write_tlv(mgmt_uart, NetToCtl::Error, b"save");
+            }
         }
         CtlToNet::ClearStorage => {
             storage.clear();
@@ -1229,12 +1263,12 @@ fn handle_mgmt_message(
                 write_tlv(mgmt_uart, NetToCtl::Error, b"utf8");
             }
         }
-        CtlToNet::GetAiConfig => {
-            write_tlv(mgmt_uart, NetToCtl::AiConfig, storage.ai_config.as_bytes());
+        CtlToNet::GetAi => {
+            write_tlv(mgmt_uart, NetToCtl::Ai, storage.ai.as_bytes());
         }
-        CtlToNet::SetAiConfig => {
+        CtlToNet::SetAi => {
             if let Ok(config) = core::str::from_utf8(value) {
-                storage.ai_config = config.to_string();
+                storage.ai = config.to_string();
                 if storage.save().is_ok() {
                     write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
                 } else {
@@ -1245,8 +1279,53 @@ fn handle_mgmt_message(
             }
         }
         CtlToNet::BurnJtagEfuse => {
-            // Stub: return error - this is a dangerous operation
-            write_tlv(mgmt_uart, NetToCtl::Error, b"not implemented");
+            // IRREVERSIBLE: Burn efuse to disable USB JTAG debugging
+            // This matches hactar's implementation in efuse_burner.cc
+            use core::ptr::addr_of_mut;
+            use esp_idf_svc::sys::{
+                esp_efuse_batch_write_begin, esp_efuse_batch_write_cancel,
+                esp_efuse_batch_write_commit, esp_efuse_read_field_bit,
+                esp_efuse_write_field_bit, ESP_EFUSE_DIS_USB_JTAG, ESP_OK,
+            };
+
+            unsafe {
+                // Check if already burned
+                if esp_efuse_read_field_bit(addr_of_mut!(ESP_EFUSE_DIS_USB_JTAG) as *mut _) {
+                    info!("net: efuse for DIS_USB_JTAG is already burned");
+                    write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+                    return;
+                }
+
+                info!("net: starting efuse burning process to disable USB JTAG (IRREVERSIBLE!)");
+
+                // Begin batch write
+                let err = esp_efuse_batch_write_begin();
+                if err != ESP_OK {
+                    warn!("net: failed to start batch write: {}", err);
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"batch begin failed");
+                    return;
+                }
+
+                // Write the efuse bit
+                let err = esp_efuse_write_field_bit(addr_of_mut!(ESP_EFUSE_DIS_USB_JTAG) as *mut _);
+                if err != ESP_OK {
+                    warn!("net: failed to write efuse field: {}", err);
+                    esp_efuse_batch_write_cancel();
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"write failed");
+                    return;
+                }
+
+                // Commit the changes
+                let err = esp_efuse_batch_write_commit();
+                if err != ESP_OK {
+                    warn!("net: failed to commit efuse changes: {}", err);
+                    write_tlv(mgmt_uart, NetToCtl::Error, b"commit failed");
+                    return;
+                }
+
+                info!("net: successfully burned efuse to disable USB JTAG");
+                write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
+            }
         }
     }
 }

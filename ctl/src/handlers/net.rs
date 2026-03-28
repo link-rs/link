@@ -81,7 +81,7 @@ pub async fn handle_net(
             | NetAction::Logs { .. }
             | NetAction::Language { .. }
             | NetAction::Channel { .. }
-            | NetAction::AiConfig { .. }
+            | NetAction::Ai { .. }
             | NetAction::ClearStorage
             | NetAction::BurnJtagEfuse { .. }
     );
@@ -441,14 +441,14 @@ pub async fn handle_net(
                 Ok(())
             }
         },
-        NetAction::AiConfig { action } => match action.unwrap_or_default() {
+        NetAction::Ai { action } => match action.unwrap_or_default() {
             GetSetString::Get => {
-                let config = core.net_get_ai_config().await?;
+                let config = core.net_get_ai().await?;
                 println!("{}", config);
                 Ok(())
             }
             GetSetString::Set { value } => {
-                core.net_set_ai_config(&value).await?;
+                core.net_set_ai(&value).await?;
                 println!("AI config set");
                 Ok(())
             }

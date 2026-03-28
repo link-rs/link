@@ -228,10 +228,10 @@ pub enum CtlToNet {
     GetChannel,
     /// Set channel configuration (JSON array: ["relay","org","channel","ptt"])
     SetChannel,
-    /// Get AI configuration (returns AiConfig)
-    GetAiConfig,
+    /// Get AI configuration (returns Ai)
+    GetAi,
     /// Set AI configuration (JSON object: {"query":[...],"audio":[...],"cmd":[...]})
-    SetAiConfig,
+    SetAi,
     /// Burn JTAG/USB disable efuse (IRREVERSIBLE!)
     BurnJtagEfuse,
 }
@@ -254,7 +254,7 @@ pub enum NetToCtl {
     /// Channel configuration (JSON array)
     Channel,
     /// AI configuration (JSON object)
-    AiConfig,
+    Ai,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

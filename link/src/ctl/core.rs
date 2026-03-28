@@ -1221,12 +1221,12 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Get NET chip AI configuration.
-    pub async fn net_get_ai_config(&mut self) -> Result<String, CtlError> {
-        self.write_tlv_net(CtlToNet::GetAiConfig, &[]).await?;
+    pub async fn net_get_ai(&mut self) -> Result<String, CtlError> {
+        self.write_tlv_net(CtlToNet::GetAi, &[]).await?;
         let tlv = self.read_tlv_net().await?;
-        if tlv.tlv_type != NetToCtl::AiConfig {
+        if tlv.tlv_type != NetToCtl::Ai {
             return Err(CtlError::UnexpectedResponse {
-                expected: "AiConfig",
+                expected: "Ai",
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
@@ -1235,8 +1235,8 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Set NET chip AI configuration.
-    pub async fn net_set_ai_config(&mut self, config: &str) -> Result<(), CtlError> {
-        self.write_tlv_net(CtlToNet::SetAiConfig, config.as_bytes())
+    pub async fn net_set_ai(&mut self, config: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetAi, config.as_bytes())
             .await?;
         let tlv = self.read_tlv_net().await?;
         if tlv.tlv_type == NetToCtl::Error {

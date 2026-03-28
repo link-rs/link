@@ -379,8 +379,8 @@ enum NetAction {
     },
 
     /// AI configuration (JSON object)
-    #[command(name = "ai-config")]
-    AiConfig {
+    #[command(name = "ai")]
+    Ai {
         #[command(subcommand)]
         action: Option<GetSetString>,
     },

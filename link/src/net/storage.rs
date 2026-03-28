@@ -17,7 +17,7 @@ pub const MAX_LANGUAGE_LEN: usize = 16;
 /// Max length for channel config JSON
 pub const MAX_CHANNEL_LEN: usize = 256;
 /// Max length for AI config JSON
-pub const MAX_AI_CONFIG_LEN: usize = 512;
+pub const MAX_AI_LEN: usize = 512;
 
 /// Persistent storage data for the NET chip.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,7 +28,7 @@ pub struct NetStorageData {
     pub relay_url: String<MAX_RELAY_URL_LEN>,
     pub language: String<MAX_LANGUAGE_LEN>,
     pub channel: String<MAX_CHANNEL_LEN>,
-    pub ai_config: String<MAX_AI_CONFIG_LEN>,
+    pub ai: String<MAX_AI_LEN>,
     pub logs_enabled: bool,
 }
 
@@ -43,7 +43,7 @@ pub struct NetStorage<F> {
 const MAGIC: [u8; 4] = *b"LNKS";
 
 /// Storage format version.
-/// V4 adds language, channel, ai_config, logs_enabled.
+/// V4 adds language, channel, ai, logs_enabled.
 const VERSION: u8 = 4;
 
 /// Header size: 4 bytes magic + 1 byte version + 2 bytes length.
@@ -183,13 +183,13 @@ where
     }
 
     /// Get the AI configuration.
-    pub fn get_ai_config(&self) -> &str {
-        &self.data.ai_config
+    pub fn get_ai(&self) -> &str {
+        &self.data.ai
     }
 
     /// Set the AI configuration.
-    pub fn set_ai_config(&mut self, config: &str) -> Result<(), ()> {
-        self.data.ai_config = String::try_from(config).map_err(|_| ())?;
+    pub fn set_ai(&mut self, config: &str) -> Result<(), ()> {
+        self.data.ai = String::try_from(config).map_err(|_| ())?;
         Ok(())
     }
 

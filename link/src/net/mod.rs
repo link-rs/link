@@ -472,18 +472,18 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             }
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
-        CtlToNet::GetAiConfig => {
-            info!("net: get ai config");
-            let config = storage.get_ai_config();
+        CtlToNet::GetAi => {
+            info!("net: get ai");
+            let config = storage.get_ai();
             to_mgmt
-                .must_write_tlv(NetToCtl::AiConfig, config.as_bytes())
+                .must_write_tlv(NetToCtl::Ai, config.as_bytes())
                 .await;
         }
-        CtlToNet::SetAiConfig => {
+        CtlToNet::SetAi => {
             let config = core::str::from_utf8(&tlv.value).unwrap_or("");
-            info!("net: set ai config");
-            if storage.set_ai_config(config).is_err() {
-                info!("net: failed to set ai config (too long)");
+            info!("net: set ai");
+            if storage.set_ai(config).is_err() {
+                info!("net: failed to set ai (too long)");
                 to_mgmt.must_write_tlv(NetToCtl::Error, b"length").await;
                 return;
             }
