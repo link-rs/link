@@ -622,11 +622,12 @@ fn mgmt_handler(
     let action = MgmtAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
 
-    tokio::task::block_in_place(|| {
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(dispatch(Command::Mgmt { action }, core))
-    })
-    .map(|()| None)
-    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
 }
 
 fn ui_handler(
@@ -636,11 +637,12 @@ fn ui_handler(
     let action = UiAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
 
-    tokio::task::block_in_place(|| {
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(dispatch(Command::Ui { action }, core))
-    })
-    .map(|()| None)
-    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
 }
 
 fn net_handler(
@@ -650,22 +652,24 @@ fn net_handler(
     let action = NetAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
 
-    tokio::task::block_in_place(|| {
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(dispatch(Command::Net { action }, core))
-    })
-    .map(|()| None)
-    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
 }
 
 fn hello_handler(
     _args: ArgMatches,
     core: &mut Core,
 ) -> Result<Option<String>, reedline_repl_rs::Error> {
-    tokio::task::block_in_place(|| {
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(dispatch(Command::Hello, core))
-    })
-    .map(|()| None)
-    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
 }
 
 fn circular_ping_handler(
@@ -678,23 +682,25 @@ fn circular_ping_handler(
         .cloned()
         .unwrap_or_else(|| "hello".to_string());
 
-    tokio::task::block_in_place(|| {
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current()
             .block_on(dispatch(Command::CircularPing { reverse, data }, core))
-    })
-    .map(|()| None)
-    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
 }
 
 fn exit_handler(
     _args: ArgMatches,
     core: &mut Core,
 ) -> Result<Option<String>, reedline_repl_rs::Error> {
-    tokio::task::block_in_place(|| {
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(dispatch(Command::Exit, core))
-    })
-    .map(|()| None)
-    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
 }
 
 fn run_repl(core: Core, port_name: &str) -> Result<(), reedline_repl_rs::Error> {
