@@ -481,7 +481,7 @@ async fn handle_mgmt<M, N, I, D, SM>(
                 stack_size: size,
                 stack_used: used,
             };
-            let mut buf = [0u8; 32];
+            let mut buf = [0u8; 128];
             if let Some(serialized) = info.to_bytes(&mut buf) {
                 to_mgmt.must_write_tlv(UiToCtl::StackInfo, serialized).await;
             }

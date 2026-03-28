@@ -601,8 +601,8 @@ impl NvsStorage {
             let mut buf = [0u8; 512];
             match nvs.get_blob(NVS_KEY_WIFI_SSIDS, &mut buf) {
                 Ok(Some(data)) => {
-                    if let Ok(ssids) =
-                        postcard::from_bytes::<heapless::Vec<WifiSsid, MAX_WIFI_SSIDS>>(data)
+                    if let Ok((ssids, _)) =
+                        serde_json_core::from_slice::<heapless::Vec<WifiSsid, MAX_WIFI_SSIDS>>(data)
                     {
                         storage.wifi_ssids = ssids;
                         info!(
@@ -659,8 +659,9 @@ impl NvsStorage {
         };
 
         // Save WiFi SSIDs
-        if let Ok(serialized) = postcard::to_allocvec(&self.wifi_ssids) {
-            nvs.set_blob(NVS_KEY_WIFI_SSIDS, &serialized)?;
+        let mut wifi_buf = [0u8; 512];
+        if let Ok(len) = serde_json_core::to_slice(&self.wifi_ssids, &mut wifi_buf) {
+            nvs.set_blob(NVS_KEY_WIFI_SSIDS, &wifi_buf[..len])?;
             info!("net: saved {} WiFi SSIDs to NVS", self.wifi_ssids.len());
         }
 
@@ -1156,7 +1157,7 @@ fn handle_mgmt_message(
             write_tlv(ui_uart, NetToUi::CircularPing, value);
         }
         CtlToNet::AddWifiSsid => {
-            if let Ok(wifi) = postcard::from_bytes::<WifiSsid>(value) {
+            if let Ok((wifi, _)) = serde_json_core::from_slice::<WifiSsid>(value) {
                 if storage.add_wifi_ssid(&wifi.ssid, &wifi.password).is_ok() {
                     if storage.save().is_ok() {
                         write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
@@ -1171,8 +1172,9 @@ fn handle_mgmt_message(
             }
         }
         CtlToNet::GetWifiSsids => {
-            if let Ok(serialized) = postcard::to_allocvec(&storage.wifi_ssids) {
-                write_tlv(mgmt_uart, NetToCtl::WifiSsids, &serialized);
+            let mut buf = [0u8; 512];
+            if let Ok(len) = serde_json_core::to_slice(&storage.wifi_ssids, &mut buf) {
+                write_tlv(mgmt_uart, NetToCtl::WifiSsids, &buf[..len]);
             }
         }
         CtlToNet::ClearWifiSsids => {

@@ -311,7 +311,8 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
         }
         CtlToNet::AddWifiSsid => {
             info!("net: add wifi ssid");
-            let Ok(wifi): Result<WifiSsid, _> = postcard::from_bytes(&tlv.value) else {
+            let Ok((wifi, _)): Result<(WifiSsid, _), _> = serde_json_core::from_slice(&tlv.value)
+            else {
                 info!("net: failed to deserialize wifi ssid");
                 to_mgmt
                     .must_write_tlv(NetToCtl::Error, b"deserialize")
@@ -333,13 +334,13 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
         CtlToNet::GetWifiSsids => {
             info!("net: get wifi ssids");
             let ssids = storage.get_wifi_ssids();
-            let mut buf = [0u8; 256];
-            let Ok(serialized) = postcard::to_slice(ssids, &mut buf) else {
+            let mut buf = [0u8; 512];
+            let Ok(len) = serde_json_core::to_slice(ssids, &mut buf) else {
                 info!("net: failed to serialize wifi ssids");
                 return;
             };
             to_mgmt
-                .must_write_tlv(NetToCtl::WifiSsids, serialized)
+                .must_write_tlv(NetToCtl::WifiSsids, &buf[..len])
                 .await;
         }
         CtlToNet::ClearWifiSsids => {

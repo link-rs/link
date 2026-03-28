@@ -1044,8 +1044,8 @@ impl<P: CtlPort> CtlCore<P> {
             password: password.try_into().map_err(|_| CtlError::TooLong)?,
         };
         let mut buf = [0u8; 128];
-        let serialized = postcard::to_slice(&wifi, &mut buf).map_err(|_| CtlError::TooLong)?;
-        self.write_tlv_net(CtlToNet::AddWifiSsid, serialized)
+        let len = serde_json_core::to_slice(&wifi, &mut buf).map_err(|_| CtlError::TooLong)?;
+        self.write_tlv_net(CtlToNet::AddWifiSsid, &buf[..len])
             .await?;
         let tlv = self.read_tlv_net().await?;
         if tlv.tlv_type != NetToCtl::Ack {
@@ -1067,7 +1067,9 @@ impl<P: CtlPort> CtlCore<P> {
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        postcard::from_bytes(&tlv.value).map_err(|_| CtlError::InvalidUtf8)
+        serde_json_core::from_slice(&tlv.value)
+            .map(|(v, _)| v)
+            .map_err(|_| CtlError::InvalidUtf8)
     }
 
     /// Clear all WiFi SSIDs from NET chip storage.

@@ -43,7 +43,7 @@ embedded-io-async = "0.7"
 
 # Shared types
 heapless = { version = "0.9", features = ["serde"] }
-postcard = "1"
+serde-json-core = "0.6"
 
 # Logging
 console_error_panic_hook = "0.1"
