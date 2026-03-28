@@ -636,7 +636,10 @@ impl NvsStorage {
             match nvs.get_u8(NVS_KEY_LOGS) {
                 Ok(Some(val)) => {
                     storage.logs_enabled = val != 0;
-                    info!("net: loaded logs_enabled from NVS: {}", storage.logs_enabled);
+                    info!(
+                        "net: loaded logs_enabled from NVS: {}",
+                        storage.logs_enabled
+                    );
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -1208,7 +1211,11 @@ fn handle_mgmt_message(
             write_tlv(mgmt_uart, NetToCtl::Loopback, &[*loopback as u8]);
         }
         CtlToNet::GetLogsEnabled => {
-            write_tlv(mgmt_uart, NetToCtl::LogsEnabled, &[storage.logs_enabled as u8]);
+            write_tlv(
+                mgmt_uart,
+                NetToCtl::LogsEnabled,
+                &[storage.logs_enabled as u8],
+            );
         }
         CtlToNet::SetLogsEnabled => {
             let enabled = value.first().copied().unwrap_or(1) != 0;
@@ -1284,8 +1291,8 @@ fn handle_mgmt_message(
             use core::ptr::addr_of_mut;
             use esp_idf_svc::sys::{
                 esp_efuse_batch_write_begin, esp_efuse_batch_write_cancel,
-                esp_efuse_batch_write_commit, esp_efuse_read_field_bit,
-                esp_efuse_write_field_bit, ESP_EFUSE_DIS_USB_JTAG, ESP_OK,
+                esp_efuse_batch_write_commit, esp_efuse_read_field_bit, esp_efuse_write_field_bit,
+                ESP_EFUSE_DIS_USB_JTAG, ESP_OK,
             };
 
             unsafe {
