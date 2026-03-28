@@ -152,7 +152,7 @@ pub enum MgmtToCtl {
     Ack,
     /// Hello response (4 bytes XOR'd with b"LINK")
     Hello,
-    /// Stack usage information (postcard-serialized StackInfo)
+    /// Stack usage information (JSON-serialized StackInfo)
     StackInfo,
 }
 
@@ -194,7 +194,7 @@ pub enum UiToCtl {
     Loopback,
     /// Debug log message (UTF-8 string)
     Log,
-    /// Stack usage information (postcard-serialized StackInfo)
+    /// Stack usage information (JSON-serialized StackInfo)
     StackInfo,
     /// Logs enabled state (1 byte: 0=disabled, 1=enabled)
     LogsEnabled,
@@ -274,7 +274,7 @@ pub enum NetToUi {
     AudioFrame,
 }
 
-/// Stack usage information (wire format, postcard-serialized).
+/// Stack usage information (wire format, JSON-serialized).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct StackInfo {
@@ -299,13 +299,15 @@ impl StackInfo {
             0.0
         }
     }
-    /// Serialize to postcard into the provided buffer.
+    /// Serialize to JSON into the provided buffer.
     pub fn to_bytes<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
-        postcard::to_slice(self, buf).ok().map(|s| &*s)
+        serde_json_core::to_slice(self, buf)
+            .ok()
+            .map(|len| &buf[..len])
     }
-    /// Deserialize from postcard bytes.
+    /// Deserialize from JSON bytes.
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
-        postcard::from_bytes(data).ok()
+        serde_json_core::from_slice(data).ok().map(|(v, _)| v)
     }
 }
 

@@ -832,13 +832,12 @@ async fn run_ui(
 
                 // Skip protocol prefix byte if present
                 // Note: WebSocket echo returns UiToNet prefixes, not NetToUi
-                let audio_data = if msg[0] == UiToNet::AudioFrame as u8
-                    || msg[0] == NetToUi::AudioFrame as u8
-                {
-                    &msg[1..]
-                } else {
-                    &msg[..]
-                };
+                let audio_data =
+                    if msg[0] == UiToNet::AudioFrame as u8 || msg[0] == NetToUi::AudioFrame as u8 {
+                        &msg[1..]
+                    } else {
+                        &msg[..]
+                    };
 
                 // Convert bytes back to i16 samples
                 if audio_data.len() >= 2 {

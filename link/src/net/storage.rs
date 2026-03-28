@@ -98,7 +98,7 @@ where
         }
 
         // Deserialize
-        if let Ok(data) = postcard::from_bytes(&buf[..len]) {
+        if let Ok((data, _)) = serde_json_core::from_slice(&buf[..len]) {
             self.data = data;
         }
     }
@@ -107,8 +107,8 @@ where
     pub fn save(&mut self) -> Result<(), F::Error> {
         // Serialize data
         let mut buf = [0u8; 512];
-        let serialized = postcard::to_slice(&self.data, &mut buf).unwrap();
-        let len = serialized.len();
+        let len =
+            serde_json_core::to_slice(&self.data, &mut buf).expect("JSON serialization failed");
 
         // Prepare header + data in one buffer to write atomically
         let mut write_buf = [0u8; HEADER_SIZE + 512];

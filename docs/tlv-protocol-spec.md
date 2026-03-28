@@ -170,7 +170,7 @@ Messages from MGMT chip to CTL host.
 | 0x12  | FromNet  | Tunneled byte stream from NET    | NET chip sent data        |
 | 0x13  | Ack      | (empty)                          | Acknowledgment of command |
 | 0x14  | Hello    | 4 bytes (challenge XOR b"LINK")  | Response to Hello         |
-| 0x15  | StackInfo| postcard-serialized StackInfo    | Response to GetStackInfo  |
+| 0x15  | StackInfo| JSON-serialized StackInfo    | Response to GetStackInfo  |
 
 ### 6.3 CtlToUi (0x2X)
 
@@ -203,7 +203,7 @@ Messages from UI chip to CTL (forwarded through MGMT via MgmtToCtl::FromUi).
 | 0x35  | Error        | UTF-8 error message           | Error response to any command       |
 | 0x36  | Loopback     | 1 byte (UiLoopbackMode)       | Response to GetLoopback             |
 | 0x37  | Log          | UTF-8 log text                | Unsolicited debug log               |
-| 0x38  | StackInfo    | postcard-serialized StackInfo | Response to GetStackInfo            |
+| 0x38  | StackInfo    | JSON-serialized StackInfo | Response to GetStackInfo            |
 
 ### 6.5 CtlToNet (0x4X)
 
@@ -213,7 +213,7 @@ Messages from CTL to NET chip (tunneled through MGMT).
 |-------|--------------------|--------------------------|------------------------------|
 | 0x40  | Ping               | Arbitrary echo data      | Pong                         |
 | 0x41  | CircularPing       | Arbitrary echo data      | (forwarded to UI)            |
-| 0x42  | AddWifiSsid        | postcard(WifiSsid)       | Ack                          |
+| 0x42  | AddWifiSsid        | JSON(WifiSsid)       | Ack                          |
 | 0x43  | GetWifiSsids       | (empty)                  | WifiSsids                    |
 | 0x44  | ClearWifiSsids     | (empty)                  | Ack                          |
 | 0x45  | GetRelayUrl        | (empty)                  | RelayUrl                     |
@@ -230,12 +230,12 @@ Messages from NET chip to CTL (forwarded through MGMT via MgmtToCtl::FromNet).
 |-------|---------------|-------------------------------------|-----------------------------|
 | 0x50  | Pong          | Echo of Ping data                   | Response to Ping            |
 | 0x51  | CircularPing  | Echo data (forwarded)               | Forwarded from UI           |
-| 0x52  | WifiSsids     | postcard(Vec\<WifiSsid\>)           | Response to GetWifiSsids    |
+| 0x52  | WifiSsids     | JSON(Vec\<WifiSsid\>)           | Response to GetWifiSsids    |
 | 0x53  | RelayUrl      | UTF-8 URL string                    | Response to GetRelayUrl     |
 | 0x54  | Ack           | (empty)                             | Acknowledgment              |
 | 0x55  | Error         | UTF-8 error message                 | Error response              |
 | 0x56  | Loopback      | 1 byte (NetLoopbackMode)            | Response to GetLoopback     |
-| 0x57  | JitterStats   | postcard-serialized JitterStatsInfo | Response to GetJitterStats  |
+| 0x57  | JitterStats   | JSON-serialized JitterStatsInfo | Response to GetJitterStats  |
 
 ### 6.7 UiToNet (0x6X)
 
@@ -266,13 +266,12 @@ Messages from NET to UI over the direct audio link.
 | u32 BE      | 4 bytes       | Big-endian                  |
 | UTF-8 string| Variable      | No length prefix; length is the TLV Length field |
 
-### 7.2 postcard Serialization
+### 7.2 JSON Serialization
 
-Structured payloads use the **postcard** serialization format (a compact
-variable-length encoding for Serde-serializable Rust types). Postcard uses
-varint encoding for lengths and enum discriminants.
+Structured payloads use **JSON** serialization format. This enables easy
+interoperability with other implementations (e.g., C++ firmware).
 
-The following types are postcard-serialized:
+The following types are JSON-serialized:
 
 **WifiSsid:**
 ```rust
@@ -306,7 +305,7 @@ The Ping/Pong exchange verifies connectivity and data integrity on any link.
 
 ### 7.5 StackInfo
 
-postcard-serialized `StackInfo` struct:
+JSON-serialized `StackInfo` struct:
 
 ```rust
 #[derive(Serialize, Deserialize)]
@@ -322,7 +321,7 @@ struct StackInfo {
 
 ### 7.6 JitterStats
 
-postcard-serialized `JitterStatsInfo` struct:
+JSON-serialized `JitterStatsInfo` struct:
 
 ```rust
 #[derive(Serialize, Deserialize)]
