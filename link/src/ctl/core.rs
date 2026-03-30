@@ -735,6 +735,10 @@ impl<P: CtlPort> CtlCore<P> {
         self.write_tlv_ui(CtlToUi::SetLoopback, &[mode as u8])
             .await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type == UiToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
         if tlv.tlv_type != UiToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",
