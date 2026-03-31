@@ -13,7 +13,7 @@ clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 indicatif = "0.17"
 rand = "0.9"
-reedline-repl-rs = { version = "1.3", features = ["derive"] }
+reedline-repl-rs = { version = "1.3", features = ["derive", "shlex"] }
 log = "0.4"
 crossterm = "0.28"
 heapless = "0.9"

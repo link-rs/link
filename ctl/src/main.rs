@@ -277,6 +277,42 @@ enum GetSetString {
     Set { value: String },
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum Language {
+    #[value(name = "en-US")]
+    EnUs,
+    #[value(name = "es-ES")]
+    EsEs,
+    #[value(name = "de-DE")]
+    DeDe,
+    #[value(name = "hi-IN")]
+    HiIn,
+    #[value(name = "nb-NO")]
+    NbNo,
+}
+
+impl std::fmt::Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Language::EnUs => write!(f, "en-US"),
+            Language::EsEs => write!(f, "es-ES"),
+            Language::DeDe => write!(f, "de-DE"),
+            Language::HiIn => write!(f, "hi-IN"),
+            Language::NbNo => write!(f, "nb-NO"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+enum LanguageAction {
+    #[default]
+    Get,
+    Set {
+        #[arg(value_enum)]
+        lang: Language,
+    },
+}
+
 #[derive(Debug, Clone, Default, Subcommand)]
 enum LoopbackAction {
     /// Get the current loopback mode
@@ -366,10 +402,10 @@ enum NetAction {
         action: Option<LogsAction>,
     },
 
-    /// Language setting (e.g. "en-US")
+    /// Language setting
     Language {
         #[command(subcommand)]
-        action: Option<GetSetString>,
+        action: Option<LanguageAction>,
     },
 
     /// Channel configuration (JSON array: ["relay","org","channel","ptt"])

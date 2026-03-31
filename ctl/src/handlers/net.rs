@@ -2,8 +2,8 @@
 
 use super::Core;
 use crate::{
-    GetSetString, LogsAction, NetAction, NetLoopbackAction, PinAction, PinLevel, ResetAction,
-    WifiAction,
+    GetSetString, LanguageAction, LogsAction, NetAction, NetLoopbackAction, PinAction, PinLevel,
+    ResetAction, WifiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::StdDelay;
@@ -417,14 +417,14 @@ pub async fn handle_net(
             }
         },
         NetAction::Language { action } => match action.unwrap_or_default() {
-            GetSetString::Get => {
+            LanguageAction::Get => {
                 let lang = core.net_get_language().await?;
                 println!("{}", lang);
                 Ok(())
             }
-            GetSetString::Set { value } => {
-                core.net_set_language(&value).await?;
-                println!("Language set to {}", value);
+            LanguageAction::Set { lang } => {
+                core.net_set_language(&lang.to_string()).await?;
+                println!("Language set to {}", lang);
                 Ok(())
             }
         },
