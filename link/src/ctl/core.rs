@@ -527,30 +527,45 @@ impl<P: CtlPort> CtlCore<P> {
         false
     }
 
-    /// Wait for the NET chip to be ready by sending a single ping with a long timeout.
+    /// Wait for the NET chip to be ready by sending pings until one succeeds.
     ///
     /// The NET chip (ESP32-S3) takes several seconds to boot after MGMT releases
     /// it from reset. If WiFi credentials are stored, it may block during WiFi
-    /// connection. This method sends one ping and waits for a response.
+    /// connection. This method sends multiple pings with short timeouts until
+    /// one succeeds or the total timeout expires.
     ///
     /// Returns `true` if NET responded, `false` if timeout expired.
     pub async fn wait_for_net_ready(&mut self, timeout_secs: u64) -> bool
     where
         P: crate::ctl::SetTimeout,
     {
+        const PING_TIMEOUT_MS: u64 = 200;
+
         let original_timeout = self.port.as_ref().map(|p| p.timeout());
+        let max_attempts = (timeout_secs * 1000 / PING_TIMEOUT_MS).max(1);
 
         if let Some(port) = &mut self.port {
-            let _ = port.set_timeout(std::time::Duration::from_secs(timeout_secs));
+            let _ = port.set_timeout(core::time::Duration::from_millis(PING_TIMEOUT_MS));
         }
 
-        self.net_buffer.clear();
-        let result = self.net_ping(b"ready").await.is_ok();
+        for _ in 0..max_attempts {
+            // Clear buffers and drain stale data before each attempt
+            self.ui_buffer.clear();
+            self.net_buffer.clear();
+            self.port_mut().drain_port().await;
+
+            if self.net_ping(b"ready").await.is_ok() {
+                if let (Some(port), Some(timeout)) = (&mut self.port, original_timeout) {
+                    let _ = port.set_timeout(timeout);
+                }
+                return true;
+            }
+        }
 
         if let (Some(port), Some(timeout)) = (&mut self.port, original_timeout) {
             let _ = port.set_timeout(timeout);
         }
-        result
+        false
     }
 
     /// Ping the MGMT chip.
@@ -731,6 +746,10 @@ impl<P: CtlPort> CtlCore<P> {
         self.write_tlv_ui(CtlToUi::SetLoopback, &[mode as u8])
             .await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type == UiToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
         if tlv.tlv_type != UiToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {
                 expected: "Ack",

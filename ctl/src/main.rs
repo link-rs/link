@@ -277,6 +277,42 @@ enum GetSetString {
     Set { value: String },
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum Language {
+    #[value(name = "en-US")]
+    EnUs,
+    #[value(name = "es-ES")]
+    EsEs,
+    #[value(name = "de-DE")]
+    DeDe,
+    #[value(name = "hi-IN")]
+    HiIn,
+    #[value(name = "nb-NO")]
+    NbNo,
+}
+
+impl std::fmt::Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Language::EnUs => write!(f, "en-US"),
+            Language::EsEs => write!(f, "es-ES"),
+            Language::DeDe => write!(f, "de-DE"),
+            Language::HiIn => write!(f, "hi-IN"),
+            Language::NbNo => write!(f, "nb-NO"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+enum LanguageAction {
+    #[default]
+    Get,
+    Set {
+        #[arg(value_enum)]
+        lang: Language,
+    },
+}
+
 #[derive(Debug, Clone, Default, Subcommand)]
 enum LoopbackAction {
     /// Get the current loopback mode
@@ -366,10 +402,10 @@ enum NetAction {
         action: Option<LogsAction>,
     },
 
-    /// Language setting (e.g. "en-US")
+    /// Language setting
     Language {
         #[command(subcommand)]
-        action: Option<GetSetString>,
+        action: Option<LanguageAction>,
     },
 
     /// Channel configuration (JSON array: ["relay","org","channel","ptt"])
@@ -622,11 +658,12 @@ fn mgmt_handler(
     let action = MgmtAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
 
-    tokio::task::block_in_place(|| {
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(dispatch(Command::Mgmt { action }, core))
-    })
-    .map(|()| None)
-    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
 }
 
 fn ui_handler(
@@ -636,11 +673,12 @@ fn ui_handler(
     let action = UiAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
 
-    tokio::task::block_in_place(|| {
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(dispatch(Command::Ui { action }, core))
-    })
-    .map(|()| None)
-    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
 }
 
 fn net_handler(
@@ -650,22 +688,24 @@ fn net_handler(
     let action = NetAction::from_arg_matches(&args)
         .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
 
-    tokio::task::block_in_place(|| {
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(dispatch(Command::Net { action }, core))
-    })
-    .map(|()| None)
-    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
 }
 
 fn hello_handler(
     _args: ArgMatches,
     core: &mut Core,
 ) -> Result<Option<String>, reedline_repl_rs::Error> {
-    tokio::task::block_in_place(|| {
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(dispatch(Command::Hello, core))
-    })
-    .map(|()| None)
-    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
 }
 
 fn circular_ping_handler(
@@ -678,23 +718,25 @@ fn circular_ping_handler(
         .cloned()
         .unwrap_or_else(|| "hello".to_string());
 
-    tokio::task::block_in_place(|| {
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current()
             .block_on(dispatch(Command::CircularPing { reverse, data }, core))
-    })
-    .map(|()| None)
-    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
 }
 
 fn exit_handler(
     _args: ArgMatches,
     core: &mut Core,
 ) -> Result<Option<String>, reedline_repl_rs::Error> {
-    tokio::task::block_in_place(|| {
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(dispatch(Command::Exit, core))
-    })
-    .map(|()| None)
-    .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
 }
 
 fn run_repl(core: Core, port_name: &str) -> Result<(), reedline_repl_rs::Error> {
