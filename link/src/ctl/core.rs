@@ -445,8 +445,9 @@ impl<P: CtlPort> CtlCore<P> {
         D: Fn(u64) -> F,
         F: core::future::Future<Output = ()>,
     {
-        let _ = self.port_mut().write_dtr(false).await;
         let _ = self.port_mut().write_rts(false).await;
+        delay_ms(50).await;
+        let _ = self.port_mut().write_dtr(false).await;
         delay_ms(100).await;
     }
 
