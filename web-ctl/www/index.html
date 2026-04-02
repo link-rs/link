@@ -1278,44 +1278,11 @@
                         <div class="inline-form">
                             <select id="netLanguageSelect" style="padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 1rem;">
                                 <option value="" disabled selected>-- click Read --</option>
-                                <option value="bg">Bulgarian</option>
-                                <option value="ca">Catalan</option>
-                                <option value="zh">Chinese (Mandarin)</option>
-                                <option value="zh-TW">Chinese (Taiwanese)</option>
-                                <option value="cs">Czech</option>
-                                <option value="da">Danish</option>
-                                <option value="nl">Dutch</option>
-                                <option value="en">English</option>
-                                <option value="et">Estonian</option>
-                                <option value="fi">Finnish</option>
-                                <option value="nl-BE">Flemish</option>
-                                <option value="fr">French</option>
-                                <option value="de">German</option>
-                                <option value="de-CH">German (Swiss)</option>
-                                <option value="el">Greek</option>
-                                <option value="hi">Hindi</option>
-                                <option value="hu">Hungarian</option>
-                                <option value="id">Indonesian</option>
-                                <option value="it">Italian</option>
-                                <option value="ja">Japanese</option>
-                                <option value="ko">Korean</option>
-                                <option value="lv">Latvian</option>
-                                <option value="lt">Lithuanian</option>
-                                <option value="ms">Malay</option>
-                                <option value="multi">Multilingual</option>
-                                <option value="no">Norwegian</option>
-                                <option value="pl">Polish</option>
-                                <option value="pt">Portuguese</option>
-                                <option value="pt-BR">Portuguese (Brazilian)</option>
-                                <option value="ro">Romanian</option>
-                                <option value="ru">Russian</option>
-                                <option value="sk">Slovak</option>
-                                <option value="es">Spanish</option>
-                                <option value="sv">Swedish</option>
-                                <option value="th">Thai</option>
-                                <option value="tr">Turkish</option>
-                                <option value="uk">Ukrainian</option>
-                                <option value="vi">Vietnamese</option>
+                                <option value="en-US">English</option>
+                                <option value="es-ES">Español (Spanish)</option>
+                                <option value="de-DE">Deutsch (German)</option>
+                                <option value="hi-IN">हिन्दी (Hindi)</option>
+                                <option value="nb-NO">Norsk Bokmål (Norwegian)</option>
                             </select>
                             <button class="btn-secondary" id="getNetLanguageBtn">Read</button>
                             <button class="btn-primary" id="setNetLanguageBtn">Set</button>
@@ -1326,7 +1293,7 @@
                 <div class="card-section">
                     <h3>Channel Config</h3>
                     <div class="form-group">
-                        <textarea id="netChannelText" rows="3" style="width: 100%; padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-family: monospace; font-size: 0.875rem; resize: vertical;" placeholder='{"url":"wss://...","room":"...","identity":"..."}'></textarea>
+                        <textarea id="netChannelText" rows="1" style="width: 100%; padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-family: monospace; font-size: 0.875rem; resize: vertical;" placeholder='["namespace", "channel"]'></textarea>
                         <div class="btn-group" style="margin-top: 0.5rem;">
                             <button class="btn-secondary" id="getNetChannelBtn">Read</button>
                             <button class="btn-primary" id="setNetChannelBtn">Set</button>
@@ -1337,7 +1304,7 @@
                 <div class="card-section">
                     <h3>AI Config</h3>
                     <div class="form-group">
-                        <textarea id="netAiText" rows="3" style="width: 100%; padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-family: monospace; font-size: 0.875rem; resize: vertical;" placeholder='{"enabled":true,"api_key":"..."}'></textarea>
+                        <textarea id="netAiText" rows="4" style="width: 100%; padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-family: monospace; font-size: 0.875rem; resize: vertical;" placeholder='{"query":["ns","path"],"audio":["ns","path"],"cmd":["ns","path"]}'></textarea>
                         <div class="btn-group" style="margin-top: 0.5rem;">
                             <button class="btn-secondary" id="getNetAiBtn">Read</button>
                             <button class="btn-primary" id="setNetAiBtn">Set</button>

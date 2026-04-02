@@ -22,11 +22,6 @@ pub fn init() {
     console_error_panic_hook::set_once();
 }
 
-/// Log to browser console for debugging
-fn console_log(s: &str) {
-    web_sys::console::log_1(&JsValue::from_str(s));
-}
-
 /// Async sleep using JavaScript setTimeout.
 async fn js_sleep(ms: u32) {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
@@ -82,25 +77,19 @@ impl LinkController {
     /// This will prompt the user to select a serial port.
     #[wasm_bindgen]
     pub async fn connect(&mut self, baud_rate: u32) -> Result<(), JsValue> {
-        console_log(&format!("[web-ctl] connect() starting, baud_rate={}", baud_rate));
         let serial = WebSerial::new();
-        console_log("[web-ctl] WebSerial created, calling connect...");
         serial
             .connect(baud_rate)
             .await
             .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
-        console_log("[web-ctl] WebSerial connected");
 
         // Wrap in adapter and create CtlCore
         let adapter = WebSerialAdapter::new(serial);
         self.core = Some(CtlCore::new(adapter));
-        console_log("[web-ctl] CtlCore created");
 
         // Initialize DTR/RTS to known good state and wait for stabilization
-        console_log("[web-ctl] calling init_port()...");
         let core = self.core.as_mut().unwrap();
         core.init_port(|ms| js_sleep(ms as u32)).await;
-        console_log("[web-ctl] init_port() complete");
 
         Ok(())
     }
@@ -151,7 +140,6 @@ impl LinkController {
     /// Returns true if the device responds correctly.
     #[wasm_bindgen]
     pub async fn hello(&mut self) -> Result<bool, JsValue> {
-        console_log("[web-ctl] hello() starting");
         // Generate a random challenge
         let challenge: [u8; 4] = [
             (js_sys::Math::random() * 256.0) as u8,
@@ -159,22 +147,16 @@ impl LinkController {
             (js_sys::Math::random() * 256.0) as u8,
             (js_sys::Math::random() * 256.0) as u8,
         ];
-        console_log(&format!("[web-ctl] challenge: {:02x}{:02x}{:02x}{:02x}",
-            challenge[0], challenge[1], challenge[2], challenge[3]));
 
         let core = self.core_mut()?;
-        console_log("[web-ctl] calling core.hello()...");
         let result = core.hello(&challenge).await;
-        console_log(&format!("[web-ctl] core.hello() returned: {}", result));
         if result {
             // Clear stale data from buffers and the WebSerial stream after
             // hello exchange, matching native ctl behavior. Without this,
             // accumulated FromNet/FromUi data causes subsequent operations
             // to hang or fail (read_tlv_mgmt spins through stale TLVs).
-            console_log("[web-ctl] draining buffers...");
             core.drain();
             core.port_mut().drain().await.ok();
-            console_log("[web-ctl] drain complete");
         }
         Ok(result)
     }
