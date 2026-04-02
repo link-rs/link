@@ -1110,6 +1110,30 @@
                 </div>
 
                 <div class="card-section">
+                    <h3>Logs</h3>
+                    <div class="form-group">
+                        <label>Log Output</label>
+                        <div class="inline-form">
+                            <select id="uiLogsSelect" style="padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 1rem;">
+                                <option value="" disabled selected>-- click Read --</option>
+                                <option value="0">Off</option>
+                                <option value="1">On</option>
+                            </select>
+                            <button class="btn-secondary" id="getUiLogsBtn">Read</button>
+                            <button class="btn-primary" id="setUiLogsBtn">Set</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-section">
+                    <h3>Storage</h3>
+                    <div class="btn-group">
+                        <button class="btn-danger" id="clearUiStorageBtn">Clear EEPROM</button>
+                        <span class="status-icon" id="clearUiStorageStatus"></span>
+                    </div>
+                </div>
+
+                <div class="card-section">
                     <h3>Stack Diagnostics</h3>
                     <div class="btn-group" style="margin-bottom: 0.75rem;">
                         <button class="btn-secondary" id="getUiStackBtn">Get Stack Info</button>
@@ -1229,6 +1253,70 @@
                             <button class="btn-secondary" id="getNetLoopbackBtn">Read</button>
                             <button class="btn-primary" id="setNetLoopbackBtn">Set</button>
                         </div>
+                    </div>
+                </div>
+
+                <div class="card-section">
+                    <h3>Logs</h3>
+                    <div class="form-group">
+                        <label>Log Output</label>
+                        <div class="inline-form">
+                            <select id="netLogsSelect" style="padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 1rem;">
+                                <option value="" disabled selected>-- click Read --</option>
+                                <option value="0">Off</option>
+                                <option value="1">On</option>
+                            </select>
+                            <button class="btn-secondary" id="getNetLogsBtn">Read</button>
+                            <button class="btn-primary" id="setNetLogsBtn">Set</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-section">
+                    <h3>Language</h3>
+                    <div class="form-group">
+                        <div class="inline-form">
+                            <select id="netLanguageSelect" style="padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 1rem;">
+                                <option value="" disabled selected>-- click Read --</option>
+                                <option value="en-US">English</option>
+                                <option value="es-ES">Español (Spanish)</option>
+                                <option value="de-DE">Deutsch (German)</option>
+                                <option value="hi-IN">हिन्दी (Hindi)</option>
+                                <option value="nb-NO">Norsk Bokmål (Norwegian)</option>
+                            </select>
+                            <button class="btn-secondary" id="getNetLanguageBtn">Read</button>
+                            <button class="btn-primary" id="setNetLanguageBtn">Set</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-section">
+                    <h3>Channel Config</h3>
+                    <div class="form-group">
+                        <textarea id="netChannelText" rows="1" style="width: 100%; padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-family: monospace; font-size: 0.875rem; resize: vertical;" placeholder='["namespace", "channel"]'></textarea>
+                        <div class="btn-group" style="margin-top: 0.5rem;">
+                            <button class="btn-secondary" id="getNetChannelBtn">Read</button>
+                            <button class="btn-primary" id="setNetChannelBtn">Set</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-section">
+                    <h3>AI Config</h3>
+                    <div class="form-group">
+                        <textarea id="netAiText" rows="4" style="width: 100%; padding: 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-family: monospace; font-size: 0.875rem; resize: vertical;" placeholder='{"query":["ns","path"],"audio":["ns","path"],"cmd":["ns","path"]}'></textarea>
+                        <div class="btn-group" style="margin-top: 0.5rem;">
+                            <button class="btn-secondary" id="getNetAiBtn">Read</button>
+                            <button class="btn-primary" id="setNetAiBtn">Set</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-section">
+                    <h3>Storage</h3>
+                    <div class="btn-group">
+                        <button class="btn-danger" id="clearNetStorageBtn">Clear NVS</button>
+                        <span class="status-icon" id="clearNetStorageStatus"></span>
                     </div>
                 </div>
 
@@ -2495,6 +2583,146 @@
                 log(`NET loopback mode set to: ${modeNames[mode]}`, 'success');
             } catch (e) {
                 log(`Set NET loopback error: ${e}`, 'error');
+            }
+        });
+
+        // ==================== LOGS CONTROLS ====================
+
+        // UI Logs
+        document.getElementById('getUiLogsBtn').addEventListener('click', async () => {
+            try {
+                const enabled = await controller.get_ui_logs_enabled();
+                document.getElementById('uiLogsSelect').value = enabled ? '1' : '0';
+                log(`UI logs: ${enabled ? 'on' : 'off'}`, 'success');
+            } catch (e) {
+                log(`Get UI logs error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('setUiLogsBtn').addEventListener('click', async () => {
+            try {
+                const enabled = document.getElementById('uiLogsSelect').value === '1';
+                await controller.set_ui_logs_enabled(enabled);
+                log(`UI logs set to: ${enabled ? 'on' : 'off'}`, 'success');
+            } catch (e) {
+                log(`Set UI logs error: ${e}`, 'error');
+            }
+        });
+
+        // NET Logs
+        document.getElementById('getNetLogsBtn').addEventListener('click', async () => {
+            try {
+                const enabled = await controller.get_net_logs_enabled();
+                document.getElementById('netLogsSelect').value = enabled ? '1' : '0';
+                log(`NET logs: ${enabled ? 'on' : 'off'}`, 'success');
+            } catch (e) {
+                log(`Get NET logs error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('setNetLogsBtn').addEventListener('click', async () => {
+            try {
+                const enabled = document.getElementById('netLogsSelect').value === '1';
+                await controller.set_net_logs_enabled(enabled);
+                log(`NET logs set to: ${enabled ? 'on' : 'off'}`, 'success');
+            } catch (e) {
+                log(`Set NET logs error: ${e}`, 'error');
+            }
+        });
+
+        // ==================== LANGUAGE CONTROL ====================
+
+        document.getElementById('getNetLanguageBtn').addEventListener('click', async () => {
+            try {
+                const lang = await controller.get_net_language();
+                document.getElementById('netLanguageSelect').value = lang;
+                log(`NET language: ${lang}`, 'success');
+            } catch (e) {
+                log(`Get NET language error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('setNetLanguageBtn').addEventListener('click', async () => {
+            try {
+                const lang = document.getElementById('netLanguageSelect').value;
+                await controller.set_net_language(lang);
+                log(`NET language set to: ${lang}`, 'success');
+            } catch (e) {
+                log(`Set NET language error: ${e}`, 'error');
+            }
+        });
+
+        // ==================== CHANNEL CONFIG ====================
+
+        document.getElementById('getNetChannelBtn').addEventListener('click', async () => {
+            try {
+                const config = await controller.get_net_channel();
+                document.getElementById('netChannelText').value = config;
+                log(`NET channel config loaded`, 'success');
+            } catch (e) {
+                log(`Get NET channel error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('setNetChannelBtn').addEventListener('click', async () => {
+            try {
+                const config = document.getElementById('netChannelText').value;
+                await controller.set_net_channel(config);
+                log(`NET channel config saved`, 'success');
+            } catch (e) {
+                log(`Set NET channel error: ${e}`, 'error');
+            }
+        });
+
+        // ==================== AI CONFIG ====================
+
+        document.getElementById('getNetAiBtn').addEventListener('click', async () => {
+            try {
+                const config = await controller.get_net_ai();
+                document.getElementById('netAiText').value = config;
+                log(`NET AI config loaded`, 'success');
+            } catch (e) {
+                log(`Get NET AI error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('setNetAiBtn').addEventListener('click', async () => {
+            try {
+                const config = document.getElementById('netAiText').value;
+                await controller.set_net_ai(config);
+                log(`NET AI config saved`, 'success');
+            } catch (e) {
+                log(`Set NET AI error: ${e}`, 'error');
+            }
+        });
+
+        // ==================== STORAGE CLEAR ====================
+
+        document.getElementById('clearUiStorageBtn').addEventListener('click', async () => {
+            if (!confirm('Clear all UI chip EEPROM storage? This cannot be undone.')) return;
+            const btn = document.getElementById('clearUiStorageBtn');
+            const statusIcon = document.getElementById('clearUiStorageStatus');
+            try {
+                await runWithStatus(btn, statusIcon, async () => {
+                    await controller.clear_ui_storage();
+                });
+                log('UI storage cleared', 'success');
+            } catch (e) {
+                log(`Clear UI storage error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('clearNetStorageBtn').addEventListener('click', async () => {
+            if (!confirm('Clear all NET chip NVS storage? This cannot be undone.')) return;
+            const btn = document.getElementById('clearNetStorageBtn');
+            const statusIcon = document.getElementById('clearNetStorageStatus');
+            try {
+                await runWithStatus(btn, statusIcon, async () => {
+                    await controller.clear_net_storage();
+                });
+                log('NET storage cleared', 'success');
+            } catch (e) {
+                log(`Clear NET storage error: ${e}`, 'error');
             }
         });
 

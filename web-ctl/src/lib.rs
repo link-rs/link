@@ -363,6 +363,29 @@ impl LinkController {
             .map_err(ctl_error_to_js)
     }
 
+    /// Get UI chip logs enabled state.
+    #[wasm_bindgen]
+    pub async fn get_ui_logs_enabled(&mut self) -> Result<bool, JsValue> {
+        let core = self.core_mut()?;
+        core.ui_get_logs_enabled().await.map_err(ctl_error_to_js)
+    }
+
+    /// Set UI chip logs enabled state.
+    #[wasm_bindgen]
+    pub async fn set_ui_logs_enabled(&mut self, enabled: bool) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.ui_set_logs_enabled(enabled)
+            .await
+            .map_err(ctl_error_to_js)
+    }
+
+    /// Clear UI chip storage (EEPROM).
+    #[wasm_bindgen]
+    pub async fn clear_ui_storage(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.ui_clear_storage().await.map_err(ctl_error_to_js)
+    }
+
     /// Get NET chip loopback mode as string.
     /// Returns: "off", "raw", or "moq"
     #[wasm_bindgen]
@@ -391,6 +414,73 @@ impl LinkController {
         core.net_set_loopback(loopback_mode)
             .await
             .map_err(ctl_error_to_js)
+    }
+
+    /// Get NET chip logs enabled state.
+    #[wasm_bindgen]
+    pub async fn get_net_logs_enabled(&mut self) -> Result<bool, JsValue> {
+        let core = self.core_mut()?;
+        core.net_get_logs_enabled().await.map_err(ctl_error_to_js)
+    }
+
+    /// Set NET chip logs enabled state.
+    #[wasm_bindgen]
+    pub async fn set_net_logs_enabled(&mut self, enabled: bool) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.net_set_logs_enabled(enabled)
+            .await
+            .map_err(ctl_error_to_js)
+    }
+
+    /// Clear NET chip storage (NVS).
+    #[wasm_bindgen]
+    pub async fn clear_net_storage(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.net_clear_storage().await.map_err(ctl_error_to_js)
+    }
+
+    /// Get NET chip language setting.
+    #[wasm_bindgen]
+    pub async fn get_net_language(&mut self) -> Result<String, JsValue> {
+        let core = self.core_mut()?;
+        core.net_get_language().await.map_err(ctl_error_to_js)
+    }
+
+    /// Set NET chip language setting.
+    #[wasm_bindgen]
+    pub async fn set_net_language(&mut self, language: &str) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.net_set_language(language)
+            .await
+            .map_err(ctl_error_to_js)
+    }
+
+    /// Get NET chip channel configuration (JSON string).
+    #[wasm_bindgen]
+    pub async fn get_net_channel(&mut self) -> Result<String, JsValue> {
+        let core = self.core_mut()?;
+        core.net_get_channel().await.map_err(ctl_error_to_js)
+    }
+
+    /// Set NET chip channel configuration (JSON string).
+    #[wasm_bindgen]
+    pub async fn set_net_channel(&mut self, channel: &str) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.net_set_channel(channel).await.map_err(ctl_error_to_js)
+    }
+
+    /// Get NET chip AI configuration (JSON string).
+    #[wasm_bindgen]
+    pub async fn get_net_ai(&mut self) -> Result<String, JsValue> {
+        let core = self.core_mut()?;
+        core.net_get_ai().await.map_err(ctl_error_to_js)
+    }
+
+    /// Set NET chip AI configuration (JSON string).
+    #[wasm_bindgen]
+    pub async fn set_net_ai(&mut self, config: &str) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.net_set_ai(config).await.map_err(ctl_error_to_js)
     }
 
     /// Ping the MGMT chip.
