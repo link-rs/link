@@ -43,6 +43,78 @@ enum PttChannel {
     Ai,
 }
 
+/// Parsed track configuration from stored settings.
+#[derive(Clone, Default)]
+struct TrackConfig {
+    /// Language code (e.g., "en-US") - used as track name
+    language: String,
+    /// Channel namespace (parsed from JSON array)
+    channel_ns: Vec<String>,
+    /// AI query namespace (parsed from AI config JSON)
+    ai_query_ns: Vec<String>,
+    /// AI audio response namespace
+    ai_audio_ns: Vec<String>,
+    /// AI command response namespace
+    ai_cmd_ns: Vec<String>,
+}
+
+impl TrackConfig {
+    /// Parse configuration from storage strings.
+    fn from_storage(language: &str, channel_json: &str, ai_json: &str) -> Self {
+        let mut config = Self {
+            language: language.to_string(),
+            ..Default::default()
+        };
+
+        // Parse channel namespace from JSON array
+        if !channel_json.is_empty() {
+            if let Ok(ns) = serde_json::from_str::<Vec<String>>(channel_json) {
+                config.channel_ns = ns;
+            } else {
+                warn!("Failed to parse channel namespace JSON");
+            }
+        }
+
+        // Parse AI config from JSON object with query/audio/cmd fields
+        if !ai_json.is_empty() {
+            if let Ok(ai) = serde_json::from_str::<serde_json::Value>(ai_json) {
+                if let Some(query) = ai.get("query").and_then(|v| v.as_array()) {
+                    config.ai_query_ns = query
+                        .iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect();
+                }
+                if let Some(audio) = ai.get("audio").and_then(|v| v.as_array()) {
+                    config.ai_audio_ns = audio
+                        .iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect();
+                }
+                if let Some(cmd) = ai.get("cmd").and_then(|v| v.as_array()) {
+                    config.ai_cmd_ns = cmd
+                        .iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect();
+                }
+            } else {
+                warn!("Failed to parse AI config JSON");
+            }
+        }
+
+        config
+    }
+
+    /// Check if channel tracks can be set up (have both namespace and language).
+    fn has_channel_config(&self) -> bool {
+        !self.channel_ns.is_empty() && !self.language.is_empty()
+    }
+
+    /// Check if AI tracks can be set up.
+    fn has_ai_config(&self) -> bool {
+        !self.ai_query_ns.is_empty() && !self.language.is_empty()
+    }
+}
+
 /// Commands sent to the MoQ task.
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -58,6 +130,8 @@ enum MoqCommand {
     SetPttChannel(PttChannel),
     /// Set loopback mode.
     SetLoopback(NetLoopbackMode),
+    /// Update track configuration (channel, language, AI settings changed).
+    UpdateConfig(TrackConfig),
 }
 
 /// Events sent from the MoQ task back to the main loop.
@@ -108,6 +182,7 @@ fn get_device_id_from_mac() -> u64 {
 /// Returns true if setup was successful.
 fn setup_ptt_tracks(
     client: &quicr::Client,
+    config: &TrackConfig,
     ptt_pub_track: &mut Option<std::sync::Arc<quicr::PublishTrack>>,
     ai_pub_track: &mut Option<std::sync::Arc<quicr::PublishTrack>>,
     ptt_subscription: &mut Option<Subscription>,
@@ -117,109 +192,121 @@ fn setup_ptt_tracks(
     ai_group_id: &mut u64,
     ai_object_id: &mut u64,
 ) -> bool {
-    // Hactar track naming:
-    // Namespace prefix: moq://moq.ptt.arpa/v1/org/acme/store/1234
-    // PTT channel: .../channel/<name>/ptt + track pcm_en_8khz_mono_i16
-    // AI audio pub: .../ai/audio + track pcm_en_8khz_mono_i16
-    // AI audio sub: .../ai/audio + track <device_id>
-
-    let ns_prefix = &["moq://moq.ptt.arpa/v1", "org/acme", "store/1234"];
-    let channel_name = "gardening"; // TODO: make configurable
-    let track_name = "pcm_en_8khz_mono_i16";
-
-    // Register PTT namespace for publishing
-    let ptt_ns = TrackNamespace::from_strings(&[
-        ns_prefix[0],
-        ns_prefix[1],
-        ns_prefix[2],
-        &format!("channel/{}", channel_name),
-        "ptt",
-    ]);
-    client.publish_namespace(&ptt_ns);
-
-    // Register AI audio namespace for publishing
-    let ai_ns =
-        TrackNamespace::from_strings(&[ns_prefix[0], ns_prefix[1], ns_prefix[2], "ai/audio"]);
-    client.publish_namespace(&ai_ns);
+    // Track naming (from hactar):
+    // Channel: publish and subscribe to {channel_ns, language}
+    // AI query: publish to {ai_query_ns, language}
+    // AI audio response: subscribe to {ai_audio_ns, device_id}
 
     // Get device ID from MAC for group_id (janet uses this to route AI responses)
     let device_id = get_device_id_from_mac();
     info!("device id: {}", device_id);
 
-    // Create PTT publish track
-    let ptt_track_name_full = FullTrackName::new(ptt_ns.clone(), track_name.as_bytes());
-    info!(
-        "MoQ PTT: publish namespace={}, track={} (device_id={})",
-        ptt_ns, track_name, device_id
-    );
-    match block_on(client.publish(ptt_track_name_full)) {
-        Ok(track) => {
-            *ptt_pub_track = Some(track);
-            *ptt_group_id = device_id;
-            *ptt_object_id = 0;
-            info!(
-                "MoQ PTT: created PTT publish track (group_id={})",
-                device_id
+    // Set up channel tracks if configured
+    if config.has_channel_config() {
+        let ptt_ns = TrackNamespace::from_strings(
+            &config.channel_ns.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        );
+        client.publish_namespace(&ptt_ns);
+
+        // Create PTT publish track with language as track name
+        let language_bytes = config.language.clone().into_bytes();
+        let ptt_track_name_full = FullTrackName::new(ptt_ns.clone(), language_bytes.clone());
+        info!(
+            "MoQ PTT: publish namespace={}, track={} (device_id={})",
+            ptt_ns, config.language, device_id
+        );
+        match block_on(client.publish(ptt_track_name_full)) {
+            Ok(track) => {
+                *ptt_pub_track = Some(track);
+                *ptt_group_id = device_id;
+                *ptt_object_id = 0;
+                info!(
+                    "MoQ PTT: created PTT publish track (group_id={})",
+                    device_id
+                );
+            }
+            Err(e) => {
+                warn!("MoQ PTT: failed to create PTT publish track: {:?}", e);
+                return false;
+            }
+        }
+
+        // Subscribe to PTT channel (receive from others)
+        let ptt_sub_track_name = FullTrackName::new(ptt_ns.clone(), language_bytes);
+        info!(
+            "MoQ PTT: subscribe namespace={}, track={}",
+            ptt_ns, config.language
+        );
+        match block_on(client.subscribe(ptt_sub_track_name)) {
+            Ok(sub) => {
+                *ptt_subscription = Some(sub);
+                info!("MoQ PTT: subscribed to PTT channel");
+            }
+            Err(e) => {
+                warn!("MoQ PTT: failed to subscribe to PTT channel: {:?}", e);
+            }
+        }
+    } else {
+        warn!("MoQ PTT: channel not configured (missing namespace or language)");
+    }
+
+    // Set up AI tracks if configured
+    if config.has_ai_config() {
+        // AI query publication track (publish to {ai_query_ns, language})
+        let ai_query_ns = TrackNamespace::from_strings(
+            &config.ai_query_ns.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        );
+        client.publish_namespace(&ai_query_ns);
+
+        let ai_language_bytes = config.language.clone().into_bytes();
+        let ai_pub_track_name = FullTrackName::new(ai_query_ns.clone(), ai_language_bytes);
+        info!(
+            "MoQ AI: publish namespace={}, track={}",
+            ai_query_ns, config.language
+        );
+        match block_on(client.publish(ai_pub_track_name)) {
+            Ok(track) => {
+                *ai_pub_track = Some(track);
+                *ai_group_id = device_id;
+                *ai_object_id = 0;
+                info!(
+                    "MoQ AI: created AI query publish track (group_id={})",
+                    device_id
+                );
+            }
+            Err(e) => {
+                warn!("MoQ AI: failed to create AI query publish track: {:?}", e);
+            }
+        }
+
+        // AI audio response subscription track (subscribe to {ai_audio_ns, device_id})
+        if !config.ai_audio_ns.is_empty() {
+            let ai_audio_ns = TrackNamespace::from_strings(
+                &config.ai_audio_ns.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             );
-        }
-        Err(e) => {
-            warn!("MoQ PTT: failed to create PTT publish track: {:?}", e);
-            return false;
-        }
-    }
+            client.subscribe_namespace(&ai_audio_ns);
 
-    // Create AI audio publish track
-    let ai_pub_track_name = FullTrackName::new(ai_ns.clone(), track_name.as_bytes());
-
-    match block_on(client.publish(ai_pub_track_name)) {
-        Ok(track) => {
-            *ai_pub_track = Some(track);
-            *ai_group_id = device_id;
-            *ai_object_id = 0;
+            let device_id_str = format!("{}", device_id);
             info!(
-                "MoQ PTT: created AI audio publish track (group_id={})",
-                device_id
+                "MoQ AI: subscribing to AI audio responses on ns={} track=\"{}\" (device_id=0x{:012x})",
+                ai_audio_ns, device_id_str, device_id
             );
+            let ai_sub_track_name = FullTrackName::new(ai_audio_ns, device_id_str.into_bytes());
+            match block_on(client.subscribe(ai_sub_track_name)) {
+                Ok(sub) => {
+                    *ai_subscription = Some(sub);
+                    info!("MoQ AI: subscribed to AI audio responses");
+                }
+                Err(e) => {
+                    warn!("MoQ AI: failed to subscribe to AI audio: {:?}", e);
+                }
+            }
         }
-        Err(e) => {
-            warn!("MoQ PTT: failed to create AI audio publish track: {:?}", e);
-        }
-    }
 
-    // Subscribe to PTT channel (receive from others)
-    let ptt_sub_track_name = FullTrackName::new(ptt_ns.clone(), track_name.as_bytes());
-    info!(
-        "MoQ PTT: subscribe namespace={}, track={}",
-        ptt_ns, track_name
-    );
-    match block_on(client.subscribe(ptt_sub_track_name)) {
-        Ok(sub) => {
-            *ptt_subscription = Some(sub);
-            info!("MoQ PTT: subscribed to PTT channel");
-        }
-        Err(e) => {
-            warn!("MoQ PTT: failed to subscribe to PTT channel: {:?}", e);
-        }
-    }
-
-    // Subscribe to AI audio namespace first (to receive announcements for dynamic tracks)
-    client.subscribe_namespace(&ai_ns);
-
-    // Subscribe to AI audio responses (using device ID as track name)
-    let device_id_str = format!("{}", device_id);
-    info!(
-        "MoQ PTT: subscribing to AI responses on ns={} track=\"{}\" track_bytes={:?} (device_id=0x{:012x})",
-        ai_ns, device_id_str, device_id_str.as_bytes(), device_id
-    );
-    let ai_sub_track_name = FullTrackName::new(ai_ns, device_id_str.into_bytes());
-    match block_on(client.subscribe(ai_sub_track_name)) {
-        Ok(sub) => {
-            *ai_subscription = Some(sub);
-            info!("MoQ PTT: subscribed to AI audio responses");
-        }
-        Err(e) => {
-            warn!("MoQ PTT: failed to subscribe to AI audio: {:?}", e);
-        }
+        // AI command response subscription could be added here if needed
+        // (subscribe to {ai_cmd_ns, device_id} with codec "ai_cmd_response:json")
+    } else {
+        warn!("MoQ AI: AI not configured (missing namespace or language)");
     }
 
     true
@@ -263,6 +350,9 @@ fn spawn_moq_task(
             let mut relay_url: Option<String> = initial_relay_url;
             let mut last_reconnect_attempt: Option<Instant> = None;
             let mut ptt_ready = false;
+
+            // Track configuration (updated via UpdateConfig command)
+            let mut track_config = TrackConfig::default();
 
             // Loopback mode (communicated from main loop)
             let mut loopback = NetLoopbackMode::Off;
@@ -317,6 +407,7 @@ fn spawn_moq_task(
                                         // Auto-start PTT mode on connect
                                         ptt_ready = setup_ptt_tracks(
                                             &c,
+                                            &track_config,
                                             &mut ptt_pub_track,
                                             &mut ai_pub_track,
                                             &mut ptt_subscription,
@@ -350,6 +441,35 @@ fn spawn_moq_task(
                     Ok(MoqCommand::SetLoopback(mode)) => {
                         loopback = mode;
                         info!("MoQ: loopback mode set to {:?}", loopback);
+                    }
+                    Ok(MoqCommand::UpdateConfig(config)) => {
+                        info!("MoQ: updating track config (language={}, channel_ns={:?})",
+                            config.language, config.channel_ns);
+                        track_config = config;
+
+                        // Re-setup tracks if connected
+                        if let Some(ref c) = client {
+                            // Clear existing tracks
+                            ptt_pub_track = None;
+                            ai_pub_track = None;
+                            ptt_subscription = None;
+                            ai_subscription = None;
+
+                            // Re-setup with new config
+                            ptt_ready = setup_ptt_tracks(
+                                c,
+                                &track_config,
+                                &mut ptt_pub_track,
+                                &mut ai_pub_track,
+                                &mut ptt_subscription,
+                                &mut ai_subscription,
+                                &mut ptt_group_id,
+                                &mut ptt_object_id,
+                                &mut ai_group_id,
+                                &mut ai_object_id,
+                            );
+                            info!("MoQ: tracks reconfigured, ptt_ready={}", ptt_ready);
+                        }
                     }
                     Ok(MoqCommand::AudioFrame { data }) => {
                         // Only publish if PTT is ready and loopback is not Raw
@@ -531,6 +651,7 @@ fn spawn_moq_task(
                                         // Auto-start PTT mode on reconnect
                                         ptt_ready = setup_ptt_tracks(
                                             &c,
+                                            &track_config,
                                             &mut ptt_pub_track,
                                             &mut ai_pub_track,
                                             &mut ptt_subscription,
@@ -582,6 +703,9 @@ struct NvsStorage {
 const NVS_KEY_WIFI_SSIDS: &str = "wifi_ssids";
 const NVS_KEY_RELAY_URL: &str = "relay_url";
 const NVS_KEY_LOGS: &str = "logs_enabled";
+const NVS_KEY_LANGUAGE: &str = "language";
+const NVS_KEY_CHANNEL: &str = "channel";
+const NVS_KEY_AI: &str = "ai";
 
 impl NvsStorage {
     /// Load storage from NVS
@@ -646,6 +770,51 @@ impl NvsStorage {
                     warn!("net: failed to read logs_enabled from NVS: {:?}", e);
                 }
             }
+
+            // Load language
+            let mut lang_buf = [0u8; 32];
+            match nvs.get_blob(NVS_KEY_LANGUAGE, &mut lang_buf) {
+                Ok(Some(data)) => {
+                    if let Ok(lang) = core::str::from_utf8(data) {
+                        storage.language = lang.to_string();
+                        info!("net: loaded language from NVS: {}", storage.language);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("net: failed to read language from NVS: {:?}", e);
+                }
+            }
+
+            // Load channel (JSON array)
+            let mut channel_buf = [0u8; 512];
+            match nvs.get_blob(NVS_KEY_CHANNEL, &mut channel_buf) {
+                Ok(Some(data)) => {
+                    if let Ok(channel) = core::str::from_utf8(data) {
+                        storage.channel = channel.to_string();
+                        info!("net: loaded channel from NVS: {}", storage.channel);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("net: failed to read channel from NVS: {:?}", e);
+                }
+            }
+
+            // Load AI config (JSON object)
+            let mut ai_buf = [0u8; 1024];
+            match nvs.get_blob(NVS_KEY_AI, &mut ai_buf) {
+                Ok(Some(data)) => {
+                    if let Ok(ai) = core::str::from_utf8(data) {
+                        storage.ai = ai.to_string();
+                        info!("net: loaded AI config from NVS");
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("net: failed to read AI config from NVS: {:?}", e);
+                }
+            }
         }
 
         storage
@@ -676,6 +845,27 @@ impl NvsStorage {
 
         // Save logs_enabled
         nvs.set_u8(NVS_KEY_LOGS, self.logs_enabled as u8)?;
+
+        // Save language
+        if !self.language.is_empty() {
+            nvs.set_blob(NVS_KEY_LANGUAGE, self.language.as_bytes())?;
+        } else {
+            let _ = nvs.remove(NVS_KEY_LANGUAGE);
+        }
+
+        // Save channel
+        if !self.channel.is_empty() {
+            nvs.set_blob(NVS_KEY_CHANNEL, self.channel.as_bytes())?;
+        } else {
+            let _ = nvs.remove(NVS_KEY_CHANNEL);
+        }
+
+        // Save AI config
+        if !self.ai.is_empty() {
+            nvs.set_blob(NVS_KEY_AI, self.ai.as_bytes())?;
+        } else {
+            let _ = nvs.remove(NVS_KEY_AI);
+        }
 
         Ok(())
     }
@@ -846,6 +1036,19 @@ fn main() {
         None
     };
     spawn_moq_task(wifi_config, initial_relay_url, moq_cmd_rx, moq_event_tx);
+
+    // Send initial track config to MoQ task
+    let initial_config = TrackConfig::from_storage(
+        &storage.language,
+        &storage.channel,
+        &storage.ai,
+    );
+    if initial_config.has_channel_config() || initial_config.has_ai_config() {
+        info!("net: sending initial track config to MoQ task");
+        let _ = moq_cmd_tx.send(MoqCommand::UpdateConfig(initial_config));
+    } else {
+        warn!("net: no channel/AI config - device needs configuration via CTL");
+    }
 
     // Loopback mode state
     let mut loopback = NetLoopbackMode::Off;
@@ -1249,6 +1452,13 @@ fn handle_mgmt_message(
             if let Ok(lang) = core::str::from_utf8(value) {
                 storage.language = lang.to_string();
                 if storage.save().is_ok() {
+                    // Update MoQ tracks with new language
+                    let config = TrackConfig::from_storage(
+                        &storage.language,
+                        &storage.channel,
+                        &storage.ai,
+                    );
+                    let _ = moq_cmd_tx.send(MoqCommand::UpdateConfig(config));
                     write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
                 } else {
                     write_tlv(mgmt_uart, NetToCtl::Error, b"save");
@@ -1264,6 +1474,13 @@ fn handle_mgmt_message(
             if let Ok(channel) = core::str::from_utf8(value) {
                 storage.channel = channel.to_string();
                 if storage.save().is_ok() {
+                    // Update MoQ tracks with new channel
+                    let config = TrackConfig::from_storage(
+                        &storage.language,
+                        &storage.channel,
+                        &storage.ai,
+                    );
+                    let _ = moq_cmd_tx.send(MoqCommand::UpdateConfig(config));
                     write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
                 } else {
                     write_tlv(mgmt_uart, NetToCtl::Error, b"save");
@@ -1279,6 +1496,13 @@ fn handle_mgmt_message(
             if let Ok(config) = core::str::from_utf8(value) {
                 storage.ai = config.to_string();
                 if storage.save().is_ok() {
+                    // Update MoQ tracks with new AI config
+                    let track_config = TrackConfig::from_storage(
+                        &storage.language,
+                        &storage.channel,
+                        &storage.ai,
+                    );
+                    let _ = moq_cmd_tx.send(MoqCommand::UpdateConfig(track_config));
                     write_tlv(mgmt_uart, NetToCtl::Ack, &[]);
                 } else {
                     write_tlv(mgmt_uart, NetToCtl::Error, b"save");
