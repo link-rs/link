@@ -1,6 +1,10 @@
 //! WebSerial transport for embedded-io-async.
 
 use embedded_io_async::{ErrorType, Read, Write};
+/// Log to browser console for debugging
+fn console_log(s: &str) {
+    web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(s));
+}
 use futures::future::{Either, select};
 use futures::pin_mut;
 use js_sys::{Object, Reflect, Uint8Array};
@@ -333,6 +337,7 @@ impl WebSerial {
     ///
     /// Uses the WebSerial `setSignals()` API.
     pub async fn write_dtr(&self, level: bool) -> Result<(), WebSerialError> {
+        console_log(&format!("[serial] write_dtr({})", level));
         let port = {
             let state = self.state.borrow();
             let state = state.as_ref().ok_or(WebSerialError::NotConnected)?;
@@ -360,6 +365,7 @@ impl WebSerial {
             .await
             .map_err(|e| WebSerialError::JsError(format!("setSignals(DTR) failed: {:?}", e)))?;
 
+        console_log("[serial] write_dtr complete");
         Ok(())
     }
 
@@ -367,6 +373,7 @@ impl WebSerial {
     ///
     /// Uses the WebSerial `setSignals()` API.
     pub async fn write_rts(&self, level: bool) -> Result<(), WebSerialError> {
+        console_log(&format!("[serial] write_rts({})", level));
         let port = {
             let state = self.state.borrow();
             let state = state.as_ref().ok_or(WebSerialError::NotConnected)?;
@@ -394,6 +401,7 @@ impl WebSerial {
             .await
             .map_err(|e| WebSerialError::JsError(format!("setSignals(RTS) failed: {:?}", e)))?;
 
+        console_log("[serial] write_rts complete");
         Ok(())
     }
 
@@ -641,12 +649,22 @@ impl link::ctl::CtlPort for WebSerialAdapter {
     type Error = std::io::Error;
 
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        <WebSerial as link::ctl::CtlPort>::read(&mut self.inner, buf)
+        let result = <WebSerial as link::ctl::CtlPort>::read(&mut self.inner, buf)
             .await
-            .map_err(Into::into)
+            .map_err(Into::into);
+        match &result {
+            Ok(n) => {
+                let hex: String = buf[..*n].iter().map(|b| format!("{:02x}", b)).collect();
+                console_log(&format!("[serial] read {} bytes: {}", n, hex));
+            }
+            Err(e) => console_log(&format!("[serial] read error: {}", e)),
+        }
+        result
     }
 
     async fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
+        let hex: String = buf.iter().map(|b| format!("{:02x}", b)).collect();
+        console_log(&format!("[serial] write_all {} bytes: {}", buf.len(), hex));
         link::ctl::CtlPort::write_all(&mut self.inner, buf)
             .await
             .map_err(Into::into)

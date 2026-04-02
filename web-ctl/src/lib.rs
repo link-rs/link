@@ -22,6 +22,11 @@ pub fn init() {
     console_error_panic_hook::set_once();
 }
 
+/// Log to browser console for debugging
+fn console_log(s: &str) {
+    web_sys::console::log_1(&JsValue::from_str(s));
+}
+
 /// Async sleep using JavaScript setTimeout.
 async fn js_sleep(ms: u32) {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
@@ -77,19 +82,25 @@ impl LinkController {
     /// This will prompt the user to select a serial port.
     #[wasm_bindgen]
     pub async fn connect(&mut self, baud_rate: u32) -> Result<(), JsValue> {
+        console_log(&format!("[web-ctl] connect() starting, baud_rate={}", baud_rate));
         let serial = WebSerial::new();
+        console_log("[web-ctl] WebSerial created, calling connect...");
         serial
             .connect(baud_rate)
             .await
             .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        console_log("[web-ctl] WebSerial connected");
 
         // Wrap in adapter and create CtlCore
         let adapter = WebSerialAdapter::new(serial);
         self.core = Some(CtlCore::new(adapter));
+        console_log("[web-ctl] CtlCore created");
 
         // Initialize DTR/RTS to known good state and wait for stabilization
+        console_log("[web-ctl] calling init_port()...");
         let core = self.core.as_mut().unwrap();
         core.init_port(|ms| js_sleep(ms as u32)).await;
+        console_log("[web-ctl] init_port() complete");
 
         Ok(())
     }
@@ -140,6 +151,7 @@ impl LinkController {
     /// Returns true if the device responds correctly.
     #[wasm_bindgen]
     pub async fn hello(&mut self) -> Result<bool, JsValue> {
+        console_log("[web-ctl] hello() starting");
         // Generate a random challenge
         let challenge: [u8; 4] = [
             (js_sys::Math::random() * 256.0) as u8,
@@ -147,16 +159,22 @@ impl LinkController {
             (js_sys::Math::random() * 256.0) as u8,
             (js_sys::Math::random() * 256.0) as u8,
         ];
+        console_log(&format!("[web-ctl] challenge: {:02x}{:02x}{:02x}{:02x}",
+            challenge[0], challenge[1], challenge[2], challenge[3]));
 
         let core = self.core_mut()?;
+        console_log("[web-ctl] calling core.hello()...");
         let result = core.hello(&challenge).await;
+        console_log(&format!("[web-ctl] core.hello() returned: {}", result));
         if result {
             // Clear stale data from buffers and the WebSerial stream after
             // hello exchange, matching native ctl behavior. Without this,
             // accumulated FromNet/FromUi data causes subsequent operations
             // to hang or fail (read_tlv_mgmt spins through stale TLVs).
+            console_log("[web-ctl] draining buffers...");
             core.drain();
             core.port_mut().drain().await.ok();
+            console_log("[web-ctl] drain complete");
         }
         Ok(result)
     }
@@ -363,6 +381,29 @@ impl LinkController {
             .map_err(ctl_error_to_js)
     }
 
+    /// Get UI chip logs enabled state.
+    #[wasm_bindgen]
+    pub async fn get_ui_logs_enabled(&mut self) -> Result<bool, JsValue> {
+        let core = self.core_mut()?;
+        core.ui_get_logs_enabled().await.map_err(ctl_error_to_js)
+    }
+
+    /// Set UI chip logs enabled state.
+    #[wasm_bindgen]
+    pub async fn set_ui_logs_enabled(&mut self, enabled: bool) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.ui_set_logs_enabled(enabled)
+            .await
+            .map_err(ctl_error_to_js)
+    }
+
+    /// Clear UI chip storage (EEPROM).
+    #[wasm_bindgen]
+    pub async fn clear_ui_storage(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.ui_clear_storage().await.map_err(ctl_error_to_js)
+    }
+
     /// Get NET chip loopback mode as string.
     /// Returns: "off", "raw", or "moq"
     #[wasm_bindgen]
@@ -391,6 +432,73 @@ impl LinkController {
         core.net_set_loopback(loopback_mode)
             .await
             .map_err(ctl_error_to_js)
+    }
+
+    /// Get NET chip logs enabled state.
+    #[wasm_bindgen]
+    pub async fn get_net_logs_enabled(&mut self) -> Result<bool, JsValue> {
+        let core = self.core_mut()?;
+        core.net_get_logs_enabled().await.map_err(ctl_error_to_js)
+    }
+
+    /// Set NET chip logs enabled state.
+    #[wasm_bindgen]
+    pub async fn set_net_logs_enabled(&mut self, enabled: bool) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.net_set_logs_enabled(enabled)
+            .await
+            .map_err(ctl_error_to_js)
+    }
+
+    /// Clear NET chip storage (NVS).
+    #[wasm_bindgen]
+    pub async fn clear_net_storage(&mut self) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.net_clear_storage().await.map_err(ctl_error_to_js)
+    }
+
+    /// Get NET chip language setting.
+    #[wasm_bindgen]
+    pub async fn get_net_language(&mut self) -> Result<String, JsValue> {
+        let core = self.core_mut()?;
+        core.net_get_language().await.map_err(ctl_error_to_js)
+    }
+
+    /// Set NET chip language setting.
+    #[wasm_bindgen]
+    pub async fn set_net_language(&mut self, language: &str) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.net_set_language(language)
+            .await
+            .map_err(ctl_error_to_js)
+    }
+
+    /// Get NET chip channel configuration (JSON string).
+    #[wasm_bindgen]
+    pub async fn get_net_channel(&mut self) -> Result<String, JsValue> {
+        let core = self.core_mut()?;
+        core.net_get_channel().await.map_err(ctl_error_to_js)
+    }
+
+    /// Set NET chip channel configuration (JSON string).
+    #[wasm_bindgen]
+    pub async fn set_net_channel(&mut self, channel: &str) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.net_set_channel(channel).await.map_err(ctl_error_to_js)
+    }
+
+    /// Get NET chip AI configuration (JSON string).
+    #[wasm_bindgen]
+    pub async fn get_net_ai(&mut self) -> Result<String, JsValue> {
+        let core = self.core_mut()?;
+        core.net_get_ai().await.map_err(ctl_error_to_js)
+    }
+
+    /// Set NET chip AI configuration (JSON string).
+    #[wasm_bindgen]
+    pub async fn set_net_ai(&mut self, config: &str) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+        core.net_set_ai(config).await.map_err(ctl_error_to_js)
     }
 
     /// Ping the MGMT chip.
