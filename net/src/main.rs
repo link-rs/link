@@ -212,7 +212,8 @@ fn setup_ptt_tracks(
     ptt_pub_track: &mut Option<std::sync::Arc<quicr::PublishTrack>>,
     ai_pub_track: &mut Option<std::sync::Arc<quicr::PublishTrack>>,
     ptt_subscription: &mut Option<Subscription>,
-    ai_subscription: &mut Option<Subscription>,
+    ai_audio_subscription: &mut Option<Subscription>,
+    ai_cmd_subscription: &mut Option<Subscription>,
     ptt_group_id: &mut u64,
     ptt_object_id: &mut u64,
     ai_group_id: &mut u64,
@@ -323,7 +324,7 @@ fn setup_ptt_tracks(
             let ai_sub_track_name = FullTrackName::new(ai_audio_ns, device_id_str.into_bytes());
             match block_on(client.subscribe(ai_sub_track_name)) {
                 Ok(sub) => {
-                    *ai_subscription = Some(sub);
+                    *ai_audio_subscription = Some(sub);
                     info!("MoQ AI: subscribed to AI audio responses");
                 }
                 Err(e) => {
@@ -332,8 +333,29 @@ fn setup_ptt_tracks(
             }
         }
 
-        // AI command response subscription could be added here if needed
-        // (subscribe to {ai_cmd_ns, device_id} with codec "ai_cmd_response:json")
+        // AI command response subscription track (subscribe to {ai_cmd_ns, device_id})
+        if !ai.cmd_ns.is_empty() {
+            let ai_cmd_ns = TrackNamespace::from_strings(
+                &ai.cmd_ns.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            );
+            client.subscribe_namespace(&ai_cmd_ns);
+
+            let device_id_str = format!("{}", device_id);
+            info!(
+                "MoQ AI: subscribing to AI cmd responses on ns={} track=\"{}\"",
+                ai_cmd_ns, device_id_str
+            );
+            let ai_cmd_track_name = FullTrackName::new(ai_cmd_ns, device_id_str.into_bytes());
+            match block_on(client.subscribe(ai_cmd_track_name)) {
+                Ok(sub) => {
+                    *ai_cmd_subscription = Some(sub);
+                    info!("MoQ AI: subscribed to AI cmd responses");
+                }
+                Err(e) => {
+                    warn!("MoQ AI: failed to subscribe to AI cmd: {:?}", e);
+                }
+            }
+        }
     } else {
         warn!("MoQ AI: AI not configured (missing namespace or language)");
     }
@@ -391,14 +413,16 @@ fn spawn_moq_task(
             let mut ptt_pub_track: Option<std::sync::Arc<quicr::PublishTrack>> = None;
             let mut ai_pub_track: Option<std::sync::Arc<quicr::PublishTrack>> = None;
             let mut ptt_subscription: Option<Subscription> = None;
-            let mut ai_subscription: Option<Subscription> = None;
+            let mut ai_audio_subscription: Option<Subscription> = None;
+            let mut ai_cmd_subscription: Option<Subscription> = None;
             let mut ptt_group_id: u64 = 0;
             let mut ptt_object_id: u64 = 0;
             let mut ai_group_id: u64 = 0;
             let mut ai_object_id: u64 = 0;
             let mut active_ptt_channel = PttChannel::Ptt;
             let mut ptt_recv_count: u64 = 0;
-            let mut ai_recv_count: u64 = 0;
+            let mut ai_audio_recv_count: u64 = 0;
+            let mut ai_cmd_recv_count: u64 = 0;
             let mut last_stats = Instant::now();
 
             loop {
@@ -411,7 +435,8 @@ fn spawn_moq_task(
                         ptt_pub_track = None;
                         ai_pub_track = None;
                         ptt_subscription = None;
-                        ai_subscription = None;
+                        ai_audio_subscription = None;
+                        ai_cmd_subscription = None;
                         if client.is_some() {
                             client = None;
                             let _ = event_tx.send(MoqEvent::Disconnected);
@@ -442,7 +467,8 @@ fn spawn_moq_task(
                                             &mut ptt_pub_track,
                                             &mut ai_pub_track,
                                             &mut ptt_subscription,
-                                            &mut ai_subscription,
+                                            &mut ai_audio_subscription,
+                                            &mut ai_cmd_subscription,
                                             &mut ptt_group_id,
                                             &mut ptt_object_id,
                                             &mut ai_group_id,
@@ -488,7 +514,8 @@ fn spawn_moq_task(
                             ptt_pub_track = None;
                             ai_pub_track = None;
                             ptt_subscription = None;
-                            ai_subscription = None;
+                            ai_audio_subscription = None;
+                            ai_cmd_subscription = None;
 
                             // Re-setup with new config
                             ptt_ready = setup_ptt_tracks(
@@ -498,7 +525,8 @@ fn spawn_moq_task(
                                 &mut ptt_pub_track,
                                 &mut ai_pub_track,
                                 &mut ptt_subscription,
-                                &mut ai_subscription,
+                                &mut ai_audio_subscription,
+                                &mut ai_cmd_subscription,
                                 &mut ptt_group_id,
                                 &mut ptt_object_id,
                                 &mut ai_group_id,
@@ -592,11 +620,11 @@ fn spawn_moq_task(
                         }
                     }
 
-                    // Drain AI subscription (receive AI responses)
-                    if let Some(ref mut subscription) = ai_subscription {
+                    // Drain AI audio subscription (receive AI audio responses)
+                    if let Some(ref mut subscription) = ai_audio_subscription {
                         while let Ok(object) = subscription.try_recv() {
-                            ai_recv_count += 1;
-                            if ai_recv_count <= 5 || ai_recv_count % 100 == 0 {
+                            ai_audio_recv_count += 1;
+                            if ai_audio_recv_count <= 5 || ai_audio_recv_count % 100 == 0 {
                                 info!(
                                     "MoQ PTT: recv AI audio, group={} obj={} len={}",
                                     object.headers.group_id,
@@ -612,12 +640,33 @@ fn spawn_moq_task(
                         }
                     }
 
+                    // Drain AI cmd subscription (receive AI command responses)
+                    if let Some(ref mut subscription) = ai_cmd_subscription {
+                        while let Ok(object) = subscription.try_recv() {
+                            ai_cmd_recv_count += 1;
+                            if ai_cmd_recv_count <= 5 || ai_cmd_recv_count % 100 == 0 {
+                                info!(
+                                    "MoQ PTT: recv AI cmd, group={} obj={} len={}",
+                                    object.headers.group_id,
+                                    object.headers.object_id,
+                                    object.payload().len()
+                                );
+                            }
+                            // Forward AI cmd to UI with ChatAi channel_id prefix
+                            let mut data = Vec::with_capacity(1 + object.payload().len());
+                            data.push(ChannelId::ChatAi as u8);
+                            data.extend_from_slice(object.payload());
+                            let _ = event_tx.send(MoqEvent::AudioReceived { data });
+                        }
+                    }
+
                     // Log stats every 2 seconds
                     if last_stats.elapsed() >= Duration::from_secs(2) {
-                        let ai_sub_status = ai_subscription.as_ref().map(|s| s.status());
+                        let ai_audio_status = ai_audio_subscription.as_ref().map(|s| s.status());
+                        let ai_cmd_status = ai_cmd_subscription.as_ref().map(|s| s.status());
                         info!(
-                            "MoQ PTT: ptt_pub={} ptt_recv={} ai_pub={} ai_recv={} ai_sub={:?} active={:?} loopback={:?}",
-                            ptt_object_id, ptt_recv_count, ai_object_id, ai_recv_count, ai_sub_status, active_ptt_channel, loopback
+                            "MoQ PTT: ptt_pub={} ptt_recv={} ai_pub={} ai_audio_recv={} ai_cmd_recv={} ai_audio={:?} ai_cmd={:?} active={:?} loopback={:?}",
+                            ptt_object_id, ptt_recv_count, ai_object_id, ai_audio_recv_count, ai_cmd_recv_count, ai_audio_status, ai_cmd_status, active_ptt_channel, loopback
                         );
                         last_stats = Instant::now();
                     }
@@ -648,7 +697,8 @@ fn spawn_moq_task(
                                 ptt_pub_track = None;
                                 ai_pub_track = None;
                                 ptt_subscription = None;
-                                ai_subscription = None;
+                                ai_audio_subscription = None;
+                                ai_cmd_subscription = None;
                                 let _ = event_tx.send(MoqEvent::Disconnected);
                             }
                             let _ = event_tx.send(MoqEvent::WifiDisconnected);
@@ -692,7 +742,8 @@ fn spawn_moq_task(
                                             &mut ptt_pub_track,
                                             &mut ai_pub_track,
                                             &mut ptt_subscription,
-                                            &mut ai_subscription,
+                                            &mut ai_audio_subscription,
+                                            &mut ai_cmd_subscription,
                                             &mut ptt_group_id,
                                             &mut ptt_object_id,
                                             &mut ai_group_id,
@@ -1166,7 +1217,7 @@ fn main() {
             Ok(MoqEvent::ChatSent) => {}
             Ok(MoqEvent::ChatReceived { .. }) => {}
             Ok(MoqEvent::AudioReceived { data }) => {
-                // Route received audio to appropriate jitter buffer based on channel_id
+                // Route received data based on channel_id
                 if data.len() >= 2 {
                     let channel_id = data[0];
                     let payload = &data[1..];
@@ -1180,6 +1231,10 @@ fn main() {
                             if !ptt_ai_buffer.push(payload) {
                                 warn!("net: ptt_ai buffer overrun");
                             }
+                        }
+                        Ok(ChannelId::ChatAi) => {
+                            // AI commands: forward directly to UI (no jitter buffering)
+                            write_tlv(&ui_uart, NetToUi::AudioFrame, &data);
                         }
                         _ => {
                             warn!("net: unknown channel_id {}", channel_id);
