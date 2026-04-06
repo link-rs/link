@@ -30,7 +30,7 @@ fn new_core(port: TokioSerialPort) -> Core {
 #[command(about = "Control interface for the link device", long_about = None)]
 struct Cli {
     /// Serial port to connect to (auto-detected if omitted)
-    #[arg(short, long)]
+    #[arg(short, long, default_missing_value = "", num_args = 0..=1)]
     port: Option<String>,
 
     /// Baud rate for the serial connection
@@ -582,20 +582,22 @@ async fn connect(
 
     // If user specified a port, connect directly
     if let Some(port_name) = port {
-        let stream = open_serial_port(&port_name, baud)?;
-        let port = TokioSerialPort::new(stream);
-        let mut core = new_core(port);
-        core.init_port(delay_ms).await;
+        if port_name != "" {
+            let stream = open_serial_port(&port_name, baud)?;
+            let port = TokioSerialPort::new(stream);
+            let mut core = new_core(port);
+            core.init_port(delay_ms).await;
 
-        // Wait for MGMT to boot and be ready
-        if !core.wait_for_mgmt_ready(50).await {
-            return Err("MGMT chip not responding after reset".into());
+            // Wait for MGMT to boot and be ready
+            if !core.wait_for_mgmt_ready(50).await {
+                return Err("MGMT chip not responding after reset".into());
+            }
+
+            // Clear any stale data from buffers after hello exchanges
+            core.drain();
+
+            return Ok((core, port_name));
         }
-
-        // Clear any stale data from buffers after hello exchanges
-        core.drain();
-
-        return Ok((core, port_name));
     }
 
     // Try to find a Link device automatically (init_port called inside try_connect)
