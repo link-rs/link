@@ -141,6 +141,10 @@ pub enum CtlToMgmt {
     GetStackInfo,
     /// Repaint the MGMT chip stack with the paint pattern
     RepaintStack,
+    /// Get MGMT hardware version (stored in option bytes)
+    GetHardwareVersion,
+    /// Set MGMT hardware version (u16 LE; DATA0 uses low byte)
+    SetHardwareVersion,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -154,6 +158,8 @@ pub enum MgmtToCtl {
     Hello,
     /// Stack usage information (JSON-serialized StackInfo)
     StackInfo,
+    /// MGMT hardware version (u16 LE)
+    HardwareVersion,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

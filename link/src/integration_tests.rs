@@ -18,6 +18,29 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone)]
+struct MockHardwareVersionStore {
+    value: Arc<Mutex<u16>>,
+}
+
+impl MockHardwareVersionStore {
+    fn new(initial: u16) -> Self {
+        Self {
+            value: Arc::new(Mutex::new(initial)),
+        }
+    }
+}
+
+impl mgmt::HardwareVersionStore for MockHardwareVersionStore {
+    fn get_hardware_version(&self) -> u16 {
+        *self.value.lock().unwrap()
+    }
+
+    fn set_hardware_version(&mut self, version: u16) {
+        *self.value.lock().unwrap() = version;
+    }
+}
+
 /// Run a test with the full device stack.
 ///
 /// The test function receives a `CtlCore<MockCtlPort>` and runs async operations on it.
@@ -42,6 +65,7 @@ where
     let ctl_core = CtlCore::new(ctl_port);
     let ui_reset_pins = mgmt::UiResetPins::new(MockPin::new(), MockPin::new(), MockPin::new());
     let net_reset_pins = mgmt::NetResetPins::new(MockPin::new(), MockPin::new());
+    let hw_version_store = MockHardwareVersionStore::new(16);
 
     let mgmt_task = mgmt::run(
         mgmt_to_ctl,
@@ -56,6 +80,7 @@ where
         net_reset_pins,
         MockAsyncDelay,
         NoOpStackMonitor,
+        hw_version_store,
     );
 
     // Create WS channels for NET app
@@ -128,6 +153,7 @@ where
     let net_boot_pin = TrackingPin::new("NET_BOOT", gpio_ops.clone());
     let net_rst_pin = TrackingPin::new("NET_RST", gpio_ops.clone());
     let net_reset_pins = mgmt::NetResetPins::new(net_boot_pin, net_rst_pin);
+    let hw_version_store = MockHardwareVersionStore::new(16);
 
     let mgmt_task = mgmt::run(
         mgmt_to_ctl,
@@ -142,6 +168,7 @@ where
         net_reset_pins,
         MockAsyncDelay,
         NoOpStackMonitor,
+        hw_version_store,
     );
 
     // Create WS channels for NET app
@@ -432,6 +459,25 @@ async fn mgmt_stack_info() {
 async fn mgmt_stack_repaint() {
     device_test(|mut ctl| async move {
         ctl.mgmt_repaint_stack().await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mgmt_hardware_version_get_default() {
+    device_test(|mut ctl| async move {
+        let version = ctl.mgmt_get_hardware_version().await.unwrap();
+        assert_eq!(version, 16);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mgmt_hardware_version_set_and_get() {
+    device_test(|mut ctl| async move {
+        ctl.mgmt_set_hardware_version(17).await.unwrap();
+        let version = ctl.mgmt_get_hardware_version().await.unwrap();
+        assert_eq!(version, 17);
     })
     .await;
 }

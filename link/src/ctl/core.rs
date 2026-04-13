@@ -611,6 +611,39 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
+    /// Get MGMT hardware version (u16).
+    pub async fn mgmt_get_hardware_version(&mut self) -> Result<u16, CtlError> {
+        self.write_tlv(CtlToMgmt::GetHardwareVersion, &[]).await?;
+        let tlv = self.read_tlv_mgmt().await?;
+        if tlv.tlv_type != MgmtToCtl::HardwareVersion {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "HardwareVersion",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 2 {
+            return Err(CtlError::InvalidLength {
+                expected: 2,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(u16::from_le_bytes([tlv.value[0], tlv.value[1]]))
+    }
+
+    /// Set MGMT hardware version (u16).
+    pub async fn mgmt_set_hardware_version(&mut self, version: u16) -> Result<(), CtlError> {
+        self.write_tlv(CtlToMgmt::SetHardwareVersion, &version.to_le_bytes())
+            .await?;
+        let tlv = self.read_tlv_mgmt().await?;
+        if tlv.tlv_type != MgmtToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Set the UI UART baud rate on the MGMT chip.
     ///
     /// This changes the baud rate between MGMT and UI chips.

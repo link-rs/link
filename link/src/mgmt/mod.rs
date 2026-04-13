@@ -145,6 +145,14 @@ where
 /// Type alias for backwards compatibility.
 pub type Esp32ResetPins<Boot, Rst> = NetResetPins<Boot, Rst>;
 
+/// Storage backend for MGMT hardware version.
+pub trait HardwareVersionStore {
+    /// Get current hardware version.
+    fn get_hardware_version(&self) -> u16;
+    /// Set hardware version.
+    fn set_hardware_version(&mut self, version: u16);
+}
+
 /// Indicates a baud rate change requested by handle_ctl.
 /// The caller is responsible for applying changes to RX sides after releasing locks.
 enum BaudRateChange {
@@ -154,7 +162,24 @@ enum BaudRateChange {
 }
 
 #[allow(unreachable_code)]
-pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, SM>(
+pub async fn run<
+    W,
+    R,
+    RA,
+    GA,
+    BA,
+    RB,
+    GB,
+    BB,
+    UiBoot0,
+    UiBoot1,
+    UiRst,
+    NetBoot,
+    NetRst,
+    D,
+    SM,
+    HV,
+>(
     to_ctl: W,
     mut from_ctl: R,
     mut to_ui: W,
@@ -167,6 +192,7 @@ pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot,
     mut net_reset_pins: NetResetPins<NetBoot, NetRst>,
     mut delay: D,
     stack_monitor: SM,
+    mut hardware_version_store: HV,
 ) -> !
 where
     W: Write + SetBaudRate,
@@ -184,6 +210,7 @@ where
     SM: crate::shared::StackMonitor,
     NetRst: OutputPin,
     D: DelayNs,
+    HV: HardwareVersionStore,
 {
     use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 
@@ -298,6 +325,7 @@ where
                 &mut net_reset_pins,
                 &mut delay,
                 &stack_monitor,
+                &mut hardware_version_store,
             )
             .await;
 
@@ -325,7 +353,7 @@ where
     unreachable!()
 }
 
-async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, SM>(
+async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, SM, HV>(
     tlv: Tlv<CtlToMgmt>,
     to_ctl: &mut C,
     to_ui: &mut U,
@@ -334,6 +362,7 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, SM>(
     net_reset_pins: &mut NetResetPins<NetBoot, NetRst>,
     _delay: &mut D,
     stack_monitor: &SM,
+    hardware_version_store: &mut HV,
 ) -> BaudRateChange
 where
     C: WriteTlv<MgmtToCtl> + Write + SetBaudRate,
@@ -346,6 +375,7 @@ where
     NetRst: OutputPin,
     D: DelayNs,
     SM: crate::shared::StackMonitor,
+    HV: HardwareVersionStore,
 {
     match tlv.tlv_type {
         CtlToMgmt::Ping => {
@@ -472,6 +502,24 @@ where
             info!("mgmt: repaint stack");
             stack_monitor.repaint_stack();
             to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
+            BaudRateChange::None
+        }
+        CtlToMgmt::GetHardwareVersion => {
+            let version = hardware_version_store.get_hardware_version();
+            to_ctl
+                .must_write_tlv(MgmtToCtl::HardwareVersion, &version.to_le_bytes())
+                .await;
+            BaudRateChange::None
+        }
+        CtlToMgmt::SetHardwareVersion => {
+            let version = u16::from_le_bytes([
+                tlv.value.first().copied().unwrap_or(0),
+                tlv.value.get(1).copied().unwrap_or(0),
+            ]);
+            // Acknowledge first to keep host-side flow robust in case setting the
+            // underlying storage triggers reset/reload behavior.
+            to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
+            hardware_version_store.set_hardware_version(version);
             BaudRateChange::None
         }
     }

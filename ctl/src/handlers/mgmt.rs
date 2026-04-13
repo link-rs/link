@@ -1,7 +1,7 @@
 //! MGMT chip command handlers.
 
 use super::Core;
-use crate::{MgmtAction, StackAction};
+use crate::{GetSetU16, MgmtAction, StackAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
 use link::ctl::flash::{FlashPhase, MgmtBootloaderEntry};
@@ -250,6 +250,18 @@ pub async fn handle_mgmt(
             StackAction::Repaint => {
                 core.mgmt_repaint_stack().await?;
                 println!("Stack repainted");
+                Ok(())
+            }
+        },
+        MgmtAction::Version { action } => match action.unwrap_or_default() {
+            GetSetU16::Get => {
+                let version = core.mgmt_get_hardware_version().await?;
+                println!("{} (0x{:04X})", version, version);
+                Ok(())
+            }
+            GetSetU16::Set { value } => {
+                core.mgmt_set_hardware_version(value).await?;
+                println!("Set MGMT hardware version to {} (0x{:04X})", value, value);
                 Ok(())
             }
         },

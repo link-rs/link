@@ -101,6 +101,11 @@ enum MgmtAction {
         #[command(subcommand)]
         action: Option<StackAction>,
     },
+    /// Get or set the MGMT hardware version field
+    Version {
+        #[command(subcommand)]
+        action: Option<GetSetU16>,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -244,6 +249,15 @@ enum GetSetU32 {
     Get,
     /// Set a new value
     Set { value: u32 },
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+enum GetSetU16 {
+    /// Get the current value
+    #[default]
+    Get,
+    /// Set a new value
+    Set { value: u16 },
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
