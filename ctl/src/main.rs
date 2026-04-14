@@ -557,7 +557,7 @@ fn manually_select_port(baud: u32) -> Result<(Core, String), String> {
 async fn connect(
     port: Option<String>,
     baud: u32,
-    require_mgmt_ready: bool,
+    auto_detect_link: bool,
 ) -> Result<(Core, String), Box<dyn std::error::Error>> {
     let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
 
@@ -568,20 +568,13 @@ async fn connect(
         let mut core = new_core(port);
         core.init_port(delay_ms).await;
 
-        // MGMT flashing must work even when no firmware is running yet.
-        if require_mgmt_ready && !core.wait_for_mgmt_ready(50).await {
-            return Err("MGMT chip not responding after reset".into());
-        }
-
         // Clear any stale data from buffers after hello exchanges
         core.drain();
 
         return Ok((core, port_name));
     }
 
-    // MGMT flashing can't rely on auto-detection because the target may not be
-    // running Link firmware yet.
-    if require_mgmt_ready {
+    if auto_detect_link {
         if let Some((app, port_name)) = find_link_device(baud).await {
             return Ok((app, port_name));
         }
@@ -635,7 +628,7 @@ async fn dispatch(cmd: Command, core: &mut Core) -> Result<(), Box<dyn std::erro
     }
 }
 
-fn requires_running_mgmt(cmd: &Command) -> bool {
+fn can_auto_detect_link(cmd: &Command) -> bool {
     !matches!(
         cmd,
         Command::Mgmt {
@@ -761,8 +754,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Some(cmd) => {
             // CLI mode: connect, run one command, exit
-            let require_mgmt_ready = requires_running_mgmt(&cmd);
-            let (mut core, port_name) = connect(cli.port, cli.baud, require_mgmt_ready).await?;
+            let auto_detect_link = can_auto_detect_link(&cmd);
+            let (mut core, port_name) = connect(cli.port, cli.baud, auto_detect_link).await?;
             println!("Connected to {} at {} baud", port_name, cli.baud);
 
             if let Err(e) = dispatch(cmd, &mut core).await {
