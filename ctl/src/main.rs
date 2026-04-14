@@ -93,6 +93,11 @@ enum MgmtAction {
     },
     /// Get MGMT chip firmware info
     Info,
+    /// Get or set the MGMT DATA0 version option byte
+    Version {
+        #[command(subcommand)]
+        action: Option<GetSetU8>,
+    },
     /// Flash firmware to the MGMT chip
     Flash { file: std::path::PathBuf },
     /// Stack usage measurement
@@ -243,6 +248,15 @@ enum GetSetU32 {
     Get,
     /// Set a new value
     Set { value: u32 },
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+enum GetSetU8 {
+    /// Get the current value
+    #[default]
+    Get,
+    /// Set a new value
+    Set { value: u8 },
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]

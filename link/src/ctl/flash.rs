@@ -18,6 +18,9 @@ use espflash::connection::{ClearBufferType, SerialInterface, SerialPortError};
 use std::io::{Error as IoError, ErrorKind};
 use std::time::Duration;
 
+const F072_OPTION_BYTES_BASE: u32 = 0x1FFF_F800;
+const F072_DATA0_BLOCK_ADDR: u32 = F072_OPTION_BYTES_BASE + 0x04;
+
 /// Information retrieved from the MGMT chip when it's in bootloader mode.
 #[derive(Debug, Clone, Default)]
 pub struct MgmtBootloaderInfo {
@@ -611,6 +614,58 @@ pub enum MgmtBootloaderEntry {
 /// These methods require the port to implement `CtlPort<Error = std::io::Error>`.
 /// All I/O is performed through the async `CtlPort` trait.
 impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
+    /// Read the MGMT chip's DATA0 option byte.
+    pub async fn get_mgmt_data0_option_byte(
+        &mut self,
+        skip_init: bool,
+    ) -> Result<u8, stm::Error<P::Error>> {
+        if !skip_init {
+            self.drain();
+        }
+
+        let mut bl = Bootloader::new(self.port_mut());
+        if !skip_init {
+            bl.init().await?;
+        }
+
+        let mut data = [0u8; 4];
+        bl.read_memory(F072_DATA0_BLOCK_ADDR, &mut data).await?;
+        Ok(data[0])
+    }
+
+    /// Write the MGMT chip's DATA0 option byte and update its complement.
+    pub async fn set_mgmt_data0_option_byte(
+        &mut self,
+        skip_init: bool,
+        value: u8,
+    ) -> Result<(), stm::Error<P::Error>> {
+        if !skip_init {
+            self.drain();
+        }
+
+        let mut bl = Bootloader::new(self.port_mut());
+        if !skip_init {
+            bl.init().await?;
+        }
+
+        let mut data = [0u8; 4];
+        bl.read_memory(F072_DATA0_BLOCK_ADDR, &mut data).await?;
+        data[0] = value;
+        data[1] = !value;
+        bl.write_memory(F072_DATA0_BLOCK_ADDR, &data).await?;
+
+        let mut verify = [0u8; 4];
+        bl.read_memory(F072_DATA0_BLOCK_ADDR, &mut verify).await?;
+        if verify != data {
+            return Err(stm::Error::Io(IoError::new(
+                ErrorKind::InvalidData,
+                "option byte verification failed",
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Attempt to enter MGMT bootloader mode automatically.
     ///
     /// This implements Strategy 1 for EV15/EV16 detection:
