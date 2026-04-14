@@ -577,6 +577,7 @@ fn manually_select_port(baud: u32) -> Result<(Core, String), String> {
 async fn connect(
     port: Option<String>,
     baud: u32,
+    require_mgmt_ready: bool,
 ) -> Result<(Core, String), Box<dyn std::error::Error>> {
     let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
 
@@ -587,8 +588,8 @@ async fn connect(
         let mut core = new_core(port);
         core.init_port(delay_ms).await;
 
-        // Wait for MGMT to boot and be ready
-        if !core.wait_for_mgmt_ready(50).await {
+        // MGMT flashing must work even when no firmware is running yet.
+        if require_mgmt_ready && !core.wait_for_mgmt_ready(50).await {
             return Err("MGMT chip not responding after reset".into());
         }
 
@@ -598,9 +599,12 @@ async fn connect(
         return Ok((core, port_name));
     }
 
-    // Try to find a Link device automatically (init_port called inside try_connect)
-    if let Some((app, port_name)) = find_link_device(baud).await {
-        return Ok((app, port_name));
+    // MGMT flashing can't rely on auto-detection because the target may not be
+    // running Link firmware yet.
+    if require_mgmt_ready {
+        if let Some((app, port_name)) = find_link_device(baud).await {
+            return Ok((app, port_name));
+        }
     }
 
     // Fall back to manual selection (only if stdin is a terminal)
@@ -649,6 +653,15 @@ async fn dispatch(cmd: Command, core: &mut Core) -> Result<(), Box<dyn std::erro
             std::process::exit(0);
         }
     }
+}
+
+fn requires_running_mgmt(cmd: &Command) -> bool {
+    !matches!(
+        cmd,
+        Command::Mgmt {
+            action: MgmtAction::Flash { .. }
+        }
+    )
 }
 
 fn mgmt_handler(
@@ -768,7 +781,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Some(cmd) => {
             // CLI mode: connect, run one command, exit
-            let (mut core, port_name) = connect(cli.port, cli.baud).await?;
+            let require_mgmt_ready = requires_running_mgmt(&cmd);
+            let (mut core, port_name) = connect(cli.port, cli.baud, require_mgmt_ready).await?;
             println!("Connected to {} at {} baud", port_name, cli.baud);
 
             if let Err(e) = dispatch(cmd, &mut core).await {
@@ -778,7 +792,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => {
             // REPL mode: connect once, run commands in loop
-            let (core, port_name) = connect(cli.port, cli.baud).await?;
+            let (core, port_name) = connect(cli.port, cli.baud, true).await?;
             run_repl(core, &port_name)?;
         }
     }
