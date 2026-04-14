@@ -8,7 +8,6 @@ mod serial;
 
 use clap::{FromArgMatches, Parser, Subcommand};
 use link::ctl::{CtlCore, SetTimeout};
-use link::timing::bootloader::PROBE_RETRY_INTERVAL_MS;
 use rand::Rng;
 use reedline_repl_rs::clap::ArgMatches;
 use reedline_repl_rs::{CallBackMap, Repl};
@@ -505,25 +504,6 @@ async fn find_link_device(baud: u32) -> Option<(Core, String)> {
 
             // Clear any stale data from buffers after hello exchanges
             core.drain();
-
-            // Probe for UI readiness (UI chip may still be booting after MGMT released it from reset)
-            let max_attempts = 20;
-            for _attempt in 1..=max_attempts {
-                // Set short timeout for probing
-                let _ = core.port_mut().set_timeout(Duration::from_millis(100));
-
-                if core.ui_ping(b"probe").await.is_ok() {
-                    // Restore normal timeout
-                    let _ = core.port_mut().set_timeout(Duration::from_secs(3));
-                    return Some((core, port_name.clone()));
-                }
-
-                // Wait a bit before retry
-                tokio::time::sleep(Duration::from_millis(PROBE_RETRY_INTERVAL_MS)).await;
-            }
-
-            // UI didn't respond, but continue anyway (NET might work, or device might not have UI firmware)
-            let _ = core.port_mut().set_timeout(Duration::from_secs(3));
             return Some((core, port_name.clone()));
         }
     }
