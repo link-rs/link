@@ -853,6 +853,140 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
+    /// Get UI chip output volume.
+    pub async fn ui_get_volume(&mut self) -> Result<u16, CtlError> {
+        self.write_tlv_ui(CtlToUi::GetVolume, &[]).await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::Volume {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Volume",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 2 {
+            return Err(CtlError::InvalidLength {
+                expected: 2,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(u16::from_le_bytes([tlv.value[0], tlv.value[1]]))
+    }
+
+    /// Set UI chip output volume.
+    pub async fn ui_set_volume(&mut self, volume: u16) -> Result<u16, CtlError> {
+        self.write_tlv_ui(CtlToUi::SetVolume, &volume.to_le_bytes())
+            .await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type == UiToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != UiToCtl::Volume {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Volume",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 2 {
+            return Err(CtlError::InvalidLength {
+                expected: 2,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(u16::from_le_bytes([tlv.value[0], tlv.value[1]]))
+    }
+
+    /// Adjust UI chip output volume by a signed delta.
+    pub async fn ui_adjust_volume(&mut self, delta: i16) -> Result<u16, CtlError> {
+        self.write_tlv_ui(CtlToUi::Volume, &delta.to_le_bytes())
+            .await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type == UiToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != UiToCtl::Volume {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Volume",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 2 {
+            return Err(CtlError::InvalidLength {
+                expected: 2,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(u16::from_le_bytes([tlv.value[0], tlv.value[1]]))
+    }
+
+    /// Get UI chip microphone preamp level.
+    pub async fn ui_get_mic_preamp(&mut self) -> Result<u16, CtlError> {
+        self.write_tlv_ui(CtlToUi::GetMicPreamp, &[]).await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::MicPreamp {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "MicPreamp",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 2 {
+            return Err(CtlError::InvalidLength {
+                expected: 2,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(u16::from_le_bytes([tlv.value[0], tlv.value[1]]))
+    }
+
+    /// Set UI chip microphone preamp level.
+    pub async fn ui_set_mic_preamp(&mut self, mic_preamp: u16) -> Result<u16, CtlError> {
+        self.write_tlv_ui(CtlToUi::SetMicPreamp, &mic_preamp.to_le_bytes())
+            .await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type == UiToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != UiToCtl::MicPreamp {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "MicPreamp",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 2 {
+            return Err(CtlError::InvalidLength {
+                expected: 2,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(u16::from_le_bytes([tlv.value[0], tlv.value[1]]))
+    }
+
+    /// Adjust UI chip microphone preamp level by a signed delta.
+    pub async fn ui_adjust_mic_preamp(&mut self, delta: i16) -> Result<u16, CtlError> {
+        self.write_tlv_ui(CtlToUi::MicPreamp, &delta.to_le_bytes())
+            .await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type == UiToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != UiToCtl::MicPreamp {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "MicPreamp",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 2 {
+            return Err(CtlError::InvalidLength {
+                expected: 2,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(u16::from_le_bytes([tlv.value[0], tlv.value[1]]))
+    }
+
     /// Set UI chip BOOT0 pin directly.
     pub async fn set_ui_boot0(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;

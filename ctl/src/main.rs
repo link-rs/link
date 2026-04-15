@@ -144,7 +144,13 @@ enum UiAction {
     /// Get or set the UI output volume
     Volume {
         #[command(subcommand)]
-        action: Option<GetSetU16>,
+        action: Option<GetSetAdjust>,
+    },
+
+    /// Get or set the UI microphone preamp level
+    MicPreamp {
+        #[command(subcommand)]
+        action: Option<GetSetAdjust>,
     },
 
     /// Set UI BOOT0 pin
@@ -253,12 +259,14 @@ enum GetSetU32 {
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
-enum GetSetU16 {
+enum GetSetAdjust {
     /// Get the current value
     #[default]
     Get,
     /// Set a new value
     Set { value: u16 },
+    /// Adjust by a signed delta
+    Adjust { value: i16 },
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]

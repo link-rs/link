@@ -2,9 +2,8 @@
 
 use super::Core;
 use crate::{
-    GetSetHex, GetSetU16, GetSetU32, LogsAction, LoopbackAction, PinAction, PinLevel,
-    ResetAction,
-    StackAction, UiAction,
+    GetSetAdjust, GetSetHex, GetSetU32, LogsAction, LoopbackAction, PinAction, PinLevel,
+    ResetAction, StackAction, UiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
@@ -202,14 +201,36 @@ pub async fn handle_ui(
             }
         },
         UiAction::Volume { action } => match action.unwrap_or_default() {
-            GetSetU16::Get => {
+            GetSetAdjust::Get => {
                 let volume = core.ui_get_volume().await?;
                 println!("{}", volume);
                 Ok(())
             }
-            GetSetU16::Set { value } => {
-                core.ui_set_volume(value).await?;
-                println!("UI volume: {}", value);
+            GetSetAdjust::Set { value } => {
+                let volume = core.ui_set_volume(value).await?;
+                println!("{}", volume);
+                Ok(())
+            }
+            GetSetAdjust::Adjust { value } => {
+                let volume = core.ui_adjust_volume(value).await?;
+                println!("{}", volume);
+                Ok(())
+            }
+        },
+        UiAction::MicPreamp { action } => match action.unwrap_or_default() {
+            GetSetAdjust::Get => {
+                let mic_preamp = core.ui_get_mic_preamp().await?;
+                println!("{}", mic_preamp);
+                Ok(())
+            }
+            GetSetAdjust::Set { value } => {
+                let mic_preamp = core.ui_set_mic_preamp(value).await?;
+                println!("{}", mic_preamp);
+                Ok(())
+            }
+            GetSetAdjust::Adjust { value } => {
+                let mic_preamp = core.ui_adjust_mic_preamp(value).await?;
+                println!("{}", mic_preamp);
                 Ok(())
             }
         },

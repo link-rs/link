@@ -165,10 +165,10 @@ pub enum CtlToUi {
     SetVersion,
     GetSFrameKey,
     SetSFrameKey,
-    /// Set loopback mode (1 byte: UiLoopbackMode)
-    SetLoopback,
     /// Get loopback mode
     GetLoopback,
+    /// Set loopback mode (1 byte: UiLoopbackMode)
+    SetLoopback,
     /// Get stack usage information
     GetStackInfo,
     /// Repaint the stack with the paint pattern
@@ -179,6 +179,18 @@ pub enum CtlToUi {
     SetLogsEnabled,
     /// Clear all stored configuration (EEPROM)
     ClearStorage,
+    /// Get output volume (2 bytes: raw codec value, little-endian)
+    GetVolume,
+    /// Set output volume (2 bytes: raw codec value, little-endian)
+    SetVolume,
+    /// Adjust output volume (2 bytes: signed delta, little-endian)
+    Volume,
+    /// Get microphone preamp level (2 bytes: raw codec value, little-endian)
+    GetMicPreamp,
+    /// Set microphone preamp level (2 bytes: raw codec value, little-endian)
+    SetMicPreamp,
+    /// Adjust microphone preamp level (2 bytes: signed delta, little-endian)
+    MicPreamp,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -198,6 +210,10 @@ pub enum UiToCtl {
     StackInfo,
     /// Logs enabled state (1 byte: 0=disabled, 1=enabled)
     LogsEnabled,
+    /// Output volume (2 bytes: raw codec value, little-endian)
+    Volume,
+    /// Microphone preamp level (2 bytes: raw codec value, little-endian)
+    MicPreamp,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
