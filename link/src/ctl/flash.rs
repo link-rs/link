@@ -20,6 +20,9 @@ use std::time::Duration;
 
 const F072_OPTION_BYTES_BASE: u32 = 0x1FFF_F800;
 const F072_DATA0_BLOCK_ADDR: u32 = F072_OPTION_BYTES_BASE + 0x04;
+const F072_OPTION_BYTES_LEN: usize = 16;
+const F072_DATA0_INDEX: usize = 4;
+const F072_NDATA0_INDEX: usize = 5;
 
 /// Information retrieved from the MGMT chip when it's in bootloader mode.
 #[derive(Debug, Clone, Default)]
@@ -648,18 +651,30 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
             bl.init().await?;
         }
 
-        let mut data = [0u8; 4];
-        bl.read_memory(F072_DATA0_BLOCK_ADDR, &mut data).await?;
-        data[0] = value;
-        data[1] = !value;
-        bl.write_memory(F072_DATA0_BLOCK_ADDR, &data).await?;
+        let mut option_bytes = [0u8; F072_OPTION_BYTES_LEN];
+        bl.read_memory(F072_OPTION_BYTES_BASE, &mut option_bytes)
+            .await?;
+        option_bytes[F072_DATA0_INDEX] = value;
+        option_bytes[F072_NDATA0_INDEX] = !value;
+        bl.write_memory(F072_OPTION_BYTES_BASE, &option_bytes)
+            .await?;
 
-        let mut verify = [0u8; 4];
+        // Option-byte programming may reset the target, so verify with a fresh
+        // bootloader session instead of assuming the current one is still valid.
+        self.drain();
+        let mut bl = Bootloader::new(self.port_mut());
+        bl.init().await?;
+
+        let expected = [value, !value];
+        let mut verify = [0u8; 2];
         bl.read_memory(F072_DATA0_BLOCK_ADDR, &mut verify).await?;
-        if verify != data {
+        if verify != expected {
             return Err(stm::Error::Io(IoError::new(
                 ErrorKind::InvalidData,
-                "option byte verification failed",
+                format!(
+                    "option byte verification failed: expected {:02X?}, got {:02X?}",
+                    expected, verify
+                ),
             )));
         }
 
