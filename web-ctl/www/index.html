@@ -963,6 +963,25 @@
                 </div>
 
                 <div class="card-section">
+                    <h3>Board and Version</h3>
+                    <div class="form-group">
+                        <label>Board Version (running MGMT firmware)</label>
+                        <div class="inline-form">
+                            <input type="text" id="mgmtBoardInput" placeholder="(click Read Board)" class="mono" readonly>
+                            <button class="btn-secondary" id="getMgmtBoardBtn">Read Board</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Version Option Byte (DATA0)</label>
+                        <div class="inline-form">
+                            <input type="number" id="mgmtVersionInput" placeholder="0-255" class="mono" min="0" max="255">
+                            <button class="btn-secondary" id="getMgmtVersionBtn">Read Version</button>
+                            <button class="btn-primary" id="setMgmtVersionBtn">Write Version</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-section">
                     <h3>Stack Diagnostics</h3>
                     <div class="btn-group" style="margin-bottom: 0.75rem;">
                         <button class="btn-secondary" id="getMgmtStackBtn">Get Stack Info</button>
@@ -1681,6 +1700,41 @@
                 log('MGMT ping successful - received pong', 'success');
             } catch (e) {
                 log(`MGMT ping error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('getMgmtBoardBtn').addEventListener('click', async () => {
+            try {
+                const version = await controller.get_mgmt_board();
+                document.getElementById('mgmtBoardInput').value = version.toString();
+                log(`MGMT board version: ${version}`, 'success');
+            } catch (e) {
+                log(`Read MGMT board version error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('getMgmtVersionBtn').addEventListener('click', async () => {
+            try {
+                const version = await controller.get_mgmt_version();
+                document.getElementById('mgmtVersionInput').value = version.toString();
+                log(`MGMT DATA0 version: ${version}`, 'success');
+            } catch (e) {
+                log(`Read MGMT version error: ${e}`, 'error');
+            }
+        });
+
+        document.getElementById('setMgmtVersionBtn').addEventListener('click', async () => {
+            try {
+                const input = document.getElementById('mgmtVersionInput').value;
+                const version = parseInt(input, 10);
+                if (!Number.isInteger(version) || version < 0 || version > 255) {
+                    log('MGMT version must be an integer from 0 to 255', 'error');
+                    return;
+                }
+                await controller.set_mgmt_version(version);
+                log(`MGMT DATA0 version set to ${version}`, 'success');
+            } catch (e) {
+                log(`Write MGMT version error: ${e}`, 'error');
             }
         });
 
