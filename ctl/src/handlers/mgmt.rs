@@ -109,7 +109,10 @@ pub async fn handle_mgmt(
     action: MgmtAction,
     core: &mut Core,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let needs_mgmt_firmware = matches!(&action, MgmtAction::Ping { .. } | MgmtAction::Stack { .. });
+    let needs_mgmt_firmware = matches!(
+        &action,
+        MgmtAction::Ping { .. } | MgmtAction::Board | MgmtAction::Stack { .. }
+    );
 
     if needs_mgmt_firmware && !core.wait_for_mgmt_ready(50).await {
         return Err("MGMT chip not responding after reset".into());
@@ -194,6 +197,11 @@ pub async fn handle_mgmt(
             exit_mgmt_bootloader(core).await?;
 
             println!("\nDone!");
+            Ok(())
+        }
+        MgmtAction::Board => {
+            let version = core.mgmt_get_board_version().await?;
+            println!("{}", version);
             Ok(())
         }
         MgmtAction::Version { action } => handle_version(action, core).await,

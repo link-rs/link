@@ -93,6 +93,8 @@ enum MgmtAction {
     },
     /// Get MGMT chip firmware info
     Info,
+    /// Get the MGMT board version from option bytes
+    Board,
     /// Get or set the MGMT DATA0 version option byte
     Version {
         #[command(subcommand)]

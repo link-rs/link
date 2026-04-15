@@ -9,6 +9,16 @@ use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use embedded_hal_async::delay::DelayNs;
 use embedded_io_async::{Read, Write};
 
+#[cfg(all(feature = "mgmt", target_arch = "arm", not(test)))]
+fn board_version() -> u8 {
+    embassy_stm32::pac::FLASH.obr().read().data0()
+}
+
+#[cfg(not(all(feature = "mgmt", target_arch = "arm", not(test))))]
+fn board_version() -> u8 {
+    0xFF
+}
+
 /// Holds the GPIO pins used to control the UI chip's reset behavior.
 ///
 /// UI chip boot mode:
@@ -466,6 +476,14 @@ where
                     .must_write_tlv(MgmtToCtl::StackInfo, serialized)
                     .await;
             }
+            BaudRateChange::None
+        }
+        CtlToMgmt::GetBoardVersion => {
+            info!("mgmt: get board version");
+            let version = board_version();
+            to_ctl
+                .must_write_tlv(MgmtToCtl::BoardVersion, &[version])
+                .await;
             BaudRateChange::None
         }
         CtlToMgmt::RepaintStack => {

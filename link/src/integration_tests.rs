@@ -193,6 +193,14 @@ async fn ctl_mgmt_ping() {
 }
 
 #[tokio::test]
+async fn ctl_mgmt_board_version() {
+    device_test(|mut ctl| async move {
+        assert_eq!(ctl.mgmt_get_board_version().await.unwrap(), 0xFF);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn ctl_ui_ping() {
     device_test(|mut ctl| async move {
         ctl.ui_ping(b"hello ui").await.unwrap();

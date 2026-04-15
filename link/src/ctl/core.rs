@@ -598,6 +598,25 @@ impl<P: CtlPort> CtlCore<P> {
         StackInfo::from_bytes(&tlv.value).ok_or(CtlError::InvalidData)
     }
 
+    /// Get the MGMT board version from the DATA0 option byte.
+    pub async fn mgmt_get_board_version(&mut self) -> Result<u8, CtlError> {
+        self.write_tlv(CtlToMgmt::GetBoardVersion, &[]).await?;
+        let tlv = self.read_tlv_mgmt().await?;
+        if tlv.tlv_type != MgmtToCtl::BoardVersion {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "BoardVersion",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 1 {
+            return Err(CtlError::InvalidLength {
+                expected: 1,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(tlv.value[0])
+    }
+
     /// Repaint the MGMT chip stack for future measurement.
     pub async fn mgmt_repaint_stack(&mut self) -> Result<(), CtlError> {
         self.write_tlv(CtlToMgmt::RepaintStack, &[]).await?;
