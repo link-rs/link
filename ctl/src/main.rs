@@ -8,7 +8,6 @@ mod serial;
 
 use clap::{FromArgMatches, Parser, Subcommand};
 use link::ctl::{CtlCore, SetTimeout};
-use link::timing::bootloader::PROBE_RETRY_INTERVAL_MS;
 use rand::Rng;
 use reedline_repl_rs::clap::ArgMatches;
 use reedline_repl_rs::{CallBackMap, Repl};
@@ -505,25 +504,6 @@ async fn find_link_device(baud: u32) -> Option<(Core, String)> {
 
             // Clear any stale data from buffers after hello exchanges
             core.drain();
-
-            // Probe for UI readiness (UI chip may still be booting after MGMT released it from reset)
-            let max_attempts = 20;
-            for _attempt in 1..=max_attempts {
-                // Set short timeout for probing
-                let _ = core.port_mut().set_timeout(Duration::from_millis(100));
-
-                if core.ui_ping(b"probe").await.is_ok() {
-                    // Restore normal timeout
-                    let _ = core.port_mut().set_timeout(Duration::from_secs(3));
-                    return Some((core, port_name.clone()));
-                }
-
-                // Wait a bit before retry
-                tokio::time::sleep(Duration::from_millis(PROBE_RETRY_INTERVAL_MS)).await;
-            }
-
-            // UI didn't respond, but continue anyway (NET might work, or device might not have UI firmware)
-            let _ = core.port_mut().set_timeout(Duration::from_secs(3));
             return Some((core, port_name.clone()));
         }
     }
@@ -577,6 +557,7 @@ fn manually_select_port(baud: u32) -> Result<(Core, String), String> {
 async fn connect(
     port: Option<String>,
     baud: u32,
+    auto_detect_link: bool,
 ) -> Result<(Core, String), Box<dyn std::error::Error>> {
     let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
 
@@ -587,20 +568,16 @@ async fn connect(
         let mut core = new_core(port);
         core.init_port(delay_ms).await;
 
-        // Wait for MGMT to boot and be ready
-        if !core.wait_for_mgmt_ready(50).await {
-            return Err("MGMT chip not responding after reset".into());
-        }
-
         // Clear any stale data from buffers after hello exchanges
         core.drain();
 
         return Ok((core, port_name));
     }
 
-    // Try to find a Link device automatically (init_port called inside try_connect)
-    if let Some((app, port_name)) = find_link_device(baud).await {
-        return Ok((app, port_name));
+    if auto_detect_link {
+        if let Some((app, port_name)) = find_link_device(baud).await {
+            return Ok((app, port_name));
+        }
     }
 
     // Fall back to manual selection (only if stdin is a terminal)
@@ -649,6 +626,15 @@ async fn dispatch(cmd: Command, core: &mut Core) -> Result<(), Box<dyn std::erro
             std::process::exit(0);
         }
     }
+}
+
+fn can_auto_detect_link(cmd: &Command) -> bool {
+    !matches!(
+        cmd,
+        Command::Mgmt {
+            action: MgmtAction::Flash { .. }
+        }
+    )
 }
 
 fn mgmt_handler(
@@ -768,7 +754,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Some(cmd) => {
             // CLI mode: connect, run one command, exit
-            let (mut core, port_name) = connect(cli.port, cli.baud).await?;
+            let auto_detect_link = can_auto_detect_link(&cmd);
+            let (mut core, port_name) = connect(cli.port, cli.baud, auto_detect_link).await?;
             println!("Connected to {} at {} baud", port_name, cli.baud);
 
             if let Err(e) = dispatch(cmd, &mut core).await {
@@ -778,7 +765,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => {
             // REPL mode: connect once, run commands in loop
-            let (core, port_name) = connect(cli.port, cli.baud).await?;
+            let (core, port_name) = connect(cli.port, cli.baud, true).await?;
             run_repl(core, &port_name)?;
         }
     }
