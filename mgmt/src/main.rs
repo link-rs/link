@@ -15,7 +15,7 @@ use embassy_stm32::{
 };
 use embassy_time::Delay;
 use embedded_io_async::{ErrorType, Read, Write};
-use link::{uart_config::SetBaudRate, StackMonitor, mgmt::Board};
+use link::{mgmt::Board, uart_config::SetBaudRate, StackMonitor};
 use {defmt_rtt as _, panic_probe as _};
 
 #[derive(Copy, Clone)]
@@ -183,27 +183,21 @@ fn setup_common(
     let ui_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
     let net_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
 
-    let (to_ctl, from_ctl) = Uart::new(
-        usart1, pa10, pa9, Irqs, dma1_ch2, dma1_ch3, ctl_config,
-    )
-    .unwrap()
-    .split();
+    let (to_ctl, from_ctl) = Uart::new(usart1, pa10, pa9, Irqs, dma1_ch2, dma1_ch3, ctl_config)
+        .unwrap()
+        .split();
     let to_ctl = UartTxWrapper(to_ctl);
     let from_ctl = UartRxWrapper(from_ctl.into_ring_buffered(ctl_rx_buf));
 
-    let (to_ui, from_ui) = Uart::new(
-        usart2, pa3, pa2, Irqs, dma1_ch4, dma1_ch5, ui_config,
-    )
-    .unwrap()
-    .split();
+    let (to_ui, from_ui) = Uart::new(usart2, pa3, pa2, Irqs, dma1_ch4, dma1_ch5, ui_config)
+        .unwrap()
+        .split();
     let to_ui = UartTxWrapper(to_ui);
     let from_ui = UartRxWrapper(from_ui.into_ring_buffered(ui_rx_buf));
 
-    let (to_net, from_net) = Uart::new(
-        usart3, pb11, pb10, Irqs, dma1_ch7, dma1_ch6, net_config,
-    )
-    .unwrap()
-    .split();
+    let (to_net, from_net) = Uart::new(usart3, pb11, pb10, Irqs, dma1_ch7, dma1_ch6, net_config)
+        .unwrap()
+        .split();
     let to_net = UartTxWrapper(to_net);
     let from_net = UartRxWrapper(from_net.into_ring_buffered(net_rx_buf));
 
@@ -213,17 +207,24 @@ fn setup_common(
     let ui_rst = Output::new(pb3, Level::Low, Speed::Low);
     let ui_reset_pins = link::mgmt::UiResetPins::new(ui_boot0, ui_boot1, ui_rst);
 
-    (mco, to_ctl, from_ctl, to_ui, from_ui, to_net, from_net, ui_reset_pins)
+    (
+        mco,
+        to_ctl,
+        from_ctl,
+        to_ui,
+        from_ui,
+        to_net,
+        from_net,
+        ui_reset_pins,
+    )
 }
 
 #[allow(dead_code)]
 async fn run_ev16(p: embassy_stm32::Peripherals) -> ! {
     let (_mco, to_ctl, from_ctl, to_ui, from_ui, to_net, from_net, ui_reset_pins) = setup_common(
-        p.MCO, p.PA8,
-        p.USART1, p.USART2, p.USART3,
-        p.PA9, p.PA10, p.PA2, p.PA3, p.PB10, p.PB11,
-        p.DMA1_CH2, p.DMA1_CH3, p.DMA1_CH4, p.DMA1_CH5, p.DMA1_CH6, p.DMA1_CH7,
-        p.PA15, p.PB3, p.PB8,
+        p.MCO, p.PA8, p.USART1, p.USART2, p.USART3, p.PA9, p.PA10, p.PA2, p.PA3, p.PB10, p.PB11,
+        p.DMA1_CH2, p.DMA1_CH3, p.DMA1_CH4, p.DMA1_CH5, p.DMA1_CH6, p.DMA1_CH7, p.PA15, p.PB3,
+        p.PB8,
     );
 
     // EV16 LED A: R=PA4 (inverted), G=PA6, B=PA7
@@ -246,19 +247,27 @@ async fn run_ev16(p: embassy_stm32::Peripherals) -> ! {
     let net_reset_pins = link::mgmt::NetResetPins::new(net_boot, net_rst);
 
     link::mgmt::run(
-        to_ctl, from_ctl, to_ui, from_ui, to_net, from_net,
-        led_a, led_b, ui_reset_pins, net_reset_pins, Delay, Stm32Board,
+        to_ctl,
+        from_ctl,
+        to_ui,
+        from_ui,
+        to_net,
+        from_net,
+        led_a,
+        led_b,
+        ui_reset_pins,
+        net_reset_pins,
+        Delay,
+        Stm32Board,
     )
     .await;
 }
 
 async fn run_ev17(p: embassy_stm32::Peripherals) -> ! {
     let (_mco, to_ctl, from_ctl, to_ui, from_ui, to_net, from_net, ui_reset_pins) = setup_common(
-        p.MCO, p.PA8,
-        p.USART1, p.USART2, p.USART3,
-        p.PA9, p.PA10, p.PA2, p.PA3, p.PB10, p.PB11,
-        p.DMA1_CH2, p.DMA1_CH3, p.DMA1_CH4, p.DMA1_CH5, p.DMA1_CH6, p.DMA1_CH7,
-        p.PA15, p.PB3, p.PB8,
+        p.MCO, p.PA8, p.USART1, p.USART2, p.USART3, p.PA9, p.PA10, p.PA2, p.PA3, p.PB10, p.PB11,
+        p.DMA1_CH2, p.DMA1_CH3, p.DMA1_CH4, p.DMA1_CH5, p.DMA1_CH6, p.DMA1_CH7, p.PA15, p.PB3,
+        p.PB8,
     );
 
     // EV17 board updates:
@@ -282,8 +291,18 @@ async fn run_ev17(p: embassy_stm32::Peripherals) -> ! {
     let net_reset_pins = link::mgmt::NetResetPins::new(net_boot, net_rst);
 
     link::mgmt::run(
-        to_ctl, from_ctl, to_ui, from_ui, to_net, from_net,
-        led_a, led_b, ui_reset_pins, net_reset_pins, Delay, Stm32Board,
+        to_ctl,
+        from_ctl,
+        to_ui,
+        from_ui,
+        to_net,
+        from_net,
+        led_a,
+        led_b,
+        ui_reset_pins,
+        net_reset_pins,
+        Delay,
+        Stm32Board,
     )
     .await;
 }
@@ -326,6 +345,6 @@ async fn main(_spawner: Spawner) {
     match Stm32Board.board_version() {
         16 => run_ev16(p).await,
         17 => run_ev17(p).await,
-        _ => loop {}
+        _ => loop {},
     }
 }
