@@ -1,7 +1,7 @@
 //! MGMT chip command handlers.
 
 use super::Core;
-use crate::{MgmtAction, StackAction};
+use crate::{GetSetU8, MgmtAction, StackAction};
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
 use link::ctl::flash::{FlashPhase, MgmtBootloaderEntry};
@@ -13,7 +13,9 @@ use tokio_serial::SerialPort;
 /// Enter MGMT bootloader mode, handling auto-reset and manual fallback.
 ///
 /// Returns whether init should be skipped (true if auto-reset succeeded).
-async fn enter_mgmt_bootloader(core: &mut Core) -> Result<bool, Box<dyn std::error::Error>> {
+pub(super) async fn enter_mgmt_bootloader(
+    core: &mut Core,
+) -> Result<bool, Box<dyn std::error::Error>> {
     // Switch to bootloader baud rate
     println!("Switching to bootloader baud rate (115200)...");
     core.port_mut().get_mut().set_baud_rate(115200)?;
@@ -60,14 +62,61 @@ async fn enter_mgmt_bootloader(core: &mut Core) -> Result<bool, Box<dyn std::err
     Ok(skip_init)
 }
 
+pub(super) async fn exit_mgmt_bootloader(
+    core: &mut Core,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
+    core.exit_mgmt_bootloader(delay_ms).await;
+
+    core.port_mut()
+        .get_mut()
+        .set_baud_rate(link::uart_config::HIGH_SPEED.baudrate)?;
+
+    Ok(())
+}
+
+async fn handle_version(
+    action: Option<GetSetU8>,
+    core: &mut Core,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let skip_init = enter_mgmt_bootloader(core).await?;
+
+    let result = async {
+        match action.unwrap_or_default() {
+            GetSetU8::Get => {
+                let value = core
+                    .get_mgmt_data0_option_byte(skip_init)
+                    .await
+                    .map_err(|e| format!("Failed to read MGMT DATA0 option byte: {:?}", e))?;
+                println!("{}", value);
+            }
+            GetSetU8::Set { value } => {
+                core.set_mgmt_data0_option_byte(skip_init, value)
+                    .await
+                    .map_err(|e| format!("Failed to write MGMT DATA0 option byte: {:?}", e))?;
+                println!("Version set to {}", value);
+            }
+        }
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    exit_mgmt_bootloader(core).await?;
+    result
+}
+
 pub async fn handle_mgmt(
     action: MgmtAction,
     core: &mut Core,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let needs_mgmt_firmware = matches!(&action, MgmtAction::Ping { .. } | MgmtAction::Stack { .. });
+    let needs_mgmt_firmware = matches!(
+        &action,
+        MgmtAction::Ping { .. } | MgmtAction::Board | MgmtAction::Stack { .. }
+    );
 
     if needs_mgmt_firmware && !core.wait_for_mgmt_ready(50).await {
-        return Err("MGMT chip not responding after reset".into());
+        return Err("MGMT chip not responding (timed out)".into());
     }
 
     match action {
@@ -142,22 +191,21 @@ pub async fn handle_mgmt(
                 println!("\nFlash Memory: Could not read (read protection may be enabled)");
             }
 
-            // Exit bootloader and reset to user code
-            let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
-            core.exit_mgmt_bootloader(delay_ms).await;
-
-            // Switch back to normal operation baud rate
             println!(
                 "Switching to normal operation baud rate ({})...",
                 link::uart_config::HIGH_SPEED.baudrate
             );
-            core.port_mut()
-                .get_mut()
-                .set_baud_rate(link::uart_config::HIGH_SPEED.baudrate)?;
+            exit_mgmt_bootloader(core).await?;
 
             println!("\nDone!");
             Ok(())
         }
+        MgmtAction::Board => {
+            let version = core.mgmt_get_board_version().await?;
+            println!("{}", version);
+            Ok(())
+        }
+        MgmtAction::Version { action } => handle_version(action, core).await,
         MgmtAction::Flash { file } => {
             println!("MGMT Flash");
             println!("==========\n");
@@ -215,10 +263,7 @@ pub async fn handle_mgmt(
 
             match result {
                 Ok(()) => {
-                    // Exit bootloader and reset to user code
-                    let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
-                    core.exit_mgmt_bootloader(delay_ms).await;
-
+                    // flash_mgmt already does Go + hardware reset + baud rate restore + wait_for_mgmt_ready
                     println!("\nFlash complete!");
                     println!(
                         "The MGMT chip should now be running the new firmware at {} baud.",

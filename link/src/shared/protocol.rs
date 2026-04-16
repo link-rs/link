@@ -139,6 +139,8 @@ pub enum CtlToMgmt {
     SetUiBaudRate,
     /// Get MGMT chip stack usage information
     GetStackInfo,
+    /// Get the board version from MGMT option bytes
+    GetBoardVersion,
     /// Repaint the MGMT chip stack with the paint pattern
     RepaintStack,
 }
@@ -154,6 +156,8 @@ pub enum MgmtToCtl {
     Hello,
     /// Stack usage information (JSON-serialized StackInfo)
     StackInfo,
+    /// Board version from MGMT option bytes (1 byte)
+    BoardVersion,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

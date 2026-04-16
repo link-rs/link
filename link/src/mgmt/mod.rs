@@ -2,12 +2,27 @@
 
 use crate::info;
 use crate::shared::{
-    Color, CtlToMgmt, CtlToNet, CtlToUi, Led, MgmtToCtl, ReadTlv, Tlv, Value, WriteTlv,
-    uart_config::SetBaudRate,
+    Color, CtlToMgmt, CtlToNet, CtlToUi, Led, MgmtToCtl, ReadTlv, StackMonitor, Tlv, Value,
+    WriteTlv, uart_config::SetBaudRate,
 };
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use embedded_hal_async::delay::DelayNs;
 use embedded_io_async::{Read, Write};
+
+/// Board trait for MGMT chip.
+///
+/// Extends StackMonitor with board version reading from option bytes.
+pub trait Board: StackMonitor {
+    /// Get the board version byte from option bytes.
+    fn board_version(&self) -> u8;
+}
+
+#[cfg(test)]
+impl Board for crate::shared::NoOpBoard {
+    fn board_version(&self) -> u8 {
+        0xFF
+    }
+}
 
 /// Holds the GPIO pins used to control the UI chip's reset behavior.
 ///
@@ -154,7 +169,7 @@ enum BaudRateChange {
 }
 
 #[allow(unreachable_code)]
-pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, SM>(
+pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, B>(
     to_ctl: W,
     mut from_ctl: R,
     mut to_ui: W,
@@ -166,7 +181,7 @@ pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot,
     mut ui_reset_pins: UiResetPins<UiBoot0, UiBoot1, UiRst>,
     mut net_reset_pins: NetResetPins<NetBoot, NetRst>,
     mut delay: D,
-    stack_monitor: SM,
+    board: B,
 ) -> !
 where
     W: Write + SetBaudRate,
@@ -181,9 +196,9 @@ where
     UiBoot1: StatefulOutputPin,
     UiRst: StatefulOutputPin,
     NetBoot: OutputPin,
-    SM: crate::shared::StackMonitor,
     NetRst: OutputPin,
     D: DelayNs,
+    B: Board,
 {
     use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 
@@ -297,7 +312,7 @@ where
                 &mut ui_reset_pins,
                 &mut net_reset_pins,
                 &mut delay,
-                &stack_monitor,
+                &board,
             )
             .await;
 
@@ -325,7 +340,7 @@ where
     unreachable!()
 }
 
-async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, SM>(
+async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, B>(
     tlv: Tlv<CtlToMgmt>,
     to_ctl: &mut C,
     to_ui: &mut U,
@@ -333,7 +348,7 @@ async fn handle_ctl<C, U, N, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, SM>(
     ui_reset_pins: &mut UiResetPins<UiBoot0, UiBoot1, UiRst>,
     net_reset_pins: &mut NetResetPins<NetBoot, NetRst>,
     _delay: &mut D,
-    stack_monitor: &SM,
+    board: &B,
 ) -> BaudRateChange
 where
     C: WriteTlv<MgmtToCtl> + Write + SetBaudRate,
@@ -345,7 +360,7 @@ where
     NetBoot: OutputPin,
     NetRst: OutputPin,
     D: DelayNs,
-    SM: crate::shared::StackMonitor,
+    B: Board,
 {
     match tlv.tlv_type {
         CtlToMgmt::Ping => {
@@ -449,11 +464,11 @@ where
         CtlToMgmt::GetStackInfo => {
             info!("mgmt: get stack info");
             use crate::shared::StackInfo;
-            let range = stack_monitor.stack();
+            let range = board.stack();
             let base = range.end as u32;
             let top = range.start as u32;
-            let size = stack_monitor.stack_size();
-            let used = size.saturating_sub(stack_monitor.stack_painted());
+            let size = board.stack_size();
+            let used = size.saturating_sub(board.stack_painted());
             let info = StackInfo {
                 stack_base: base,
                 stack_top: top,
@@ -468,9 +483,17 @@ where
             }
             BaudRateChange::None
         }
+        CtlToMgmt::GetBoardVersion => {
+            info!("mgmt: get board version");
+            let version = board.board_version();
+            to_ctl
+                .must_write_tlv(MgmtToCtl::BoardVersion, &[version])
+                .await;
+            BaudRateChange::None
+        }
         CtlToMgmt::RepaintStack => {
             info!("mgmt: repaint stack");
-            stack_monitor.repaint_stack();
+            board.repaint_stack();
             to_ctl.must_write_tlv(MgmtToCtl::Ack, &[]).await;
             BaudRateChange::None
         }

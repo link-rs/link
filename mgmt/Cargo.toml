@@ -12,7 +12,7 @@ defmt = "1"
 defmt-rtt = "1"
 
 embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
-embassy-stm32 = { version = "0.4", features = ["defmt", "stm32f072cb", "memory-x", "exti", "chrono", "time-driver-any"] }
+embassy-stm32 = { version = "0.4", features = ["defmt", "stm32f072cb", "memory-x", "exti", "chrono", "time-driver-any", "unstable-pac"] }
 embassy-sync = { version = "0.7", features = ["defmt"] }
 embassy-time = { version = "0.5", features = ["defmt"] }
 heapless = "0.8"
@@ -27,6 +27,7 @@ cortex-m-stack = "0.2.1"
 
 [profile.dev]
 opt-level = "s"
+lto = "fat"
 
 [profile.release]
 debug = 2

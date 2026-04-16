@@ -490,6 +490,72 @@ impl LinkController {
         core.mgmt_ping(&data).await.map_err(ctl_error_to_js)
     }
 
+    /// Get the board version reported by the running MGMT firmware.
+    #[wasm_bindgen]
+    pub async fn get_mgmt_board(&mut self) -> Result<u8, JsValue> {
+        let core = self.core_mut()?;
+        core.mgmt_get_board_version().await.map_err(ctl_error_to_js)
+    }
+
+    /// Get the MGMT DATA0 option-byte version via the STM32 bootloader.
+    #[wasm_bindgen]
+    pub async fn get_mgmt_version(&mut self) -> Result<u8, JsValue> {
+        let core = self.core_mut()?;
+
+        let _ = core
+            .port_mut()
+            .set_timeout(std::time::Duration::from_millis(
+                timeouts::BOOTLOADER_PROBE_MS,
+            ));
+        let entry = core
+            .try_enter_mgmt_bootloader(|ms| js_sleep(ms as u32))
+            .await;
+        let _ = core
+            .port_mut()
+            .set_timeout(std::time::Duration::from_secs(timeouts::NORMAL_SECS));
+
+        let skip_init = match entry {
+            MgmtBootloaderEntry::AutoReset | MgmtBootloaderEntry::AlreadyActive => true,
+            MgmtBootloaderEntry::NotDetected => false,
+        };
+
+        let value = core
+            .get_mgmt_data0_option_byte(skip_init)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
+        core.exit_mgmt_bootloader(|ms| js_sleep(ms as u32)).await;
+        Ok(value)
+    }
+
+    /// Set the MGMT DATA0 option-byte version via the STM32 bootloader.
+    #[wasm_bindgen]
+    pub async fn set_mgmt_version(&mut self, version: u8) -> Result<(), JsValue> {
+        let core = self.core_mut()?;
+
+        let _ = core
+            .port_mut()
+            .set_timeout(std::time::Duration::from_millis(
+                timeouts::BOOTLOADER_PROBE_MS,
+            ));
+        let entry = core
+            .try_enter_mgmt_bootloader(|ms| js_sleep(ms as u32))
+            .await;
+        let _ = core
+            .port_mut()
+            .set_timeout(std::time::Duration::from_secs(timeouts::NORMAL_SECS));
+
+        let skip_init = match entry {
+            MgmtBootloaderEntry::AutoReset | MgmtBootloaderEntry::AlreadyActive => true,
+            MgmtBootloaderEntry::NotDetected => false,
+        };
+
+        core.set_mgmt_data0_option_byte(skip_init, version)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Bootloader error: {:?}", e)))?;
+        core.exit_mgmt_bootloader(|ms| js_sleep(ms as u32)).await;
+        Ok(())
+    }
+
     /// Ping the UI chip.
     #[wasm_bindgen]
     pub async fn ping_ui(&mut self, data: Vec<u8>) -> Result<(), JsValue> {

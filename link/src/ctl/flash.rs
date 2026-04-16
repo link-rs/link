@@ -18,6 +18,12 @@ use espflash::connection::{ClearBufferType, SerialInterface, SerialPortError};
 use std::io::{Error as IoError, ErrorKind};
 use std::time::Duration;
 
+const F072_OPTION_BYTES_BASE: u32 = 0x1FFF_F800;
+const F072_DATA0_BLOCK_ADDR: u32 = F072_OPTION_BYTES_BASE + 0x04;
+const F072_OPTION_BYTES_LEN: usize = 16;
+const F072_DATA0_INDEX: usize = 4;
+const F072_NDATA0_INDEX: usize = 5;
+
 /// Information retrieved from the MGMT chip when it's in bootloader mode.
 #[derive(Debug, Clone, Default)]
 pub struct MgmtBootloaderInfo {
@@ -611,6 +617,70 @@ pub enum MgmtBootloaderEntry {
 /// These methods require the port to implement `CtlPort<Error = std::io::Error>`.
 /// All I/O is performed through the async `CtlPort` trait.
 impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
+    /// Read the MGMT chip's DATA0 option byte.
+    pub async fn get_mgmt_data0_option_byte(
+        &mut self,
+        skip_init: bool,
+    ) -> Result<u8, stm::Error<P::Error>> {
+        if !skip_init {
+            self.drain();
+        }
+
+        let mut bl = Bootloader::new(self.port_mut());
+        if !skip_init {
+            bl.init().await?;
+        }
+
+        let mut data = [0u8; 4];
+        bl.read_memory(F072_DATA0_BLOCK_ADDR, &mut data).await?;
+        Ok(data[0])
+    }
+
+    /// Write the MGMT chip's DATA0 option byte and update its complement.
+    pub async fn set_mgmt_data0_option_byte(
+        &mut self,
+        skip_init: bool,
+        value: u8,
+    ) -> Result<(), stm::Error<P::Error>> {
+        if !skip_init {
+            self.drain();
+        }
+
+        let mut bl = Bootloader::new(self.port_mut());
+        if !skip_init {
+            bl.init().await?;
+        }
+
+        let mut option_bytes = [0u8; F072_OPTION_BYTES_LEN];
+        bl.read_memory(F072_OPTION_BYTES_BASE, &mut option_bytes)
+            .await?;
+        option_bytes[F072_DATA0_INDEX] = value;
+        option_bytes[F072_NDATA0_INDEX] = !value;
+        bl.write_memory(F072_OPTION_BYTES_BASE, &option_bytes)
+            .await?;
+
+        // Option-byte programming may reset the target, so verify with a fresh
+        // bootloader session instead of assuming the current one is still valid.
+        self.drain();
+        let mut bl = Bootloader::new(self.port_mut());
+        bl.init().await?;
+
+        let expected = [value, !value];
+        let mut verify = [0u8; 2];
+        bl.read_memory(F072_DATA0_BLOCK_ADDR, &mut verify).await?;
+        if verify != expected {
+            return Err(stm::Error::Io(IoError::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "option byte verification failed: expected {:02X?}, got {:02X?}",
+                    expected, verify
+                ),
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Attempt to enter MGMT bootloader mode automatically.
     ///
     /// This implements Strategy 1 for EV15/EV16 detection:
@@ -867,12 +937,6 @@ impl<P: CtlPort<Error = std::io::Error>> CtlCore<P> {
 
             // Jump to new firmware
             bl.go(0x0800_0000).await?;
-
-            // Wait for MGMT to come back online
-            // Try hello() every 100ms, up to 50 attempts (5 seconds total)
-            // This helps avoid the need for retries in UI flashing
-            drop(bl); // Drop bootloader to release port reference
-            let _ = self.wait_for_mgmt_ready(50).await;
 
             Ok(())
         }

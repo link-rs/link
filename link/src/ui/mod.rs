@@ -15,9 +15,15 @@ pub use log::{LogMessage, LogSender, MAX_LOG_SIZE};
 
 use crate::info;
 use crate::shared::{
-    Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi, Led, NetToUi, Sender, Tlv,
-    UiLoopbackMode, UiToCtl, UiToNet, WriteTlv, chunk, read_tlv_loop,
+    Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi, Led, NetToUi, Sender,
+    StackMonitor, Tlv, UiLoopbackMode, UiToCtl, UiToNet, WriteTlv, chunk, read_tlv_loop,
 };
+
+/// Board trait for UI chip.
+pub trait Board: StackMonitor {}
+
+#[cfg(test)]
+impl Board for crate::shared::NoOpBoard {}
 use crate::tlv_log;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::StatefulOutputPin;
@@ -46,7 +52,7 @@ enum Event {
 }
 
 #[allow(unreachable_code)]
-pub async fn run<W, R, LR, LG, LB, BA, BB, BM, I, D, AS, SM>(
+pub async fn run<W, R, LR, LG, LB, BA, BB, BM, I, D, AS, B>(
     mut to_mgmt: W,
     from_mgmt: R,
     mut to_net: W,
@@ -58,7 +64,7 @@ pub async fn run<W, R, LR, LG, LB, BA, BB, BM, I, D, AS, SM>(
     mut i2c: I,
     mut delay: D,
     mut audio_system: AS,
-    stack_monitor: SM,
+    board: B,
 ) -> !
 where
     W: Write,
@@ -72,7 +78,7 @@ where
     I: I2c,
     D: DelayNs,
     AS: AudioSystem,
-    SM: crate::shared::StackMonitor,
+    B: Board,
 {
     info!("ui: starting");
 
@@ -134,7 +140,7 @@ where
                         &loopback_mode,
                         &logs_enabled,
                         &mut sframe_state,
-                        &stack_monitor,
+                        &board,
                     )
                     .await
                 }
@@ -372,7 +378,7 @@ async fn button_monitor<'a, B: Wait, const N: usize>(
     }
 }
 
-async fn handle_mgmt<M, N, I, D, SM>(
+async fn handle_mgmt<M, N, I, D, B>(
     tlv: Tlv<CtlToUi>,
     to_mgmt: &mut M,
     to_net: &mut N,
@@ -381,13 +387,13 @@ async fn handle_mgmt<M, N, I, D, SM>(
     loopback_mode: &AtomicU8,
     logs_enabled: &AtomicBool,
     sframe_state: &mut sframe::SFrameState,
-    stack_monitor: &SM,
+    board: &B,
 ) where
     M: WriteTlv<UiToCtl>,
     N: WriteTlv<UiToNet>,
     I: I2c,
     D: DelayNs,
-    SM: crate::shared::StackMonitor,
+    B: Board,
 {
     match tlv.tlv_type {
         CtlToUi::Ping => {
@@ -470,11 +476,11 @@ async fn handle_mgmt<M, N, I, D, SM>(
         CtlToUi::GetStackInfo => {
             info!("ui: get stack info");
             use crate::shared::StackInfo;
-            let range = stack_monitor.stack();
+            let range = board.stack();
             let base = range.end as u32;
             let top = range.start as u32;
-            let size = stack_monitor.stack_size();
-            let used = size.saturating_sub(stack_monitor.stack_painted());
+            let size = board.stack_size();
+            let used = size.saturating_sub(board.stack_painted());
             let info = StackInfo {
                 stack_base: base,
                 stack_top: top,
@@ -488,7 +494,7 @@ async fn handle_mgmt<M, N, I, D, SM>(
         }
         CtlToUi::RepaintStack => {
             info!("ui: repaint stack");
-            stack_monitor.repaint_stack();
+            board.repaint_stack();
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
         CtlToUi::GetLogsEnabled => {
@@ -613,7 +619,7 @@ mod tests {
             &loopback_mode,
             &logs_enabled,
             &mut sframe_state,
-            &crate::shared::NoOpStackMonitor,
+            &crate::shared::NoOpBoard,
         )
         .await;
 
@@ -650,7 +656,7 @@ mod tests {
             &loopback_mode,
             &logs_enabled,
             &mut sframe_state,
-            &crate::shared::NoOpStackMonitor,
+            &crate::shared::NoOpBoard,
         )
         .await;
 
@@ -693,7 +699,7 @@ mod tests {
             &loopback_mode,
             &logs_enabled,
             &mut sframe_state,
-            &crate::shared::NoOpStackMonitor,
+            &crate::shared::NoOpBoard,
         )
         .await;
 
@@ -733,7 +739,7 @@ mod tests {
             &loopback_mode,
             &logs_enabled,
             &mut sframe_state,
-            &crate::shared::NoOpStackMonitor,
+            &crate::shared::NoOpBoard,
         )
         .await;
 
@@ -771,7 +777,7 @@ mod tests {
             &loopback_mode,
             &logs_enabled,
             &mut sframe_state,
-            &crate::shared::NoOpStackMonitor,
+            &crate::shared::NoOpBoard,
         )
         .await;
 
@@ -809,7 +815,7 @@ mod tests {
             &loopback_mode,
             &logs_enabled,
             &mut sframe_state,
-            &crate::shared::NoOpStackMonitor,
+            &crate::shared::NoOpBoard,
         )
         .await;
 
@@ -824,7 +830,7 @@ mod tests {
 #[cfg(test)]
 mod audio_streaming_tests {
     use super::*;
-    use crate::shared::NoOpStackMonitor;
+    use crate::shared::NoOpBoard;
     use crate::shared::ReadTlv;
     use crate::shared::mocks::{
         ControllableButton, MockAudioStream, MockButton, MockDelay, mock_i2c_with_eeprom,
@@ -918,7 +924,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 MockAudioStream::new(),
-                NoOpStackMonitor,
+                NoOpBoard,
             ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
@@ -985,7 +991,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 MockAudioStream::new(),
-                NoOpStackMonitor,
+                NoOpBoard,
             ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
@@ -1047,7 +1053,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 MockAudioStream::new(),
-                NoOpStackMonitor,
+                NoOpBoard,
             ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
@@ -1112,7 +1118,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 MockAudioStream::new(),
-                NoOpStackMonitor,
+                NoOpBoard,
             ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
@@ -1151,7 +1157,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 MockAudioStream::new(),
-                NoOpStackMonitor,
+                NoOpBoard,
             ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
@@ -1206,7 +1212,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 MockAudioStream::new(),
-                NoOpStackMonitor,
+                NoOpBoard,
             ) => unreachable!(),
             _ = collector.collect_from(net_from_ui) => unreachable!(),
             _ = async {
@@ -1302,7 +1308,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 audio_stream,
-                NoOpStackMonitor,
+                NoOpBoard,
             ) => unreachable!(),
             _ = async {
                 // Wait for startup tone to complete (50 frames × 5ms = 250ms)
@@ -1397,7 +1403,7 @@ mod audio_streaming_tests {
                 mock_i2c_with_eeprom(),
                 MockDelay,
                 audio_stream,
-                NoOpStackMonitor,
+                NoOpBoard,
             ) => unreachable!(),
             _ = async {
                 // Wait for startup tone to complete (50 frames × 5ms = 250ms)

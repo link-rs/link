@@ -9,7 +9,6 @@ use alloc::format;
 use alloc::string::String;
 
 use crate::shared::protocol_config::retries::MAX_TLV_SKIP;
-use crate::shared::timing::bootloader::HELLO_TIMEOUT_MS;
 use crate::shared::timing::reset::ESP32_RESET_HOLD_MS;
 use crate::shared::tlv::{buffer, tunnel};
 use crate::shared::{
@@ -499,16 +498,28 @@ impl<P: CtlPort> CtlCore<P> {
     where
         P: crate::ctl::SetTimeout,
     {
+        // Clear any stale data from previous operations
+        self.drain();
+
         // Save the original timeout so we can restore it when done.
         let original_timeout = self.port.as_ref().map(|p| p.timeout());
 
-        // Set short timeout for hello attempts
+        // Set timeout for hello attempts - longer than bootloader timeout since
+        // MGMT firmware may take a moment to respond after reset
         if let Some(port) = &mut self.port {
-            let _ = port.set_timeout(std::time::Duration::from_millis(HELLO_TIMEOUT_MS));
+            let _ = port.set_timeout(std::time::Duration::from_millis(500));
         }
 
-        for _attempt in 1..=max_attempts {
-            let challenge = [0x12, 0x34, 0x56, 0x78];
+        for attempt in 1..=max_attempts {
+            // Use different challenge each time to avoid matching stale responses
+            // within this call (across calls, the drain above handles stale data)
+            let attempt_byte = attempt as u8;
+            let challenge = [
+                attempt_byte,
+                !attempt_byte,
+                attempt_byte.wrapping_add(1),
+                !attempt_byte.wrapping_add(1),
+            ];
 
             if self.hello(&challenge).await {
                 // Success! Restore original timeout and return
@@ -596,6 +607,25 @@ impl<P: CtlPort> CtlCore<P> {
             });
         }
         StackInfo::from_bytes(&tlv.value).ok_or(CtlError::InvalidData)
+    }
+
+    /// Get the MGMT board version from the DATA0 option byte.
+    pub async fn mgmt_get_board_version(&mut self) -> Result<u8, CtlError> {
+        self.write_tlv(CtlToMgmt::GetBoardVersion, &[]).await?;
+        let tlv = self.read_tlv_mgmt().await?;
+        if tlv.tlv_type != MgmtToCtl::BoardVersion {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "BoardVersion",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 1 {
+            return Err(CtlError::InvalidLength {
+                expected: 1,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(tlv.value[0])
     }
 
     /// Repaint the MGMT chip stack for future measurement.

@@ -22,10 +22,10 @@ use embedded_hal::i2c::I2c as I2cTrait;
 use link::ui::{AudioError, AudioSystem, StereoFrame, STEREO_FRAME_SIZE};
 use {defmt_rtt as _, panic_probe as _};
 
-/// Stack monitor implementation using cortex-m-stack.
-struct CortexMStackMonitor;
+/// Board implementation for UI STM32.
+struct Stm32Board;
 
-impl link::StackMonitor for CortexMStackMonitor {
+impl link::StackMonitor for Stm32Board {
     fn stack(&self) -> core::ops::Range<*mut u32> {
         cortex_m_stack::stack()
     }
@@ -42,6 +42,8 @@ impl link::StackMonitor for CortexMStackMonitor {
         cortex_m_stack::repaint_stack();
     }
 }
+
+impl link::ui::Board for Stm32Board {}
 
 /// Convert centralized UART config to STM32 HAL config.
 fn uart_config_to_stm32(cfg: link::uart_config::Config) -> Config {
@@ -269,7 +271,7 @@ async fn main(_spawner: Spawner) {
         i2c,
         delay,
         audio_system,
-        CortexMStackMonitor,
+        Stm32Board,
     )
     .await;
 }
