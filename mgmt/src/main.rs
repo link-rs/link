@@ -18,10 +18,37 @@ use embedded_io_async::{ErrorType, Read, Write};
 use link::uart_config::SetBaudRate;
 use {defmt_rtt as _, panic_probe as _};
 
-/// Stack monitor implementation using cortex-m-stack.
-struct CortexMStackMonitor;
+#[derive(Copy, Clone)]
+struct NoopOutputPin;
 
-impl link::StackMonitor for CortexMStackMonitor {
+impl embedded_hal::digital::ErrorType for NoopOutputPin {
+    type Error = core::convert::Infallible;
+}
+
+impl embedded_hal::digital::OutputPin for NoopOutputPin {
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+impl embedded_hal::digital::StatefulOutputPin for NoopOutputPin {
+    fn is_set_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+
+    fn is_set_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(true)
+    }
+}
+
+/// Board implementation for MGMT STM32.
+struct Stm32Board;
+
+impl link::StackMonitor for Stm32Board {
     fn stack(&self) -> core::ops::Range<*mut u32> {
         cortex_m_stack::stack()
     }
@@ -36,6 +63,12 @@ impl link::StackMonitor for CortexMStackMonitor {
 
     fn repaint_stack(&self) {
         cortex_m_stack::repaint_stack();
+    }
+}
+
+impl link::mgmt::Board for Stm32Board {
+    fn board_version(&self) -> u8 {
+        embassy_stm32::pac::FLASH.obr().read().data0()
     }
 }
 
@@ -107,6 +140,162 @@ bind_interrupts!(struct Irqs {
     USART3_4 => usart::InterruptHandler<peripherals::USART3>;
 });
 
+#[allow(dead_code)]
+async fn ev16_pin_assignments_init(p: embassy_stm32::Peripherals) -> ! {
+    // MCO on PA8: Output 6 MHz clock for UI chip
+    let _mco = Mco::new(p.MCO, p.PA8, McoSource::PLL, McoPrescaler::DIV4);
+
+    let ctl_config = uart_config_to_stm32(link::uart_config::CTL_MGMT);
+    let ui_config = uart_config_to_stm32(link::uart_config::MGMT_UI);
+    let net_config = uart_config_to_stm32(link::uart_config::MGMT_NET);
+
+    let ctl_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
+    let ui_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
+    let net_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
+
+    let (to_ctl, from_ctl) = Uart::new(
+        p.USART1, p.PA10, p.PA9, Irqs, p.DMA1_CH2, p.DMA1_CH3, ctl_config,
+    )
+    .unwrap()
+    .split();
+    let to_ctl = UartTxWrapper(to_ctl);
+    let from_ctl = UartRxWrapper(from_ctl.into_ring_buffered(ctl_rx_buf));
+
+    let (to_ui, from_ui) = Uart::new(
+        p.USART2, p.PA3, p.PA2, Irqs, p.DMA1_CH4, p.DMA1_CH5, ui_config,
+    )
+    .unwrap()
+    .split();
+    let to_ui = UartTxWrapper(to_ui);
+    let from_ui = UartRxWrapper(from_ui.into_ring_buffered(ui_rx_buf));
+
+    let (to_net, from_net) = Uart::new(
+        p.USART3, p.PB11, p.PB10, Irqs, p.DMA1_CH7, p.DMA1_CH6, net_config,
+    )
+    .unwrap()
+    .split();
+    let to_net = UartTxWrapper(to_net);
+    let from_net = UartRxWrapper(from_net.into_ring_buffered(net_rx_buf));
+
+    // EV16 LED A: R=PA4 (inverted), G=PA6, B=PA7
+    let led_a = (
+        link::InvertedPin(Output::new(p.PA4, Level::Low, Speed::Low)),
+        Output::new(p.PA6, Level::Low, Speed::Low),
+        Output::new(p.PA7, Level::Low, Speed::Low),
+    );
+
+    // EV16 LED B: R=PB0, G=PB6, B=PB15
+    let led_b = (
+        Output::new(p.PB0, Level::Low, Speed::Low),
+        Output::new(p.PB6, Level::Low, Speed::Low),
+        Output::new(p.PB15, Level::Low, Speed::Low),
+    );
+
+    let ui_boot0 = Output::new(p.PA15, Level::Low, Speed::Low);
+    let ui_boot1 = Output::new(p.PB8, Level::High, Speed::Low);
+    let ui_rst = Output::new(p.PB3, Level::Low, Speed::Low);
+    let ui_reset_pins = link::mgmt::UiResetPins::new(ui_boot0, ui_boot1, ui_rst);
+
+    let net_boot = Output::new(p.PB5, Level::High, Speed::Low);
+    let net_rst = Output::new(p.PB4, Level::Low, Speed::Low);
+    let net_reset_pins = link::mgmt::NetResetPins::new(net_boot, net_rst);
+
+    link::mgmt::run(
+        to_ctl,
+        from_ctl,
+        to_ui,
+        from_ui,
+        to_net,
+        from_net,
+        led_a,
+        led_b,
+        ui_reset_pins,
+        net_reset_pins,
+        Delay,
+        Stm32Board,
+    )
+    .await;
+}
+async fn ev17_pin_assignments_init(p: embassy_stm32::Peripherals) -> ! {
+    // MCO on PA8: Output 6 MHz clock for UI chip
+    let _mco = Mco::new(p.MCO, p.PA8, McoSource::PLL, McoPrescaler::DIV4);
+
+    let ctl_config = uart_config_to_stm32(link::uart_config::CTL_MGMT);
+    let ui_config = uart_config_to_stm32(link::uart_config::MGMT_UI);
+    let net_config = uart_config_to_stm32(link::uart_config::MGMT_NET);
+
+    let ctl_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
+    let ui_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
+    let net_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
+
+    let (to_ctl, from_ctl) = Uart::new(
+        p.USART1, p.PA10, p.PA9, Irqs, p.DMA1_CH2, p.DMA1_CH3, ctl_config,
+    )
+    .unwrap()
+    .split();
+    let to_ctl = UartTxWrapper(to_ctl);
+    let from_ctl = UartRxWrapper(from_ctl.into_ring_buffered(ctl_rx_buf));
+
+    let (to_ui, from_ui) = Uart::new(
+        p.USART2, p.PA3, p.PA2, Irqs, p.DMA1_CH4, p.DMA1_CH5, ui_config,
+    )
+    .unwrap()
+    .split();
+    let to_ui = UartTxWrapper(to_ui);
+    let from_ui = UartRxWrapper(from_ui.into_ring_buffered(ui_rx_buf));
+
+    let (to_net, from_net) = Uart::new(
+        p.USART3, p.PB11, p.PB10, Irqs, p.DMA1_CH7, p.DMA1_CH6, net_config,
+    )
+    .unwrap()
+    .split();
+    let to_net = UartTxWrapper(to_net);
+    let from_net = UartRxWrapper(from_net.into_ring_buffered(net_rx_buf));
+
+    // EV17 LED A: R=PB5, G=PB4, B=PB1
+    let led_a = (
+        Output::new(p.PB5, Level::Low, Speed::Low),
+        Output::new(p.PB4, Level::Low, Speed::Low),
+        Output::new(p.PB1, Level::Low, Speed::Low),
+    );
+
+    // EV17 board updates:
+    // - PB0 is BATTERY_MON (ADC input)
+    // - PC14 is MGMT_DEBUG1 (output)
+    // - PB15 is NC (floating)
+    // let _battery_mon = Input::new(p.PB0, Pull::None);
+    // let _mgmt_debug1 = Output::new(p.PC14, Level::Low, Speed::Low);
+    // let _pb15_nc = Input::new(p.PB15, Pull::None);
+
+    // LED B no longer exists on EV17.
+    let led_b = (NoopOutputPin, NoopOutputPin, NoopOutputPin);
+
+    let ui_boot0 = Output::new(p.PA15, Level::Low, Speed::Low);
+    let ui_boot1 = Output::new(p.PB8, Level::High, Speed::Low);
+    let ui_rst = Output::new(p.PB3, Level::Low, Speed::Low);
+    let ui_reset_pins = link::mgmt::UiResetPins::new(ui_boot0, ui_boot1, ui_rst);
+
+    let net_boot = Output::new(p.PB6, Level::High, Speed::Low);
+    let net_rst = Output::new(p.PC13, Level::Low, Speed::Low);
+    let net_reset_pins = link::mgmt::NetResetPins::new(net_boot, net_rst);
+
+    link::mgmt::run(
+        to_ctl,
+        from_ctl,
+        to_ui,
+        from_ui,
+        to_net,
+        from_net,
+        led_a,
+        led_b,
+        ui_reset_pins,
+        net_reset_pins,
+        Delay,
+        Stm32Board,
+    )
+    .await;
+}
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     // Clock configuration matching the C firmware:
@@ -142,91 +331,6 @@ async fn main(_spawner: Spawner) {
     };
     let p = embassy_stm32::init(rcc_config);
 
-    // MCO on PA8: Output 6 MHz clock for UI chip
-    let _mco = Mco::new(p.MCO, p.PA8, McoSource::PLL, McoPrescaler::DIV4);
-
-    // UART configs from centralized definitions
-    // CTL UART always boots at fixed high speed (1000000)
-    let ctl_config = uart_config_to_stm32(link::uart_config::CTL_MGMT);
-
-    // UI UART at high speed (1000000)
-    let ui_config = uart_config_to_stm32(link::uart_config::MGMT_UI);
-
-    let net_config = uart_config_to_stm32(link::uart_config::MGMT_NET);
-
-    // DMA buffers for ring-buffered RX
-    let ctl_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
-    let ui_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
-    let net_rx_buf = singleton!(: [u8; DMA_BUF_SIZE] = [0; DMA_BUF_SIZE]).unwrap();
-
-    // UART to CTL (uses even parity for bootloader compatibility)
-    let (to_ctl, from_ctl) = Uart::new(
-        p.USART1, p.PA10, p.PA9, Irqs, p.DMA1_CH2, p.DMA1_CH3, ctl_config,
-    )
-    .unwrap()
-    .split();
-    let to_ctl = UartTxWrapper(to_ctl);
-    let from_ctl = UartRxWrapper(from_ctl.into_ring_buffered(ctl_rx_buf));
-
-    // UART to UI (uses even parity for bootloader compatibility)
-    let (to_ui, from_ui) = Uart::new(
-        p.USART2, p.PA3, p.PA2, Irqs, p.DMA1_CH4, p.DMA1_CH5, ui_config,
-    )
-    .unwrap()
-    .split();
-    let to_ui = UartTxWrapper(to_ui);
-    let from_ui = UartRxWrapper(from_ui.into_ring_buffered(ui_rx_buf));
-
-    // UART to NET (no parity)
-    let (to_net, from_net) = Uart::new(
-        p.USART3, p.PB11, p.PB10, Irqs, p.DMA1_CH7, p.DMA1_CH6, net_config,
-    )
-    .unwrap()
-    .split();
-    let to_net = UartTxWrapper(to_net);
-    let from_net = UartRxWrapper(from_net.into_ring_buffered(net_rx_buf));
-
-    // RGB LEDs (R, G, B pin tuples)
-    // LED A: R=PA4 (inverted), G=PA6, B=PA7
-    let led_a = (
-        link::InvertedPin(Output::new(p.PA4, Level::Low, Speed::Low)),
-        Output::new(p.PA6, Level::Low, Speed::Low),
-        Output::new(p.PA7, Level::Low, Speed::Low),
-    );
-
-    // LED B: R=PB0, G=PB6, B=PB15
-    let led_b = (
-        Output::new(p.PB0, Level::Low, Speed::Low),
-        Output::new(p.PB6, Level::Low, Speed::Low),
-        Output::new(p.PB15, Level::Low, Speed::Low),
-    );
-
-    // UI chip reset control pins
-    // RST starts low to hold UI in reset until MGMT clocks are stable
-    let ui_boot0 = Output::new(p.PA15, Level::Low, Speed::Low);
-    let ui_boot1 = Output::new(p.PB8, Level::High, Speed::Low);
-    let ui_rst = Output::new(p.PB3, Level::Low, Speed::Low);
-    let ui_reset_pins = link::mgmt::UiResetPins::new(ui_boot0, ui_boot1, ui_rst);
-
-    // NET chip reset control pins
-    // RST starts low to hold NET in reset until MGMT clocks are stable
-    let net_boot = Output::new(p.PB5, Level::High, Speed::Low);
-    let net_rst = Output::new(p.PB4, Level::Low, Speed::Low);
-    let net_reset_pins = link::mgmt::NetResetPins::new(net_boot, net_rst);
-
-    link::mgmt::run(
-        to_ctl,
-        from_ctl,
-        to_ui,
-        from_ui,
-        to_net,
-        from_net,
-        led_a,
-        led_b,
-        ui_reset_pins,
-        net_reset_pins,
-        Delay,
-        CortexMStackMonitor,
-    )
-    .await;
+    ev17_pin_assignments_init(p).await
 }
+

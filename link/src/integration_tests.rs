@@ -7,7 +7,7 @@
 #![cfg(all(feature = "ctl", feature = "mgmt", feature = "net", feature = "ui"))]
 
 use crate::ctl::CtlCore;
-use crate::shared::NoOpStackMonitor;
+use crate::shared::NoOpBoard;
 use crate::shared::mocks::{
     GpioOp, MockAsyncDelay, MockAudioStream, MockButton, MockCtlPort, MockDelay, MockFlash,
     MockPin, TrackingPin, async_async_channel, ctl_async_channel, mock_i2c_with_eeprom,
@@ -55,7 +55,7 @@ where
         ui_reset_pins,
         net_reset_pins,
         MockAsyncDelay,
-        NoOpStackMonitor,
+        NoOpBoard,
     );
 
     // Create WS channels for NET app
@@ -82,7 +82,7 @@ where
             mock_i2c_with_eeprom(),
             MockDelay,
             MockAudioStream::new(),
-            NoOpStackMonitor,
+            NoOpBoard,
         ) => {}
         _ = net::run(
             net_to_mgmt,
@@ -141,7 +141,7 @@ where
         ui_reset_pins,
         net_reset_pins,
         MockAsyncDelay,
-        NoOpStackMonitor,
+        NoOpBoard,
     );
 
     // Create WS channels for NET app
@@ -168,7 +168,7 @@ where
             mock_i2c_with_eeprom(),
             MockDelay,
             MockAudioStream::new(),
-            NoOpStackMonitor,
+            NoOpBoard,
         ) => {}
         _ = net::run(
             net_to_mgmt,
@@ -429,7 +429,7 @@ async fn hello_handshake() {
 async fn mgmt_stack_info() {
     device_test(|mut ctl| async move {
         let info = ctl.mgmt_get_stack_info().await.unwrap();
-        // NoOpStackMonitor returns zeros for everything
+        // NoOpBoard returns zeros for everything
         assert_eq!(info.stack_size, 0);
         assert_eq!(info.stack_used, 0);
     })

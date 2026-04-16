@@ -30,7 +30,7 @@ pub use shared::{HEADER_SIZE, SYNC_WORD};
 // Re-export uart_config module for chip firmware
 pub use shared::uart_config;
 
-// Re-export StackMonitor trait for mgmt and ui firmware
+// Re-export StackMonitor trait for chip-specific Board traits
 #[cfg(any(feature = "mgmt", feature = "ui"))]
 pub use shared::stack_monitor::StackMonitor;
 
