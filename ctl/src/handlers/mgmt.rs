@@ -71,6 +71,11 @@ pub(super) async fn exit_mgmt_bootloader(
     core.port_mut()
         .get_mut()
         .set_baud_rate(link::uart_config::HIGH_SPEED.baudrate)?;
+
+    // Drain any stale data from bootloader and wait for MGMT to be ready
+    core.drain();
+    core.wait_for_mgmt_ready(10).await;
+
     Ok(())
 }
 
@@ -115,7 +120,7 @@ pub async fn handle_mgmt(
     );
 
     if needs_mgmt_firmware && !core.wait_for_mgmt_ready(50).await {
-        return Err("MGMT chip not responding after reset".into());
+        return Err("MGMT chip not responding (timed out)".into());
     }
 
     match action {

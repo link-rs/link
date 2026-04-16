@@ -15,7 +15,7 @@ use embassy_stm32::{
 };
 use embassy_time::Delay;
 use embedded_io_async::{ErrorType, Read, Write};
-use link::uart_config::SetBaudRate;
+use link::{uart_config::SetBaudRate, StackMonitor, mgmt::Board};
 use {defmt_rtt as _, panic_probe as _};
 
 #[derive(Copy, Clone)]
@@ -48,7 +48,7 @@ impl embedded_hal::digital::StatefulOutputPin for NoopOutputPin {
 /// Board implementation for MGMT STM32.
 struct Stm32Board;
 
-impl link::StackMonitor for Stm32Board {
+impl StackMonitor for Stm32Board {
     fn stack(&self) -> core::ops::Range<*mut u32> {
         cortex_m_stack::stack()
     }
@@ -66,7 +66,7 @@ impl link::StackMonitor for Stm32Board {
     }
 }
 
-impl link::mgmt::Board for Stm32Board {
+impl Board for Stm32Board {
     fn board_version(&self) -> u8 {
         embassy_stm32::pac::FLASH.obr().read().data0()
     }
@@ -141,7 +141,7 @@ bind_interrupts!(struct Irqs {
 });
 
 #[allow(dead_code)]
-async fn ev16_pin_assignments_init(p: embassy_stm32::Peripherals) -> ! {
+async fn run_ev16(p: embassy_stm32::Peripherals) -> ! {
     // MCO on PA8: Output 6 MHz clock for UI chip
     let _mco = Mco::new(p.MCO, p.PA8, McoSource::PLL, McoPrescaler::DIV4);
 
@@ -216,7 +216,7 @@ async fn ev16_pin_assignments_init(p: embassy_stm32::Peripherals) -> ! {
     )
     .await;
 }
-async fn ev17_pin_assignments_init(p: embassy_stm32::Peripherals) -> ! {
+async fn run_ev17(p: embassy_stm32::Peripherals) -> ! {
     // MCO on PA8: Output 6 MHz clock for UI chip
     let _mco = Mco::new(p.MCO, p.PA8, McoSource::PLL, McoPrescaler::DIV4);
 
@@ -331,6 +331,11 @@ async fn main(_spawner: Spawner) {
     };
     let p = embassy_stm32::init(rcc_config);
 
-    ev17_pin_assignments_init(p).await
+    match Stm32Board.board_version() {
+        16 => run_ev16(p).await,
+        17 => run_ev17(p).await,
+        _ => loop {}
+        // _ => run_ev17(p).await,
+    }
 }
 
