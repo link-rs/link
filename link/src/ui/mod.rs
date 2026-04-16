@@ -15,8 +15,8 @@ pub use log::{LogMessage, LogSender, MAX_LOG_SIZE};
 
 use crate::info;
 use crate::shared::{
-    Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi, Led, NetToUi, Sender, StackMonitor,
-    Tlv, UiLoopbackMode, UiToCtl, UiToNet, WriteTlv, chunk, read_tlv_loop,
+    Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi, Led, NetToUi, Sender,
+    StackMonitor, Tlv, UiLoopbackMode, UiToCtl, UiToNet, WriteTlv, chunk, read_tlv_loop,
 };
 
 /// Board trait for UI chip.

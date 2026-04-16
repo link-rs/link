@@ -71,10 +71,10 @@ pub use moq::{MAX_MOQ_NAMESPACE_LEN, MAX_MOQ_TRACK_NAME_LEN, MoqError, MoqExampl
 pub use wifi::WifiSsid;
 
 // StackMonitor trait - base for chip-specific Board traits
-#[cfg(any(feature = "mgmt", feature = "ui"))]
-pub use stack_monitor::StackMonitor;
 #[cfg(test)]
 pub use stack_monitor::NoOpBoard;
+#[cfg(any(feature = "mgmt", feature = "ui"))]
+pub use stack_monitor::StackMonitor;
 
 // Re-export embassy_sync types for use by firmware chip modules that need them
 #[cfg(any(feature = "net", feature = "ui"))]

@@ -2,8 +2,8 @@
 
 use crate::info;
 use crate::shared::{
-    Color, CtlToMgmt, CtlToNet, CtlToUi, Led, MgmtToCtl, ReadTlv, StackMonitor, Tlv, Value, WriteTlv,
-    uart_config::SetBaudRate,
+    Color, CtlToMgmt, CtlToNet, CtlToUi, Led, MgmtToCtl, ReadTlv, StackMonitor, Tlv, Value,
+    WriteTlv, uart_config::SetBaudRate,
 };
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use embedded_hal_async::delay::DelayNs;

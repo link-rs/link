@@ -514,7 +514,12 @@ impl<P: CtlPort> CtlCore<P> {
             // Use different challenge each time to avoid matching stale responses
             // within this call (across calls, the drain above handles stale data)
             let attempt_byte = attempt as u8;
-            let challenge = [attempt_byte, !attempt_byte, attempt_byte.wrapping_add(1), !attempt_byte.wrapping_add(1)];
+            let challenge = [
+                attempt_byte,
+                !attempt_byte,
+                attempt_byte.wrapping_add(1),
+                !attempt_byte.wrapping_add(1),
+            ];
 
             if self.hello(&challenge).await {
                 // Success! Restore original timeout and return
