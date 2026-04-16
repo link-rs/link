@@ -72,10 +72,6 @@ pub(super) async fn exit_mgmt_bootloader(
         .get_mut()
         .set_baud_rate(link::uart_config::HIGH_SPEED.baudrate)?;
 
-    // Drain any stale data from bootloader and wait for MGMT to be ready
-    core.drain();
-    core.wait_for_mgmt_ready(10).await;
-
     Ok(())
 }
 
@@ -267,9 +263,7 @@ pub async fn handle_mgmt(
 
             match result {
                 Ok(()) => {
-                    // Exit bootloader and reset to user code
-                    exit_mgmt_bootloader(core).await?;
-
+                    // flash_mgmt already does Go + hardware reset + baud rate restore + wait_for_mgmt_ready
                     println!("\nFlash complete!");
                     println!(
                         "The MGMT chip should now be running the new firmware at {} baud.",
