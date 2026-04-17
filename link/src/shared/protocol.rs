@@ -183,6 +183,10 @@ pub enum CtlToUi {
     SetLogsEnabled,
     /// Clear all stored configuration (EEPROM)
     ClearStorage,
+    /// Get output volume (returns 1 byte: u8)
+    GetVolume,
+    /// Set output volume (1 byte: u8)
+    SetVolume,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -202,6 +206,8 @@ pub enum UiToCtl {
     StackInfo,
     /// Logs enabled state (1 byte: 0=disabled, 1=enabled)
     LogsEnabled,
+    /// Output volume (1 byte: u8)
+    Volume,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

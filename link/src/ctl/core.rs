@@ -883,6 +883,38 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
+    /// Get UI chip output volume.
+    pub async fn ui_get_volume(&mut self) -> Result<u8, CtlError> {
+        self.write_tlv_ui(CtlToUi::GetVolume, &[]).await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::Volume {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Volume",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 1 {
+            return Err(CtlError::InvalidLength {
+                expected: 1,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(tlv.value[0])
+    }
+
+    /// Set UI chip output volume.
+    pub async fn ui_set_volume(&mut self, volume: u8) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::SetVolume, &[volume]).await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Set UI chip BOOT0 pin directly.
     pub async fn set_ui_boot0(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;

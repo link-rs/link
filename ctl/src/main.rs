@@ -147,6 +147,12 @@ enum UiAction {
         action: Option<LoopbackAction>,
     },
 
+    /// Get or set the UI output volume
+    Volume {
+        #[command(subcommand)]
+        action: Option<GetSetU8>,
+    },
+
     /// Set UI BOOT0 pin
     Boot0 {
         #[command(subcommand)]

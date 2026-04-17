@@ -2,7 +2,7 @@
 
 use super::Core;
 use crate::{
-    GetSetHex, GetSetU32, LogsAction, LoopbackAction, PinAction, PinLevel, ResetAction,
+    GetSetHex, GetSetU8, GetSetU32, LogsAction, LoopbackAction, PinAction, PinLevel, ResetAction,
     StackAction, UiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
@@ -373,5 +373,17 @@ pub async fn handle_ui(
             println!("UI storage cleared");
             Ok(())
         }
+        UiAction::Volume { action } => match action.unwrap_or_default() {
+            GetSetU8::Get => {
+                let volume = core.ui_get_volume().await?;
+                println!("{}", volume);
+                Ok(())
+            }
+            GetSetU8::Set { value } => {
+                core.ui_set_volume(value).await?;
+                println!("Volume set to {}", value);
+                Ok(())
+            }
+        },
     }
 }

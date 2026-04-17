@@ -111,6 +111,9 @@ where
     // Shared logs enabled state
     let logs_enabled = AtomicBool::new(true);
 
+    // Shared volume level (TODO: actually configure the audio system)
+    let volume = AtomicU8::new(255);
+
     // Shared button state - true when any button is pressed
     // This allows audio_task to skip sending frames when no button is held
     let button_active = AtomicBool::new(false);
@@ -139,6 +142,7 @@ where
                         &mut delay,
                         &loopback_mode,
                         &logs_enabled,
+                        &volume,
                         &mut sframe_state,
                         &board,
                     )
@@ -386,6 +390,7 @@ async fn handle_mgmt<M, N, I, D, B>(
     delay: &mut D,
     loopback_mode: &AtomicU8,
     logs_enabled: &AtomicBool,
+    volume: &AtomicU8,
     sframe_state: &mut sframe::SFrameState,
     board: &B,
 ) where
@@ -523,6 +528,17 @@ async fn handle_mgmt<M, N, I, D, B>(
             sframe_state.reset(&[0x00; 16], 0);
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
+        CtlToUi::GetVolume => {
+            info!("ui: get volume");
+            let vol = volume.load(Ordering::Relaxed);
+            to_mgmt.must_write_tlv(UiToCtl::Volume, &[vol]).await;
+        }
+        CtlToUi::SetVolume => {
+            let vol = tlv.value.first().copied().unwrap_or(255);
+            info!("ui: set volume = {}", vol);
+            volume.store(vol, Ordering::Relaxed);
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
+        }
     }
 }
 
@@ -609,6 +625,7 @@ mod tests {
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -618,6 +635,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &logs_enabled,
+            &volume,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -646,6 +664,7 @@ mod tests {
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -655,6 +674,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &logs_enabled,
+            &volume,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -689,6 +709,7 @@ mod tests {
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -698,6 +719,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &logs_enabled,
+            &volume,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -729,6 +751,7 @@ mod tests {
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -738,6 +761,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &logs_enabled,
+            &volume,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -767,6 +791,7 @@ mod tests {
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -776,6 +801,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &logs_enabled,
+            &volume,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -805,6 +831,7 @@ mod tests {
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -814,6 +841,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &logs_enabled,
+            &volume,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
