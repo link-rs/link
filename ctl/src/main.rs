@@ -206,6 +206,12 @@ enum UiAction {
         #[command(subcommand)]
         action: Option<AudioModeAction>,
     },
+
+    /// Audio capture and playback (sets audio-mode to ctl)
+    Audio {
+        #[command(subcommand)]
+        action: AudioAction,
+    },
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
@@ -365,6 +371,21 @@ enum AudioModeAction {
     Ctl,
     /// Route audio to/from NET (normal operation)
     Net,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum AudioAction {
+    /// Capture audio from the UI chip
+    Capture {
+        #[command(subcommand)]
+        mode: CaptureMode,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum CaptureMode {
+    /// Play captured audio to computer speakers (8kHz mono)
+    Live,
 }
 
 #[derive(Debug, Clone, Subcommand)]

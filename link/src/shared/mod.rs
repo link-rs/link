@@ -5,6 +5,9 @@ pub mod chip_config;
 pub mod chunk;
 #[cfg(feature = "ctl")]
 pub mod protocol_config;
+// SFrame encryption/decryption - used by UI and CTL
+#[cfg(any(feature = "ui", feature = "ctl"))]
+pub mod sframe;
 #[cfg(any(feature = "mgmt", feature = "ui"))]
 pub mod stack_monitor;
 #[cfg(feature = "ctl")]

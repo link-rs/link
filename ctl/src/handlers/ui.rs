@@ -2,15 +2,17 @@
 
 use super::Core;
 use crate::{
-    AudioModeAction, GetSetHex, GetSetU8, GetSetU32, LogsAction, LoopbackAction, PinAction,
-    PinLevel, ResetAction, StackAction, UiAction,
+    AudioAction, AudioModeAction, CaptureMode, GetSetHex, GetSetU8, GetSetU32, LogsAction,
+    LoopbackAction, PinAction, PinLevel, ResetAction, StackAction, UiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
+use link::ctl::audio_capture::{AudioSink, CaptureSession};
 use link::ctl::flash::FlashPhase;
 use link::protocol_config::timeouts;
-use link::{AudioMode, PinValue, UiLoopbackMode};
+use link::{AudioMode, PinValue, UiLoopbackMode, UiToCtl};
 use std::io::Write;
+use std::sync::mpsc;
 use std::time::Duration;
 
 pub async fn handle_ui(
@@ -402,5 +404,210 @@ pub async fn handle_ui(
                 Ok(())
             }
         },
+        UiAction::Audio { action } => handle_audio(action, core).await,
     }
+}
+
+/// Handle audio capture and playback commands.
+async fn handle_audio(
+    action: AudioAction,
+    core: &mut Core,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        AudioAction::Capture { mode } => match mode {
+            CaptureMode::Live => capture_live(core).await,
+        },
+    }
+}
+
+/// AudioSink that sends samples to a cpal output stream via channel.
+struct CpalSink {
+    tx: mpsc::Sender<Vec<i16>>,
+}
+
+impl AudioSink for CpalSink {
+    fn write_samples(&mut self, samples: &[i16]) {
+        let _ = self.tx.send(samples.to_vec());
+    }
+}
+
+/// Capture audio from the UI chip and play it through the computer speakers.
+async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+    // Get the SFrame key from UI chip
+    println!("Reading SFrame key from UI chip...");
+    let sframe_key = core.get_sframe_key().await?;
+    println!("SFrame key: {}", hex::encode(&sframe_key));
+
+    // Set audio mode to CTL
+    println!("Setting audio mode to CTL...");
+    core.ui_set_audio_mode(AudioMode::Ctl).await?;
+
+    // Create capture session
+    let mut session = CaptureSession::new(&sframe_key);
+
+    // Set up cpal audio output
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or("No audio output device found")?;
+    println!("Audio output device: {}", device.name()?);
+
+    // Create channel for sending samples from capture to playback
+    let (tx, rx) = mpsc::channel::<Vec<i16>>();
+    let sink = CpalSink { tx };
+
+    // Configure stream for 8kHz mono i16
+    let config = cpal::StreamConfig {
+        channels: 1,
+        sample_rate: cpal::SampleRate(8000),
+        buffer_size: cpal::BufferSize::Default,
+    };
+
+    // Build the output stream
+    let stream = device.build_output_stream(
+        &config,
+        move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+            // Try to get samples from the channel
+            let mut idx = 0;
+            while idx < data.len() {
+                if let Ok(samples) = rx.try_recv() {
+                    for sample in samples {
+                        if idx < data.len() {
+                            data[idx] = sample;
+                            idx += 1;
+                        }
+                    }
+                } else {
+                    // No more samples, fill rest with silence
+                    break;
+                }
+            }
+            // Fill remaining with silence
+            for sample in &mut data[idx..] {
+                *sample = 0;
+            }
+        },
+        |err| eprintln!("Audio stream error: {}", err),
+        None,
+    )?;
+
+    stream.play()?;
+
+    println!("\nCapturing audio (press and hold PTT button to talk)...");
+    println!("Press ESC to stop.\n");
+
+    // Set a short timeout for non-blocking reads
+    if let Err(e) = core
+        .port_mut()
+        .set_timeout(Duration::from_millis(timeouts::MONITOR_MS))
+    {
+        eprintln!("Warning: couldn't set timeout: {}", e);
+    }
+
+    // Use crossterm for ESC detection
+    use crossterm::event::{self, Event, KeyCode, KeyEvent};
+    use crossterm::terminal;
+
+    terminal::enable_raw_mode()?;
+
+    let mut sink = sink;
+    let mut capturing = false;
+    let mut frame_count = 0u32;
+
+    let result = async {
+        loop {
+            // Check for key press (non-blocking)
+            if event::poll(Duration::from_millis(0))? {
+                if let Event::Key(KeyEvent {
+                    code: KeyCode::Esc, ..
+                }) = event::read()?
+                {
+                    return Ok::<(), Box<dyn std::error::Error>>(());
+                }
+            }
+
+            // Try to read a TLV from UI
+            match core.try_read_tlv_ui().await {
+                Ok(Some(tlv)) => {
+                    match tlv.tlv_type {
+                        UiToCtl::AudioStart => {
+                            if !capturing {
+                                capturing = true;
+                                frame_count = 0;
+                                print!("\r[CAPTURING] ");
+                                std::io::stdout().flush().ok();
+                            }
+                        }
+                        UiToCtl::AudioEnd => {
+                            if capturing {
+                                capturing = false;
+                                print!("\r[IDLE] {} frames captured\r\n", frame_count);
+                                std::io::stdout().flush().ok();
+                            }
+                        }
+                        UiToCtl::AudioFrame => {
+                            if capturing {
+                                match session.process_frame(&tlv.value, &mut sink) {
+                                    Ok(true) => {
+                                        frame_count += 1;
+                                        print!("\r[CAPTURING] {} frames", frame_count);
+                                        std::io::stdout().flush().ok();
+                                    }
+                                    Ok(false) => {
+                                        // Invalid frame, skip
+                                    }
+                                    Err(e) => {
+                                        print!("\r[ERROR] {}\r\n", e);
+                                        std::io::stdout().flush().ok();
+                                    }
+                                }
+                            }
+                        }
+                        UiToCtl::Log => {
+                            // Print log messages
+                            if let Ok(msg) = core::str::from_utf8(&tlv.value) {
+                                print!("\r[UI] {}\r\n", msg);
+                                std::io::stdout().flush().ok();
+                            }
+                        }
+                        _ => {
+                            // Ignore other TLVs
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Timeout, continue
+                }
+                Err(e) => {
+                    if e.is_timeout() {
+                        continue;
+                    }
+                    return Err(format!("Read error: {:?}", e).into());
+                }
+            }
+        }
+    }
+    .await;
+
+    // Cleanup
+    terminal::disable_raw_mode()?;
+    drop(stream);
+
+    // Restore audio mode to NET
+    println!("\nRestoring audio mode to NET...");
+    core.ui_set_audio_mode(AudioMode::Net).await?;
+
+    // Restore timeout
+    if let Err(e) = core
+        .port_mut()
+        .set_timeout(Duration::from_secs(timeouts::NORMAL_SECS))
+    {
+        eprintln!("Warning: couldn't restore timeout: {}", e);
+    }
+
+    println!("Capture stopped.");
+
+    result
 }

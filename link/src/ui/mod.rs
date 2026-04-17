@@ -3,9 +3,11 @@
 mod audio;
 mod eeprom;
 mod log;
-mod sframe;
 
-pub use sframe::SFrameState;
+// Re-export SFrame from shared
+pub use crate::shared::sframe::SFrameState;
+// Also use it locally as "sframe" for internal references
+use crate::shared::sframe;
 
 pub use audio::{
     AudioError, AudioSystem, ENCODED_FRAME_SIZE, FRAME_SIZE, Frame, STEREO_FRAME_SIZE, StereoFrame,

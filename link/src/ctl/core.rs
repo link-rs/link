@@ -1105,6 +1105,46 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(None)
     }
 
+    /// Try to read any TLV from the UI chip (non-blocking/timeout-aware).
+    ///
+    /// Returns `Ok(Some(tlv))` if a complete TLV was received,
+    /// `Ok(None)` if timeout/no data available,
+    /// or an error for real I/O failures.
+    ///
+    /// Use this for polling scenarios where you expect timeouts.
+    pub async fn try_read_tlv_ui(&mut self) -> Result<Option<Tlv<UiToCtl>>, CtlError> {
+        // First, try to parse a TLV from the existing buffer
+        if let Some(tlv) = Self::try_parse_tlv_from_buffer::<UiToCtl>(&mut self.ui_buffer)? {
+            return Ok(Some(tlv));
+        }
+
+        // Need more data - try to read from wire (returns None on timeout)
+        let Some(tlv) = self.read_tlv::<MgmtToCtl>().await? else {
+            return Ok(None); // Timeout/no data
+        };
+
+        // Append data to appropriate buffer
+        match tlv.tlv_type {
+            MgmtToCtl::FromUi => {
+                let _ = self.ui_buffer.extend_from_slice(&tlv.value);
+            }
+            MgmtToCtl::FromNet => {
+                let _ = self.net_buffer.extend_from_slice(&tlv.value);
+            }
+            _ => {
+                // Skip MGMT-level messages
+            }
+        }
+
+        // Try parsing again after receiving new data
+        if let Some(tlv) = Self::try_parse_tlv_from_buffer::<UiToCtl>(&mut self.ui_buffer)? {
+            return Ok(Some(tlv));
+        }
+
+        // Return None to indicate we got data but not a complete TLV yet
+        Ok(None)
+    }
+
     // ========================================================================
     // NET operations
     // ========================================================================
