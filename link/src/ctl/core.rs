@@ -884,7 +884,7 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Get UI chip output volume.
-    pub async fn ui_get_volume(&mut self) -> Result<u16, CtlError> {
+    pub async fn ui_get_volume(&mut self) -> Result<u8, CtlError> {
         self.write_tlv_ui(CtlToUi::GetVolume, &[]).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
         if tlv.tlv_type != UiToCtl::Volume {
@@ -893,20 +893,18 @@ impl<P: CtlPort> CtlCore<P> {
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        if tlv.value.len() != 2 {
+        if tlv.value.len() != 1 {
             return Err(CtlError::InvalidLength {
-                expected: 2,
+                expected: 1,
                 actual: tlv.value.len(),
             });
         }
-        let volume = u16::from_le_bytes([tlv.value[0], tlv.value[1]]);
-        Ok(volume)
+        Ok(tlv.value[0])
     }
 
     /// Set UI chip output volume.
-    pub async fn ui_set_volume(&mut self, volume: u16) -> Result<(), CtlError> {
-        self.write_tlv_ui(CtlToUi::SetVolume, &volume.to_le_bytes())
-            .await?;
+    pub async fn ui_set_volume(&mut self, volume: u8) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::SetVolume, &[volume]).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
         if tlv.tlv_type != UiToCtl::Ack {
             return Err(CtlError::UnexpectedResponse {

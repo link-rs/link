@@ -111,6 +111,9 @@ where
     // Shared logs enabled state
     let logs_enabled = AtomicBool::new(true);
 
+    // Shared volume level (TODO: actually configure the audio system)
+    let volume = AtomicU8::new(255);
+
     // Shared button state - true when any button is pressed
     // This allows audio_task to skip sending frames when no button is held
     let button_active = AtomicBool::new(false);
@@ -139,6 +142,7 @@ where
                         &mut delay,
                         &loopback_mode,
                         &logs_enabled,
+                        &volume,
                         &mut sframe_state,
                         &board,
                     )
@@ -386,6 +390,7 @@ async fn handle_mgmt<M, N, I, D, B>(
     delay: &mut D,
     loopback_mode: &AtomicU8,
     logs_enabled: &AtomicBool,
+    volume: &AtomicU8,
     sframe_state: &mut sframe::SFrameState,
     board: &B,
 ) where
@@ -525,28 +530,13 @@ async fn handle_mgmt<M, N, I, D, B>(
         }
         CtlToUi::GetVolume => {
             info!("ui: get volume");
-            let mut eeprom = Eeprom::new(i2c, delay);
-            let Ok(volume) = eeprom.get_volume() else {
-                info!("ui: failed to read volume from EEPROM");
-                return;
-            };
-            let value = volume.to_le_bytes();
-            to_mgmt.must_write_tlv(UiToCtl::Volume, &value).await;
+            let vol = volume.load(Ordering::Relaxed);
+            to_mgmt.must_write_tlv(UiToCtl::Volume, &[vol]).await;
         }
         CtlToUi::SetVolume => {
-            info!("ui: set volume");
-            if tlv.value.len() != 2 {
-                info!("ui: invalid volume length: {}", tlv.value.len());
-                to_mgmt.must_write_tlv(UiToCtl::Error, b"length").await;
-                return;
-            }
-            let volume = u16::from_le_bytes([tlv.value[0], tlv.value[1]]);
-            let mut eeprom = Eeprom::new(i2c, delay);
-            if eeprom.set_volume(volume).is_err() {
-                info!("ui: failed to write volume to EEPROM");
-                to_mgmt.must_write_tlv(UiToCtl::Error, b"eeprom").await;
-                return;
-            }
+            let vol = tlv.value.first().copied().unwrap_or(255);
+            info!("ui: set volume = {}", vol);
+            volume.store(vol, Ordering::Relaxed);
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
     }
@@ -635,6 +625,7 @@ mod tests {
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -644,6 +635,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &logs_enabled,
+            &volume,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -672,6 +664,7 @@ mod tests {
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -681,6 +674,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &logs_enabled,
+            &volume,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -715,6 +709,7 @@ mod tests {
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -724,6 +719,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &logs_enabled,
+            &volume,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -755,6 +751,7 @@ mod tests {
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -764,6 +761,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &logs_enabled,
+            &volume,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -793,6 +791,7 @@ mod tests {
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -802,6 +801,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &logs_enabled,
+            &volume,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -831,6 +831,7 @@ mod tests {
 
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -840,6 +841,7 @@ mod tests {
             &mut delay,
             &loopback_mode,
             &logs_enabled,
+            &volume,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )

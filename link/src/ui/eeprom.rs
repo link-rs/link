@@ -20,7 +20,6 @@ where
     const I2C_ADDR: u8 = 0x50;
     const VERSION_OFFSET: u8 = 0;
     const SFRAME_KEY_OFFSET: u8 = 16;
-    const VOLUME_OFFSET: u8 = 32;
     const WRITE_DELAY_NS: u32 = 10_000_000;
 
     /// Create a new EEPROM interface from shared I2C and delay references.
@@ -59,24 +58,6 @@ where
         let mut write_data = [0u8; 17];
         write_data[0] = Self::SFRAME_KEY_OFFSET;
         write_data[1..].copy_from_slice(key);
-        self.i2c.write(Self::I2C_ADDR, &write_data)?;
-        self.delay.delay_ns(Self::WRITE_DELAY_NS);
-        Ok(())
-    }
-
-    /// Read the volume field (2 bytes little-endian u16 at offset 32).
-    pub fn get_volume(&mut self) -> Result<u16, I::Error> {
-        let mut buf = [0u8; 2];
-        self.i2c
-            .write_read(Self::I2C_ADDR, &[Self::VOLUME_OFFSET], &mut buf)?;
-        Ok(u16::from_le_bytes(buf))
-    }
-
-    /// Write the volume field (2 bytes little-endian u16 at offset 32).
-    pub fn set_volume(&mut self, volume: u16) -> Result<(), I::Error> {
-        let mut write_data = [0u8; 3];
-        write_data[0] = Self::VOLUME_OFFSET;
-        write_data[1..].copy_from_slice(&volume.to_le_bytes());
         self.i2c.write(Self::I2C_ADDR, &write_data)?;
         self.delay.delay_ns(Self::WRITE_DELAY_NS);
         Ok(())
