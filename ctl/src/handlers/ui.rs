@@ -380,8 +380,8 @@ pub async fn handle_ui(
                 Ok(())
             }
             VolumeAction::Set { value } => {
-                core.ui_set_volume(value).await?;
-                println!("Volume set to {}", value);
+                let volume = core.ui_set_volume(value).await?;
+                println!("Volume set to {}", volume);
                 Ok(())
             }
             VolumeAction::Up { amount } => {
@@ -406,8 +406,8 @@ pub async fn handle_ui(
                 Ok(())
             }
             VolumeAction::Set { value } => {
-                core.ui_set_mic_preamp(value).await?;
-                println!("Mic preamp set to {}", value);
+                let preamp = core.ui_set_mic_preamp(value).await?;
+                println!("Mic preamp set to {}", preamp);
                 Ok(())
             }
             VolumeAction::Up { amount } => {

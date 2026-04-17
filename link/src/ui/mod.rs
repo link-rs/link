@@ -15,8 +15,8 @@ pub use log::{LogMessage, LogSender, MAX_LOG_SIZE};
 
 use crate::info;
 use crate::shared::{
-    Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi, Led, NetToUi, Sender,
-    StackMonitor, Tlv, UiLoopbackMode, UiToCtl, UiToNet, WriteTlv, chunk, read_tlv_loop,
+    AdjDirection, Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi, Led, NetToUi,
+    Sender, StackMonitor, Tlv, UiLoopbackMode, UiToCtl, UiToNet, WriteTlv, chunk, read_tlv_loop,
 };
 
 /// Board trait for UI chip.
@@ -114,6 +114,9 @@ where
     // Shared volume level (TODO: actually configure the audio system)
     let volume = AtomicU8::new(255);
 
+    // Shared microphone preamp level (TODO: actually configure the audio system)
+    let mic_preamp = AtomicU8::new(255);
+
     // Shared button state - true when any button is pressed
     // This allows audio_task to skip sending frames when no button is held
     let button_active = AtomicBool::new(false);
@@ -143,6 +146,7 @@ where
                         &loopback_mode,
                         &logs_enabled,
                         &volume,
+                        &mic_preamp,
                         &mut sframe_state,
                         &board,
                     )
@@ -391,6 +395,7 @@ async fn handle_mgmt<M, N, I, D, B>(
     loopback_mode: &AtomicU8,
     logs_enabled: &AtomicBool,
     volume: &AtomicU8,
+    mic_preamp: &AtomicU8,
     sframe_state: &mut sframe::SFrameState,
     board: &B,
 ) where
@@ -538,6 +543,76 @@ async fn handle_mgmt<M, N, I, D, B>(
             info!("ui: set volume = {}", vol);
             volume.store(vol, Ordering::Relaxed);
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
+        }
+        CtlToUi::AdjVolume => {
+            if tlv.value.len() != 2 {
+                info!(
+                    "ui: invalid adjust volume payload length: {}",
+                    tlv.value.len()
+                );
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"volume").await;
+                return;
+            }
+
+            let Ok(direction) = AdjDirection::try_from(tlv.value[0]) else {
+                info!("ui: invalid adjust volume direction: {}", tlv.value[0]);
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"volume").await;
+                return;
+            };
+
+            let amount = tlv.value[1];
+            let current = volume.load(Ordering::Relaxed);
+            let next = match direction {
+                AdjDirection::Down => current.saturating_sub(amount),
+                AdjDirection::Up => current.saturating_add(amount),
+            };
+            volume.store(next, Ordering::Relaxed);
+            to_mgmt.must_write_tlv(UiToCtl::Volume, &[next]).await;
+        }
+        CtlToUi::GetMicPreamp => {
+            let preamp = mic_preamp.load(Ordering::Relaxed);
+            info!("ui: get mic preamp = {}", preamp);
+            to_mgmt.must_write_tlv(UiToCtl::MicPreamp, &[preamp]).await;
+        }
+        CtlToUi::SetMicPreamp => {
+            if tlv.value.len() != 1 {
+                info!(
+                    "ui: invalid set mic preamp payload length: {}",
+                    tlv.value.len()
+                );
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"mic-preamp").await;
+                return;
+            }
+
+            let preamp = tlv.value[0];
+            info!("ui: set mic preamp = {}", preamp);
+            mic_preamp.store(preamp, Ordering::Relaxed);
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
+        }
+        CtlToUi::AdjMicPreamp => {
+            if tlv.value.len() != 2 {
+                info!(
+                    "ui: invalid adjust mic preamp payload length: {}",
+                    tlv.value.len()
+                );
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"mic-preamp").await;
+                return;
+            }
+
+            let Ok(direction) = AdjDirection::try_from(tlv.value[0]) else {
+                info!("ui: invalid adjust mic preamp direction: {}", tlv.value[0]);
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"mic-preamp").await;
+                return;
+            };
+
+            let amount = tlv.value[1];
+            let current = mic_preamp.load(Ordering::Relaxed);
+            let next = match direction {
+                AdjDirection::Down => current.saturating_sub(amount),
+                AdjDirection::Up => current.saturating_add(amount),
+            };
+            mic_preamp.store(next, Ordering::Relaxed);
+            to_mgmt.must_write_tlv(UiToCtl::MicPreamp, &[next]).await;
         }
     }
 }
