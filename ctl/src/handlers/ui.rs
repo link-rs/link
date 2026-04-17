@@ -420,6 +420,7 @@ async fn handle_audio(
         },
         AudioAction::Play { mode } => match mode {
             PlayMode::Wav { file } => play_wav(core, &file).await,
+            PlayMode::Live => play_live(core).await,
         },
     }
 }
@@ -882,4 +883,135 @@ async fn play_wav(
 
     println!("Playback complete.");
     Ok(())
+}
+
+/// Stream audio from computer microphone to the UI chip speaker.
+async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // Get the SFrame key from UI chip
+    println!("Reading SFrame key from UI chip...");
+    let sframe_key = core.get_sframe_key().await?;
+    println!("SFrame key: {}", hex::encode(&sframe_key));
+
+    // Set audio mode to CTL
+    println!("Setting audio mode to CTL...");
+    core.ui_set_audio_mode(AudioMode::Ctl).await?;
+
+    // Create playback session
+    let mut session = PlaybackSession::new(&sframe_key);
+
+    // Set up cpal audio input
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .ok_or("No audio input device found")?;
+    println!("Audio input device: {}", device.name()?);
+
+    // Create channel for receiving samples from the input callback
+    let (tx, rx) = mpsc::channel::<Vec<i16>>();
+
+    // Configure stream for 8kHz mono i16
+    let config = cpal::StreamConfig {
+        channels: 1,
+        sample_rate: cpal::SampleRate(8000),
+        buffer_size: cpal::BufferSize::Default,
+    };
+
+    // Flag to stop the stream
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = running.clone();
+
+    // Build the input stream
+    let stream = device.build_input_stream(
+        &config,
+        move |data: &[i16], _: &cpal::InputCallbackInfo| {
+            if running_clone.load(Ordering::Relaxed) {
+                let _ = tx.send(data.to_vec());
+            }
+        },
+        |err| eprintln!("Audio stream error: {}", err),
+        None,
+    )?;
+
+    stream.play()?;
+
+    println!("\nStreaming from microphone to device...");
+    println!("Press ESC to stop.\n");
+
+    // Use crossterm for ESC detection
+    use crossterm::event::{self, Event, KeyCode, KeyEvent};
+    use crossterm::terminal;
+
+    terminal::enable_raw_mode()?;
+
+    // Chunk size - 160 samples = 20ms at 8kHz
+    const CHUNK_SIZE: usize = 160;
+    const CHANNEL_ID: u8 = 0;
+
+    let mut sample_buffer = Vec::new();
+    let mut frame_count = 0u32;
+    let mut streaming = false;
+
+    let result = async {
+        loop {
+            // Check for key press (non-blocking)
+            if event::poll(Duration::from_millis(0))? {
+                if let Event::Key(KeyEvent {
+                    code: KeyCode::Esc, ..
+                }) = event::read()?
+                {
+                    return Ok::<(), Box<dyn std::error::Error>>(());
+                }
+            }
+
+            // Try to receive samples from the input stream
+            while let Ok(samples) = rx.try_recv() {
+                if !streaming {
+                    streaming = true;
+                    core.ui_send_audio_start().await?;
+                    print!("\r[STREAMING] ");
+                    std::io::stdout().flush().ok();
+                }
+
+                sample_buffer.extend_from_slice(&samples);
+
+                // Send complete chunks
+                while sample_buffer.len() >= CHUNK_SIZE {
+                    let chunk: Vec<i16> = sample_buffer.drain(..CHUNK_SIZE).collect();
+                    let frame = session.create_frame(&chunk, CHANNEL_ID)?;
+                    core.ui_send_audio_frame(&frame).await?;
+                    frame_count += 1;
+
+                    if frame_count % 50 == 0 {
+                        print!("\r[STREAMING] {} frames", frame_count);
+                        std::io::stdout().flush().ok();
+                    }
+                }
+            }
+
+            // Small sleep to prevent busy-waiting
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+    .await;
+
+    // Cleanup
+    running.store(false, Ordering::Relaxed);
+    terminal::disable_raw_mode()?;
+    drop(stream);
+
+    if streaming {
+        core.ui_send_audio_end().await?;
+    }
+
+    // Restore audio mode to NET
+    println!("\n\nRestoring audio mode to NET...");
+    core.ui_set_audio_mode(AudioMode::Net).await?;
+
+    println!("Streaming stopped. {} frames sent.", frame_count);
+
+    result
 }

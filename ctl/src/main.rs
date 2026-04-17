@@ -399,6 +399,8 @@ enum CaptureMode {
 enum PlayMode {
     /// Play a WAV file to the device speaker (must be 8kHz mono)
     Wav { file: std::path::PathBuf },
+    /// Stream from computer microphone to device speaker (8kHz mono)
+    Live,
 }
 
 #[derive(Debug, Clone, Subcommand)]
