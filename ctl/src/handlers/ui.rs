@@ -3,11 +3,11 @@
 use super::Core;
 use crate::{
     AudioAction, AudioModeAction, CaptureMode, GetSetHex, GetSetU8, GetSetU32, LogsAction,
-    LoopbackAction, PinAction, PinLevel, ResetAction, StackAction, UiAction,
+    LoopbackAction, PinAction, PinLevel, PlayMode, ResetAction, StackAction, UiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
-use link::ctl::audio_capture::{AudioSink, CaptureSession};
+use link::ctl::audio_capture::{AudioSink, CaptureSession, PlaybackSession};
 use link::ctl::flash::FlashPhase;
 use link::protocol_config::timeouts;
 use link::{AudioMode, PinValue, UiLoopbackMode, UiToCtl};
@@ -418,6 +418,9 @@ async fn handle_audio(
             CaptureMode::Live => capture_live(core).await,
             CaptureMode::Wav { file } => capture_wav(core, &file).await,
         },
+        AudioAction::Play { mode } => match mode {
+            PlayMode::Wav { file } => play_wav(core, &file).await,
+        },
     }
 }
 
@@ -797,4 +800,86 @@ async fn capture_wav(
     }
 
     result
+}
+
+/// Play a WAV file to the UI chip speaker.
+async fn play_wav(
+    core: &mut Core,
+    path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Read and validate WAV file
+    println!("Reading WAV file: {}", path.display());
+    let mut reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
+
+    if spec.channels != 1 {
+        return Err(format!("WAV file must be mono, got {} channels", spec.channels).into());
+    }
+    if spec.sample_rate != 8000 {
+        return Err(format!("WAV file must be 8kHz, got {} Hz", spec.sample_rate).into());
+    }
+    if spec.bits_per_sample != 16 {
+        return Err(format!("WAV file must be 16-bit, got {} bits", spec.bits_per_sample).into());
+    }
+    if spec.sample_format != hound::SampleFormat::Int {
+        return Err("WAV file must use integer sample format".into());
+    }
+
+    // Read all samples
+    let samples: Vec<i16> = reader.samples::<i16>().collect::<Result<Vec<_>, _>>()?;
+
+    let duration_secs = samples.len() as f64 / 8000.0;
+    println!(
+        "Loaded {:.2} seconds of audio ({} samples)",
+        duration_secs,
+        samples.len()
+    );
+
+    // Get the SFrame key from UI chip
+    println!("Reading SFrame key from UI chip...");
+    let sframe_key = core.get_sframe_key().await?;
+    println!("SFrame key: {}", hex::encode(&sframe_key));
+
+    // Set audio mode to CTL
+    println!("Setting audio mode to CTL...");
+    core.ui_set_audio_mode(AudioMode::Ctl).await?;
+
+    // Create playback session
+    let mut session = PlaybackSession::new(&sframe_key);
+
+    // Chunk size - 160 samples = 20ms at 8kHz (standard for telephony)
+    const CHUNK_SIZE: usize = 160;
+    const CHANNEL_ID: u8 = 0;
+
+    let total_chunks = (samples.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    println!("\nPlaying {} chunks to device...", total_chunks);
+
+    // Send audio start
+    core.ui_send_audio_start().await?;
+
+    // Send audio frames
+    for (i, chunk) in samples.chunks(CHUNK_SIZE).enumerate() {
+        let frame = session.create_frame(chunk, CHANNEL_ID)?;
+        core.ui_send_audio_frame(&frame).await?;
+
+        // Progress
+        if (i + 1) % 50 == 0 || i + 1 == total_chunks {
+            let progress = (i + 1) as f64 / total_chunks as f64 * 100.0;
+            print!("\rProgress: {:.0}% ({}/{})", progress, i + 1, total_chunks);
+            std::io::stdout().flush().ok();
+        }
+
+        // Pace the sending to roughly match real-time (20ms per chunk)
+        // This prevents overwhelming the device with too much data at once
+        tokio::time::sleep(Duration::from_millis(18)).await;
+    }
+
+    // Send audio end
+    core.ui_send_audio_end().await?;
+
+    println!("\n\nRestoring audio mode to NET...");
+    core.ui_set_audio_mode(AudioMode::Net).await?;
+
+    println!("Playback complete.");
+    Ok(())
 }

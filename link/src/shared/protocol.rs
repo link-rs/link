@@ -215,6 +215,10 @@ pub enum CtlToUi {
     SetAudioMode,
     /// Audio frame from CTL to play out (when audio-mode=ctl)
     AudioFrame,
+    /// Audio stream start marker from CTL
+    AudioStart,
+    /// Audio stream end marker from CTL
+    AudioEnd,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

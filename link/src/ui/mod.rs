@@ -629,6 +629,10 @@ async fn handle_mgmt<M, N, I, D, B, const PLAYBACK_N: usize>(
                 }
             }
         }
+        CtlToUi::AudioStart | CtlToUi::AudioEnd => {
+            // Audio stream markers from CTL - could be used for UI feedback
+            // (e.g., LED indication). For now, silently ignore.
+        }
     }
 }
 

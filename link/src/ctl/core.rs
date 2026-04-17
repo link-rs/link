@@ -954,6 +954,30 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
+    /// Send audio start marker to UI chip.
+    ///
+    /// This signals the start of an audio stream from CTL to UI.
+    /// Fire-and-forget, no acknowledgment expected.
+    pub async fn ui_send_audio_start(&mut self) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::AudioStart, &[]).await
+    }
+
+    /// Send audio end marker to UI chip.
+    ///
+    /// This signals the end of an audio stream from CTL to UI.
+    /// Fire-and-forget, no acknowledgment expected.
+    pub async fn ui_send_audio_end(&mut self) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::AudioEnd, &[]).await
+    }
+
+    /// Send an audio frame to UI chip.
+    ///
+    /// The frame data should be in the format: channel_id (1 byte) + encrypted chunk.
+    /// Fire-and-forget, no acknowledgment expected.
+    pub async fn ui_send_audio_frame(&mut self, frame: &[u8]) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::AudioFrame, frame).await
+    }
+
     /// Set UI chip BOOT0 pin directly.
     pub async fn set_ui_boot0(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;

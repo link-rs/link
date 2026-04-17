@@ -112,6 +112,81 @@ impl core::fmt::Display for CaptureError {
 
 impl std::error::Error for CaptureError {}
 
+/// Audio playback session.
+///
+/// Handles encoding and encrypting audio frames to send to the UI chip.
+pub struct PlaybackSession {
+    sframe: SFrameState,
+}
+
+impl PlaybackSession {
+    /// Create a new playback session with the given SFrame key.
+    ///
+    /// The key should be the 16-byte SFrame key from the UI chip's EEPROM.
+    pub fn new(sframe_key: &[u8; 16]) -> Self {
+        Self {
+            sframe: SFrameState::new(sframe_key, 0),
+        }
+    }
+
+    /// Create an audio frame from PCM samples.
+    ///
+    /// The frame format is: channel_id (1 byte) + encrypted chunk
+    /// (SFrame header + encrypted data + auth tag).
+    ///
+    /// Returns the frame ready to be sent as an AudioFrame TLV value.
+    pub fn create_frame(
+        &mut self,
+        samples: &[i16],
+        channel_id: u8,
+    ) -> Result<Vec<u8>, PlaybackError> {
+        use audio_codec_algorithms::encode_alaw;
+
+        // Encode PCM to A-law
+        let alaw_data: Vec<u8> = samples.iter().map(|&s| encode_alaw(s)).collect();
+
+        // Build chunk (media format) - prepend header
+        let mut chunk_buf: heapless::Vec<u8, 256> = heapless::Vec::new();
+        chunk_buf
+            .extend_from_slice(&alaw_data)
+            .map_err(|_| PlaybackError::BufferTooSmall)?;
+        chunk::prepend_media_header(&mut chunk_buf, false)
+            .map_err(|_| PlaybackError::BufferTooSmall)?;
+
+        // Encrypt with SFrame
+        self.sframe
+            .protect(&[], &mut chunk_buf)
+            .map_err(|_| PlaybackError::EncryptionFailed)?;
+
+        // Build final frame: channel_id + encrypted chunk
+        let mut frame = Vec::with_capacity(1 + chunk_buf.len());
+        frame.push(channel_id);
+        frame.extend_from_slice(&chunk_buf);
+
+        Ok(frame)
+    }
+}
+
+/// Errors that can occur during audio playback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackError {
+    /// Buffer too small for operation
+    BufferTooSmall,
+    /// SFrame encryption failed
+    EncryptionFailed,
+}
+
+impl core::fmt::Display for PlaybackError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PlaybackError::BufferTooSmall => write!(f, "buffer too small"),
+            PlaybackError::EncryptionFailed => write!(f, "encryption failed"),
+        }
+    }
+}
+
+impl std::error::Error for PlaybackError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

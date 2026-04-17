@@ -380,6 +380,11 @@ enum AudioAction {
         #[command(subcommand)]
         mode: CaptureMode,
     },
+    /// Play audio to the UI chip
+    Play {
+        #[command(subcommand)]
+        mode: PlayMode,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -387,6 +392,12 @@ enum CaptureMode {
     /// Play captured audio to computer speakers (8kHz mono)
     Live,
     /// Save captured audio to a WAV file (8kHz mono 16-bit)
+    Wav { file: std::path::PathBuf },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum PlayMode {
+    /// Play a WAV file to the device speaker (must be 8kHz mono)
     Wav { file: std::path::PathBuf },
 }
 
