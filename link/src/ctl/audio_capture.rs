@@ -67,8 +67,7 @@ impl CaptureSession {
             .map_err(|_| CaptureError::BufferTooSmall)?;
 
         // Parse header for debugging before attempting decryption
-        let header_info = sframe::parse_header_info(&heapless_buf)
-            .map(|h| (h.kid, h.ctr));
+        let header_info = sframe::parse_header_info(&heapless_buf).map(|h| (h.kid, h.ctr));
 
         if let Err(e) = self.sframe.unprotect(&[], &mut heapless_buf) {
             return Err(CaptureError::DecryptionFailedDetail(e, header_info));

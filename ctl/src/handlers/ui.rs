@@ -868,7 +868,10 @@ async fn capture_wav(core: &mut Core, basename: &str) -> Result<(), Box<dyn std:
                                         std::io::stdout().flush().ok();
                                     }
                                     Ok(false) => {
-                                        print!("\r[SKIP] invalid frame ({} bytes)\r\n", tlv.value.len());
+                                        print!(
+                                            "\r[SKIP] invalid frame ({} bytes)\r\n",
+                                            tlv.value.len()
+                                        );
                                         std::io::stdout().flush().ok();
                                     }
                                     Err(e) => {

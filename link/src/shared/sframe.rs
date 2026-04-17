@@ -395,7 +395,10 @@ pub struct HeaderInfo {
 
 /// Parse SFrame header to extract KID and CTR (for debugging).
 pub fn parse_header_info(input: &[u8]) -> Option<HeaderInfo> {
-    decode_header(input).ok().map(|h| HeaderInfo { kid: h.kid, ctr: h.ctr })
+    decode_header(input).ok().map(|h| HeaderInfo {
+        kid: h.kid,
+        ctr: h.ctr,
+    })
 }
 
 /// Parsed SFrame header
