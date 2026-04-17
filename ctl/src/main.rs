@@ -80,6 +80,12 @@ enum Command {
         data: String,
     },
 
+    /// Audio capture and playback via UI chip
+    Audio {
+        #[command(subcommand)]
+        action: AudioAction,
+    },
+
     /// Exit the REPL
     Exit,
 }
@@ -205,12 +211,6 @@ enum UiAction {
     AudioMode {
         #[command(subcommand)]
         action: Option<AudioModeAction>,
-    },
-
-    /// Audio capture and playback (sets audio-mode to ctl)
-    Audio {
-        #[command(subcommand)]
-        action: AudioAction,
     },
 }
 
@@ -698,6 +698,7 @@ async fn dispatch(cmd: Command, core: &mut Core) -> Result<(), Box<dyn std::erro
             println!("Completed circular ping!");
             Ok(())
         }
+        Command::Audio { action } => handlers::handle_audio(action, core).await,
         Command::Exit => {
             std::process::exit(0);
         }
@@ -789,6 +790,21 @@ fn circular_ping_handler(
     Ok(None)
 }
 
+fn audio_handler(
+    args: ArgMatches,
+    core: &mut Core,
+) -> Result<Option<String>, reedline_repl_rs::Error> {
+    let action = AudioAction::from_arg_matches(&args)
+        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
+
+    if let Err(e) = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(dispatch(Command::Audio { action }, core))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
+}
+
 fn exit_handler(
     _args: ArgMatches,
     core: &mut Core,
@@ -811,6 +827,7 @@ fn run_repl(core: Core, port_name: &str) -> Result<(), reedline_repl_rs::Error> 
     callbacks.insert("net".to_string(), net_handler);
     callbacks.insert("hello".to_string(), hello_handler);
     callbacks.insert("circular-ping".to_string(), circular_ping_handler);
+    callbacks.insert("audio".to_string(), audio_handler);
     callbacks.insert("exit".to_string(), exit_handler);
 
     let mut repl = Repl::<Core, reedline_repl_rs::Error>::new(core)

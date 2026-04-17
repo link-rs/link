@@ -404,12 +404,11 @@ pub async fn handle_ui(
                 Ok(())
             }
         },
-        UiAction::Audio { action } => handle_audio(action, core).await,
     }
 }
 
 /// Handle audio capture and playback commands.
-async fn handle_audio(
+pub async fn handle_audio(
     action: AudioAction,
     core: &mut Core,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -521,31 +520,37 @@ async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>>
     let supported = selected_config.ok_or("No supported audio output configuration found")?;
     let sample_rate = supported.sample_rate().0;
     let channels = supported.channels() as usize;
+    let sample_format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
 
-    println!("Output format: {}Hz, {} channel(s)", sample_rate, channels);
+    println!(
+        "Output format: {}Hz, {} channel(s), {:?}",
+        sample_rate, channels, sample_format
+    );
 
     // Calculate upsampling ratio from 8kHz
     let upsample_ratio = sample_rate as f64 / 8000.0;
 
-    // Build the output stream with upsampling
+    // Build the output stream with upsampling - use f32 which is most universally supported
     let stream = device.build_output_stream(
         &config,
-        move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
             // Try to get samples from the channel and upsample
             let mut idx = 0;
             while idx < data.len() {
                 if let Ok(samples) = rx.try_recv() {
                     // Upsample: repeat each sample to match output rate
                     for sample in samples {
+                        // Convert i16 to f32 (-1.0 to 1.0)
+                        let sample_f32 = sample as f32 / 32768.0;
                         let repeat_count = upsample_ratio.round() as usize;
                         for _ in 0..repeat_count {
                             if idx < data.len() {
-                                data[idx] = sample;
+                                data[idx] = sample_f32;
                                 idx += 1;
                                 // For stereo, duplicate to both channels
                                 if channels == 2 && idx < data.len() {
-                                    data[idx] = sample;
+                                    data[idx] = sample_f32;
                                     idx += 1;
                                 }
                             }
@@ -557,7 +562,7 @@ async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>>
             }
             // Fill remaining with silence
             for sample in &mut data[idx..] {
-                *sample = 0;
+                *sample = 0.0;
             }
         },
         |err| eprintln!("Audio stream error: {}", err),
