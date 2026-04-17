@@ -24,6 +24,7 @@ futures = "0.3"
 # Audio playback and recording
 cpal = "0.15"
 hound = "3.5"
+rubato = "0.16"
 
 [patch.crates-io]
 espflash = { git = "https://github.com/link-rs/espflash.git", rev = "9697703" }

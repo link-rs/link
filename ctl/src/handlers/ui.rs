@@ -438,6 +438,8 @@ impl AudioSink for CpalSink {
 /// Capture audio from the UI chip and play it through the computer speakers.
 async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use rubato::{FftFixedIn, Resampler};
+    use std::sync::{Arc, Mutex};
 
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
@@ -457,10 +459,6 @@ async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>>
         .default_output_device()
         .ok_or("No audio output device found")?;
     println!("Audio output device: {}", device.name()?);
-
-    // Create channel for sending samples from capture to playback
-    let (tx, rx) = mpsc::channel::<Vec<i16>>();
-    let sink = CpalSink { tx };
 
     // Find a supported output configuration - prefer 48kHz for easy upsampling from 8kHz
     let supported_configs: Vec<_> = device.supported_output_configs()?.collect();
@@ -528,38 +526,73 @@ async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>>
         sample_rate, channels, sample_format
     );
 
-    // Calculate upsampling ratio from 8kHz
-    let upsample_ratio = sample_rate as f64 / 8000.0;
+    // Create rubato resampler: 8kHz -> output rate
+    // Use FftFixedIn which is efficient and high quality
+    let resampler = FftFixedIn::<f32>::new(8000, sample_rate as usize, 160, 2, 1)
+        .map_err(|e| format!("Failed to create resampler: {}", e))?;
 
-    // Build the output stream with upsampling - use f32 which is most universally supported
+    // Shared state between capture thread and audio callback
+    let resampler = Arc::new(Mutex::new(resampler));
+    let resampled_buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // Create channel for sending samples from capture to resampler
+    let (tx, rx) = mpsc::channel::<Vec<i16>>();
+    let sink = CpalSink { tx };
+
+    // Clone for the resampling thread
+    let resampler_clone = Arc::clone(&resampler);
+    let buffer_clone = Arc::clone(&resampled_buffer);
+
+    // Spawn a thread to handle resampling (rubato isn't real-time safe in audio callback)
+    std::thread::spawn(move || {
+        let mut input_buffer: Vec<f32> = Vec::new();
+
+        while let Ok(samples) = rx.recv() {
+            // Convert i16 to f32 and accumulate
+            for sample in samples {
+                input_buffer.push(sample as f32 / 32768.0);
+            }
+
+            // Process when we have enough samples (160 = one frame at 8kHz)
+            let mut resampler = resampler_clone.lock().unwrap();
+            while input_buffer.len() >= 160 {
+                let chunk: Vec<f32> = input_buffer.drain(..160).collect();
+                let input = vec![chunk];
+
+                if let Ok(output) = resampler.process(&input, None) {
+                    if !output.is_empty() {
+                        let mut buffer = buffer_clone.lock().unwrap();
+                        buffer.extend_from_slice(&output[0]);
+                    }
+                }
+            }
+        }
+    });
+
+    let buffer_for_callback = Arc::clone(&resampled_buffer);
+
+    // Build the output stream
     let stream = device.build_output_stream(
         &config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            // Try to get samples from the channel and upsample
+            let mut buffer = buffer_for_callback.lock().unwrap();
+            let samples_per_channel = data.len() / channels;
+            let available = buffer.len().min(samples_per_channel);
+
             let mut idx = 0;
-            while idx < data.len() {
-                if let Ok(samples) = rx.try_recv() {
-                    // Upsample: repeat each sample to match output rate
-                    for sample in samples {
-                        // Convert i16 to f32 (-1.0 to 1.0)
-                        let sample_f32 = sample as f32 / 32768.0;
-                        let repeat_count = upsample_ratio.round() as usize;
-                        for _ in 0..repeat_count {
-                            if idx < data.len() {
-                                data[idx] = sample_f32;
-                                idx += 1;
-                                // For stereo, duplicate to both channels
-                                if channels == 2 && idx < data.len() {
-                                    data[idx] = sample_f32;
-                                    idx += 1;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    break;
+            for i in 0..available {
+                let sample = buffer[i];
+                data[idx] = sample;
+                idx += 1;
+                // For stereo, duplicate to both channels
+                if channels == 2 {
+                    data[idx] = sample;
+                    idx += 1;
                 }
             }
+            // Remove consumed samples
+            buffer.drain(..available);
+
             // Fill remaining with silence
             for sample in &mut data[idx..] {
                 *sample = 0.0;
@@ -835,7 +868,8 @@ async fn capture_wav(core: &mut Core, basename: &str) -> Result<(), Box<dyn std:
                                         std::io::stdout().flush().ok();
                                     }
                                     Ok(false) => {
-                                        // Invalid frame, skip
+                                        print!("\r[SKIP] invalid frame ({} bytes)\r\n", tlv.value.len());
+                                        std::io::stdout().flush().ok();
                                     }
                                     Err(e) => {
                                         print!("\r[ERROR] {}\r\n", e);
@@ -983,6 +1017,7 @@ async fn play_wav(
 /// Stream audio from computer microphone to the UI chip speaker.
 async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use rubato::{FftFixedIn, Resampler};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1006,9 +1041,9 @@ async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     println!("Audio input device: {}", device.name()?);
 
     // Create channel for receiving samples from the input callback
-    let (tx, rx) = mpsc::channel::<Vec<i16>>();
+    let (tx, rx) = mpsc::channel::<Vec<f32>>();
 
-    // Find a supported input configuration
+    // Find a supported input configuration - use f32 for rubato compatibility
     let supported_configs: Vec<_> = device.supported_input_configs()?.collect();
     let mut selected_config = None;
 
@@ -1049,23 +1084,26 @@ async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let supported = selected_config.ok_or("No supported audio input configuration found")?;
-    let sample_rate = supported.sample_rate().0;
+    let sample_rate = supported.sample_rate().0 as usize;
     let channels = supported.channels() as usize;
     let config: cpal::StreamConfig = supported.into();
 
     println!("Input format: {}Hz, {} channel(s)", sample_rate, channels);
 
-    // Calculate downsampling ratio to 8kHz
-    let downsample_ratio = sample_rate / 8000;
+    // Create rubato resampler: input rate -> 8kHz
+    // chunk_size chosen to give ~160 output samples (one frame) per process call
+    let input_chunk_size = (sample_rate * 160) / 8000; // e.g., 960 for 48kHz
+    let mut resampler = FftFixedIn::<f32>::new(sample_rate, 8000, input_chunk_size, 2, 1)
+        .map_err(|e| format!("Failed to create resampler: {}", e))?;
 
     // Flag to stop the stream
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = running.clone();
 
-    // Build the input stream
+    // Build the input stream with f32 samples
     let stream = device.build_input_stream(
         &config,
-        move |data: &[i16], _: &cpal::InputCallbackInfo| {
+        move |data: &[f32], _: &cpal::InputCallbackInfo| {
             if running_clone.load(Ordering::Relaxed) {
                 let _ = tx.send(data.to_vec());
             }
@@ -1089,7 +1127,8 @@ async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     const CHUNK_SIZE: usize = 160;
     const CHANNEL_ID: u8 = 0;
 
-    let mut sample_buffer = Vec::new();
+    let mut input_buffer: Vec<f32> = Vec::new();
+    let mut output_buffer: Vec<i16> = Vec::new();
     let mut frame_count = 0u32;
     let mut streaming = false;
 
@@ -1114,22 +1153,35 @@ async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
                     std::io::stdout().flush().ok();
                 }
 
-                // Downsample: take every Nth sample (for stereo, also mix to mono)
-                for (i, chunk) in samples.chunks(channels).enumerate() {
-                    if i % downsample_ratio as usize == 0 {
-                        // Mix stereo to mono if needed, otherwise take the sample
-                        let sample = if channels == 2 {
-                            ((chunk[0] as i32 + chunk[1] as i32) / 2) as i16
-                        } else {
-                            chunk[0]
-                        };
-                        sample_buffer.push(sample);
+                // Mix stereo to mono if needed, accumulate into input buffer
+                for chunk in samples.chunks(channels) {
+                    let sample = if channels == 2 {
+                        (chunk[0] + chunk[1]) / 2.0
+                    } else {
+                        chunk[0]
+                    };
+                    input_buffer.push(sample);
+                }
+
+                // Process through resampler when we have enough samples
+                while input_buffer.len() >= input_chunk_size {
+                    let chunk: Vec<f32> = input_buffer.drain(..input_chunk_size).collect();
+                    let input = vec![chunk];
+
+                    if let Ok(output) = resampler.process(&input, None) {
+                        if !output.is_empty() {
+                            // Convert f32 to i16
+                            for sample in &output[0] {
+                                let s = (*sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                                output_buffer.push(s);
+                            }
+                        }
                     }
                 }
 
                 // Send complete chunks
-                while sample_buffer.len() >= CHUNK_SIZE {
-                    let chunk: Vec<i16> = sample_buffer.drain(..CHUNK_SIZE).collect();
+                while output_buffer.len() >= CHUNK_SIZE {
+                    let chunk: Vec<i16> = output_buffer.drain(..CHUNK_SIZE).collect();
                     let frame = session.create_frame(&chunk, CHANNEL_ID)?;
                     core.ui_send_audio_frame(&frame).await?;
                     frame_count += 1;

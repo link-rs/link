@@ -4,7 +4,7 @@
 //! decrypting them with SFrame, decoding A-law, and outputting PCM samples.
 
 use crate::shared::chunk;
-use crate::shared::sframe::SFrameState;
+use crate::shared::sframe::{self, SFrameState};
 use audio_codec_algorithms::decode_alaw;
 
 /// Trait for audio output sinks.
@@ -66,9 +66,13 @@ impl CaptureSession {
             .extend_from_slice(&buf)
             .map_err(|_| CaptureError::BufferTooSmall)?;
 
-        self.sframe
-            .unprotect(&[], &mut heapless_buf)
-            .map_err(|_| CaptureError::DecryptionFailed)?;
+        // Parse header for debugging before attempting decryption
+        let header_info = sframe::parse_header_info(&heapless_buf)
+            .map(|h| (h.kid, h.ctr));
+
+        if let Err(e) = self.sframe.unprotect(&[], &mut heapless_buf) {
+            return Err(CaptureError::DecryptionFailedDetail(e, header_info));
+        }
 
         // Parse the chunk to extract audio data
         let parsed = chunk::parse_chunk(&heapless_buf).ok_or(CaptureError::InvalidChunk)?;
@@ -96,6 +100,8 @@ pub enum CaptureError {
     BufferTooSmall,
     /// SFrame decryption failed
     DecryptionFailed,
+    /// SFrame decryption failed with detail (error, kid, ctr)
+    DecryptionFailedDetail(crate::shared::sframe::Error, Option<(u64, u64)>),
     /// Invalid chunk format
     InvalidChunk,
 }
@@ -105,6 +111,12 @@ impl core::fmt::Display for CaptureError {
         match self {
             CaptureError::BufferTooSmall => write!(f, "buffer too small"),
             CaptureError::DecryptionFailed => write!(f, "decryption failed"),
+            CaptureError::DecryptionFailedDetail(e, Some((kid, ctr))) => {
+                write!(f, "decryption failed: {:?} (kid={}, ctr={})", e, kid, ctr)
+            }
+            CaptureError::DecryptionFailedDetail(e, None) => {
+                write!(f, "decryption failed: {:?} (no header)", e)
+            }
             CaptureError::InvalidChunk => write!(f, "invalid chunk format"),
         }
     }

@@ -384,6 +384,20 @@ fn encode_header<const N: usize>(kid: u64, ctr: u64, out: &mut Vec<u8, N>) -> Re
     Ok(out.len() - start_len)
 }
 
+/// Parsed SFrame header info (for debugging)
+#[derive(Debug, Clone, Copy)]
+pub struct HeaderInfo {
+    /// Key identifier
+    pub kid: u64,
+    /// Counter value
+    pub ctr: u64,
+}
+
+/// Parse SFrame header to extract KID and CTR (for debugging).
+pub fn parse_header_info(input: &[u8]) -> Option<HeaderInfo> {
+    decode_header(input).ok().map(|h| HeaderInfo { kid: h.kid, ctr: h.ctr })
+}
+
 /// Parsed SFrame header
 #[derive(Debug, Clone, Copy)]
 struct Header {
