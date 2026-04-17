@@ -463,29 +463,95 @@ async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>>
     let (tx, rx) = mpsc::channel::<Vec<i16>>();
     let sink = CpalSink { tx };
 
-    // Configure stream for 8kHz mono i16
-    let config = cpal::StreamConfig {
-        channels: 1,
-        sample_rate: cpal::SampleRate(8000),
-        buffer_size: cpal::BufferSize::Default,
-    };
+    // Find a supported output configuration - prefer 48kHz for easy upsampling from 8kHz
+    let supported_configs: Vec<_> = device.supported_output_configs()?.collect();
+    let mut selected_config = None;
 
-    // Build the output stream
+    // First try to find 48kHz mono
+    for config in &supported_configs {
+        if config.channels() == 1
+            && config.min_sample_rate().0 <= 48000
+            && config.max_sample_rate().0 >= 48000
+        {
+            selected_config = Some(config.clone().with_sample_rate(cpal::SampleRate(48000)));
+            break;
+        }
+    }
+
+    // Fall back to any mono config at 48kHz or 44.1kHz
+    if selected_config.is_none() {
+        for config in &supported_configs {
+            if config.channels() == 1 {
+                let rate = if config.min_sample_rate().0 <= 48000
+                    && config.max_sample_rate().0 >= 48000
+                {
+                    48000
+                } else if config.min_sample_rate().0 <= 44100 && config.max_sample_rate().0 >= 44100
+                {
+                    44100
+                } else {
+                    config.max_sample_rate().0
+                };
+                selected_config = Some(config.clone().with_sample_rate(cpal::SampleRate(rate)));
+                break;
+            }
+        }
+    }
+
+    // Fall back to stereo if no mono available
+    if selected_config.is_none() {
+        for config in &supported_configs {
+            if config.channels() == 2 {
+                let rate = if config.min_sample_rate().0 <= 48000
+                    && config.max_sample_rate().0 >= 48000
+                {
+                    48000
+                } else if config.min_sample_rate().0 <= 44100 && config.max_sample_rate().0 >= 44100
+                {
+                    44100
+                } else {
+                    config.max_sample_rate().0
+                };
+                selected_config = Some(config.clone().with_sample_rate(cpal::SampleRate(rate)));
+                break;
+            }
+        }
+    }
+
+    let supported = selected_config.ok_or("No supported audio output configuration found")?;
+    let sample_rate = supported.sample_rate().0;
+    let channels = supported.channels() as usize;
+    let config: cpal::StreamConfig = supported.into();
+
+    println!("Output format: {}Hz, {} channel(s)", sample_rate, channels);
+
+    // Calculate upsampling ratio from 8kHz
+    let upsample_ratio = sample_rate as f64 / 8000.0;
+
+    // Build the output stream with upsampling
     let stream = device.build_output_stream(
         &config,
         move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-            // Try to get samples from the channel
+            // Try to get samples from the channel and upsample
             let mut idx = 0;
             while idx < data.len() {
                 if let Ok(samples) = rx.try_recv() {
+                    // Upsample: repeat each sample to match output rate
                     for sample in samples {
-                        if idx < data.len() {
-                            data[idx] = sample;
-                            idx += 1;
+                        let repeat_count = upsample_ratio.round() as usize;
+                        for _ in 0..repeat_count {
+                            if idx < data.len() {
+                                data[idx] = sample;
+                                idx += 1;
+                                // For stereo, duplicate to both channels
+                                if channels == 2 && idx < data.len() {
+                                    data[idx] = sample;
+                                    idx += 1;
+                                }
+                            }
                         }
                     }
                 } else {
-                    // No more samples, fill rest with silence
                     break;
                 }
             }
@@ -913,12 +979,55 @@ async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     // Create channel for receiving samples from the input callback
     let (tx, rx) = mpsc::channel::<Vec<i16>>();
 
-    // Configure stream for 8kHz mono i16
-    let config = cpal::StreamConfig {
-        channels: 1,
-        sample_rate: cpal::SampleRate(8000),
-        buffer_size: cpal::BufferSize::Default,
-    };
+    // Find a supported input configuration
+    let supported_configs: Vec<_> = device.supported_input_configs()?.collect();
+    let mut selected_config = None;
+
+    // First try to find mono config at 48kHz or 44.1kHz
+    for config in &supported_configs {
+        if config.channels() == 1 {
+            let rate = if config.min_sample_rate().0 <= 48000 && config.max_sample_rate().0 >= 48000
+            {
+                48000
+            } else if config.min_sample_rate().0 <= 44100 && config.max_sample_rate().0 >= 44100 {
+                44100
+            } else {
+                config.max_sample_rate().0
+            };
+            selected_config = Some(config.clone().with_sample_rate(cpal::SampleRate(rate)));
+            break;
+        }
+    }
+
+    // Fall back to stereo if no mono available
+    if selected_config.is_none() {
+        for config in &supported_configs {
+            if config.channels() == 2 {
+                let rate = if config.min_sample_rate().0 <= 48000
+                    && config.max_sample_rate().0 >= 48000
+                {
+                    48000
+                } else if config.min_sample_rate().0 <= 44100 && config.max_sample_rate().0 >= 44100
+                {
+                    44100
+                } else {
+                    config.max_sample_rate().0
+                };
+                selected_config = Some(config.clone().with_sample_rate(cpal::SampleRate(rate)));
+                break;
+            }
+        }
+    }
+
+    let supported = selected_config.ok_or("No supported audio input configuration found")?;
+    let sample_rate = supported.sample_rate().0;
+    let channels = supported.channels() as usize;
+    let config: cpal::StreamConfig = supported.into();
+
+    println!("Input format: {}Hz, {} channel(s)", sample_rate, channels);
+
+    // Calculate downsampling ratio to 8kHz
+    let downsample_ratio = sample_rate / 8000;
 
     // Flag to stop the stream
     let running = Arc::new(AtomicBool::new(true));
@@ -976,7 +1085,18 @@ async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
                     std::io::stdout().flush().ok();
                 }
 
-                sample_buffer.extend_from_slice(&samples);
+                // Downsample: take every Nth sample (for stereo, also mix to mono)
+                for (i, chunk) in samples.chunks(channels).enumerate() {
+                    if i % downsample_ratio as usize == 0 {
+                        // Mix stereo to mono if needed, otherwise take the sample
+                        let sample = if channels == 2 {
+                            ((chunk[0] as i32 + chunk[1] as i32) / 2) as i16
+                        } else {
+                            chunk[0]
+                        };
+                        sample_buffer.push(sample);
+                    }
+                }
 
                 // Send complete chunks
                 while sample_buffer.len() >= CHUNK_SIZE {
