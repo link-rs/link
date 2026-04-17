@@ -2,14 +2,14 @@
 
 use super::Core;
 use crate::{
-    GetSetHex, GetSetU8, GetSetU32, LogsAction, LoopbackAction, PinAction, PinLevel, ResetAction,
-    StackAction, UiAction,
+    GetSetHex, GetSetU32, LogsAction, LoopbackAction, PinAction, PinLevel, ResetAction,
+    StackAction, UiAction, VolumeAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
 use link::ctl::flash::FlashPhase;
 use link::protocol_config::timeouts;
-use link::{PinValue, UiLoopbackMode};
+use link::{AdjDirection, PinValue, UiLoopbackMode};
 use std::io::Write;
 use std::time::Duration;
 
@@ -374,14 +374,54 @@ pub async fn handle_ui(
             Ok(())
         }
         UiAction::Volume { action } => match action.unwrap_or_default() {
-            GetSetU8::Get => {
+            VolumeAction::Get => {
                 let volume = core.ui_get_volume().await?;
                 println!("{}", volume);
                 Ok(())
             }
-            GetSetU8::Set { value } => {
+            VolumeAction::Set { value } => {
                 core.ui_set_volume(value).await?;
                 println!("Volume set to {}", value);
+                Ok(())
+            }
+            VolumeAction::Up { amount } => {
+                let volume = core
+                    .ui_adjust_volume(AdjDirection::Up, amount.unwrap_or(1))
+                    .await?;
+                println!("Volume set to {}", volume);
+                Ok(())
+            }
+            VolumeAction::Down { amount } => {
+                let volume = core
+                    .ui_adjust_volume(AdjDirection::Down, amount.unwrap_or(1))
+                    .await?;
+                println!("Volume set to {}", volume);
+                Ok(())
+            }
+        },
+        UiAction::MicPreamp { action } => match action.unwrap_or_default() {
+            VolumeAction::Get => {
+                let preamp = core.ui_get_mic_preamp().await?;
+                println!("{}", preamp);
+                Ok(())
+            }
+            VolumeAction::Set { value } => {
+                core.ui_set_mic_preamp(value).await?;
+                println!("Mic preamp set to {}", value);
+                Ok(())
+            }
+            VolumeAction::Up { amount } => {
+                let preamp = core
+                    .ui_adjust_mic_preamp(AdjDirection::Up, amount.unwrap_or(1))
+                    .await?;
+                println!("Mic preamp set to {}", preamp);
+                Ok(())
+            }
+            VolumeAction::Down { amount } => {
+                let preamp = core
+                    .ui_adjust_mic_preamp(AdjDirection::Down, amount.unwrap_or(1))
+                    .await?;
+                println!("Mic preamp set to {}", preamp);
                 Ok(())
             }
         },
