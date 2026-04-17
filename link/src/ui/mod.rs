@@ -523,6 +523,32 @@ async fn handle_mgmt<M, N, I, D, B>(
             sframe_state.reset(&[0x00; 16], 0);
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
+        CtlToUi::GetVolume => {
+            info!("ui: get volume");
+            let mut eeprom = Eeprom::new(i2c, delay);
+            let Ok(volume) = eeprom.get_volume() else {
+                info!("ui: failed to read volume from EEPROM");
+                return;
+            };
+            let value = volume.to_le_bytes();
+            to_mgmt.must_write_tlv(UiToCtl::Volume, &value).await;
+        }
+        CtlToUi::SetVolume => {
+            info!("ui: set volume");
+            if tlv.value.len() != 2 {
+                info!("ui: invalid volume length: {}", tlv.value.len());
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"length").await;
+                return;
+            }
+            let volume = u16::from_le_bytes([tlv.value[0], tlv.value[1]]);
+            let mut eeprom = Eeprom::new(i2c, delay);
+            if eeprom.set_volume(volume).is_err() {
+                info!("ui: failed to write volume to EEPROM");
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"eeprom").await;
+                return;
+            }
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
+        }
     }
 }
 
