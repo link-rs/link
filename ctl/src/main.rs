@@ -391,8 +391,9 @@ enum AudioAction {
 enum CaptureMode {
     /// Play captured audio to computer speakers (8kHz mono)
     Live,
-    /// Save captured audio to a WAV file (8kHz mono 16-bit)
-    Wav { file: std::path::PathBuf },
+    /// Save captured audio to WAV files (8kHz mono 16-bit)
+    /// Each PTT press creates a new file: basename_001.wav, basename_002.wav, etc.
+    Wav { basename: String },
 }
 
 #[derive(Debug, Clone, Subcommand)]

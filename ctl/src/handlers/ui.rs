@@ -415,7 +415,7 @@ pub async fn handle_audio(
     match action {
         AudioAction::Capture { mode } => match mode {
             CaptureMode::Live => capture_live(core).await,
-            CaptureMode::Wav { file } => capture_wav(core, &file).await,
+            CaptureMode::Wav { basename } => capture_wav(core, &basename).await,
         },
         AudioAction::Play { mode } => match mode {
             PlayMode::Wav { file } => play_wav(core, &file).await,
@@ -699,11 +699,33 @@ impl AudioSink for VecSink {
     }
 }
 
-/// Capture audio from the UI chip and save it to a WAV file.
-async fn capture_wav(
-    core: &mut Core,
-    path: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+/// Save samples to a numbered WAV file.
+fn save_wav_file(
+    basename: &str,
+    file_number: u32,
+    samples: &[i16],
+) -> Result<String, Box<dyn std::error::Error>> {
+    let filename = format!("{}_{:03}.wav", basename, file_number);
+
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 8000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+
+    let mut writer = hound::WavWriter::create(&filename, spec)?;
+    for sample in samples {
+        writer.write_sample(*sample)?;
+    }
+    writer.finalize()?;
+
+    Ok(filename)
+}
+
+/// Capture audio from the UI chip and save to numbered WAV files.
+/// Each PTT press creates a new file: basename_001.wav, basename_002.wav, etc.
+async fn capture_wav(core: &mut Core, basename: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
     let sframe_key = core.get_sframe_key().await?;
@@ -716,16 +738,16 @@ async fn capture_wav(
     // Create capture session
     let mut session = CaptureSession::new(&sframe_key);
 
-    // Create sink to collect samples
+    // Create sink to collect samples for current recording
     let mut sink = VecSink {
         samples: Vec::new(),
     };
 
     println!(
-        "\nCapturing audio to {} (press and hold PTT button to talk)...",
-        path.display()
+        "\nCapturing audio to {}_XXX.wav (press and hold PTT button to talk)...",
+        basename
     );
-    println!("Press ESC to stop and save.\n");
+    println!("Press ESC to stop.\n");
 
     // Set a short timeout for non-blocking reads
     if let Err(e) = core
@@ -743,7 +765,8 @@ async fn capture_wav(
 
     let mut capturing = false;
     let mut frame_count = 0u32;
-    let mut total_samples = 0usize;
+    let mut file_number = 0u32;
+    let mut files_saved = Vec::new();
 
     let result = async {
         loop {
@@ -765,31 +788,49 @@ async fn capture_wav(
                             if !capturing {
                                 capturing = true;
                                 frame_count = 0;
-                                print!("\r[CAPTURING] ");
+                                sink.samples.clear();
+                                file_number += 1;
+                                print!("\r[RECORDING #{}] ", file_number);
                                 std::io::stdout().flush().ok();
                             }
                         }
                         UiToCtl::AudioEnd => {
                             if capturing {
                                 capturing = false;
-                                print!(
-                                    "\r[IDLE] {} frames, {} samples total\r\n",
-                                    frame_count, total_samples
-                                );
+
+                                // Save the recorded audio to a file
+                                if !sink.samples.is_empty() {
+                                    match save_wav_file(basename, file_number, &sink.samples) {
+                                        Ok(filename) => {
+                                            let duration_secs = sink.samples.len() as f64 / 8000.0;
+                                            print!(
+                                                "\r[SAVED] {} ({:.2}s, {} samples)\r\n",
+                                                filename,
+                                                duration_secs,
+                                                sink.samples.len()
+                                            );
+                                            files_saved.push(filename);
+                                        }
+                                        Err(e) => {
+                                            print!("\r[ERROR] Failed to save: {}\r\n", e);
+                                        }
+                                    }
+                                } else {
+                                    print!("\r[IDLE] No audio captured\r\n");
+                                }
                                 std::io::stdout().flush().ok();
                             }
                         }
                         UiToCtl::AudioFrame => {
                             if capturing {
-                                let before = sink.samples.len();
                                 match session.process_frame(&tlv.value, &mut sink) {
                                     Ok(true) => {
                                         frame_count += 1;
-                                        total_samples = sink.samples.len();
                                         print!(
-                                            "\r[CAPTURING] {} frames, {} samples",
+                                            "\r[RECORDING #{}] {} frames, {} samples",
+                                            file_number,
                                             frame_count,
-                                            total_samples - before
+                                            sink.samples.len()
                                         );
                                         std::io::stdout().flush().ok();
                                     }
@@ -844,31 +885,14 @@ async fn capture_wav(
         eprintln!("Warning: couldn't restore timeout: {}", e);
     }
 
-    // Write samples to WAV file
-    let sample_count = sink.samples.len();
-    if sample_count > 0 {
-        println!("Writing {} samples to {}...", sample_count, path.display());
-
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: 8000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-
-        let mut writer = hound::WavWriter::create(path, spec)?;
-        for sample in &sink.samples {
-            writer.write_sample(*sample)?;
-        }
-        writer.finalize()?;
-
-        let duration_secs = sample_count as f64 / 8000.0;
-        println!(
-            "Saved {:.2} seconds of audio ({} samples)",
-            duration_secs, sample_count
-        );
+    // Summary
+    if files_saved.is_empty() {
+        println!("No files saved.");
     } else {
-        println!("No audio captured, file not created.");
+        println!("Saved {} file(s):", files_saved.len());
+        for f in &files_saved {
+            println!("  {}", f);
+        }
     }
 
     result
