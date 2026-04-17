@@ -386,6 +386,8 @@ enum AudioAction {
 enum CaptureMode {
     /// Play captured audio to computer speakers (8kHz mono)
     Live,
+    /// Save captured audio to a WAV file (8kHz mono 16-bit)
+    Wav { file: std::path::PathBuf },
 }
 
 #[derive(Debug, Clone, Subcommand)]

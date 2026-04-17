@@ -416,6 +416,7 @@ async fn handle_audio(
     match action {
         AudioAction::Capture { mode } => match mode {
             CaptureMode::Live => capture_live(core).await,
+            CaptureMode::Wav { file } => capture_wav(core, &file).await,
         },
     }
 }
@@ -608,6 +609,192 @@ async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>>
     }
 
     println!("Capture stopped.");
+
+    result
+}
+
+/// AudioSink that collects samples into a Vec.
+struct VecSink {
+    samples: Vec<i16>,
+}
+
+impl AudioSink for VecSink {
+    fn write_samples(&mut self, samples: &[i16]) {
+        self.samples.extend_from_slice(samples);
+    }
+}
+
+/// Capture audio from the UI chip and save it to a WAV file.
+async fn capture_wav(
+    core: &mut Core,
+    path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Get the SFrame key from UI chip
+    println!("Reading SFrame key from UI chip...");
+    let sframe_key = core.get_sframe_key().await?;
+    println!("SFrame key: {}", hex::encode(&sframe_key));
+
+    // Set audio mode to CTL
+    println!("Setting audio mode to CTL...");
+    core.ui_set_audio_mode(AudioMode::Ctl).await?;
+
+    // Create capture session
+    let mut session = CaptureSession::new(&sframe_key);
+
+    // Create sink to collect samples
+    let mut sink = VecSink {
+        samples: Vec::new(),
+    };
+
+    println!(
+        "\nCapturing audio to {} (press and hold PTT button to talk)...",
+        path.display()
+    );
+    println!("Press ESC to stop and save.\n");
+
+    // Set a short timeout for non-blocking reads
+    if let Err(e) = core
+        .port_mut()
+        .set_timeout(Duration::from_millis(timeouts::MONITOR_MS))
+    {
+        eprintln!("Warning: couldn't set timeout: {}", e);
+    }
+
+    // Use crossterm for ESC detection
+    use crossterm::event::{self, Event, KeyCode, KeyEvent};
+    use crossterm::terminal;
+
+    terminal::enable_raw_mode()?;
+
+    let mut capturing = false;
+    let mut frame_count = 0u32;
+    let mut total_samples = 0usize;
+
+    let result = async {
+        loop {
+            // Check for key press (non-blocking)
+            if event::poll(Duration::from_millis(0))? {
+                if let Event::Key(KeyEvent {
+                    code: KeyCode::Esc, ..
+                }) = event::read()?
+                {
+                    return Ok::<(), Box<dyn std::error::Error>>(());
+                }
+            }
+
+            // Try to read a TLV from UI
+            match core.try_read_tlv_ui().await {
+                Ok(Some(tlv)) => {
+                    match tlv.tlv_type {
+                        UiToCtl::AudioStart => {
+                            if !capturing {
+                                capturing = true;
+                                frame_count = 0;
+                                print!("\r[CAPTURING] ");
+                                std::io::stdout().flush().ok();
+                            }
+                        }
+                        UiToCtl::AudioEnd => {
+                            if capturing {
+                                capturing = false;
+                                print!(
+                                    "\r[IDLE] {} frames, {} samples total\r\n",
+                                    frame_count, total_samples
+                                );
+                                std::io::stdout().flush().ok();
+                            }
+                        }
+                        UiToCtl::AudioFrame => {
+                            if capturing {
+                                let before = sink.samples.len();
+                                match session.process_frame(&tlv.value, &mut sink) {
+                                    Ok(true) => {
+                                        frame_count += 1;
+                                        total_samples = sink.samples.len();
+                                        print!(
+                                            "\r[CAPTURING] {} frames, {} samples",
+                                            frame_count,
+                                            total_samples - before
+                                        );
+                                        std::io::stdout().flush().ok();
+                                    }
+                                    Ok(false) => {
+                                        // Invalid frame, skip
+                                    }
+                                    Err(e) => {
+                                        print!("\r[ERROR] {}\r\n", e);
+                                        std::io::stdout().flush().ok();
+                                    }
+                                }
+                            }
+                        }
+                        UiToCtl::Log => {
+                            // Print log messages
+                            if let Ok(msg) = core::str::from_utf8(&tlv.value) {
+                                print!("\r[UI] {}\r\n", msg);
+                                std::io::stdout().flush().ok();
+                            }
+                        }
+                        _ => {
+                            // Ignore other TLVs
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Timeout, continue
+                }
+                Err(e) => {
+                    if e.is_timeout() {
+                        continue;
+                    }
+                    return Err(format!("Read error: {:?}", e).into());
+                }
+            }
+        }
+    }
+    .await;
+
+    // Cleanup
+    terminal::disable_raw_mode()?;
+
+    // Restore audio mode to NET
+    println!("\nRestoring audio mode to NET...");
+    core.ui_set_audio_mode(AudioMode::Net).await?;
+
+    // Restore timeout
+    if let Err(e) = core
+        .port_mut()
+        .set_timeout(Duration::from_secs(timeouts::NORMAL_SECS))
+    {
+        eprintln!("Warning: couldn't restore timeout: {}", e);
+    }
+
+    // Write samples to WAV file
+    let sample_count = sink.samples.len();
+    if sample_count > 0 {
+        println!("Writing {} samples to {}...", sample_count, path.display());
+
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 8000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+
+        let mut writer = hound::WavWriter::create(path, spec)?;
+        for sample in &sink.samples {
+            writer.write_sample(*sample)?;
+        }
+        writer.finalize()?;
+
+        let duration_secs = sample_count as f64 / 8000.0;
+        println!(
+            "Saved {:.2} seconds of audio ({} samples)",
+            duration_secs, sample_count
+        );
+    } else {
+        println!("No audio captured, file not created.");
+    }
 
     result
 }
