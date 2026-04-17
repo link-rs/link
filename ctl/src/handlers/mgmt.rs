@@ -110,15 +110,6 @@ pub async fn handle_mgmt(
     action: MgmtAction,
     core: &mut Core,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let needs_mgmt_firmware = matches!(
-        &action,
-        MgmtAction::Ping { .. } | MgmtAction::Board | MgmtAction::Stack { .. }
-    );
-
-    if needs_mgmt_firmware && !core.wait_for_mgmt_ready(50).await {
-        return Err("MGMT chip not responding (timed out)".into());
-    }
-
     match action {
         MgmtAction::Ping { data } => {
             println!("Sending MGMT ping with data: {}", data);
