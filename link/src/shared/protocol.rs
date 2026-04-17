@@ -73,6 +73,28 @@ impl core::fmt::Display for UiLoopbackMode {
     }
 }
 
+/// Audio routing mode for the UI chip.
+/// Determines whether audio frames are sent to/from NET or CTL.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum AudioMode {
+    /// Audio routed to/from NET chip (normal operation)
+    #[default]
+    Net = 0,
+    /// Audio routed to/from CTL via MGMT (for capture/playback testing)
+    Ctl = 1,
+}
+
+impl core::fmt::Display for AudioMode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            AudioMode::Net => write!(f, "net"),
+            AudioMode::Ctl => write!(f, "ctl"),
+        }
+    }
+}
+
 /// Loopback mode for the NET chip.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -187,6 +209,12 @@ pub enum CtlToUi {
     GetVolume,
     /// Set output volume (1 byte: u8)
     SetVolume,
+    /// Get audio routing mode (returns AudioMode)
+    GetAudioMode,
+    /// Set audio routing mode (1 byte: AudioMode - 0=Net, 1=Ctl)
+    SetAudioMode,
+    /// Audio frame from CTL to play out (when audio-mode=ctl)
+    AudioFrame,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -208,6 +236,15 @@ pub enum UiToCtl {
     LogsEnabled,
     /// Output volume (1 byte: u8)
     Volume,
+    /// Audio routing mode (1 byte: AudioMode - 0=Net, 1=Ctl)
+    AudioMode,
+    /// Audio capture started (button pressed) - sent when audio-mode=ctl
+    AudioStart,
+    /// Audio capture ended (button released) - sent when audio-mode=ctl
+    AudioEnd,
+    /// Audio frame from UI mic (when audio-mode=ctl)
+    /// Format: [channel_id: u8][sframe_header][encrypted_chunk][auth_tag]
+    AudioFrame,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -274,6 +311,10 @@ pub enum UiToNet {
     /// Audio frame with channel_id prefix + encrypted chunk (hactar format)
     /// Format: [channel_id: u8][sframe_header][encrypted_chunk][auth_tag]
     AudioFrame,
+    /// Audio capture started (button pressed) - NET ignores this
+    AudioStart,
+    /// Audio capture ended (button released) - NET ignores this
+    AudioEnd,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

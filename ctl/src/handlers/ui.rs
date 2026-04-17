@@ -2,14 +2,14 @@
 
 use super::Core;
 use crate::{
-    GetSetHex, GetSetU8, GetSetU32, LogsAction, LoopbackAction, PinAction, PinLevel, ResetAction,
-    StackAction, UiAction,
+    AudioModeAction, GetSetHex, GetSetU8, GetSetU32, LogsAction, LoopbackAction, PinAction,
+    PinLevel, ResetAction, StackAction, UiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
 use link::ctl::flash::FlashPhase;
 use link::protocol_config::timeouts;
-use link::{PinValue, UiLoopbackMode};
+use link::{AudioMode, PinValue, UiLoopbackMode};
 use std::io::Write;
 use std::time::Duration;
 
@@ -382,6 +382,23 @@ pub async fn handle_ui(
             GetSetU8::Set { value } => {
                 core.ui_set_volume(value).await?;
                 println!("Volume set to {}", value);
+                Ok(())
+            }
+        },
+        UiAction::AudioMode { action } => match action.unwrap_or_default() {
+            AudioModeAction::Get => {
+                let mode = core.ui_get_audio_mode().await?;
+                println!("{}", mode);
+                Ok(())
+            }
+            AudioModeAction::Ctl => {
+                core.ui_set_audio_mode(AudioMode::Ctl).await?;
+                println!("Audio mode: ctl");
+                Ok(())
+            }
+            AudioModeAction::Net => {
+                core.ui_set_audio_mode(AudioMode::Net).await?;
+                println!("Audio mode: net");
                 Ok(())
             }
         },

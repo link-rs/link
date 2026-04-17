@@ -199,6 +199,13 @@ enum UiAction {
     /// Clear all stored configuration (EEPROM)
     #[command(name = "clear-storage")]
     ClearStorage,
+
+    /// Get or set the audio routing mode (ctl or net)
+    #[command(name = "audio-mode")]
+    AudioMode {
+        #[command(subcommand)]
+        action: Option<AudioModeAction>,
+    },
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
@@ -347,6 +354,17 @@ enum LoopbackAction {
     Alaw,
     /// SFrame encrypted loopback
     Sframe,
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+enum AudioModeAction {
+    /// Get the current audio routing mode
+    #[default]
+    Get,
+    /// Route audio to/from CTL for capture/playback testing
+    Ctl,
+    /// Route audio to/from NET (normal operation)
+    Net,
 }
 
 #[derive(Debug, Clone, Subcommand)]

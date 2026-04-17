@@ -539,6 +539,8 @@ where
                 None
             }
         }
+        // AudioStart/AudioEnd are ignored by NET (used by CTL for capture timing)
+        UiToNet::AudioStart | UiToNet::AudioEnd => None,
     }
 }
 
