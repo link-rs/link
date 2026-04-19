@@ -34,8 +34,10 @@ impl<'a, I: I2c> Codec<'a, I> {
         delay.delay_ms(100);
         self.configure_dac(true, true, false);
         delay.delay_ms(100);
-        self.enable_i2s();
+        self.configure_i2s_clocks();
         delay.delay_ms(100);
+        // NOTE: Do not enable master mode here. Call enable_master_mode()
+        // AFTER the I2S slave peripheral is initialized.
     }
 
     fn power_on(&mut self, delay: &mut impl DelayNs) {
@@ -112,9 +114,11 @@ impl<'a, I: I2c> Codec<'a, I> {
         });
     }
 
-    fn enable_i2s(&mut self) {
+    fn configure_i2s_clocks(&mut self) {
+        // Configure PLL and clock dividers, but do NOT enable master mode yet.
+        // Master mode should be enabled AFTER the I2S slave peripheral is ready,
+        // so it can properly sync to the clock edges.
         self.regs.modify(&mut self.i2c, |r| {
-            r.set(AudioInterfaceMasterMode(true));
             r.set(AudioWordLength(0b00));
             r.set(AudioFormat(0b10));
             r.set(PllEnable(true));
@@ -130,6 +134,16 @@ impl<'a, I: I2c> Codec<'a, I> {
             r.set(BclkFrequency(0b1100));
             r.set(ClassDSysclkDivider(0b111));
             r.set(AdcAlcSampleRateSelect(0b101));
+        });
+    }
+
+    /// Enable I2S master mode on the codec.
+    ///
+    /// This should be called AFTER the I2S slave peripheral is initialized,
+    /// so the slave is ready to sync when the codec starts driving BCLK/LRCK.
+    pub fn enable_master_mode(&mut self) {
+        self.regs.modify(&mut self.i2c, |r| {
+            r.set(AudioInterfaceMasterMode(true));
         });
     }
 

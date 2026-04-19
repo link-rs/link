@@ -92,15 +92,16 @@ impl<'d> AudioSystem<'d> {
         delay: &mut D,
     ) -> Self {
         // Configure WM8960 codec FIRST (before I2S clocks start)
+        // Configure WM8960 codec (PLL, clocks) but do NOT enable master mode yet
         let mut codec = wm8960::Codec::new(i2c);
         codec.init(delay);
         codec.enable_input(true);
         codec.enable_output(true);
 
-        // Allow codec to stabilize
+        // Allow codec PLL to stabilize
         delay.delay_ms(20);
 
-        // Construct I2S (codec is ready, clocks are stable)
+        // Construct I2S slave peripheral (must be ready BEFORE codec starts driving clocks)
         let mut config = i2s::Config::default();
         config.mode = i2s::Mode::Slave;
         config.standard = i2s::Standard::Philips;
@@ -112,6 +113,9 @@ impl<'d> AudioSystem<'d> {
         let i2s = I2S::new_full_duplex(
             spi, ws, ck, sd_tx, sd_rx, dma_tx, tx_buf, dma_rx, rx_buf, irqs, config,
         );
+
+        // NOW enable codec master mode - I2S slave is ready to sync
+        codec.enable_master_mode();
 
         Self { i2s }
     }
