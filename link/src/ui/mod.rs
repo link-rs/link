@@ -701,6 +701,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
+        let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -711,6 +712,7 @@ mod tests {
             &loopback_mode,
             &logs_enabled,
             &volume,
+            &mic_preamp,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -740,6 +742,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
+        let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -750,6 +753,7 @@ mod tests {
             &loopback_mode,
             &logs_enabled,
             &volume,
+            &mic_preamp,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -785,6 +789,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
+        let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -795,6 +800,7 @@ mod tests {
             &loopback_mode,
             &logs_enabled,
             &volume,
+            &mic_preamp,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -827,6 +833,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
+        let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -837,6 +844,7 @@ mod tests {
             &loopback_mode,
             &logs_enabled,
             &volume,
+            &mic_preamp,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -867,6 +875,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
+        let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -877,6 +886,7 @@ mod tests {
             &loopback_mode,
             &logs_enabled,
             &volume,
+            &mic_preamp,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
@@ -907,6 +917,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
+        let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -917,6 +928,7 @@ mod tests {
             &loopback_mode,
             &logs_enabled,
             &volume,
+            &mic_preamp,
             &mut sframe_state,
             &crate::shared::NoOpBoard,
         )
