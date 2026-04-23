@@ -83,16 +83,16 @@ impl<'d> BoardAudioSystem<'d> {
         i2c: &mut I,
         delay: &mut D,
     ) -> Self {
-        // 1. Configure WM8960 codec FIRST (before I2S clocks start)
+        // 1. Configure WM8960 codec (PLL, clocks) but do NOT enable master mode yet
         let mut codec = wm8960::Codec::new(i2c);
         codec.init(delay);
         codec.enable_input(true);
         codec.enable_output(true);
 
-        // 2. Allow codec to stabilize
+        // 2. Allow codec PLL to stabilize
         delay.delay_ms(20);
 
-        // 3. Construct I2S (codec is ready, clocks are stable)
+        // 3. Construct I2S slave peripheral (must be ready BEFORE codec starts driving clocks)
         let mut config = i2s::Config::default();
         config.mode = i2s::Mode::Slave;
         config.standard = i2s::Standard::Philips;
@@ -104,6 +104,10 @@ impl<'d> BoardAudioSystem<'d> {
         let i2s = I2S::new_full_duplex(
             spi, ws, ck, sd_tx, sd_rx, dma_tx, tx_buf, dma_rx, rx_buf, config,
         );
+
+        // 4. NOW enable codec master mode - I2S slave is ready to sync
+        codec.enable_master_mode();
+        delay.delay_ms(100);
 
         Self { i2s }
     }
@@ -119,6 +123,10 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
     }
 
     async fn start(&mut self) {
+        // Delay before starting I2S - allows codec PLL to stabilize after reset.
+        // Without this, the startup tone may not play consistently on soft reset.
+        // (Hactar has a similar 20ms delay in StartI2S())
+        embassy_time::Timer::after_millis(20).await;
         self.i2s.start();
     }
 

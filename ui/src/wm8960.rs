@@ -39,11 +39,18 @@ impl<'a, I: I2c> Codec<'a, I> {
         delay.delay_ms(100);
         self.configure_dac(true, true, false);
         delay.delay_ms(100);
-        self.enable_i2s();
+        self.configure_i2s_clocks();
         delay.delay_ms(100);
+        // NOTE: Do not enable master mode here. Call enable_master_mode()
+        // AFTER the I2S slave peripheral is initialized.
     }
 
     fn power_on(&mut self, delay: &mut impl DelayNs) {
+        // Small delay to ensure I2C bus is ready after MCU reset.
+        // Without this, the reset command may fail on soft reset,
+        // causing the codec to retain previous gain settings.
+        delay.delay_ms(10);
+
         const RESET_SIGNAL: [u8; 2] = [0x1e, 0x00];
         let _ = self.i2c.write(I2C_ADDR, &RESET_SIGNAL);
 
@@ -56,11 +63,24 @@ impl<'a, I: I2c> Codec<'a, I> {
 
         delay.delay_ms(100);
 
+        // Use fast start-up mode (VMIDSEL=11, 2x5kΩ divider) to quickly charge
+        // the VMID capacitor. This ensures consistent volume on both hard reset
+        // (where VMID cap is discharged) and soft reset (where it's already charged).
+        // Without this, hard reset has lower volume because the 50kΩ divider
+        // charges the cap too slowly.
         self.regs.modify(&mut self.i2c, |r| {
-            r.set(PowerMgmt1VmidSelect(0b01));
+            r.set(PowerMgmt1VmidSelect(0b11)); // Fast start-up mode
         });
 
+        // Wait for VMID to settle with fast divider
         delay.delay_ms(100);
+
+        // Switch to normal mode (2x50kΩ) for lower power consumption
+        self.regs.modify(&mut self.i2c, |r| {
+            r.set(PowerMgmt1VmidSelect(0b01)); // Normal playback/record mode
+        });
+
+        delay.delay_ms(50);
 
         self.regs.modify(&mut self.i2c, |r| {
             r.set(MicrophoneBiasEnable(true));
@@ -84,10 +104,10 @@ impl<'a, I: I2c> Codec<'a, I> {
             r.set(LeftInput2ToNonInverting(true));
             r.set(LeftInputToBoost(true));
             r.set(LeftInputAnalogMute(false));
-            r.set(Linput2Boost(0b000));
+            r.set(Linput2Boost(0b101)); // 0dB (was muted!)
             r.set(LeftBoostGain(0b10));
             r.set(InputPgaVolumeUpdate(true));
-            r.set(LeftPgaVolume(0b01_0111));
+            r.set(LeftPgaVolume(0b11_1001)); // 57 = +25.5dB
         });
     }
 
@@ -117,9 +137,11 @@ impl<'a, I: I2c> Codec<'a, I> {
         });
     }
 
-    fn enable_i2s(&mut self) {
+    fn configure_i2s_clocks(&mut self) {
+        // Configure PLL and clock dividers, but do NOT enable master mode yet.
+        // Master mode should be enabled AFTER the I2S slave peripheral is ready,
+        // so it can properly sync to the clock edges.
         self.regs.modify(&mut self.i2c, |r| {
-            r.set(AudioInterfaceMasterMode(true));
             r.set(AudioWordLength(0b00));
             r.set(AudioFormat(0b10));
             r.set(PllEnable(true));
@@ -135,6 +157,16 @@ impl<'a, I: I2c> Codec<'a, I> {
             r.set(BclkFrequency(0b1100));
             r.set(ClassDSysclkDivider(0b111));
             r.set(AdcAlcSampleRateSelect(0b101));
+        });
+    }
+
+    /// Enable I2S master mode on the codec.
+    ///
+    /// This should be called AFTER the I2S slave peripheral is initialized,
+    /// so the slave is ready to sync when the codec starts driving BCLK/LRCK.
+    pub fn enable_master_mode(&mut self) {
+        self.regs.modify(&mut self.i2c, |r| {
+            r.set(AudioInterfaceMasterMode(true));
         });
     }
 

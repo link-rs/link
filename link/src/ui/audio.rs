@@ -42,10 +42,21 @@ impl Default for StereoFrame {
 impl StereoFrame {
     /// Extract the active input channel and A-law encode.
     pub fn encode(&self) -> Frame {
+        // HACK: Auto-detect which I2S channel has the mic signal.
+        // The WM8960 left ADC output sometimes appears on the "right" I2S
+        // channel due to LRCK polarity differences. Check first 10 samples
+        // to see which channel has signal.
+        let mut sum_even: u32 = 0;
+        let mut sum_odd: u32 = 0;
+        for i in 0..10 {
+            sum_even += (self.0[i * 2] as i16).unsigned_abs() as u32;
+            sum_odd += (self.0[i * 2 + 1] as i16).unsigned_abs() as u32;
+        }
+        let offset = if sum_odd > sum_even { 1 } else { 0 };
+
         let mut encoded = Frame::default();
         for i in 0..ENCODED_FRAME_SIZE {
-            // Left channel (even indices) contains the microphone input
-            let sample = self.0[i * 2] as i16;
+            let sample = self.0[i * 2 + offset] as i16;
             encoded.0[i] = encode_alaw(sample);
         }
         encoded
@@ -54,15 +65,38 @@ impl StereoFrame {
     /// Encode directly into a heapless::Vec buffer.
     /// The buffer is cleared and filled with ENCODED_FRAME_SIZE A-law bytes.
     pub fn encode_into<const N: usize>(&self, buf: &mut heapless::Vec<u8, N>) {
+        // HACK: Auto-detect which I2S channel has the mic signal (see encode())
+        let mut sum_even: u32 = 0;
+        let mut sum_odd: u32 = 0;
+        for i in 0..10 {
+            sum_even += (self.0[i * 2] as i16).unsigned_abs() as u32;
+            sum_odd += (self.0[i * 2 + 1] as i16).unsigned_abs() as u32;
+        }
+        let offset = if sum_odd > sum_even { 1 } else { 0 };
+
         buf.clear();
         for i in 0..ENCODED_FRAME_SIZE {
-            // Left channel (even indices) contains the microphone input
-            // XXX(RLB) Empirically not.  It appears that sometimes low-level timing stuff will
-            // cause this to shift.  If Alaw loopback suddenly goes silent, consider whether
-            // this needs to be changed back.
-            let sample = self.0[i * 2 + 1] as i16;
+            let sample = self.0[i * 2 + offset] as i16;
             let _ = buf.push(encode_alaw(sample));
         }
+    }
+
+    /// Calculate energy of left channel (for debugging).
+    pub fn energy_left(&self) -> u32 {
+        let mut sum: u32 = 0;
+        for i in 0..ENCODED_FRAME_SIZE {
+            sum += (self.0[i * 2] as i16).unsigned_abs() as u32;
+        }
+        sum
+    }
+
+    /// Calculate energy of right channel (for debugging).
+    pub fn energy_right(&self) -> u32 {
+        let mut sum: u32 = 0;
+        for i in 0..ENCODED_FRAME_SIZE {
+            sum += (self.0[i * 2 + 1] as i16).unsigned_abs() as u32;
+        }
+        sum
     }
 
     /// Create from mono samples by duplicating to stereo.

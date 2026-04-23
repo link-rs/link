@@ -80,6 +80,12 @@ enum Command {
         data: String,
     },
 
+    /// Audio capture and playback via UI chip
+    Audio {
+        #[command(subcommand)]
+        action: AudioAction,
+    },
+
     /// Exit the REPL
     Exit,
 }
@@ -206,6 +212,13 @@ enum UiAction {
     /// Clear all stored configuration (EEPROM)
     #[command(name = "clear-storage")]
     ClearStorage,
+
+    /// Get or set the audio routing mode (ctl or net)
+    #[command(name = "audio-mode")]
+    AudioMode {
+        #[command(subcommand)]
+        action: Option<AudioModeAction>,
+    },
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
@@ -369,6 +382,48 @@ enum LoopbackAction {
     Sframe,
 }
 
+#[derive(Debug, Clone, Default, Subcommand)]
+enum AudioModeAction {
+    /// Get the current audio routing mode
+    #[default]
+    Get,
+    /// Route audio to/from CTL for capture/playback testing
+    Ctl,
+    /// Route audio to/from NET (normal operation)
+    Net,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum AudioAction {
+    /// Capture audio from the UI chip
+    Capture {
+        #[command(subcommand)]
+        mode: CaptureMode,
+    },
+    /// Play audio to the UI chip
+    Play {
+        #[command(subcommand)]
+        mode: PlayMode,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum CaptureMode {
+    /// Play captured audio to computer speakers (8kHz mono)
+    Live,
+    /// Save captured audio to WAV files (8kHz mono 16-bit)
+    /// Each PTT press creates a new file: basename_001.wav, basename_002.wav, etc.
+    Wav { basename: String },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum PlayMode {
+    /// Play a WAV file to the device speaker (must be 8kHz mono)
+    Wav { file: std::path::PathBuf },
+    /// Stream from computer microphone to device speaker (8kHz mono)
+    Live,
+}
+
 #[derive(Debug, Clone, Subcommand)]
 enum NetAction {
     /// Send a ping to the NET chip
@@ -510,9 +565,10 @@ async fn try_connect(port_name: &str, baud: u32) -> Option<Core> {
     let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
     core.init_port(delay_ms).await;
 
-    // Set short timeout for hello check
+    // Set timeout for hello check - needs to be long enough for device initialization
+    // (codec init takes ~850ms+ due to VMID capacitor charging and I2S timing)
     core.port_mut()
-        .set_timeout(Duration::from_millis(500))
+        .set_timeout(Duration::from_millis(1500))
         .ok()?;
 
     let challenge: [u8; 4] = rand::rng().random();
@@ -664,6 +720,7 @@ async fn dispatch(cmd: Command, core: &mut Core) -> Result<(), Box<dyn std::erro
             println!("Completed circular ping!");
             Ok(())
         }
+        Command::Audio { action } => handlers::handle_audio(action, core).await,
         Command::Exit => {
             std::process::exit(0);
         }
@@ -755,6 +812,21 @@ fn circular_ping_handler(
     Ok(None)
 }
 
+fn audio_handler(
+    args: ArgMatches,
+    core: &mut Core,
+) -> Result<Option<String>, reedline_repl_rs::Error> {
+    let action = AudioAction::from_arg_matches(&args)
+        .map_err(|e| reedline_repl_rs::Error::UnknownCommand(e.to_string()))?;
+
+    if let Err(e) = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(dispatch(Command::Audio { action }, core))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
+}
+
 fn exit_handler(
     _args: ArgMatches,
     core: &mut Core,
@@ -777,6 +849,7 @@ fn run_repl(core: Core, port_name: &str) -> Result<(), reedline_repl_rs::Error> 
     callbacks.insert("net".to_string(), net_handler);
     callbacks.insert("hello".to_string(), hello_handler);
     callbacks.insert("circular-ping".to_string(), circular_ping_handler);
+    callbacks.insert("audio".to_string(), audio_handler);
     callbacks.insert("exit".to_string(), exit_handler);
 
     let mut repl = Repl::<Core, reedline_repl_rs::Error>::new(core)

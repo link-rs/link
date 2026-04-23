@@ -976,6 +976,69 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(tlv.value[0])
     }
 
+    /// Get UI chip audio routing mode.
+    pub async fn ui_get_audio_mode(&mut self) -> Result<crate::shared::AudioMode, CtlError> {
+        self.write_tlv_ui(CtlToUi::GetAudioMode, &[]).await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::AudioMode {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "AudioMode",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.is_empty() {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "AudioMode value",
+                actual: "empty".to_string(),
+            });
+        }
+        crate::shared::AudioMode::try_from(tlv.value[0]).map_err(|_| CtlError::UnexpectedResponse {
+            expected: "valid AudioMode",
+            actual: format!("{}", tlv.value[0]),
+        })
+    }
+
+    /// Set UI chip audio routing mode.
+    pub async fn ui_set_audio_mode(
+        &mut self,
+        mode: crate::shared::AudioMode,
+    ) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::SetAudioMode, &[mode as u8])
+            .await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Send audio start marker to UI chip.
+    ///
+    /// This signals the start of an audio stream from CTL to UI.
+    /// Fire-and-forget, no acknowledgment expected.
+    pub async fn ui_send_audio_start(&mut self) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::AudioStart, &[]).await
+    }
+
+    /// Send audio end marker to UI chip.
+    ///
+    /// This signals the end of an audio stream from CTL to UI.
+    /// Fire-and-forget, no acknowledgment expected.
+    pub async fn ui_send_audio_end(&mut self) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::AudioEnd, &[]).await
+    }
+
+    /// Send an audio frame to UI chip.
+    ///
+    /// The frame data should be in the format: channel_id (1 byte) + encrypted chunk.
+    /// Fire-and-forget, no acknowledgment expected.
+    pub async fn ui_send_audio_frame(&mut self, frame: &[u8]) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::AudioFrame, frame).await
+    }
+
     /// Set UI chip BOOT0 pin directly.
     pub async fn set_ui_boot0(&mut self, value: crate::shared::PinValue) -> Result<(), CtlError> {
         use crate::shared::Pin;
@@ -1124,6 +1187,46 @@ impl<P: CtlPort> CtlCore<P> {
 
         // Return None to indicate we got data but not a complete Log TLV yet
         // (caller will call us again in the next iteration)
+        Ok(None)
+    }
+
+    /// Try to read any TLV from the UI chip (non-blocking/timeout-aware).
+    ///
+    /// Returns `Ok(Some(tlv))` if a complete TLV was received,
+    /// `Ok(None)` if timeout/no data available,
+    /// or an error for real I/O failures.
+    ///
+    /// Use this for polling scenarios where you expect timeouts.
+    pub async fn try_read_tlv_ui(&mut self) -> Result<Option<Tlv<UiToCtl>>, CtlError> {
+        // First, try to parse a TLV from the existing buffer
+        if let Some(tlv) = Self::try_parse_tlv_from_buffer::<UiToCtl>(&mut self.ui_buffer)? {
+            return Ok(Some(tlv));
+        }
+
+        // Need more data - try to read from wire (returns None on timeout)
+        let Some(tlv) = self.read_tlv::<MgmtToCtl>().await? else {
+            return Ok(None); // Timeout/no data
+        };
+
+        // Append data to appropriate buffer
+        match tlv.tlv_type {
+            MgmtToCtl::FromUi => {
+                let _ = self.ui_buffer.extend_from_slice(&tlv.value);
+            }
+            MgmtToCtl::FromNet => {
+                let _ = self.net_buffer.extend_from_slice(&tlv.value);
+            }
+            _ => {
+                // Skip MGMT-level messages
+            }
+        }
+
+        // Try parsing again after receiving new data
+        if let Some(tlv) = Self::try_parse_tlv_from_buffer::<UiToCtl>(&mut self.ui_buffer)? {
+            return Ok(Some(tlv));
+        }
+
+        // Return None to indicate we got data but not a complete TLV yet
         Ok(None)
     }
 

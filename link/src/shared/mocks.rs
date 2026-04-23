@@ -495,6 +495,65 @@ impl crate::ui::AudioSystem for CapturingAudioStream {
     }
 }
 
+/// Mock audio stream that injects specific mic samples and captures speaker output.
+/// Use this to verify that specific audio samples flow through the system correctly.
+pub struct InjectableAudioStream {
+    /// Queue of stereo frames to inject as mic input (FIFO)
+    inject_frames:
+        std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<crate::ui::StereoFrame>>>,
+    /// Captured stereo frames sent to speaker
+    captured_frames: std::sync::Arc<std::sync::Mutex<Vec<crate::ui::StereoFrame>>>,
+}
+
+impl InjectableAudioStream {
+    pub fn new() -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<crate::ui::StereoFrame>>>,
+        std::sync::Arc<std::sync::Mutex<Vec<crate::ui::StereoFrame>>>,
+    ) {
+        let inject = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            Self {
+                inject_frames: inject.clone(),
+                captured_frames: captured.clone(),
+            },
+            inject,
+            captured,
+        )
+    }
+}
+
+impl crate::ui::AudioSystem for InjectableAudioStream {
+    fn set_input_enabled<I: embedded_hal::i2c::I2c>(&mut self, _i2c: &mut I, _enable: bool) {}
+    fn set_output_enabled<I: embedded_hal::i2c::I2c>(&mut self, _i2c: &mut I, _enable: bool) {}
+
+    async fn start(&mut self) {}
+    async fn stop(&mut self) {}
+
+    async fn read_write(
+        &mut self,
+        tx: &crate::ui::StereoFrame,
+        rx: &mut crate::ui::StereoFrame,
+    ) -> Result<(), crate::ui::AudioError> {
+        // Capture non-silent frames sent to speaker
+        if tx.0.iter().any(|&s| s != 0) {
+            self.captured_frames.lock().unwrap().push(tx.clone());
+        }
+
+        // Simulate audio timing
+        sleep(Duration::from_millis(5)).await;
+
+        // Return injected frame if available, otherwise silence
+        if let Some(frame) = self.inject_frames.lock().unwrap().pop_front() {
+            *rx = frame;
+        } else {
+            *rx = crate::ui::StereoFrame::default();
+        }
+        Ok(())
+    }
+}
+
 // =============================================================================
 // Sync/Async Channel Adapters for Integration Tests
 // =============================================================================

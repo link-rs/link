@@ -29,6 +29,10 @@ pub use ::espflash;
 #[cfg(feature = "ctl")]
 pub mod flash;
 
+// Audio capture (requires ctl feature)
+#[cfg(feature = "ctl")]
+pub mod audio_capture;
+
 // Re-export espflash types for CLI usage
 #[cfg(feature = "ctl")]
 pub use espflash::flasher::{DeviceInfo, FlashSize, SecurityInfo};
