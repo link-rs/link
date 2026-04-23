@@ -305,6 +305,9 @@ mod tests {
 
         // Should fail decryption
         let result = session.process_frame(&frame, &mut sink);
-        assert_eq!(result, Err(CaptureError::DecryptionFailed));
+        assert!(matches!(
+            result,
+            Err(CaptureError::DecryptionFailedDetail(_, Some((0, 0))))
+        ));
     }
 }
