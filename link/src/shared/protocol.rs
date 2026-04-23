@@ -97,6 +97,15 @@ impl core::fmt::Display for NetLoopbackMode {
     }
 }
 
+/// Volume adjustment direction for the UI chip.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum AdjDirection {
+    Down = 0,
+    Up,
+}
+
 /// Pin identifiers for SetPin command.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -169,10 +178,10 @@ pub enum CtlToUi {
     SetVersion,
     GetSFrameKey,
     SetSFrameKey,
-    /// Set loopback mode (1 byte: UiLoopbackMode)
-    SetLoopback,
     /// Get loopback mode
     GetLoopback,
+    /// Set loopback mode (1 byte: UiLoopbackMode)
+    SetLoopback,
     /// Get stack usage information
     GetStackInfo,
     /// Repaint the stack with the paint pattern
@@ -187,6 +196,14 @@ pub enum CtlToUi {
     GetVolume,
     /// Set output volume (1 byte: u8)
     SetVolume,
+    /// Adjust output volume (2 bytes: AdjVolume, amount)
+    AdjVolume,
+    /// Get microphone preamp level (returns 1 byte: u8)
+    GetMicPreamp,
+    /// Set microphone preamp level (1 byte: u8)
+    SetMicPreamp,
+    /// Adjust microphone preamp level (2 bytes: AdjMicPreamp, amount)
+    AdjMicPreamp,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -208,6 +225,8 @@ pub enum UiToCtl {
     LogsEnabled,
     /// Output volume (1 byte: u8)
     Volume,
+    /// Microphone preamp level (1 byte: u8)
+    MicPreamp,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
