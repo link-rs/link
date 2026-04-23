@@ -218,6 +218,14 @@ pub enum CtlToUi {
     GetVolume,
     /// Set output volume (1 byte: u8)
     SetVolume,
+    /// Adjust output volume (2 bytes: AdjVolume, amount)
+    AdjVolume,
+    /// Get microphone preamp level (returns 1 byte: u8)
+    GetMicPreamp,
+    /// Set microphone preamp level (1 byte: u8)
+    SetMicPreamp,
+    /// Adjust microphone preamp level (2 bytes: AdjMicPreamp, amount)
+    AdjMicPreamp,
     /// Get audio routing mode (returns AudioMode)
     GetAudioMode,
     /// Set audio routing mode (1 byte: AudioMode - 0=Net, 1=Ctl)
@@ -228,14 +236,6 @@ pub enum CtlToUi {
     AudioStart,
     /// Audio stream end marker from CTL
     AudioEnd,
-    /// Adjust output volume (2 bytes: AdjVolume, amount)
-    AdjVolume,
-    /// Get microphone preamp level (returns 1 byte: u8)
-    GetMicPreamp,
-    /// Set microphone preamp level (1 byte: u8)
-    SetMicPreamp,
-    /// Adjust microphone preamp level (2 bytes: AdjMicPreamp, amount)
-    AdjMicPreamp,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -257,6 +257,8 @@ pub enum UiToCtl {
     LogsEnabled,
     /// Output volume (1 byte: u8)
     Volume,
+    /// Microphone preamp level (1 byte: u8)
+    MicPreamp,
     /// Audio routing mode (1 byte: AudioMode - 0=Net, 1=Ctl)
     AudioMode,
     /// Audio capture started (button pressed) - sent when audio-mode=ctl
@@ -266,8 +268,6 @@ pub enum UiToCtl {
     /// Audio frame from UI mic (when audio-mode=ctl)
     /// Format: [channel_id: u8][sframe_header][encrypted_chunk][auth_tag]
     AudioFrame,
-    /// Microphone preamp level (1 byte: u8)
-    MicPreamp,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
