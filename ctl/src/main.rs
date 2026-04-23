@@ -156,7 +156,14 @@ enum UiAction {
     /// Get or set the UI output volume
     Volume {
         #[command(subcommand)]
-        action: Option<GetSetU8>,
+        action: Option<VolumeAction>,
+    },
+
+    /// Get or set the UI microphone preamp
+    #[command(name = "mic-preamp")]
+    MicPreamp {
+        #[command(subcommand)]
+        action: Option<VolumeAction>,
     },
 
     /// Set UI BOOT0 pin
@@ -278,6 +285,19 @@ enum GetSetU8 {
     Get,
     /// Set a new value
     Set { value: u8 },
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+enum VolumeAction {
+    /// Get the current value
+    #[default]
+    Get,
+    /// Set a new value
+    Set { value: u8 },
+    /// Increase volume by an optional amount
+    Up { amount: Option<u8> },
+    /// Decrease volume by an optional amount
+    Down { amount: Option<u8> },
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]

@@ -12,8 +12,8 @@ use crate::shared::protocol_config::retries::MAX_TLV_SKIP;
 use crate::shared::timing::reset::ESP32_RESET_HOLD_MS;
 use crate::shared::tlv::{buffer, tunnel};
 use crate::shared::{
-    CtlToMgmt, CtlToNet, CtlToUi, HEADER_SIZE, MAX_VALUE_SIZE, MgmtToCtl, NetLoopbackMode,
-    NetToCtl, SYNC_WORD, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid,
+    AdjDirection, CtlToMgmt, CtlToNet, CtlToUi, HEADER_SIZE, MgmtToCtl, NetLoopbackMode, NetToCtl,
+    SYNC_WORD, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid,
 };
 
 use super::port::CtlPort;
@@ -116,6 +116,7 @@ impl std::error::Error for CtlError {}
 /// chips via the TLV protocol. It works with any type implementing `CtlPort`.
 pub struct CtlCore<P: CtlPort> {
     port: Option<P>,
+    mgmt_buffer: Vec<u8>,
     ui_buffer: Vec<u8>,
     net_buffer: Vec<u8>,
 }
@@ -125,6 +126,7 @@ impl<P: CtlPort> CtlCore<P> {
     pub fn new(port: P) -> Self {
         Self {
             port: Some(port),
+            mgmt_buffer: Vec::new(),
             ui_buffer: Vec::new(),
             net_buffer: Vec::new(),
         }
@@ -183,64 +185,31 @@ impl<P: CtlPort> CtlCore<P> {
     ///
     /// This clears both the internal TLV buffers and the port's read buffer.
     pub fn drain(&mut self) {
+        self.mgmt_buffer.clear();
         self.ui_buffer.clear();
         self.net_buffer.clear();
         self.port_mut().clear_buffer();
     }
 
-    /// Read a TLV from the port, scanning for sync word.
+    /// Read a TLV from the MGMT stream using buffered parsing.
     async fn read_tlv<T: TryFrom<u16>>(&mut self) -> Result<Option<Tlv<T>>, CtlError> {
-        // Scan for sync word byte-by-byte
-        let mut matched = 0usize;
-        let mut buf = [0u8; 1];
-        while matched < SYNC_WORD.len() {
-            let n = match self.port_mut().read(&mut buf).await {
+        loop {
+            if let Some(tlv) = Self::try_parse_tlv_from_buffer::<T>(&mut self.mgmt_buffer)? {
+                return Ok(Some(tlv));
+            }
+
+            let mut chunk = [0u8; 256];
+            let n = match self.port_mut().read(&mut chunk).await {
                 Ok(n) => n,
                 Err(e) if P::is_timeout(&e) => return Ok(None),
                 Err(e) => return Err(CtlError::Port(format!("{:?}", e))),
             };
             if n == 0 {
-                return Ok(None); // EOF
+                return Ok(None);
             }
 
-            if buf[0] == SYNC_WORD[matched] {
-                matched += 1;
-            } else {
-                matched = 0;
-                if buf[0] == SYNC_WORD[0] {
-                    matched = 1;
-                }
-            }
+            let _ = self.mgmt_buffer.extend_from_slice(&chunk[..n]);
         }
-
-        // Read header
-        let mut header = [0u8; HEADER_SIZE];
-        self.port_mut()
-            .read_exact(&mut header)
-            .await
-            .map_err(|e| CtlError::Port(format!("{:?}", e)))?;
-
-        // Decode header
-        let raw_type = u16::from_le_bytes([header[0], header[1]]);
-        let length = u32::from_le_bytes([header[2], header[3], header[4], header[5]]) as usize;
-
-        // Check type first
-        let Ok(tlv_type) = T::try_from(raw_type) else {
-            return Err(CtlError::InvalidType(raw_type));
-        };
-
-        // Read value
-        let mut value = heapless::Vec::<u8, MAX_VALUE_SIZE>::new();
-        if value.resize(length, 0).is_err() {
-            return Err(CtlError::TooLong);
-        }
-
-        self.port_mut()
-            .read_exact(&mut value)
-            .await
-            .map_err(|e| CtlError::Port(format!("{:?}", e)))?;
-
-        Ok(Some(Tlv { tlv_type, value }))
     }
 
     /// Write a TLV to the port with sync word prefix.
@@ -903,16 +872,108 @@ impl<P: CtlPort> CtlCore<P> {
     }
 
     /// Set UI chip output volume.
-    pub async fn ui_set_volume(&mut self, volume: u8) -> Result<(), CtlError> {
+    pub async fn ui_set_volume(&mut self, volume: u8) -> Result<u8, CtlError> {
         self.write_tlv_ui(CtlToUi::SetVolume, &[volume]).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
-        if tlv.tlv_type != UiToCtl::Ack {
+        if tlv.tlv_type != UiToCtl::Volume {
             return Err(CtlError::UnexpectedResponse {
-                expected: "Ack",
+                expected: "Volume",
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        Ok(())
+        if tlv.value.len() != 1 {
+            return Err(CtlError::InvalidLength {
+                expected: 1,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(tlv.value[0])
+    }
+
+    /// Adjust UI chip output volume and return the updated value.
+    pub async fn ui_adjust_volume(
+        &mut self,
+        direction: AdjDirection,
+        amount: u8,
+    ) -> Result<u8, CtlError> {
+        self.write_tlv_ui(CtlToUi::AdjVolume, &[direction as u8, amount])
+            .await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::Volume {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Volume",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 1 {
+            return Err(CtlError::InvalidLength {
+                expected: 1,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(tlv.value[0])
+    }
+
+    /// Get UI chip microphone preamp level.
+    pub async fn ui_get_mic_preamp(&mut self) -> Result<u8, CtlError> {
+        self.write_tlv_ui(CtlToUi::GetMicPreamp, &[]).await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::MicPreamp {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "MicPreamp",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 1 {
+            return Err(CtlError::InvalidLength {
+                expected: 1,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(tlv.value[0])
+    }
+
+    /// Set UI chip microphone preamp level.
+    pub async fn ui_set_mic_preamp(&mut self, preamp: u8) -> Result<u8, CtlError> {
+        self.write_tlv_ui(CtlToUi::SetMicPreamp, &[preamp]).await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::MicPreamp {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "MicPreamp",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 1 {
+            return Err(CtlError::InvalidLength {
+                expected: 1,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(tlv.value[0])
+    }
+
+    /// Adjust UI chip microphone preamp level and return the updated value.
+    pub async fn ui_adjust_mic_preamp(
+        &mut self,
+        direction: AdjDirection,
+        amount: u8,
+    ) -> Result<u8, CtlError> {
+        self.write_tlv_ui(CtlToUi::AdjMicPreamp, &[direction as u8, amount])
+            .await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::MicPreamp {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "MicPreamp",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 1 {
+            return Err(CtlError::InvalidLength {
+                expected: 1,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(tlv.value[0])
     }
 
     /// Get UI chip audio routing mode.

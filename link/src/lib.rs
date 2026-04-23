@@ -52,7 +52,8 @@ pub use shared::wifi::WifiSsid;
 
 // Re-export protocol types
 pub use shared::protocol::{
-    AudioMode, ChannelId, CtlToMgmt, CtlToNet, CtlToUi, MgmtToCtl, NetLoopbackMode, NetToCtl,
+    AdjDirection, AudioMode, ChannelId, CtlToMgmt, CtlToNet, CtlToUi, MgmtToCtl,
+    NetLoopbackMode, NetToCtl,
     NetToUi, Pin, PinValue, StackInfo, UiLoopbackMode, UiToCtl, UiToNet,
 };
 

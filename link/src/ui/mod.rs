@@ -17,8 +17,9 @@ pub use log::{LogMessage, LogSender, MAX_LOG_SIZE};
 
 use crate::info;
 use crate::shared::{
-    AudioMode, Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi, Led, NetToUi, Sender,
-    StackMonitor, Tlv, UiLoopbackMode, UiToCtl, UiToNet, WriteTlv, chunk, read_tlv_loop,
+    AdjDirection, AudioMode, Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi, Led,
+    NetToUi, Sender, StackMonitor, Tlv, UiLoopbackMode, UiToCtl, UiToNet, WriteTlv, chunk,
+    read_tlv_loop,
 };
 
 /// Board trait for UI chip.
@@ -118,6 +119,8 @@ where
 
     // Shared audio routing mode (Net or Ctl)
     let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+    // Shared microphone preamp level (TODO: actually configure the audio system)
+    let mic_preamp = AtomicU8::new(255);
 
     // Shared button state - true when any button is pressed
     // This allows audio_task to skip sending frames when no button is held
@@ -149,6 +152,7 @@ where
                         &logs_enabled,
                         &volume,
                         &audio_mode,
+                        &mic_preamp,
                         &mut sframe_state,
                         &playback_channel,
                         &board,
@@ -443,6 +447,7 @@ async fn handle_mgmt<M, N, I, D, B, const PLAYBACK_N: usize>(
     logs_enabled: &AtomicBool,
     volume: &AtomicU8,
     audio_mode: &AtomicU8,
+    mic_preamp: &AtomicU8,
     sframe_state: &mut sframe::SFrameState,
     playback_channel: &Channel<CriticalSectionRawMutex, Frame, PLAYBACK_N>,
     board: &B,
@@ -641,6 +646,76 @@ async fn handle_mgmt<M, N, I, D, B, const PLAYBACK_N: usize>(
             // Audio stream markers from CTL - could be used for UI feedback
             // (e.g., LED indication). For now, silently ignore.
         }
+        CtlToUi::AdjVolume => {
+            if tlv.value.len() != 2 {
+                info!(
+                    "ui: invalid adjust volume payload length: {}",
+                    tlv.value.len()
+                );
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"volume").await;
+                return;
+            }
+
+            let Ok(direction) = AdjDirection::try_from(tlv.value[0]) else {
+                info!("ui: invalid adjust volume direction: {}", tlv.value[0]);
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"volume").await;
+                return;
+            };
+
+            let amount = tlv.value[1];
+            let current = volume.load(Ordering::Relaxed);
+            let next = match direction {
+                AdjDirection::Down => current.saturating_sub(amount),
+                AdjDirection::Up => current.saturating_add(amount),
+            };
+            volume.store(next, Ordering::Relaxed);
+            to_mgmt.must_write_tlv(UiToCtl::Volume, &[next]).await;
+        }
+        CtlToUi::GetMicPreamp => {
+            let preamp = mic_preamp.load(Ordering::Relaxed);
+            info!("ui: get mic preamp = {}", preamp);
+            to_mgmt.must_write_tlv(UiToCtl::MicPreamp, &[preamp]).await;
+        }
+        CtlToUi::SetMicPreamp => {
+            if tlv.value.len() != 1 {
+                info!(
+                    "ui: invalid set mic preamp payload length: {}",
+                    tlv.value.len()
+                );
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"mic-preamp").await;
+                return;
+            }
+
+            let preamp = tlv.value[0];
+            info!("ui: set mic preamp = {}", preamp);
+            mic_preamp.store(preamp, Ordering::Relaxed);
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
+        }
+        CtlToUi::AdjMicPreamp => {
+            if tlv.value.len() != 2 {
+                info!(
+                    "ui: invalid adjust mic preamp payload length: {}",
+                    tlv.value.len()
+                );
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"mic-preamp").await;
+                return;
+            }
+
+            let Ok(direction) = AdjDirection::try_from(tlv.value[0]) else {
+                info!("ui: invalid adjust mic preamp direction: {}", tlv.value[0]);
+                to_mgmt.must_write_tlv(UiToCtl::Error, b"mic-preamp").await;
+                return;
+            };
+
+            let amount = tlv.value[1];
+            let current = mic_preamp.load(Ordering::Relaxed);
+            let next = match direction {
+                AdjDirection::Down => current.saturating_sub(amount),
+                AdjDirection::Up => current.saturating_add(amount),
+            };
+            mic_preamp.store(next, Ordering::Relaxed);
+            to_mgmt.must_write_tlv(UiToCtl::MicPreamp, &[next]).await;
+        }
     }
 }
 
@@ -730,6 +805,7 @@ mod tests {
         let volume = AtomicU8::new(255);
         let audio_mode = AtomicU8::new(AudioMode::Net as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
+        let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -741,6 +817,7 @@ mod tests {
             &logs_enabled,
             &volume,
             &audio_mode,
+            &mic_preamp,
             &mut sframe_state,
             &playback_channel,
             &crate::shared::NoOpBoard,
@@ -773,6 +850,7 @@ mod tests {
         let volume = AtomicU8::new(255);
         let audio_mode = AtomicU8::new(AudioMode::Net as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
+        let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -784,6 +862,7 @@ mod tests {
             &logs_enabled,
             &volume,
             &audio_mode,
+            &mic_preamp,
             &mut sframe_state,
             &playback_channel,
             &crate::shared::NoOpBoard,
@@ -822,6 +901,7 @@ mod tests {
         let volume = AtomicU8::new(255);
         let audio_mode = AtomicU8::new(AudioMode::Net as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
+        let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -833,6 +913,7 @@ mod tests {
             &logs_enabled,
             &volume,
             &audio_mode,
+            &mic_preamp,
             &mut sframe_state,
             &playback_channel,
             &crate::shared::NoOpBoard,
@@ -868,6 +949,7 @@ mod tests {
         let volume = AtomicU8::new(255);
         let audio_mode = AtomicU8::new(AudioMode::Net as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
+        let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -879,6 +961,7 @@ mod tests {
             &logs_enabled,
             &volume,
             &audio_mode,
+            &mic_preamp,
             &mut sframe_state,
             &playback_channel,
             &crate::shared::NoOpBoard,
@@ -912,6 +995,7 @@ mod tests {
         let volume = AtomicU8::new(255);
         let audio_mode = AtomicU8::new(AudioMode::Net as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
+        let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -923,6 +1007,7 @@ mod tests {
             &logs_enabled,
             &volume,
             &audio_mode,
+            &mic_preamp,
             &mut sframe_state,
             &playback_channel,
             &crate::shared::NoOpBoard,
@@ -956,6 +1041,7 @@ mod tests {
         let volume = AtomicU8::new(255);
         let audio_mode = AtomicU8::new(AudioMode::Net as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
+        let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
         handle_mgmt(
             tlv,
@@ -967,6 +1053,7 @@ mod tests {
             &logs_enabled,
             &volume,
             &audio_mode,
+            &mic_preamp,
             &mut sframe_state,
             &playback_channel,
             &crate::shared::NoOpBoard,
