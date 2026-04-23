@@ -545,9 +545,10 @@ async fn try_connect(port_name: &str, baud: u32) -> Option<Core> {
     let delay_ms = |ms| tokio::time::sleep(Duration::from_millis(ms));
     core.init_port(delay_ms).await;
 
-    // Set short timeout for hello check
+    // Set timeout for hello check - needs to be long enough for device initialization
+    // (codec init takes ~850ms+ due to VMID capacitor charging and I2S timing)
     core.port_mut()
-        .set_timeout(Duration::from_millis(500))
+        .set_timeout(Duration::from_millis(1500))
         .ok()?;
 
     let challenge: [u8; 4] = rand::rng().random();

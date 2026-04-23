@@ -107,6 +107,7 @@ impl<'d> BoardAudioSystem<'d> {
 
         // 4. NOW enable codec master mode - I2S slave is ready to sync
         codec.enable_master_mode();
+        delay.delay_ms(100);
 
         Self { i2s }
     }
@@ -122,6 +123,10 @@ impl<'d> AudioSystem for BoardAudioSystem<'d> {
     }
 
     async fn start(&mut self) {
+        // Delay before starting I2S - allows codec PLL to stabilize after reset.
+        // Without this, the startup tone may not play consistently on soft reset.
+        // (Hactar has a similar 20ms delay in StartI2S())
+        embassy_time::Timer::after_millis(20).await;
         self.i2s.start();
     }
 

@@ -245,6 +245,14 @@ where
                     // Alaw loopback: play directly (no encryption)
                     if mode == UiLoopbackMode::Alaw {
                         if let Some(frame) = Frame::from_bytes(&buf) {
+                            // Log energy levels for debugging (every frame during loopback)
+                            tlv_log!(
+                                log_sender,
+                                "L={} R={} enc={}",
+                                rx_stereo.energy_left(),
+                                rx_stereo.energy_right(),
+                                frame.energy()
+                            );
                             playback_channel.send(frame).await;
                         }
                         break 'audio;

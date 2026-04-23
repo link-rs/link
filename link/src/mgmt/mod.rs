@@ -216,7 +216,7 @@ where
 
     // UI and NET chips are held in reset at boot (RST low).
     // Wait for MGMT clocks to stabilize, then release them to boot.
-    delay.delay_ms(50).await;
+    delay.delay_ms(100).await;
     info!("mgmt: releasing UI and NET from reset");
     let _ = ui_reset_pins.rst.set_high();
     let _ = net_reset_pins.rst.set_high();
