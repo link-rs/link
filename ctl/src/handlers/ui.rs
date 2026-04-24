@@ -481,6 +481,15 @@ async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>>
     use rubato::{FftFixedIn, Resampler};
     use std::sync::{Arc, Mutex};
 
+    println!("Pinging ui until its ready");
+    match ping_ui_until_pong(core).await {
+        Ok(()) => {}
+        Err(err) => {
+            println!("Failed to ping ui");
+            return Err(err);
+        }
+    }
+
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
     let sframe_key = core.get_sframe_key().await?;
@@ -1042,6 +1051,15 @@ async fn play_wav(
         samples.len()
     );
 
+    println!("Pinging ui until its ready");
+    match ping_ui_until_pong(core).await {
+        Ok(()) => {}
+        Err(err) => {
+            println!("Failed to ping ui");
+            return Err(err);
+        }
+    }
+
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
     let sframe_key = core.get_sframe_key().await?;
@@ -1097,6 +1115,15 @@ async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     use rubato::{FftFixedIn, Resampler};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    println!("Pinging ui until its ready");
+    match ping_ui_until_pong(core).await {
+        Ok(()) => {}
+        Err(err) => {
+            println!("Failed to ping ui");
+            return Err(err);
+        }
+    }
 
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
