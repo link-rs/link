@@ -796,9 +796,43 @@ fn save_wav_file(
     Ok(filename)
 }
 
+async fn ping_ui_until_pong(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
+    let original_timeout = core.port_mut().timeout();
+    let ping_data = b"hello";
+
+    // Need to wait for net to stop dumping logs
+    core.port_mut().set_timeout(Duration::from_millis(1000))?;
+
+    for _ in 0..10 {
+        match core.ui_ping(ping_data).await {
+            Ok(()) => {
+                core.port_mut().set_timeout(original_timeout)?;
+                return Ok(());
+            }
+            Err(err) => {
+                println!("Ping failed {err}");
+                continue;
+            }
+        }
+    }
+
+    core.port_mut().set_timeout(original_timeout)?;
+    Err("Ui did not respond to ping after 10 attempts".into())
+}
+
 /// Capture audio from the UI chip and save to numbered WAV files.
 /// Each PTT press creates a new file: basename_001.wav, basename_002.wav, etc.
 async fn capture_wav(core: &mut Core, basename: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Ping the ui until it responds or times out.
+    println!("Pinging ui until its ready");
+    match ping_ui_until_pong(core).await {
+        Ok(()) => {}
+        Err(err) => {
+            println!("Failed to ping ui");
+            return Err(err);
+        }
+    }
+
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
     let sframe_key = core.get_sframe_key().await?;
