@@ -416,7 +416,7 @@ impl<P: CtlPort> CtlCore<P> {
         let _ = self.port_mut().write_rts(false).await;
         delay_ms(50).await;
         let _ = self.port_mut().write_dtr(false).await;
-        delay_ms(100).await;
+        delay_ms(200).await;
     }
 
     /// Send Hello handshake to detect if a valid device is connected.
