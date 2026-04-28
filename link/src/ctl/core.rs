@@ -661,6 +661,25 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
+    pub async fn ping_ui_until_pong(&mut self) -> Result<(), CtlError> {
+        let ping_data = b"hello";
+        // Need to wait for net to stop dumping logs
+        for i in 0..10 {
+            println!("Pinging UI until Pong {}/10", i + 1);
+            match self.ui_ping(ping_data).await {
+                Ok(()) => {
+                    return Ok(());
+                }
+                Err(err) => {
+                    println!("Ping failed {err}");
+                    continue;
+                }
+            }
+        }
+
+        Err(CtlError::Timeout)
+    }
+
     /// Get the version stored in UI chip EEPROM.
     pub async fn get_version(&mut self) -> Result<u32, CtlError> {
         self.write_tlv_ui(CtlToUi::GetVersion, &[]).await?;

@@ -481,14 +481,8 @@ async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>>
     use rubato::{FftFixedIn, Resampler};
     use std::sync::{Arc, Mutex};
 
-    println!("Pinging ui until its ready");
-    match ping_ui_until_pong(core).await {
-        Ok(()) => {}
-        Err(err) => {
-            println!("Failed to ping ui");
-            return Err(err);
-        }
-    }
+    // Ping the ui until it responds or times out.
+    core.ping_ui_until_pong().await?;
 
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
@@ -805,42 +799,11 @@ fn save_wav_file(
     Ok(filename)
 }
 
-async fn ping_ui_until_pong(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
-    let original_timeout = core.port_mut().timeout();
-    let ping_data = b"hello";
-
-    // Need to wait for net to stop dumping logs
-    core.port_mut().set_timeout(Duration::from_millis(1000))?;
-
-    for _ in 0..10 {
-        match core.ui_ping(ping_data).await {
-            Ok(()) => {
-                core.port_mut().set_timeout(original_timeout)?;
-                return Ok(());
-            }
-            Err(err) => {
-                println!("Ping failed {err}");
-                continue;
-            }
-        }
-    }
-
-    core.port_mut().set_timeout(original_timeout)?;
-    Err("Ui did not respond to ping after 10 attempts".into())
-}
-
 /// Capture audio from the UI chip and save to numbered WAV files.
 /// Each PTT press creates a new file: basename_001.wav, basename_002.wav, etc.
 async fn capture_wav(core: &mut Core, basename: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Ping the ui until it responds or times out.
-    println!("Pinging ui until its ready");
-    match ping_ui_until_pong(core).await {
-        Ok(()) => {}
-        Err(err) => {
-            println!("Failed to ping ui");
-            return Err(err);
-        }
-    }
+    core.ping_ui_until_pong().await?;
 
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
@@ -1051,14 +1014,8 @@ async fn play_wav(
         samples.len()
     );
 
-    println!("Pinging ui until its ready");
-    match ping_ui_until_pong(core).await {
-        Ok(()) => {}
-        Err(err) => {
-            println!("Failed to ping ui");
-            return Err(err);
-        }
-    }
+    // Ping the ui until it responds or times out.
+    core.ping_ui_until_pong().await?;
 
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
@@ -1116,14 +1073,8 @@ async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    println!("Pinging ui until its ready");
-    match ping_ui_until_pong(core).await {
-        Ok(()) => {}
-        Err(err) => {
-            println!("Failed to ping ui");
-            return Err(err);
-        }
-    }
+    // Ping the ui until it responds or times out.
+    core.ping_ui_until_pong().await?;
 
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
