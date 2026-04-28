@@ -416,7 +416,7 @@ impl<P: CtlPort> CtlCore<P> {
         let _ = self.port_mut().write_rts(false).await;
         delay_ms(50).await;
         let _ = self.port_mut().write_dtr(false).await;
-        delay_ms(100).await;
+        delay_ms(200).await;
     }
 
     /// Send Hello handshake to detect if a valid device is connected.
@@ -659,6 +659,25 @@ impl<P: CtlPort> CtlCore<P> {
             return Err(CtlError::DataMismatch);
         }
         Ok(())
+    }
+
+    pub async fn ping_ui_until_pong(&mut self) -> Result<(), CtlError> {
+        let ping_data = b"hello";
+        // Need to wait for net to stop dumping logs
+        for i in 0..10 {
+            println!("Pinging UI until Pong {}/10", i + 1);
+            match self.ui_ping(ping_data).await {
+                Ok(()) => {
+                    return Ok(());
+                }
+                Err(err) => {
+                    println!("Ping failed {err}");
+                    continue;
+                }
+            }
+        }
+
+        Err(CtlError::Timeout)
     }
 
     /// Get the version stored in UI chip EEPROM.
