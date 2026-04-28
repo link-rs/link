@@ -83,7 +83,8 @@ pub enum AudioMode {
     #[default]
     Net = 0,
     /// Audio routed to/from CTL via MGMT (for capture/playback testing)
-    Ctl = 1,
+    Ctl,
+    Both,
 }
 
 impl core::fmt::Display for AudioMode {
@@ -91,6 +92,7 @@ impl core::fmt::Display for AudioMode {
         match self {
             AudioMode::Net => write!(f, "net"),
             AudioMode::Ctl => write!(f, "ctl"),
+            AudioMode::Both => write!(f, "both"),
         }
     }
 }
