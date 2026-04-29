@@ -481,6 +481,9 @@ async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>>
     use rubato::{FftFixedIn, Resampler};
     use std::sync::{Arc, Mutex};
 
+    // Ping the ui until it responds or times out.
+    core.ping_ui_until_pong().await?;
+
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
     let sframe_key = core.get_sframe_key().await?;
@@ -799,6 +802,9 @@ fn save_wav_file(
 /// Capture audio from the UI chip and save to numbered WAV files.
 /// Each PTT press creates a new file: basename_001.wav, basename_002.wav, etc.
 async fn capture_wav(core: &mut Core, basename: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Ping the ui until it responds or times out.
+    core.ping_ui_until_pong().await?;
+
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
     let sframe_key = core.get_sframe_key().await?;
@@ -1008,6 +1014,9 @@ async fn play_wav(
         samples.len()
     );
 
+    // Ping the ui until it responds or times out.
+    core.ping_ui_until_pong().await?;
+
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
     let sframe_key = core.get_sframe_key().await?;
@@ -1063,6 +1072,9 @@ async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     use rubato::{FftFixedIn, Resampler};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    // Ping the ui until it responds or times out.
+    core.ping_ui_until_pong().await?;
 
     // Get the SFrame key from UI chip
     println!("Reading SFrame key from UI chip...");
