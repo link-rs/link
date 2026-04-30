@@ -86,6 +86,13 @@ enum Command {
         action: AudioAction,
     },
 
+    /// Monitor UI and NET logs together
+    Monitor {
+        /// Reset both chips before monitoring
+        #[arg(long)]
+        reset: bool,
+    },
+
     /// Exit the REPL
     Exit,
 }
@@ -721,6 +728,7 @@ async fn dispatch(cmd: Command, core: &mut Core) -> Result<(), Box<dyn std::erro
             Ok(())
         }
         Command::Audio { action } => handlers::handle_audio(action, core).await,
+        Command::Monitor { reset } => handlers::handle_monitor(reset, core).await,
         Command::Exit => {
             std::process::exit(0);
         }
@@ -827,6 +835,20 @@ fn audio_handler(
     Ok(None)
 }
 
+fn monitor_handler(
+    args: ArgMatches,
+    core: &mut Core,
+) -> Result<Option<String>, reedline_repl_rs::Error> {
+    let reset = args.get_flag("reset");
+
+    if let Err(e) = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(dispatch(Command::Monitor { reset }, core))
+    }) {
+        eprintln!("Error: {}", e);
+    }
+    Ok(None)
+}
+
 fn exit_handler(
     _args: ArgMatches,
     core: &mut Core,
@@ -850,6 +872,7 @@ fn run_repl(core: Core, port_name: &str) -> Result<(), reedline_repl_rs::Error> 
     callbacks.insert("hello".to_string(), hello_handler);
     callbacks.insert("circular-ping".to_string(), circular_ping_handler);
     callbacks.insert("audio".to_string(), audio_handler);
+    callbacks.insert("monitor".to_string(), monitor_handler);
     callbacks.insert("exit".to_string(), exit_handler);
 
     let mut repl = Repl::<Core, reedline_repl_rs::Error>::new(core)
