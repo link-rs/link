@@ -17,9 +17,9 @@ pub use log::{LogMessage, LogSender, MAX_LOG_SIZE};
 
 use crate::info;
 use crate::shared::{
-    AdjDirection, AudioTransmitMode, Channel, ChannelId, Color, CriticalSectionRawMutex,
-    CtlToUi, Led, NetToUi, Sender, StackMonitor, Tlv, UiAudioReceivedPath, UiLoopbackMode,
-    UiToCtl, UiToNet, WriteTlv, chunk, read_tlv_loop,
+    AdjDirection, AudioTransmitMode, Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi,
+    Led, NetToUi, Sender, StackMonitor, Tlv, UiAudioReceivedPath, UiLoopbackMode, UiToCtl, UiToNet,
+    WriteTlv, chunk, read_tlv_loop,
 };
 
 /// Board trait for UI chip.
@@ -327,8 +327,9 @@ where
                     }
 
                     // Route based on audio mode
-                    let audio_routing = AudioTransmitMode::try_from(audio_mode.load(Ordering::Relaxed))
-                        .unwrap_or(AudioTransmitMode::Net);
+                    let audio_routing =
+                        AudioTransmitMode::try_from(audio_mode.load(Ordering::Relaxed))
+                            .unwrap_or(AudioTransmitMode::Net);
                     let channel_id_byte = [channel_id as u8];
 
                     if audio_routing == AudioTransmitMode::Ctl {
@@ -625,7 +626,9 @@ async fn handle_mgmt<M, N, I, D, B, const PLAYBACK_N: usize>(
         CtlToUi::GetAudioTransmitMode => {
             info!("ui: get audio transmit mode");
             let mode = audio_mode.load(Ordering::Relaxed);
-            to_mgmt.must_write_tlv(UiToCtl::AudioTransmitMode, &[mode]).await;
+            to_mgmt
+                .must_write_tlv(UiToCtl::AudioTransmitMode, &[mode])
+                .await;
         }
         CtlToUi::SetAudioTransmitMode => {
             let mode_byte = tlv.value.first().copied().unwrap_or(0);
