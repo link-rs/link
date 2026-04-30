@@ -2,8 +2,9 @@
 
 use super::Core;
 use crate::{
-    AudioAction, AudioModeAction, CaptureMode, GetSetHex, GetSetU32, LogsAction, LoopbackAction,
-    MonitorTarget, PinAction, PinLevel, PlayMode, ResetAction, StackAction, UiAction, VolumeAction,
+    AudioAction, AudioReceivedPathAction, AudioTransmitModeAction, CaptureMode,
+    CaptureTransmitMode, GetSetHex, GetSetU32, LogsAction, LoopbackAction, MonitorTarget,
+    PinAction, PinLevel, PlayMode, ResetAction, StackAction, UiAction, VolumeAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
@@ -11,7 +12,9 @@ use link::ctl::audio_capture::{AudioSink, CaptureSession, PlaybackSession};
 use link::ctl::flash::FlashPhase;
 use link::ctl::{MonitorEvent, escape_non_ascii};
 use link::protocol_config::timeouts;
-use link::{AdjDirection, AudioMode, PinValue, UiLoopbackMode, UiToCtl};
+use link::{
+    AdjDirection, AudioTransmitMode, PinValue, UiAudioReceivedPath, UiLoopbackMode, UiToCtl,
+};
 use std::io::Write;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -358,20 +361,53 @@ pub async fn handle_ui(
                 Ok(())
             }
         },
-        UiAction::AudioMode { action } => match action.unwrap_or_default() {
-            AudioModeAction::Get => {
-                let mode = core.ui_get_audio_mode().await?;
+        UiAction::AudioTransmitMode { action } => match action.unwrap_or_default() {
+            AudioTransmitModeAction::Get => {
+                let mode = core.ui_get_audio_transmit_mode().await?;
                 println!("{}", mode);
                 Ok(())
             }
-            AudioModeAction::Ctl => {
-                core.ui_set_audio_mode(AudioMode::Ctl).await?;
-                println!("Audio mode: ctl");
+            AudioTransmitModeAction::Ctl => {
+                core.ui_set_audio_transmit_mode(AudioTransmitMode::Ctl)
+                    .await?;
+                println!("Audio transmit mode: ctl");
                 Ok(())
             }
-            AudioModeAction::Net => {
-                core.ui_set_audio_mode(AudioMode::Net).await?;
-                println!("Audio mode: net");
+            AudioTransmitModeAction::Net => {
+                core.ui_set_audio_transmit_mode(AudioTransmitMode::Net)
+                    .await?;
+                println!("Audio transmit mode: net");
+                Ok(())
+            }
+        },
+        UiAction::AudioReceivedPath { action } => match action.unwrap_or_default() {
+            AudioReceivedPathAction::Get => {
+                let path = core.ui_get_audio_received_path().await?;
+                println!("{}", path);
+                Ok(())
+            }
+            AudioReceivedPathAction::None => {
+                core.ui_set_audio_received_path(UiAudioReceivedPath::None)
+                    .await?;
+                println!("Audio received path: none");
+                Ok(())
+            }
+            AudioReceivedPathAction::Headphones => {
+                core.ui_set_audio_received_path(UiAudioReceivedPath::Headphones)
+                    .await?;
+                println!("Audio received path: headphones");
+                Ok(())
+            }
+            AudioReceivedPathAction::Ctl => {
+                core.ui_set_audio_received_path(UiAudioReceivedPath::Ctl)
+                    .await?;
+                println!("Audio received path: ctl");
+                Ok(())
+            }
+            AudioReceivedPathAction::Both => {
+                core.ui_set_audio_received_path(UiAudioReceivedPath::Both)
+                    .await?;
+                println!("Audio received path: both");
                 Ok(())
             }
         },
@@ -500,13 +536,23 @@ pub async fn handle_audio(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         AudioAction::Capture { mode } => match mode {
-            CaptureMode::Live => capture_live(core).await,
-            CaptureMode::Wav { basename } => capture_wav(core, &basename).await,
+            CaptureMode::Live { transmit_mode } => capture_live(core, transmit_mode).await,
+            CaptureMode::Wav {
+                basename,
+                transmit_mode,
+            } => capture_wav(core, &basename, transmit_mode).await,
         },
         AudioAction::Play { mode } => match mode {
             PlayMode::Wav { file } => play_wav(core, &file).await,
             PlayMode::Live => play_live(core).await,
         },
+    }
+}
+
+fn ui_transmit_mode(mode: CaptureTransmitMode) -> AudioTransmitMode {
+    match mode {
+        CaptureTransmitMode::Ctl => AudioTransmitMode::Ctl,
+        CaptureTransmitMode::Both => AudioTransmitMode::Both,
     }
 }
 
@@ -522,7 +568,10 @@ impl AudioSink for CpalSink {
 }
 
 /// Capture audio from the UI chip and play it through the computer speakers.
-async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
+async fn capture_live(
+    core: &mut Core,
+    transmit_mode: CaptureTransmitMode,
+) -> Result<(), Box<dyn std::error::Error>> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use rubato::{FftFixedIn, Resampler};
     use std::sync::{Arc, Mutex};
@@ -535,9 +584,9 @@ async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>>
     let sframe_key = core.get_sframe_key().await?;
     println!("SFrame key: {}", hex::encode(&sframe_key));
 
-    // Set audio mode to CTL
-    println!("Setting audio mode to CTL...");
-    core.ui_set_audio_mode(AudioMode::Ctl).await?;
+    let transmit_mode = ui_transmit_mode(transmit_mode);
+    println!("Setting audio transmit mode to {}...", transmit_mode);
+    core.ui_set_audio_transmit_mode(transmit_mode).await?;
 
     // Create capture session
     let mut session = CaptureSession::new(&sframe_key);
@@ -763,6 +812,22 @@ async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>>
                                 }
                             }
                         }
+                        UiToCtl::AudioFrameUnprotected => {
+                            if capturing {
+                                match session.process_unprotected_frame(&tlv.value, &mut sink) {
+                                    Ok(true) => {
+                                        frame_count += 1;
+                                        print!("\r[CAPTURING] {} frames", frame_count);
+                                        std::io::stdout().flush().ok();
+                                    }
+                                    Ok(false) => {}
+                                    Err(e) => {
+                                        print!("\r[ERROR] {}\r\n", e);
+                                        std::io::stdout().flush().ok();
+                                    }
+                                }
+                            }
+                        }
                         UiToCtl::Log => {
                             // Print log messages
                             if let Ok(msg) = core::str::from_utf8(&tlv.value) {
@@ -793,9 +858,10 @@ async fn capture_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>>
     terminal::disable_raw_mode()?;
     drop(stream);
 
-    // Restore audio mode to NET
-    println!("\nRestoring audio mode to NET...");
-    core.ui_set_audio_mode(AudioMode::Net).await?;
+    // Restore audio transmit mode to NET
+    println!("\nRestoring audio transmit mode to NET...");
+    core.ui_set_audio_transmit_mode(AudioTransmitMode::Net)
+        .await?;
 
     // Restore timeout
     if let Err(e) = core
@@ -847,7 +913,11 @@ fn save_wav_file(
 
 /// Capture audio from the UI chip and save to numbered WAV files.
 /// Each PTT press creates a new file: basename_001.wav, basename_002.wav, etc.
-async fn capture_wav(core: &mut Core, basename: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn capture_wav(
+    core: &mut Core,
+    basename: &str,
+    transmit_mode: CaptureTransmitMode,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Ping the ui until it responds or times out.
     core.ping_ui_until_pong().await?;
 
@@ -856,9 +926,9 @@ async fn capture_wav(core: &mut Core, basename: &str) -> Result<(), Box<dyn std:
     let sframe_key = core.get_sframe_key().await?;
     println!("SFrame key: {}", hex::encode(&sframe_key));
 
-    // Set audio mode to CTL
-    println!("Setting audio mode to CTL...");
-    core.ui_set_audio_mode(AudioMode::Ctl).await?;
+    let transmit_mode = ui_transmit_mode(transmit_mode);
+    println!("Setting audio transmit mode to {}...", transmit_mode);
+    core.ui_set_audio_transmit_mode(transmit_mode).await?;
 
     // Create capture session
     let mut session = CaptureSession::new(&sframe_key);
@@ -973,6 +1043,33 @@ async fn capture_wav(core: &mut Core, basename: &str) -> Result<(), Box<dyn std:
                                 }
                             }
                         }
+                        UiToCtl::AudioFrameUnprotected => {
+                            if capturing {
+                                match session.process_unprotected_frame(&tlv.value, &mut sink) {
+                                    Ok(true) => {
+                                        frame_count += 1;
+                                        print!(
+                                            "\r[RECORDING #{}] {} frames, {} samples",
+                                            file_number,
+                                            frame_count,
+                                            sink.samples.len()
+                                        );
+                                        std::io::stdout().flush().ok();
+                                    }
+                                    Ok(false) => {
+                                        print!(
+                                            "\r[SKIP] invalid frame ({} bytes)\r\n",
+                                            tlv.value.len()
+                                        );
+                                        std::io::stdout().flush().ok();
+                                    }
+                                    Err(e) => {
+                                        print!("\r[ERROR] {}\r\n", e);
+                                        std::io::stdout().flush().ok();
+                                    }
+                                }
+                            }
+                        }
                         UiToCtl::Log => {
                             // Print log messages
                             if let Ok(msg) = core::str::from_utf8(&tlv.value) {
@@ -1002,9 +1099,10 @@ async fn capture_wav(core: &mut Core, basename: &str) -> Result<(), Box<dyn std:
     // Cleanup
     terminal::disable_raw_mode()?;
 
-    // Restore audio mode to NET
-    println!("\nRestoring audio mode to NET...");
-    core.ui_set_audio_mode(AudioMode::Net).await?;
+    // Restore audio transmit mode to NET
+    println!("\nRestoring audio transmit mode to NET...");
+    core.ui_set_audio_transmit_mode(AudioTransmitMode::Net)
+        .await?;
 
     // Restore timeout
     if let Err(e) = core
@@ -1068,9 +1166,10 @@ async fn play_wav(
     let sframe_key = core.get_sframe_key().await?;
     println!("SFrame key: {}", hex::encode(&sframe_key));
 
-    // Set audio mode to CTL
-    println!("Setting audio mode to CTL...");
-    core.ui_set_audio_mode(AudioMode::Ctl).await?;
+    // Set audio transmit mode to CTL
+    println!("Setting audio transmit mode to CTL...");
+    core.ui_set_audio_transmit_mode(AudioTransmitMode::Ctl)
+        .await?;
 
     // Create playback session
     let mut session = PlaybackSession::new(&sframe_key);
@@ -1105,8 +1204,9 @@ async fn play_wav(
     // Send audio end
     core.ui_send_audio_end().await?;
 
-    println!("\n\nRestoring audio mode to NET...");
-    core.ui_set_audio_mode(AudioMode::Net).await?;
+    println!("\n\nRestoring audio transmit mode to NET...");
+    core.ui_set_audio_transmit_mode(AudioTransmitMode::Net)
+        .await?;
 
     println!("Playback complete.");
     Ok(())
@@ -1127,9 +1227,10 @@ async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
     let sframe_key = core.get_sframe_key().await?;
     println!("SFrame key: {}", hex::encode(&sframe_key));
 
-    // Set audio mode to CTL
-    println!("Setting audio mode to CTL...");
-    core.ui_set_audio_mode(AudioMode::Ctl).await?;
+    // Set audio transmit mode to CTL
+    println!("Setting audio transmit mode to CTL...");
+    core.ui_set_audio_transmit_mode(AudioTransmitMode::Ctl)
+        .await?;
 
     // Create playback session
     let mut session = PlaybackSession::new(&sframe_key);
@@ -1309,9 +1410,10 @@ async fn play_live(core: &mut Core) -> Result<(), Box<dyn std::error::Error>> {
         core.ui_send_audio_end().await?;
     }
 
-    // Restore audio mode to NET
-    println!("\n\nRestoring audio mode to NET...");
-    core.ui_set_audio_mode(AudioMode::Net).await?;
+    // Restore audio transmit mode to NET
+    println!("\n\nRestoring audio transmit mode to NET...");
+    core.ui_set_audio_transmit_mode(AudioTransmitMode::Net)
+        .await?;
 
     println!("Streaming stopped. {} frames sent.", frame_count);
 

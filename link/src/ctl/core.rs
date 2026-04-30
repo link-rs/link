@@ -13,7 +13,7 @@ use crate::shared::timing::reset::ESP32_RESET_HOLD_MS;
 use crate::shared::tlv::{buffer, tunnel};
 use crate::shared::{
     AdjDirection, CtlToMgmt, CtlToNet, CtlToUi, HEADER_SIZE, MgmtToCtl, NetLoopbackMode, NetToCtl,
-    SYNC_WORD, StackInfo, Tlv, UiLoopbackMode, UiToCtl, WifiSsid,
+    SYNC_WORD, StackInfo, Tlv, UiAudioReceivedPath, UiLoopbackMode, UiToCtl, WifiSsid,
 };
 
 use super::port::CtlPort;
@@ -1000,34 +1000,77 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(tlv.value[0])
     }
 
-    /// Get UI chip audio routing mode.
-    pub async fn ui_get_audio_mode(&mut self) -> Result<crate::shared::AudioMode, CtlError> {
-        self.write_tlv_ui(CtlToUi::GetAudioMode, &[]).await?;
+    /// Get UI chip audio transmit mode.
+    pub async fn ui_get_audio_transmit_mode(
+        &mut self,
+    ) -> Result<crate::shared::AudioTransmitMode, CtlError> {
+        self.write_tlv_ui(CtlToUi::GetAudioTransmitMode, &[]).await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
-        if tlv.tlv_type != UiToCtl::AudioMode {
+        if tlv.tlv_type != UiToCtl::AudioTransmitMode {
             return Err(CtlError::UnexpectedResponse {
-                expected: "AudioMode",
+                expected: "AudioTransmitMode",
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
         if tlv.value.is_empty() {
             return Err(CtlError::UnexpectedResponse {
-                expected: "AudioMode value",
+                expected: "AudioTransmitMode value",
                 actual: "empty".to_string(),
             });
         }
-        crate::shared::AudioMode::try_from(tlv.value[0]).map_err(|_| CtlError::UnexpectedResponse {
-            expected: "valid AudioMode",
+        crate::shared::AudioTransmitMode::try_from(tlv.value[0]).map_err(|_| {
+            CtlError::UnexpectedResponse {
+                expected: "valid AudioTransmitMode",
+                actual: format!("{}", tlv.value[0]),
+            }
+        })
+    }
+
+    /// Set UI chip audio transmit mode.
+    pub async fn ui_set_audio_transmit_mode(
+        &mut self,
+        mode: crate::shared::AudioTransmitMode,
+    ) -> Result<(), CtlError> {
+        self.write_tlv_ui(CtlToUi::SetAudioTransmitMode, &[mode as u8])
+            .await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get UI chip received audio output path.
+    pub async fn ui_get_audio_received_path(&mut self) -> Result<UiAudioReceivedPath, CtlError> {
+        self.write_tlv_ui(CtlToUi::GetAudioReceivedPath, &[]).await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type != UiToCtl::AudioReceivedPath {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "AudioReceivedPath",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.is_empty() {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "AudioReceivedPath value",
+                actual: "empty".to_string(),
+            });
+        }
+        UiAudioReceivedPath::try_from(tlv.value[0]).map_err(|_| CtlError::UnexpectedResponse {
+            expected: "valid UiAudioReceivedPath",
             actual: format!("{}", tlv.value[0]),
         })
     }
 
-    /// Set UI chip audio routing mode.
-    pub async fn ui_set_audio_mode(
+    /// Set UI chip received audio output path.
+    pub async fn ui_set_audio_received_path(
         &mut self,
-        mode: crate::shared::AudioMode,
+        path: UiAudioReceivedPath,
     ) -> Result<(), CtlError> {
-        self.write_tlv_ui(CtlToUi::SetAudioMode, &[mode as u8])
+        self.write_tlv_ui(CtlToUi::SetAudioReceivedPath, &[path as u8])
             .await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
         if tlv.tlv_type != UiToCtl::Ack {
