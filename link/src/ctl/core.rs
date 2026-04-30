@@ -1650,9 +1650,29 @@ impl<P: CtlPort> CtlCore<P> {
 }
 
 /// Escape non-ASCII bytes as `\xAB` while passing ASCII through.
+///
+/// ANSI escape sequences are preserved so terminal color output from logs still renders.
 pub fn escape_non_ascii(bytes: &[u8]) -> String {
     let mut out = String::new();
-    for &b in bytes {
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let start = i;
+            i += 2;
+            while i < bytes.len() {
+                let next = bytes[i];
+                i += 1;
+                if (0x40..=0x7E).contains(&next) {
+                    break;
+                }
+            }
+            for &ansi_byte in &bytes[start..i] {
+                out.push(ansi_byte as char);
+            }
+            continue;
+        }
+
         if b.is_ascii() && !b.is_ascii_control() {
             out.push(b as char);
         } else if b == b'\n' {
@@ -1664,6 +1684,24 @@ pub fn escape_non_ascii(bytes: &[u8]) -> String {
         } else {
             out.push_str(&format!("\\x{:02X}", b));
         }
+        i += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_non_ascii;
+
+    #[test]
+    fn escape_non_ascii_preserves_ansi_sequences() {
+        let bytes = b"plain \x1B[31mred\x1B[0m text";
+        assert_eq!(escape_non_ascii(bytes), "plain \x1B[31mred\x1B[0m text");
+    }
+
+    #[test]
+    fn escape_non_ascii_escapes_non_ansi_control_bytes() {
+        let bytes = [0x01, b'A', 0x1B, b'X'];
+        assert_eq!(escape_non_ascii(&bytes), "\\x01A\\x1BX");
+    }
 }
