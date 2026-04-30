@@ -9,6 +9,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
 use link::ctl::audio_capture::{AudioSink, CaptureSession, PlaybackSession};
 use link::ctl::flash::FlashPhase;
+use link::ctl::{MonitorEvent, escape_non_ascii};
 use link::protocol_config::timeouts;
 use link::{AdjDirection, AudioMode, PinValue, UiLoopbackMode, UiToCtl};
 use std::io::Write;
@@ -445,6 +446,80 @@ pub async fn handle_ui(
             }
         },
     }
+}
+
+pub async fn handle_monitor(
+    reset: bool,
+    core: &mut Core,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if reset {
+        println!("Resetting UI chip...");
+        let delay = |ms| tokio::time::sleep(Duration::from_millis(ms));
+        core.reset_ui_to_user(delay).await?;
+
+        println!("Resetting NET chip...");
+        let delay = |ms| tokio::time::sleep(Duration::from_millis(ms));
+        core.reset_net_to_user(delay).await?;
+    }
+    println!("Monitoring UI and NET logs (ESC to stop)...\n");
+
+    if let Err(e) = core
+        .port_mut()
+        .set_timeout(Duration::from_millis(timeouts::MONITOR_MS))
+    {
+        eprintln!("Warning: couldn't set timeout: {}", e);
+    }
+
+    use crossterm::event::{self, Event, KeyCode, KeyEvent};
+    use crossterm::terminal;
+
+    terminal::enable_raw_mode()?;
+
+    let result = async {
+        loop {
+            if event::poll(Duration::from_millis(0))? {
+                if let Event::Key(KeyEvent {
+                    code: KeyCode::Esc, ..
+                }) = event::read()?
+                {
+                    return Ok::<(), Box<dyn std::error::Error>>(());
+                }
+            }
+
+            match core.try_read_monitor_event().await {
+                Ok(Some(MonitorEvent::UiLog(msg))) => {
+                    print!("[UI] {}\r\n", msg);
+                    std::io::stdout().flush().ok();
+                }
+                Ok(Some(MonitorEvent::NetData(data))) => {
+                    let text = escape_non_ascii(&data);
+                    print!("[NET] {}", text);
+                    std::io::stdout().flush().ok();
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    if e.is_timeout() {
+                        continue;
+                    }
+                    return Err(format!("Read error: {:?}", e).into());
+                }
+            }
+        }
+    }
+    .await;
+
+    terminal::disable_raw_mode()?;
+
+    if let Err(e) = core
+        .port_mut()
+        .set_timeout(Duration::from_secs(timeouts::NORMAL_SECS))
+    {
+        eprintln!("Warning: couldn't restore timeout: {}", e);
+    }
+
+    println!("\nMonitor stopped.");
+
+    result
 }
 
 /// Handle audio capture and playback commands.
