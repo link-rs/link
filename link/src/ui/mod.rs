@@ -17,9 +17,9 @@ pub use log::{LogMessage, LogSender, MAX_LOG_SIZE};
 
 use crate::info;
 use crate::shared::{
-    AdjDirection, AudioMode, Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi, Led,
-    NetToUi, Sender, StackMonitor, Tlv, UiAudioReceivedPath, UiLoopbackMode, UiToCtl, UiToNet,
-    WriteTlv, chunk, read_tlv_loop,
+    AdjDirection, AudioTransmitMode, Channel, ChannelId, Color, CriticalSectionRawMutex,
+    CtlToUi, Led, NetToUi, Sender, StackMonitor, Tlv, UiAudioReceivedPath, UiLoopbackMode,
+    UiToCtl, UiToNet, WriteTlv, chunk, read_tlv_loop,
 };
 
 /// Board trait for UI chip.
@@ -118,7 +118,7 @@ where
     let volume = AtomicU8::new(255);
 
     // Shared audio routing mode (Net or Ctl)
-    let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+    let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
     // Shared output path for audio received from NET.
     let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
     // Shared microphone preamp level (TODO: actually configure the audio system)
@@ -166,9 +166,9 @@ where
                     // Handle audio frames specially - they need decryption
                     if tlv.tlv_type == NetToUi::AudioFrame {
                         // Drop audio from NET when audio-mode=ctl
-                        let mode = AudioMode::try_from(audio_mode.load(Ordering::Relaxed))
-                            .unwrap_or(AudioMode::Net);
-                        if mode == AudioMode::Ctl {
+                        let mode = AudioTransmitMode::try_from(audio_mode.load(Ordering::Relaxed))
+                            .unwrap_or(AudioTransmitMode::Net);
+                        if mode == AudioTransmitMode::Ctl {
                             continue;
                         }
 
@@ -226,9 +226,9 @@ where
                         button_active.store(true, Ordering::Relaxed);
 
                         // Emit AudioStart to CTL or NET depending on mode
-                        let mode = AudioMode::try_from(audio_mode.load(Ordering::Relaxed))
-                            .unwrap_or(AudioMode::Net);
-                        if mode == AudioMode::Ctl {
+                        let mode = AudioTransmitMode::try_from(audio_mode.load(Ordering::Relaxed))
+                            .unwrap_or(AudioTransmitMode::Net);
+                        if mode == AudioTransmitMode::Ctl {
                             to_mgmt.must_write_tlv(UiToCtl::AudioStart, &[]).await;
                         } else {
                             to_net.must_write_tlv(UiToNet::AudioStart, &[]).await;
@@ -243,9 +243,9 @@ where
                         button_active.store(false, Ordering::Relaxed);
 
                         // Emit AudioEnd to CTL or NET depending on mode
-                        let mode = AudioMode::try_from(audio_mode.load(Ordering::Relaxed))
-                            .unwrap_or(AudioMode::Net);
-                        if mode == AudioMode::Ctl {
+                        let mode = AudioTransmitMode::try_from(audio_mode.load(Ordering::Relaxed))
+                            .unwrap_or(AudioTransmitMode::Net);
+                        if mode == AudioTransmitMode::Ctl {
                             to_mgmt.must_write_tlv(UiToCtl::AudioEnd, &[]).await;
                         } else {
                             to_net.must_write_tlv(UiToNet::AudioEnd, &[]).await;
@@ -327,11 +327,11 @@ where
                     }
 
                     // Route based on audio mode
-                    let audio_routing = AudioMode::try_from(audio_mode.load(Ordering::Relaxed))
-                        .unwrap_or(AudioMode::Net);
+                    let audio_routing = AudioTransmitMode::try_from(audio_mode.load(Ordering::Relaxed))
+                        .unwrap_or(AudioTransmitMode::Net);
                     let channel_id_byte = [channel_id as u8];
 
-                    if audio_routing == AudioMode::Ctl {
+                    if audio_routing == AudioTransmitMode::Ctl {
                         // Send to CTL via MGMT: channel_id (plaintext) + encrypted chunk
                         to_mgmt
                             .must_write_tlv_parts(UiToCtl::AudioFrame, &[&channel_id_byte, &buf])
@@ -622,15 +622,15 @@ async fn handle_mgmt<M, N, I, D, B, const PLAYBACK_N: usize>(
             volume.store(vol, Ordering::Relaxed);
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
-        CtlToUi::GetAudioMode => {
-            info!("ui: get audio mode");
+        CtlToUi::GetAudioTransmitMode => {
+            info!("ui: get audio transmit mode");
             let mode = audio_mode.load(Ordering::Relaxed);
-            to_mgmt.must_write_tlv(UiToCtl::AudioMode, &[mode]).await;
+            to_mgmt.must_write_tlv(UiToCtl::AudioTransmitMode, &[mode]).await;
         }
-        CtlToUi::SetAudioMode => {
+        CtlToUi::SetAudioTransmitMode => {
             let mode_byte = tlv.value.first().copied().unwrap_or(0);
-            let mode = AudioMode::try_from(mode_byte).unwrap_or(AudioMode::Net);
-            info!("ui: set audio mode = {:?}", mode);
+            let mode = AudioTransmitMode::try_from(mode_byte).unwrap_or(AudioTransmitMode::Net);
+            info!("ui: set audio transmit mode = {:?}", mode);
             audio_mode.store(mode as u8, Ordering::Relaxed);
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
@@ -655,9 +655,9 @@ async fn handle_mgmt<M, N, I, D, B, const PLAYBACK_N: usize>(
         }
         CtlToUi::AudioFrame => {
             // Audio frame from CTL - only process when audio-mode=ctl
-            let mode =
-                AudioMode::try_from(audio_mode.load(Ordering::Relaxed)).unwrap_or(AudioMode::Net);
-            if mode != AudioMode::Ctl {
+            let mode = AudioTransmitMode::try_from(audio_mode.load(Ordering::Relaxed))
+                .unwrap_or(AudioTransmitMode::Net);
+            if mode != AudioTransmitMode::Ctl {
                 // Drop audio from CTL when not in ctl mode
                 return;
             }
@@ -847,7 +847,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
         let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
@@ -894,7 +894,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
         let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
@@ -947,7 +947,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
         let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
@@ -997,7 +997,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
         let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
@@ -1045,7 +1045,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
         let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
@@ -1093,7 +1093,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
         let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
@@ -1138,7 +1138,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
         let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Ctl as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
@@ -1185,7 +1185,7 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
         let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
@@ -2206,7 +2206,7 @@ mod audio_streaming_tests {
 
                 // Set audio mode to CTL
                 mgmt_to_ui
-                    .write_tlv(CtlToUi::SetAudioMode, &[AudioMode::Ctl as u8])
+                    .write_tlv(CtlToUi::SetAudioTransmitMode, &[AudioTransmitMode::Ctl as u8])
                     .await
                     .unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2306,7 +2306,7 @@ mod audio_streaming_tests {
 
                 // Explicitly set audio mode to NET (should be default, but be explicit)
                 mgmt_to_ui
-                    .write_tlv(CtlToUi::SetAudioMode, &[AudioMode::Net as u8])
+                    .write_tlv(CtlToUi::SetAudioTransmitMode, &[AudioTransmitMode::Net as u8])
                     .await
                     .unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2401,7 +2401,7 @@ mod audio_streaming_tests {
 
                 // Set audio mode to CTL
                 mgmt_to_ui
-                    .write_tlv(CtlToUi::SetAudioMode, &[AudioMode::Ctl as u8])
+                    .write_tlv(CtlToUi::SetAudioTransmitMode, &[AudioTransmitMode::Ctl as u8])
                     .await
                     .unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2542,7 +2542,7 @@ mod audio_streaming_tests {
 
                 // Set audio mode to CTL
                 mgmt_to_ui
-                    .write_tlv(CtlToUi::SetAudioMode, &[AudioMode::Ctl as u8])
+                    .write_tlv(CtlToUi::SetAudioTransmitMode, &[AudioTransmitMode::Ctl as u8])
                     .await
                     .unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
