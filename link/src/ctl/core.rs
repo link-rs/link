@@ -1004,7 +1004,8 @@ impl<P: CtlPort> CtlCore<P> {
     pub async fn ui_get_audio_transmit_mode(
         &mut self,
     ) -> Result<crate::shared::AudioTransmitMode, CtlError> {
-        self.write_tlv_ui(CtlToUi::GetAudioTransmitMode, &[]).await?;
+        self.write_tlv_ui(CtlToUi::GetAudioTransmitMode, &[])
+            .await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
         if tlv.tlv_type != UiToCtl::AudioTransmitMode {
             return Err(CtlError::UnexpectedResponse {
@@ -1045,7 +1046,8 @@ impl<P: CtlPort> CtlCore<P> {
 
     /// Get UI chip received audio output path.
     pub async fn ui_get_audio_received_path(&mut self) -> Result<UiAudioReceivedPath, CtlError> {
-        self.write_tlv_ui(CtlToUi::GetAudioReceivedPath, &[]).await?;
+        self.write_tlv_ui(CtlToUi::GetAudioReceivedPath, &[])
+            .await?;
         let tlv = self.read_tlv_ui_skip_log().await?;
         if tlv.tlv_type != UiToCtl::AudioReceivedPath {
             return Err(CtlError::UnexpectedResponse {

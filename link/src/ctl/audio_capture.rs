@@ -387,7 +387,10 @@ mod tests {
         let mut sink = MockSink::new();
 
         assert_eq!(session.process_unprotected_frame(&[], &mut sink), Ok(false));
-        assert_eq!(session.process_unprotected_frame(&[0x00], &mut sink), Ok(false));
+        assert_eq!(
+            session.process_unprotected_frame(&[0x00], &mut sink),
+            Ok(false)
+        );
         assert!(matches!(
             session.process_unprotected_frame(&[0x00, 0x01], &mut sink),
             Err(CaptureError::InvalidChunk)
