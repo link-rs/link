@@ -86,15 +86,25 @@ enum Command {
         action: AudioAction,
     },
 
-    /// Monitor UI and NET logs together
+    /// Monitor logs from UI, NET, or both
     Monitor {
-        /// Reset both chips before monitoring
+        #[arg(value_enum, default_value_t = MonitorTarget::Both)]
+        target: MonitorTarget,
+        /// Reset the selected chip or chips before monitoring
         #[arg(long)]
         reset: bool,
     },
 
     /// Exit the REPL
     Exit,
+}
+
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+enum MonitorTarget {
+    Ui,
+    Net,
+    #[default]
+    Both,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -195,13 +205,6 @@ enum UiAction {
     Reset {
         #[command(subcommand)]
         action: Option<ResetAction>,
-    },
-
-    /// Monitor log messages from UI chip
-    Monitor {
-        /// Reset the chip before monitoring
-        #[arg(long)]
-        reset: bool,
     },
 
     /// Stack usage measurement
@@ -492,13 +495,6 @@ enum NetAction {
     /// Erase the NET chip's flash
     Erase,
 
-    /// Monitor data from NET chip (prints FromNet TLVs)
-    Monitor {
-        /// Reset the chip before monitoring
-        #[arg(long)]
-        reset: bool,
-    },
-
     /// Logs enabled control
     Logs {
         #[command(subcommand)]
@@ -728,7 +724,7 @@ async fn dispatch(cmd: Command, core: &mut Core) -> Result<(), Box<dyn std::erro
             Ok(())
         }
         Command::Audio { action } => handlers::handle_audio(action, core).await,
-        Command::Monitor { reset } => handlers::handle_monitor(reset, core).await,
+        Command::Monitor { target, reset } => handlers::handle_monitor(target, reset, core).await,
         Command::Exit => {
             std::process::exit(0);
         }
@@ -839,10 +835,14 @@ fn monitor_handler(
     args: ArgMatches,
     core: &mut Core,
 ) -> Result<Option<String>, reedline_repl_rs::Error> {
+    let target = args
+        .get_one::<MonitorTarget>("target")
+        .copied()
+        .unwrap_or(MonitorTarget::Both);
     let reset = args.get_flag("reset");
 
     if let Err(e) = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(dispatch(Command::Monitor { reset }, core))
+        tokio::runtime::Handle::current().block_on(dispatch(Command::Monitor { target, reset }, core))
     }) {
         eprintln!("Error: {}", e);
     }
