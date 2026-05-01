@@ -12,7 +12,7 @@ pub mod core;
 pub mod port;
 
 // Re-export core types
-pub use self::core::{CtlCore, CtlError, escape_non_ascii};
+pub use self::core::{CtlCore, CtlError, MonitorEvent, escape_non_ascii};
 pub use self::port::CtlPort;
 
 #[cfg(feature = "std")]
