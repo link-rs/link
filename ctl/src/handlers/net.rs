@@ -7,8 +7,7 @@ use crate::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::flash::StdDelay;
-use link::ctl::{ProgressCallbacks, SetTimeout, escape_non_ascii};
-use link::protocol_config::timeouts;
+use link::ctl::ProgressCallbacks;
 use link::{NetLoopbackMode, Pin, PinValue};
 use std::io::Write;
 
@@ -325,79 +324,6 @@ pub async fn handle_net(
                 }
                 Err(e) => Err(format!("Failed to erase flash: {}", e).into()),
             }
-        }
-        NetAction::Monitor { reset } => {
-            if reset {
-                println!("Resetting NET chip...");
-                let delay = |ms| tokio::time::sleep(std::time::Duration::from_millis(ms));
-                core.reset_net_to_user(delay).await?;
-            }
-            println!("Monitoring NET chip (ESC to stop)...\n");
-
-            // Set a short timeout for non-blocking reads
-            if let Err(e) = core
-                .port_mut()
-                .set_timeout(std::time::Duration::from_millis(timeouts::MONITOR_MS))
-            {
-                eprintln!("Warning: couldn't set timeout: {}", e);
-            }
-
-            use crossterm::event::{self, Event, KeyCode, KeyEvent};
-            use crossterm::terminal;
-            use std::io::Write;
-
-            // Enable raw mode to capture ESC
-            terminal::enable_raw_mode()?;
-
-            let result = async {
-                loop {
-                    // Check for key press (non-blocking)
-                    if event::poll(std::time::Duration::from_millis(0))? {
-                        if let Event::Key(KeyEvent {
-                            code: KeyCode::Esc, ..
-                        }) = event::read()?
-                        {
-                            return Ok::<(), Box<dyn std::error::Error>>(());
-                        }
-                    }
-
-                    // Check for TLV data (timeout-aware: returns Ok(None) on timeout)
-                    match core.read_tlv_raw().await {
-                        Ok(Some(tlv)) => {
-                            if tlv.tlv_type == link::MgmtToCtl::FromNet {
-                                let text = escape_non_ascii(&tlv.value);
-                                print!("{}", text);
-                                std::io::stdout().flush().ok();
-                            }
-                        }
-                        Ok(None) => {
-                            // Timeout, continue
-                        }
-                        Err(e) => {
-                            if e.is_timeout() {
-                                continue;
-                            }
-                            return Err(format!("Read error: {:?}", e).into());
-                        }
-                    }
-                }
-            }
-            .await;
-
-            // Always restore terminal mode and timeout
-            terminal::disable_raw_mode()?;
-
-            // Restore timeout to normal
-            if let Err(e) = core
-                .port_mut()
-                .set_timeout(std::time::Duration::from_secs(timeouts::NORMAL_SECS))
-            {
-                eprintln!("Warning: couldn't restore timeout: {}", e);
-            }
-
-            println!("\nMonitor stopped.");
-
-            result
         }
         NetAction::Logs { action } => match action.unwrap_or_default() {
             LogsAction::Get => {
