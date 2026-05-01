@@ -3,8 +3,7 @@
 use super::Core;
 use crate::{
     AudioAction, AudioModeAction, CaptureMode, GetSetHex, GetSetU32, LogsAction, LoopbackAction,
-    MonitorTarget, PinAction, PinLevel, PlayMode, ResetAction, StackAction, UiAction,
-    VolumeAction,
+    MonitorTarget, PinAction, PinLevel, PlayMode, ResetAction, StackAction, UiAction, VolumeAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
