@@ -6,8 +6,8 @@ use crate::{
     ResetAction, WifiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use link::ctl::flash::StdDelay;
 use link::ctl::ProgressCallbacks;
+use link::ctl::flash::StdDelay;
 use link::{NetLoopbackMode, Pin, PinValue};
 use std::io::Write;
 

@@ -842,7 +842,8 @@ fn monitor_handler(
     let reset = args.get_flag("reset");
 
     if let Err(e) = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(dispatch(Command::Monitor { target, reset }, core))
+        tokio::runtime::Handle::current()
+            .block_on(dispatch(Command::Monitor { target, reset }, core))
     }) {
         eprintln!("Error: {}", e);
     }
