@@ -62,6 +62,11 @@ pub enum CtlError {
     Timeout,
 }
 
+pub enum MonitorEvent {
+    UiLog(String),
+    NetData(Vec<u8>),
+}
+
 impl core::fmt::Display for CtlError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -1207,6 +1212,36 @@ impl<P: CtlPort> CtlCore<P> {
         // Return None to indicate we got data but not a complete Log TLV yet
         // (caller will call us again in the next iteration)
         Ok(None)
+    }
+
+    /// Try to read either a UI log line or raw NET data for monitor mode.
+    pub async fn try_read_monitor_event(&mut self) -> Result<Option<MonitorEvent>, CtlError> {
+        loop {
+            if let Some(tlv) = Self::try_parse_tlv_from_buffer::<UiToCtl>(&mut self.ui_buffer)? {
+                if tlv.tlv_type == UiToCtl::Log {
+                    let msg = match core::str::from_utf8(&tlv.value) {
+                        Ok(msg) => msg.into(),
+                        Err(_) => format!("<invalid utf8: {:?}>", tlv.value.as_slice()),
+                    };
+                    return Ok(Some(MonitorEvent::UiLog(msg)));
+                }
+                continue;
+            }
+
+            let Some(tlv) = self.read_tlv::<MgmtToCtl>().await? else {
+                return Ok(None);
+            };
+
+            match tlv.tlv_type {
+                MgmtToCtl::FromUi => {
+                    let _ = self.ui_buffer.extend_from_slice(&tlv.value);
+                }
+                MgmtToCtl::FromNet => {
+                    return Ok(Some(MonitorEvent::NetData(tlv.value.to_vec())));
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Try to read any TLV from the UI chip (non-blocking/timeout-aware).
