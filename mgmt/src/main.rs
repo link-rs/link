@@ -271,23 +271,29 @@ async fn run_ev17(p: embassy_stm32::Peripherals) -> ! {
     );
 
     // EV17 board updates:
+    // - UI_NRST is PB3
+    // - UI_STAT is PA0
+    // - NET_STAT is PA1
+    // - LED A: R=PA4, G=PA6, B=PA7
+    // - NET_BOOT is PB5
+    // - NET_NRST is PB4
     // - PB0 is BATTERY_MON (ADC input)
     // - PC14 is MGMT_DEBUG1 (output)
     // - PB15 is NC (floating)
 
-    // EV17 LED A: R=PB5, G=PB4, B=PB1
+    // EV17 LED A: R=PA4, G=PA6, B=PA7
     let led_a = (
-        Output::new(p.PB5, Level::Low, Speed::Low),
-        Output::new(p.PB4, Level::Low, Speed::Low),
-        Output::new(p.PB1, Level::Low, Speed::Low),
+        Output::new(p.PA4, Level::Low, Speed::Low),
+        Output::new(p.PA6, Level::Low, Speed::Low),
+        Output::new(p.PA7, Level::Low, Speed::Low),
     );
 
     // LED B no longer exists on EV17
     let led_b = (NoopOutputPin, NoopOutputPin, NoopOutputPin);
 
-    // EV17 NET reset: BOOT=PB6, RST=PC13
-    let net_boot = Output::new(p.PB6, Level::High, Speed::Low);
-    let net_rst = Output::new(p.PC13, Level::Low, Speed::Low);
+    // EV17 NET reset: BOOT=PB5, RST=PB4
+    let net_boot = Output::new(p.PB5, Level::High, Speed::Low);
+    let net_rst = Output::new(p.PB4, Level::Low, Speed::Low);
     let net_reset_pins = link::mgmt::NetResetPins::new(net_boot, net_rst);
 
     link::mgmt::run(
