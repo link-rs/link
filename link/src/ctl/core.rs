@@ -217,6 +217,30 @@ impl<P: CtlPort> CtlCore<P> {
         }
     }
 
+    /// Read a TLV from the MGMT stream while tolerating malformed packets.
+    ///
+    /// Invalid TLV types and oversized packets are skipped byte-by-byte until a
+    /// valid sync word and packet are found.
+    async fn read_tlv_lossy<T: TryFrom<u16>>(&mut self) -> Result<Option<Tlv<T>>, CtlError> {
+        loop {
+            if let Some(tlv) = Self::try_parse_tlv_from_buffer_lossy::<T>(&mut self.mgmt_buffer)? {
+                return Ok(Some(tlv));
+            }
+
+            let mut chunk = [0u8; 256];
+            let n = match self.port_mut().read(&mut chunk).await {
+                Ok(n) => n,
+                Err(e) if P::is_timeout(&e) => return Ok(None),
+                Err(e) => return Err(CtlError::Port(format!("{:?}", e))),
+            };
+            if n == 0 {
+                return Ok(None);
+            }
+
+            let _ = self.mgmt_buffer.extend_from_slice(&chunk[..n]);
+        }
+    }
+
     /// Write a TLV to the port with sync word prefix.
     async fn write_tlv<T: Into<u16> + Copy>(
         &mut self,
@@ -400,6 +424,42 @@ impl<P: CtlPort> CtlCore<P> {
                 buffer.copy_within(1.., 0);
                 buffer.truncate(buffer.len() - 1);
                 Ok(None)
+            }
+        }
+    }
+
+    /// Try to parse a TLV from a stream buffer while tolerating malformed data.
+    fn try_parse_tlv_from_buffer_lossy<T: TryFrom<u16>>(
+        buffer: &mut Vec<u8>,
+    ) -> Result<Option<Tlv<T>>, CtlError> {
+        loop {
+            match buffer::try_parse_from_buffer(buffer) {
+                Ok(Some((tlv, consumed))) => {
+                    buffer.copy_within(consumed.., 0);
+                    buffer.truncate(buffer.len() - consumed);
+                    return Ok(Some(tlv));
+                }
+                Ok(None) => {
+                    if let Some(sync_pos) = buffer::find_sync_word(buffer) {
+                        if sync_pos > 0 {
+                            buffer.copy_within(sync_pos.., 0);
+                            buffer.truncate(buffer.len() - sync_pos);
+                        }
+                    } else {
+                        let keep = buffer.len().min(SYNC_WORD.len() - 1);
+                        let start = buffer.len() - keep;
+                        buffer.copy_within(start.., 0);
+                        buffer.truncate(keep);
+                    }
+                    return Ok(None);
+                }
+                Err(buffer::ParseError::InvalidType(_)) | Err(buffer::ParseError::TooLong) => {
+                    if buffer.is_empty() {
+                        return Ok(None);
+                    }
+                    buffer.copy_within(1.., 0);
+                    buffer.truncate(buffer.len() - 1);
+                }
             }
         }
     }
@@ -644,6 +704,11 @@ impl<P: CtlPort> CtlCore<P> {
     /// Read a raw TLV from the MGMT connection.
     pub async fn read_tlv_raw(&mut self) -> Result<Option<Tlv<MgmtToCtl>>, CtlError> {
         self.read_tlv().await
+    }
+
+    /// Read a raw TLV from the MGMT connection, skipping malformed packets.
+    pub async fn read_tlv_raw_lossy(&mut self) -> Result<Option<Tlv<MgmtToCtl>>, CtlError> {
+        self.read_tlv_lossy().await
     }
 
     // ========================================================================
@@ -1224,7 +1289,7 @@ impl<P: CtlPort> CtlCore<P> {
     /// Use this for polling scenarios where you expect timeouts.
     pub async fn try_read_ui_log(&mut self) -> Result<Option<String>, CtlError> {
         // First, try to parse a TLV from the existing buffer
-        if let Some(tlv) = Self::try_parse_tlv_from_buffer::<UiToCtl>(&mut self.ui_buffer)? {
+        if let Some(tlv) = Self::try_parse_tlv_from_buffer_lossy::<UiToCtl>(&mut self.ui_buffer)? {
             if tlv.tlv_type == UiToCtl::Log {
                 match core::str::from_utf8(&tlv.value) {
                     Ok(msg) => return Ok(Some(msg.into())),
@@ -1237,7 +1302,7 @@ impl<P: CtlPort> CtlCore<P> {
         }
 
         // Need more data - try to read from wire (returns None on timeout)
-        let Some(tlv) = self.read_tlv::<MgmtToCtl>().await? else {
+        let Some(tlv) = self.read_tlv_lossy::<MgmtToCtl>().await? else {
             return Ok(None); // Timeout/no data
         };
 
@@ -1262,7 +1327,9 @@ impl<P: CtlPort> CtlCore<P> {
     /// Try to read either a UI log line or raw NET data for monitor mode.
     pub async fn try_read_monitor_event(&mut self) -> Result<Option<MonitorEvent>, CtlError> {
         loop {
-            if let Some(tlv) = Self::try_parse_tlv_from_buffer::<UiToCtl>(&mut self.ui_buffer)? {
+            if let Some(tlv) =
+                Self::try_parse_tlv_from_buffer_lossy::<UiToCtl>(&mut self.ui_buffer)?
+            {
                 if tlv.tlv_type == UiToCtl::Log {
                     let msg = match core::str::from_utf8(&tlv.value) {
                         Ok(msg) => msg.into(),
@@ -1273,7 +1340,7 @@ impl<P: CtlPort> CtlCore<P> {
                 continue;
             }
 
-            let Some(tlv) = self.read_tlv::<MgmtToCtl>().await? else {
+            let Some(tlv) = self.read_tlv_lossy::<MgmtToCtl>().await? else {
                 return Ok(None);
             };
 

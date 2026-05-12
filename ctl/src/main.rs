@@ -414,6 +414,15 @@ enum AudioTransmitModeAction {
 enum CaptureTransmitMode {
     #[default]
     Ctl,
+    Net,
+    Both,
+}
+
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+enum CaptureReceiveMode {
+    Ctl,
+    #[default]
+    Headphones,
     Both,
 }
 
@@ -452,13 +461,17 @@ enum CaptureMode {
     Live {
         #[arg(long, value_enum, default_value_t)]
         transmit_mode: CaptureTransmitMode,
+        #[arg(long, value_enum, default_value_t)]
+        receive_mode: CaptureReceiveMode,
     },
     /// Save captured audio to WAV files (8kHz mono 16-bit)
     /// Each PTT press creates a new file: basename_001.wav, basename_002.wav, etc.
     Wav {
-        basename: String,
         #[arg(long, value_enum, default_value_t)]
         transmit_mode: CaptureTransmitMode,
+        #[arg(long, value_enum, default_value_t)]
+        receive_mode: CaptureReceiveMode,
+        basename: String,
     },
 }
 

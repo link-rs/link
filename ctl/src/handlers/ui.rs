@@ -2,7 +2,7 @@
 
 use super::Core;
 use crate::{
-    AudioAction, AudioReceivedPathAction, AudioTransmitModeAction, CaptureMode,
+    AudioAction, AudioReceivedPathAction, AudioTransmitModeAction, CaptureMode, CaptureReceiveMode,
     CaptureTransmitMode, GetSetHex, GetSetU32, LogsAction, LoopbackAction, MonitorTarget,
     PinAction, PinLevel, PlayMode, ResetAction, StackAction, UiAction, VolumeAction,
 };
@@ -13,7 +13,8 @@ use link::ctl::flash::FlashPhase;
 use link::ctl::{MonitorEvent, escape_non_ascii};
 use link::protocol_config::timeouts;
 use link::{
-    AdjDirection, AudioTransmitMode, PinValue, UiAudioReceivedPath, UiLoopbackMode, UiToCtl,
+    AdjDirection, AudioTransmitMode, CtlToMgmt, Pin, PinValue, UiAudioReceivedPath,
+    UiLoopbackMode, UiToCtl,
 };
 use std::io::Write;
 use std::sync::mpsc;
@@ -423,13 +424,13 @@ pub async fn handle_monitor(
         if matches!(target, MonitorTarget::Ui | MonitorTarget::Both) {
             println!("Resetting UI chip...");
             let delay = |ms| tokio::time::sleep(Duration::from_millis(ms));
-            core.reset_ui_to_user(delay).await?;
+            reset_ui_to_user_no_ack(core, delay).await?;
         }
 
         if matches!(target, MonitorTarget::Net | MonitorTarget::Both) {
             println!("Resetting NET chip...");
             let delay = |ms| tokio::time::sleep(Duration::from_millis(ms));
-            core.reset_net_to_user(delay).await?;
+            reset_net_to_user_no_ack(core, delay).await?;
         }
     }
 
@@ -476,7 +477,7 @@ pub async fn handle_monitor(
                         return Err(format!("Read error: {:?}", e).into());
                     }
                 },
-                MonitorTarget::Net => match core.read_tlv_raw().await {
+                MonitorTarget::Net => match core.read_tlv_raw_lossy().await {
                     Ok(Some(tlv)) => {
                         if tlv.tlv_type == link::MgmtToCtl::FromNet {
                             let text = escape_non_ascii(&tlv.value);
@@ -529,6 +530,51 @@ pub async fn handle_monitor(
     result
 }
 
+async fn set_pin_no_ack(
+    core: &mut Core,
+    pin: Pin,
+    value: PinValue,
+) -> Result<(), Box<dyn std::error::Error>> {
+    core.write_tlv_raw(CtlToMgmt::SetPin, &[pin as u8, value as u8])
+        .await?;
+    Ok(())
+}
+
+async fn reset_ui_to_user_no_ack<D, F>(
+    core: &mut Core,
+    delay_ms: D,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    D: Fn(u64) -> F,
+    F: core::future::Future<Output = ()>,
+{
+    use link::timing::reset::STM32_SIGNAL_TRANSITION_MS;
+
+    set_pin_no_ack(core, Pin::UiBoot0, PinValue::Low).await?;
+    set_pin_no_ack(core, Pin::UiBoot1, PinValue::High).await?;
+    set_pin_no_ack(core, Pin::UiRst, PinValue::Low).await?;
+    delay_ms(STM32_SIGNAL_TRANSITION_MS).await;
+    set_pin_no_ack(core, Pin::UiRst, PinValue::High).await?;
+    Ok(())
+}
+
+async fn reset_net_to_user_no_ack<D, F>(
+    core: &mut Core,
+    delay_ms: D,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    D: Fn(u64) -> F,
+    F: core::future::Future<Output = ()>,
+{
+    use link::timing::reset::ESP32_RESET_HOLD_MS;
+
+    set_pin_no_ack(core, Pin::NetBoot, PinValue::High).await?;
+    set_pin_no_ack(core, Pin::NetRst, PinValue::Low).await?;
+    delay_ms(ESP32_RESET_HOLD_MS).await;
+    set_pin_no_ack(core, Pin::NetRst, PinValue::High).await?;
+    Ok(())
+}
+
 /// Handle audio capture and playback commands.
 pub async fn handle_audio(
     action: AudioAction,
@@ -536,11 +582,15 @@ pub async fn handle_audio(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         AudioAction::Capture { mode } => match mode {
-            CaptureMode::Live { transmit_mode } => capture_live(core, transmit_mode).await,
+            CaptureMode::Live {
+                transmit_mode,
+                receive_mode,
+            } => capture_live(core, transmit_mode, receive_mode).await,
             CaptureMode::Wav {
                 basename,
                 transmit_mode,
-            } => capture_wav(core, &basename, transmit_mode).await,
+                receive_mode,
+            } => capture_wav(core, &basename, transmit_mode, receive_mode).await,
         },
         AudioAction::Play { mode } => match mode {
             PlayMode::Wav { file } => play_wav(core, &file).await,
@@ -552,8 +602,57 @@ pub async fn handle_audio(
 fn ui_transmit_mode(mode: CaptureTransmitMode) -> AudioTransmitMode {
     match mode {
         CaptureTransmitMode::Ctl => AudioTransmitMode::Ctl,
+        CaptureTransmitMode::Net => AudioTransmitMode::Net,
         CaptureTransmitMode::Both => AudioTransmitMode::Both,
     }
+}
+
+fn ui_receive_mode(mode: CaptureReceiveMode) -> UiAudioReceivedPath {
+    match mode {
+        CaptureReceiveMode::Ctl => UiAudioReceivedPath::Ctl,
+        CaptureReceiveMode::Headphones => UiAudioReceivedPath::Headphones,
+        CaptureReceiveMode::Both => UiAudioReceivedPath::Both,
+    }
+}
+
+async fn setup_capture_routing(
+    core: &mut Core,
+    transmit_mode: CaptureTransmitMode,
+    receive_mode: CaptureReceiveMode,
+) -> Result<(AudioTransmitMode, UiAudioReceivedPath), Box<dyn std::error::Error>> {
+    let previous_transmit_mode = core.ui_get_audio_transmit_mode().await?;
+    let previous_receive_mode = core.ui_get_audio_received_path().await?;
+
+    let transmit_mode = ui_transmit_mode(transmit_mode);
+    let receive_mode = ui_receive_mode(receive_mode);
+
+    println!("Setting audio transmit mode to {}...", transmit_mode);
+    core.ui_set_audio_transmit_mode(transmit_mode).await?;
+    println!("Setting audio receive mode to {}...", receive_mode);
+    core.ui_set_audio_received_path(receive_mode).await?;
+
+    Ok((previous_transmit_mode, previous_receive_mode))
+}
+
+async fn restore_capture_routing(
+    core: &mut Core,
+    previous_transmit_mode: AudioTransmitMode,
+    previous_receive_mode: UiAudioReceivedPath,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "\nRestoring audio transmit mode to {}...",
+        previous_transmit_mode
+    );
+    core.ui_set_audio_transmit_mode(previous_transmit_mode)
+        .await?;
+    println!(
+        "Restoring audio receive mode to {}...",
+        previous_receive_mode
+    );
+    core.ui_set_audio_received_path(previous_receive_mode)
+        .await?;
+
+    Ok(())
 }
 
 /// AudioSink that sends samples to a cpal output stream via channel.
@@ -571,6 +670,7 @@ impl AudioSink for CpalSink {
 async fn capture_live(
     core: &mut Core,
     transmit_mode: CaptureTransmitMode,
+    receive_mode: CaptureReceiveMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use rubato::{FftFixedIn, Resampler};
@@ -584,9 +684,8 @@ async fn capture_live(
     let sframe_key = core.get_sframe_key().await?;
     println!("SFrame key: {}", hex::encode(&sframe_key));
 
-    let transmit_mode = ui_transmit_mode(transmit_mode);
-    println!("Setting audio transmit mode to {}...", transmit_mode);
-    core.ui_set_audio_transmit_mode(transmit_mode).await?;
+    let (previous_transmit_mode, previous_receive_mode) =
+        setup_capture_routing(core, transmit_mode, receive_mode).await?;
 
     // Create capture session
     let mut session = CaptureSession::new(&sframe_key);
@@ -858,10 +957,7 @@ async fn capture_live(
     terminal::disable_raw_mode()?;
     drop(stream);
 
-    // Restore audio transmit mode to NET
-    println!("\nRestoring audio transmit mode to NET...");
-    core.ui_set_audio_transmit_mode(AudioTransmitMode::Net)
-        .await?;
+    restore_capture_routing(core, previous_transmit_mode, previous_receive_mode).await?;
 
     // Restore timeout
     if let Err(e) = core
@@ -917,6 +1013,7 @@ async fn capture_wav(
     core: &mut Core,
     basename: &str,
     transmit_mode: CaptureTransmitMode,
+    receive_mode: CaptureReceiveMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Ping the ui until it responds or times out.
     core.ping_ui_until_pong().await?;
@@ -926,9 +1023,8 @@ async fn capture_wav(
     let sframe_key = core.get_sframe_key().await?;
     println!("SFrame key: {}", hex::encode(&sframe_key));
 
-    let transmit_mode = ui_transmit_mode(transmit_mode);
-    println!("Setting audio transmit mode to {}...", transmit_mode);
-    core.ui_set_audio_transmit_mode(transmit_mode).await?;
+    let (previous_transmit_mode, previous_receive_mode) =
+        setup_capture_routing(core, transmit_mode, receive_mode).await?;
 
     // Create capture session
     let mut session = CaptureSession::new(&sframe_key);
@@ -1099,10 +1195,7 @@ async fn capture_wav(
     // Cleanup
     terminal::disable_raw_mode()?;
 
-    // Restore audio transmit mode to NET
-    println!("\nRestoring audio transmit mode to NET...");
-    core.ui_set_audio_transmit_mode(AudioTransmitMode::Net)
-        .await?;
+    restore_capture_routing(core, previous_transmit_mode, previous_receive_mode).await?;
 
     // Restore timeout
     if let Err(e) = core
