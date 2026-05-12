@@ -2,9 +2,9 @@
 
 use super::Core;
 use crate::{
-    AudioAction, AudioReceivedPathAction, AudioTransmitModeAction, CaptureMode, CaptureReceiveMode,
-    CaptureTransmitMode, GetSetHex, GetSetU32, LogsAction, LoopbackAction, MonitorTarget,
-    PinAction, PinLevel, PlayMode, ResetAction, StackAction, UiAction, VolumeAction,
+    AudioAction, AudioReceivedPathAction, AudioTransmitModeAction, BlasterPattern, CaptureMode,
+    CaptureReceiveMode, CaptureTransmitMode, GetSetHex, GetSetU32, LogsAction, LoopbackAction,
+    MonitorTarget, PinAction, PinLevel, PlayMode, ResetAction, StackAction, UiAction, VolumeAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::SetTimeout;
@@ -16,9 +16,19 @@ use link::{
     AdjDirection, AudioTransmitMode, CtlToMgmt, Pin, PinValue, UiAudioReceivedPath, UiLoopbackMode,
     UiToCtl,
 };
+use rand::Rng;
 use std::io::Write;
 use std::sync::mpsc;
 use std::time::Duration;
+
+fn blaster_payload(pattern: BlasterPattern, num_bytes: usize) -> Vec<u8> {
+    let mut payload = vec![0u8; num_bytes];
+    match pattern {
+        BlasterPattern::Random => rand::rng().fill(&mut payload[..]),
+        BlasterPattern::Fill => payload.fill(0x55),
+    }
+    payload
+}
 
 pub async fn handle_ui(
     action: UiAction,
@@ -207,6 +217,26 @@ pub async fn handle_ui(
                 Ok(())
             }
         },
+        UiAction::BlasterSend {
+            pattern,
+            num_bytes,
+            num_repeat,
+            time_delay_ms,
+        } => {
+            let delay = Duration::from_millis(time_delay_ms);
+            for i in 0..num_repeat {
+                let payload = blaster_payload(pattern, num_bytes as usize);
+                core.ui_blaster_send(&payload).await?;
+                if i + 1 < num_repeat {
+                    tokio::time::sleep(delay).await;
+                }
+            }
+            println!(
+                "UI blaster sent {} payload(s) of {} byte(s)",
+                num_repeat, num_bytes
+            );
+            Ok(())
+        }
         UiAction::Boot0 {
             action: PinAction::Set { level },
         } => {

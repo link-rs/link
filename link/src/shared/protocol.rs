@@ -269,6 +269,8 @@ pub enum CtlToUi {
     AudioStart,
     /// Audio stream end marker from CTL
     AudioEnd,
+    /// Test payload for UART blasting (raw bytes, up to 640 bytes)
+    BlasterSend,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -340,6 +342,12 @@ pub enum CtlToNet {
     GetAi,
     /// Set AI configuration (JSON object: {"query":[...],"audio":[...],"cmd":[...]})
     SetAi,
+    /// Test payload for UART blasting (raw bytes, up to 640 bytes)
+    BlasterSend,
+    /// Get NET blaster enabled state
+    GetBlaster,
+    /// Set NET blaster enabled state (1 byte: 0=off, 1=on)
+    SetBlaster,
     /// Burn JTAG/USB disable efuse (IRREVERSIBLE!)
     BurnJtagEfuse,
 }
@@ -363,6 +371,8 @@ pub enum NetToCtl {
     Channel,
     /// AI configuration (JSON object)
     Ai,
+    /// NET blaster enabled state (1 byte: 0=off, 1=on)
+    Blaster,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

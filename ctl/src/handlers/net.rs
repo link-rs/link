@@ -2,14 +2,25 @@
 
 use super::Core;
 use crate::{
-    GetSetString, LanguageAction, LogsAction, NetAction, NetLoopbackAction, PinAction, PinLevel,
-    ResetAction, WifiAction,
+    BlasterPattern, GetSetString, LanguageAction, LogsAction, NetAction, NetBlasterAction,
+    NetLoopbackAction, PinAction, PinLevel, ResetAction, WifiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::ProgressCallbacks;
 use link::ctl::flash::StdDelay;
 use link::{NetLoopbackMode, Pin, PinValue};
+use rand::Rng;
 use std::io::Write;
+use std::time::Duration;
+
+fn blaster_payload(pattern: BlasterPattern, num_bytes: usize) -> Vec<u8> {
+    let mut payload = vec![0u8; num_bytes];
+    match pattern {
+        BlasterPattern::Random => rand::rng().fill(&mut payload[..]),
+        BlasterPattern::Fill => payload.fill(0x55),
+    }
+    payload
+}
 
 /// Progress handler for NET chip flashing that wraps an indicatif ProgressBar.
 struct FlashProgress {
@@ -81,6 +92,8 @@ pub async fn handle_net(
             | NetAction::Language { .. }
             | NetAction::Channel { .. }
             | NetAction::Ai { .. }
+            | NetAction::BlasterSend { .. }
+            | NetAction::Blaster { .. }
             | NetAction::ClearStorage
             | NetAction::BurnJtagEfuse { .. }
     );
@@ -262,6 +275,38 @@ pub async fn handle_net(
             NetLoopbackAction::Moq => {
                 core.net_set_loopback(NetLoopbackMode::Moq).await?;
                 println!("NET loopback: moq (hear own audio via relay)");
+                Ok(())
+            }
+        },
+        NetAction::BlasterSend {
+            pattern,
+            num_bytes,
+            num_repeat,
+            time_delay_ms,
+        } => {
+            let delay = Duration::from_millis(time_delay_ms);
+            for i in 0..num_repeat {
+                let payload = blaster_payload(pattern, num_bytes as usize);
+                core.net_blaster_send(&payload).await?;
+                if i + 1 < num_repeat {
+                    tokio::time::sleep(delay).await;
+                }
+            }
+            println!(
+                "NET blaster sent {} payload(s) of {} byte(s)",
+                num_repeat, num_bytes
+            );
+            Ok(())
+        }
+        NetAction::Blaster { action } => match action.unwrap_or_default() {
+            NetBlasterAction::Get => {
+                let enabled = core.net_get_blaster().await?;
+                println!("{}", if enabled { "on" } else { "off" });
+                Ok(())
+            }
+            NetBlasterAction::Set { state } => {
+                core.net_set_blaster(state.is_on()).await?;
+                println!("NET blaster: {}", if state.is_on() { "on" } else { "off" });
                 Ok(())
             }
         },

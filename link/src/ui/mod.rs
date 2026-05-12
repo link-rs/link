@@ -562,6 +562,10 @@ async fn handle_mgmt<M, N, I, D, B, const PLAYBACK_N: usize>(
             info!("ui: get loopback = {}", mode);
             to_mgmt.must_write_tlv(UiToCtl::Loopback, &[mode]).await;
         }
+        CtlToUi::BlasterSend => {
+            info!("ui: blaster send ({} bytes)", tlv.value.len());
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
+        }
         CtlToUi::GetStackInfo => {
             info!("ui: get stack info");
             use crate::shared::StackInfo;
@@ -1028,6 +1032,48 @@ mod tests {
         assert_eq!(to_mgmt.written[0].0, UiToCtl::Ack);
         let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         assert_eq!(eeprom.get_sframe_key().unwrap(), key);
+    }
+
+    #[tokio::test]
+    async fn tlv_blaster_send_returns_ack() {
+        let mut to_mgmt = MockTlvWriter::new();
+        let mut to_net = DummyNetWriter;
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
+
+        let tlv = Tlv {
+            tlv_type: CtlToUi::BlasterSend,
+            value: Value::from_slice(&[0x55; 32]).unwrap(),
+        };
+
+        let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
+        let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
+        let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
+        let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
+        let mic_preamp = AtomicU8::new(255);
+        let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_net,
+            &mut i2c,
+            &mut delay,
+            &loopback_mode,
+            &logs_enabled,
+            &volume,
+            &audio_mode,
+            &audio_received_path,
+            &mic_preamp,
+            &mut sframe_state,
+            &playback_channel,
+            &crate::shared::NoOpBoard,
+        )
+        .await;
+
+        assert_eq!(to_mgmt.written.len(), 1);
+        assert_eq!(to_mgmt.written[0].0, UiToCtl::Ack);
     }
 
     #[tokio::test]

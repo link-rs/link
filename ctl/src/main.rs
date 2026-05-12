@@ -236,6 +236,37 @@ enum UiAction {
         #[command(subcommand)]
         action: Option<AudioReceivedPathAction>,
     },
+
+    /// Blast test payloads at the UI chip
+    #[command(name = "blaster-send")]
+    BlasterSend {
+        #[arg(value_enum)]
+        pattern: BlasterPattern,
+        #[arg(default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=640))]
+        num_bytes: u16,
+        #[arg(default_value_t = 1)]
+        num_repeat: u32,
+        #[arg(default_value_t = 20)]
+        time_delay_ms: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum BlasterPattern {
+    Random,
+    Fill,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum OnOff {
+    On,
+    Off,
+}
+
+impl OnOff {
+    fn is_on(self) -> bool {
+        matches!(self, Self::On)
+    }
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
@@ -569,6 +600,25 @@ enum NetAction {
         action: Option<GetSetString>,
     },
 
+    /// Blast test payloads at the NET chip
+    #[command(name = "blaster-send")]
+    BlasterSend {
+        #[arg(value_enum)]
+        pattern: BlasterPattern,
+        #[arg(default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=640))]
+        num_bytes: u16,
+        #[arg(default_value_t = 1)]
+        num_repeat: u32,
+        #[arg(default_value_t = 20)]
+        time_delay_ms: u64,
+    },
+
+    /// Get or set NET blaster mode
+    Blaster {
+        #[command(subcommand)]
+        action: Option<NetBlasterAction>,
+    },
+
     /// Clear all stored configuration (NVS)
     #[command(name = "clear-storage")]
     ClearStorage,
@@ -588,6 +638,18 @@ enum WifiAction {
     Add { ssid: String, password: String },
     /// Clear all saved Wi-Fi credentials
     Clear,
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+enum NetBlasterAction {
+    /// Get the current blaster state
+    #[default]
+    Get,
+    /// Set the blaster state
+    Set {
+        #[arg(value_enum)]
+        state: OnOff,
+    },
 }
 
 /// Open a serial port with standard settings using tokio-serial.
