@@ -346,7 +346,7 @@ pub enum CtlToNet {
     BlasterSend,
     /// Get NET blaster enabled state
     GetBlaster,
-    /// Set NET blaster enabled state (1 byte: 0=off, 1=on)
+    /// Set NET blaster state (3 bytes: enabled u8, blaster_size i16 LE)
     SetBlaster,
     /// Burn JTAG/USB disable efuse (IRREVERSIBLE!)
     BurnJtagEfuse,
@@ -371,7 +371,7 @@ pub enum NetToCtl {
     Channel,
     /// AI configuration (JSON object)
     Ai,
-    /// NET blaster enabled state (1 byte: 0=off, 1=on)
+    /// NET blaster state (3 bytes: enabled u8, blaster_size i16 LE)
     Blaster,
 }
 

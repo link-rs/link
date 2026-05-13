@@ -1492,8 +1492,8 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
-    /// Get the NET blaster enabled state.
-    pub async fn net_get_blaster(&mut self) -> Result<bool, CtlError> {
+    /// Get the NET blaster state.
+    pub async fn net_get_blaster(&mut self) -> Result<(bool, i16), CtlError> {
         self.write_tlv_net(CtlToNet::GetBlaster, &[]).await?;
         let tlv = self.read_tlv_net().await?;
         if tlv.tlv_type == NetToCtl::Error {
@@ -1506,12 +1506,27 @@ impl<P: CtlPort> CtlCore<P> {
                 actual: format!("{:?}", tlv.tlv_type),
             });
         }
-        Ok(tlv.value.first().copied().unwrap_or(0) != 0)
+
+        if tlv.value.len() != 3 {
+            return Err(CtlError::InvalidLength {
+                expected: 3,
+                actual: tlv.value.len(),
+            });
+        }
+
+        let enabled = tlv.value[0] != 0;
+        let blaster_size = i16::from_le_bytes([tlv.value[1], tlv.value[2]]);
+        Ok((enabled, blaster_size))
     }
 
-    /// Set the NET blaster enabled state.
-    pub async fn net_set_blaster(&mut self, enabled: bool) -> Result<(), CtlError> {
-        self.write_tlv_net(CtlToNet::SetBlaster, &[enabled as u8])
+    /// Set the NET blaster state.
+    pub async fn net_set_blaster(
+        &mut self,
+        enabled: bool,
+        blaster_size: i16,
+    ) -> Result<(), CtlError> {
+        let size = blaster_size.to_le_bytes();
+        self.write_tlv_net(CtlToNet::SetBlaster, &[enabled as u8, size[0], size[1]])
             .await?;
         let tlv = self.read_tlv_net().await?;
         if tlv.tlv_type == NetToCtl::Error {
