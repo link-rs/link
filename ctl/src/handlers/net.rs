@@ -300,13 +300,20 @@ pub async fn handle_net(
         }
         NetAction::Blaster { action } => match action.unwrap_or_default() {
             NetBlasterAction::Get => {
-                let enabled = core.net_get_blaster().await?;
-                println!("{}", if enabled { "on" } else { "off" });
+                let (enabled, blaster_size) = core.net_get_blaster().await?;
+                println!("{} {}", if enabled { "on" } else { "off" }, blaster_size);
                 Ok(())
             }
-            NetBlasterAction::Set { state } => {
-                core.net_set_blaster(state.is_on()).await?;
-                println!("NET blaster: {}", if state.is_on() { "on" } else { "off" });
+            NetBlasterAction::Set {
+                state,
+                blaster_size,
+            } => {
+                core.net_set_blaster(state.is_on(), blaster_size).await?;
+                println!(
+                    "NET blaster: {} {}",
+                    if state.is_on() { "on" } else { "off" },
+                    blaster_size
+                );
                 Ok(())
             }
         },

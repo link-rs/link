@@ -649,6 +649,8 @@ enum NetBlasterAction {
     Set {
         #[arg(value_enum)]
         state: OnOff,
+        #[arg(default_value_t = -1, allow_hyphen_values = true)]
+        blaster_size: i16,
     },
 }
 
