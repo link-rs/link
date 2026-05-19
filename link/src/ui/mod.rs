@@ -17,9 +17,9 @@ pub use log::{LogMessage, LogSender, MAX_LOG_SIZE};
 
 use crate::info;
 use crate::shared::{
-    AdjDirection, AudioMode, Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi, Led,
-    NetToUi, Sender, StackMonitor, Tlv, UiLoopbackMode, UiToCtl, UiToNet, WriteTlv, chunk,
-    read_tlv_loop,
+    AdjDirection, AudioTransmitMode, Channel, ChannelId, Color, CriticalSectionRawMutex, CtlToUi,
+    Led, NetToUi, Sender, StackMonitor, Tlv, UiAudioReceivedPath, UiLoopbackMode, UiToCtl, UiToNet,
+    WriteTlv, chunk, read_tlv_loop,
 };
 
 /// Board trait for UI chip.
@@ -118,7 +118,9 @@ where
     let volume = AtomicU8::new(255);
 
     // Shared audio routing mode (Net or Ctl)
-    let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+    let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
+    // Shared output path for audio received from NET.
+    let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
     // Shared microphone preamp level (TODO: actually configure the audio system)
     let mic_preamp = AtomicU8::new(255);
 
@@ -152,6 +154,7 @@ where
                         &logs_enabled,
                         &volume,
                         &audio_mode,
+                        &audio_received_path,
                         &mic_preamp,
                         &mut sframe_state,
                         &playback_channel,
@@ -163,10 +166,31 @@ where
                     // Handle audio frames specially - they need decryption
                     if tlv.tlv_type == NetToUi::AudioFrame {
                         // Drop audio from NET when audio-mode=ctl
-                        let mode = AudioMode::try_from(audio_mode.load(Ordering::Relaxed))
-                            .unwrap_or(AudioMode::Net);
-                        if mode == AudioMode::Ctl {
+                        let mode = AudioTransmitMode::try_from(audio_mode.load(Ordering::Relaxed))
+                            .unwrap_or(AudioTransmitMode::Net);
+                        if mode == AudioTransmitMode::Ctl {
                             continue;
+                        }
+
+                        let received_path = UiAudioReceivedPath::try_from(
+                            audio_received_path.load(Ordering::Relaxed),
+                        )
+                        .unwrap_or(UiAudioReceivedPath::Headphones);
+
+                        match received_path {
+                            UiAudioReceivedPath::None => continue,
+                            UiAudioReceivedPath::Ctl => {
+                                to_mgmt
+                                    .must_write_tlv(UiToCtl::AudioFrame, &tlv.value)
+                                    .await;
+                                continue;
+                            }
+                            UiAudioReceivedPath::Both => {
+                                to_mgmt
+                                    .must_write_tlv(UiToCtl::AudioFrame, &tlv.value)
+                                    .await;
+                            }
+                            UiAudioReceivedPath::Headphones => {}
                         }
 
                         // New hactar format: channel_id (1 byte) + encrypted chunk
@@ -202,9 +226,9 @@ where
                         button_active.store(true, Ordering::Relaxed);
 
                         // Emit AudioStart to CTL or NET depending on mode
-                        let mode = AudioMode::try_from(audio_mode.load(Ordering::Relaxed))
-                            .unwrap_or(AudioMode::Net);
-                        if mode == AudioMode::Ctl {
+                        let mode = AudioTransmitMode::try_from(audio_mode.load(Ordering::Relaxed))
+                            .unwrap_or(AudioTransmitMode::Net);
+                        if mode == AudioTransmitMode::Ctl {
                             to_mgmt.must_write_tlv(UiToCtl::AudioStart, &[]).await;
                         } else {
                             to_net.must_write_tlv(UiToNet::AudioStart, &[]).await;
@@ -219,9 +243,9 @@ where
                         button_active.store(false, Ordering::Relaxed);
 
                         // Emit AudioEnd to CTL or NET depending on mode
-                        let mode = AudioMode::try_from(audio_mode.load(Ordering::Relaxed))
-                            .unwrap_or(AudioMode::Net);
-                        if mode == AudioMode::Ctl {
+                        let mode = AudioTransmitMode::try_from(audio_mode.load(Ordering::Relaxed))
+                            .unwrap_or(AudioTransmitMode::Net);
+                        if mode == AudioTransmitMode::Ctl {
                             to_mgmt.must_write_tlv(UiToCtl::AudioEnd, &[]).await;
                         } else {
                             to_net.must_write_tlv(UiToNet::AudioEnd, &[]).await;
@@ -303,11 +327,12 @@ where
                     }
 
                     // Route based on audio mode
-                    let audio_routing = AudioMode::try_from(audio_mode.load(Ordering::Relaxed))
-                        .unwrap_or(AudioMode::Net);
+                    let audio_routing =
+                        AudioTransmitMode::try_from(audio_mode.load(Ordering::Relaxed))
+                            .unwrap_or(AudioTransmitMode::Net);
                     let channel_id_byte = [channel_id as u8];
 
-                    if audio_routing == AudioMode::Ctl {
+                    if audio_routing == AudioTransmitMode::Ctl {
                         // Send to CTL via MGMT: channel_id (plaintext) + encrypted chunk
                         to_mgmt
                             .must_write_tlv_parts(UiToCtl::AudioFrame, &[&channel_id_byte, &buf])
@@ -447,6 +472,7 @@ async fn handle_mgmt<M, N, I, D, B, const PLAYBACK_N: usize>(
     logs_enabled: &AtomicBool,
     volume: &AtomicU8,
     audio_mode: &AtomicU8,
+    audio_received_path: &AtomicU8,
     mic_preamp: &AtomicU8,
     sframe_state: &mut sframe::SFrameState,
     playback_channel: &Channel<CriticalSectionRawMutex, Frame, PLAYBACK_N>,
@@ -597,23 +623,44 @@ async fn handle_mgmt<M, N, I, D, B, const PLAYBACK_N: usize>(
             volume.store(vol, Ordering::Relaxed);
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
-        CtlToUi::GetAudioMode => {
-            info!("ui: get audio mode");
+        CtlToUi::GetAudioTransmitMode => {
+            info!("ui: get audio transmit mode");
             let mode = audio_mode.load(Ordering::Relaxed);
-            to_mgmt.must_write_tlv(UiToCtl::AudioMode, &[mode]).await;
+            to_mgmt
+                .must_write_tlv(UiToCtl::AudioTransmitMode, &[mode])
+                .await;
         }
-        CtlToUi::SetAudioMode => {
+        CtlToUi::SetAudioTransmitMode => {
             let mode_byte = tlv.value.first().copied().unwrap_or(0);
-            let mode = AudioMode::try_from(mode_byte).unwrap_or(AudioMode::Net);
-            info!("ui: set audio mode = {:?}", mode);
+            let mode = AudioTransmitMode::try_from(mode_byte).unwrap_or(AudioTransmitMode::Net);
+            info!("ui: set audio transmit mode = {:?}", mode);
             audio_mode.store(mode as u8, Ordering::Relaxed);
+            to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
+        }
+        CtlToUi::GetAudioReceivedPath => {
+            info!("ui: get audio received path");
+            let path = audio_received_path.load(Ordering::Relaxed);
+            to_mgmt
+                .must_write_tlv(UiToCtl::AudioReceivedPath, &[path])
+                .await;
+        }
+        CtlToUi::SetAudioReceivedPath => {
+            let path_byte = tlv
+                .value
+                .first()
+                .copied()
+                .unwrap_or(UiAudioReceivedPath::Headphones as u8);
+            let path =
+                UiAudioReceivedPath::try_from(path_byte).unwrap_or(UiAudioReceivedPath::Headphones);
+            info!("ui: set audio received path = {:?}", path);
+            audio_received_path.store(path as u8, Ordering::Relaxed);
             to_mgmt.must_write_tlv(UiToCtl::Ack, &[]).await;
         }
         CtlToUi::AudioFrame => {
             // Audio frame from CTL - only process when audio-mode=ctl
-            let mode =
-                AudioMode::try_from(audio_mode.load(Ordering::Relaxed)).unwrap_or(AudioMode::Net);
-            if mode != AudioMode::Ctl {
+            let mode = AudioTransmitMode::try_from(audio_mode.load(Ordering::Relaxed))
+                .unwrap_or(AudioTransmitMode::Net);
+            if mode != AudioTransmitMode::Ctl {
                 // Drop audio from CTL when not in ctl mode
                 return;
             }
@@ -803,7 +850,8 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
+        let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
@@ -817,6 +865,7 @@ mod tests {
             &logs_enabled,
             &volume,
             &audio_mode,
+            &audio_received_path,
             &mic_preamp,
             &mut sframe_state,
             &playback_channel,
@@ -848,7 +897,8 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
+        let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
@@ -862,6 +912,7 @@ mod tests {
             &logs_enabled,
             &volume,
             &audio_mode,
+            &audio_received_path,
             &mic_preamp,
             &mut sframe_state,
             &playback_channel,
@@ -899,7 +950,8 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
+        let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
@@ -913,6 +965,7 @@ mod tests {
             &logs_enabled,
             &volume,
             &audio_mode,
+            &audio_received_path,
             &mic_preamp,
             &mut sframe_state,
             &playback_channel,
@@ -947,7 +1000,8 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
+        let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
@@ -961,6 +1015,7 @@ mod tests {
             &logs_enabled,
             &volume,
             &audio_mode,
+            &audio_received_path,
             &mic_preamp,
             &mut sframe_state,
             &playback_channel,
@@ -993,7 +1048,8 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
+        let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
@@ -1007,6 +1063,7 @@ mod tests {
             &logs_enabled,
             &volume,
             &audio_mode,
+            &audio_received_path,
             &mic_preamp,
             &mut sframe_state,
             &playback_channel,
@@ -1039,7 +1096,8 @@ mod tests {
         let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
         let logs_enabled = AtomicBool::new(true);
         let volume = AtomicU8::new(255);
-        let audio_mode = AtomicU8::new(AudioMode::Net as u8);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
+        let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
         let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
         let mic_preamp = AtomicU8::new(255);
         let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
@@ -1053,6 +1111,7 @@ mod tests {
             &logs_enabled,
             &volume,
             &audio_mode,
+            &audio_received_path,
             &mic_preamp,
             &mut sframe_state,
             &playback_channel,
@@ -1065,6 +1124,99 @@ mod tests {
         assert_eq!(to_mgmt.written[0].0, UiToCtl::Error);
         let mut eeprom = Eeprom::new(&mut i2c, &mut delay);
         assert_eq!(eeprom.get_sframe_key().unwrap(), [0xff; 16]);
+    }
+
+    #[tokio::test]
+    async fn tlv_get_audio_received_path() {
+        let mut to_mgmt = MockTlvWriter::new();
+        let mut to_net = DummyNetWriter;
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
+
+        let tlv = Tlv {
+            tlv_type: CtlToUi::GetAudioReceivedPath,
+            value: Value::new(),
+        };
+
+        let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
+        let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
+        let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Ctl as u8);
+        let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
+        let mic_preamp = AtomicU8::new(255);
+        let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_net,
+            &mut i2c,
+            &mut delay,
+            &loopback_mode,
+            &logs_enabled,
+            &volume,
+            &audio_mode,
+            &audio_received_path,
+            &mic_preamp,
+            &mut sframe_state,
+            &playback_channel,
+            &crate::shared::NoOpBoard,
+        )
+        .await;
+
+        assert_eq!(to_mgmt.written.len(), 1);
+        assert_eq!(to_mgmt.written[0].0, UiToCtl::AudioReceivedPath);
+        assert_eq!(to_mgmt.written[0].1, &[UiAudioReceivedPath::Ctl as u8]);
+    }
+
+    #[tokio::test]
+    async fn tlv_set_audio_received_path() {
+        let mut to_mgmt = MockTlvWriter::new();
+        let mut to_net = DummyNetWriter;
+        let mut i2c = mock_i2c_with_eeprom();
+        let mut delay = MockDelay;
+
+        let mut value: Value = Value::new();
+        value
+            .extend_from_slice(&[UiAudioReceivedPath::None as u8])
+            .unwrap();
+        let tlv = Tlv {
+            tlv_type: CtlToUi::SetAudioReceivedPath,
+            value,
+        };
+
+        let loopback_mode = AtomicU8::new(UiLoopbackMode::Off as u8);
+        let logs_enabled = AtomicBool::new(true);
+        let volume = AtomicU8::new(255);
+        let audio_mode = AtomicU8::new(AudioTransmitMode::Net as u8);
+        let audio_received_path = AtomicU8::new(UiAudioReceivedPath::Headphones as u8);
+        let playback_channel: Channel<CriticalSectionRawMutex, Frame, 4> = Channel::new();
+        let mic_preamp = AtomicU8::new(255);
+        let mut sframe_state = sframe::SFrameState::new(&[0u8; 16], 0);
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_net,
+            &mut i2c,
+            &mut delay,
+            &loopback_mode,
+            &logs_enabled,
+            &volume,
+            &audio_mode,
+            &audio_received_path,
+            &mic_preamp,
+            &mut sframe_state,
+            &playback_channel,
+            &crate::shared::NoOpBoard,
+        )
+        .await;
+
+        assert_eq!(to_mgmt.written.len(), 1);
+        assert_eq!(to_mgmt.written[0].0, UiToCtl::Ack);
+        assert_eq!(
+            audio_received_path.load(Ordering::Relaxed),
+            UiAudioReceivedPath::None as u8
+        );
     }
 }
 
@@ -1726,6 +1878,247 @@ mod audio_streaming_tests {
         }
     }
 
+    #[tokio::test]
+    async fn net_audio_frame_forwards_to_ctl_when_received_path_ctl() {
+        use crate::shared::mocks::CapturingAudioStream;
+        use crate::shared::{MIN_START_LEVEL, WriteTlv};
+        use audio_codec_algorithms::decode_alaw;
+
+        let (ui_to_mgmt, mgmt_from_ui) = channel();
+        let (mut mgmt_to_ui, ui_from_mgmt) = channel();
+        let (ui_to_net, _net_from_ui) = channel();
+        let (mut net_to_ui, ui_from_net) = channel();
+
+        let (audio_stream, written_frames) = CapturingAudioStream::new();
+        let mut sframe_state = sframe::SFrameState::new(&[0xff; 16], 0);
+        let expected_forwarded = std::sync::Arc::new(std::sync::Mutex::new(None::<Vec<u8>>));
+        let expected_forwarded_task = expected_forwarded.clone();
+        let mgmt_collector = MgmtTlvCollector::new();
+        let expected_playback_sample = decode_alaw(0x5a) as u16;
+
+        tokio::select! {
+            _ = run(
+                ui_to_mgmt,
+                ui_from_mgmt,
+                ui_to_net,
+                ui_from_net,
+                mock_led_pins(),
+                MockButton,
+                MockButton,
+                MockButton,
+                mock_i2c_with_eeprom(),
+                MockDelay,
+                audio_stream,
+                NoOpBoard,
+            ) => unreachable!(),
+            _ = mgmt_collector.collect_from(mgmt_from_ui) => unreachable!(),
+            _ = async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+
+                mgmt_to_ui
+                    .write_tlv(CtlToUi::SetAudioReceivedPath, &[UiAudioReceivedPath::Ctl as u8])
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                for _ in 0..MIN_START_LEVEL {
+                    let padding_frame = crate::ui::Frame::default();
+                    let encrypted = encrypt_frame_for_test(&padding_frame, &mut sframe_state);
+                    net_to_ui
+                        .write_tlv(crate::shared::NetToUi::AudioFrame, &encrypted)
+                        .await
+                        .unwrap();
+                }
+
+                let mut test_frame = crate::ui::Frame::default();
+                test_frame.0[0] = 0x5a;
+                let encrypted = encrypt_frame_for_test(&test_frame, &mut sframe_state);
+                *expected_forwarded_task.lock().unwrap() = Some(encrypted.to_vec());
+                net_to_ui
+                    .write_tlv(crate::shared::NetToUi::AudioFrame, &encrypted)
+                    .await
+                    .unwrap();
+
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            } => {}
+        }
+
+        let forwarded = mgmt_collector.audio_frames.lock().unwrap();
+        assert!(
+            !forwarded.is_empty(),
+            "NET audio should be forwarded to CTL when received path=ctl"
+        );
+        assert_eq!(
+            forwarded.last().unwrap(),
+            expected_forwarded.lock().unwrap().as_ref().unwrap()
+        );
+        let found_locally = written_frames
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|f| f.0[0] == expected_playback_sample);
+        assert!(
+            !found_locally,
+            "Forwarded NET audio should not also play out locally"
+        );
+    }
+
+    #[tokio::test]
+    async fn net_audio_frame_drops_when_received_path_none() {
+        use crate::shared::mocks::CapturingAudioStream;
+        use crate::shared::{MIN_START_LEVEL, WriteTlv};
+        use audio_codec_algorithms::{decode_alaw, encode_alaw};
+
+        let (ui_to_mgmt, mgmt_from_ui) = channel();
+        let (mut mgmt_to_ui, ui_from_mgmt) = channel();
+        let (ui_to_net, _net_from_ui) = channel();
+        let (mut net_to_ui, ui_from_net) = channel();
+
+        let (audio_stream, written_frames) = CapturingAudioStream::new();
+        let mut sframe_state = sframe::SFrameState::new(&[0xff; 16], 0);
+        let mgmt_collector = MgmtTlvCollector::new();
+        let test_alaw = encode_alaw(4321);
+        let expected_decoded = decode_alaw(test_alaw) as u16;
+
+        tokio::select! {
+            _ = run(
+                ui_to_mgmt,
+                ui_from_mgmt,
+                ui_to_net,
+                ui_from_net,
+                mock_led_pins(),
+                MockButton,
+                MockButton,
+                MockButton,
+                mock_i2c_with_eeprom(),
+                MockDelay,
+                audio_stream,
+                NoOpBoard,
+            ) => unreachable!(),
+            _ = mgmt_collector.collect_from(mgmt_from_ui) => unreachable!(),
+            _ = async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+
+                mgmt_to_ui
+                    .write_tlv(CtlToUi::SetAudioReceivedPath, &[UiAudioReceivedPath::None as u8])
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                for _ in 0..MIN_START_LEVEL + 1 {
+                    let mut test_frame = crate::ui::Frame::default();
+                    test_frame.0[0] = test_alaw;
+                    let encrypted = encrypt_frame_for_test(&test_frame, &mut sframe_state);
+                    net_to_ui
+                        .write_tlv(crate::shared::NetToUi::AudioFrame, &encrypted)
+                        .await
+                        .unwrap();
+                }
+
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            } => {}
+        }
+
+        let found_locally = written_frames
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|f| f.0[0] == expected_decoded);
+        assert!(
+            !found_locally,
+            "Dropped NET audio should not play out locally"
+        );
+        assert!(
+            mgmt_collector.audio_frames.lock().unwrap().is_empty(),
+            "Dropped NET audio should not be forwarded to CTL"
+        );
+    }
+
+    #[tokio::test]
+    async fn net_audio_frame_forwards_and_plays_when_received_path_both() {
+        use crate::shared::mocks::CapturingAudioStream;
+        use crate::shared::{MIN_START_LEVEL, WriteTlv};
+        use audio_codec_algorithms::decode_alaw;
+
+        let (ui_to_mgmt, mgmt_from_ui) = channel();
+        let (mut mgmt_to_ui, ui_from_mgmt) = channel();
+        let (ui_to_net, _net_from_ui) = channel();
+        let (mut net_to_ui, ui_from_net) = channel();
+
+        let (audio_stream, written_frames) = CapturingAudioStream::new();
+        let mut sframe_state = sframe::SFrameState::new(&[0xff; 16], 0);
+        let expected_forwarded = std::sync::Arc::new(std::sync::Mutex::new(None::<Vec<u8>>));
+        let expected_forwarded_task = expected_forwarded.clone();
+        let mgmt_collector = MgmtTlvCollector::new();
+        let expected_playback_sample = decode_alaw(0x5a) as u16;
+
+        tokio::select! {
+            _ = run(
+                ui_to_mgmt,
+                ui_from_mgmt,
+                ui_to_net,
+                ui_from_net,
+                mock_led_pins(),
+                MockButton,
+                MockButton,
+                MockButton,
+                mock_i2c_with_eeprom(),
+                MockDelay,
+                audio_stream,
+                NoOpBoard,
+            ) => unreachable!(),
+            _ = mgmt_collector.collect_from(mgmt_from_ui) => unreachable!(),
+            _ = async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+
+                mgmt_to_ui
+                    .write_tlv(CtlToUi::SetAudioReceivedPath, &[UiAudioReceivedPath::Both as u8])
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                for _ in 0..MIN_START_LEVEL {
+                    let padding_frame = crate::ui::Frame::default();
+                    let encrypted = encrypt_frame_for_test(&padding_frame, &mut sframe_state);
+                    net_to_ui
+                        .write_tlv(crate::shared::NetToUi::AudioFrame, &encrypted)
+                        .await
+                        .unwrap();
+                }
+
+                let mut test_frame = crate::ui::Frame::default();
+                test_frame.0[0] = 0x5a;
+                let encrypted = encrypt_frame_for_test(&test_frame, &mut sframe_state);
+                *expected_forwarded_task.lock().unwrap() = Some(encrypted.to_vec());
+                net_to_ui
+                    .write_tlv(crate::shared::NetToUi::AudioFrame, &encrypted)
+                    .await
+                    .unwrap();
+
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            } => {}
+        }
+
+        let forwarded = mgmt_collector.audio_frames.lock().unwrap();
+        assert!(
+            !forwarded.is_empty(),
+            "NET audio should be forwarded to CTL when received path=both"
+        );
+        assert_eq!(
+            forwarded.last().unwrap(),
+            expected_forwarded.lock().unwrap().as_ref().unwrap()
+        );
+        let found_locally = written_frames
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|f| f.0[0] == expected_playback_sample);
+        assert!(
+            found_locally,
+            "NET audio should also play locally when received path=both"
+        );
+    }
+
     /// Collector for TLVs on the MGMT interface (CTL path).
     /// Captures AudioStart, AudioEnd, and AudioFrame TLVs.
     struct MgmtTlvCollector {
@@ -1816,7 +2209,7 @@ mod audio_streaming_tests {
 
                 // Set audio mode to CTL
                 mgmt_to_ui
-                    .write_tlv(CtlToUi::SetAudioMode, &[AudioMode::Ctl as u8])
+                    .write_tlv(CtlToUi::SetAudioTransmitMode, &[AudioTransmitMode::Ctl as u8])
                     .await
                     .unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1916,7 +2309,7 @@ mod audio_streaming_tests {
 
                 // Explicitly set audio mode to NET (should be default, but be explicit)
                 mgmt_to_ui
-                    .write_tlv(CtlToUi::SetAudioMode, &[AudioMode::Net as u8])
+                    .write_tlv(CtlToUi::SetAudioTransmitMode, &[AudioTransmitMode::Net as u8])
                     .await
                     .unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2011,7 +2404,7 @@ mod audio_streaming_tests {
 
                 // Set audio mode to CTL
                 mgmt_to_ui
-                    .write_tlv(CtlToUi::SetAudioMode, &[AudioMode::Ctl as u8])
+                    .write_tlv(CtlToUi::SetAudioTransmitMode, &[AudioTransmitMode::Ctl as u8])
                     .await
                     .unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2152,7 +2545,7 @@ mod audio_streaming_tests {
 
                 // Set audio mode to CTL
                 mgmt_to_ui
-                    .write_tlv(CtlToUi::SetAudioMode, &[AudioMode::Ctl as u8])
+                    .write_tlv(CtlToUi::SetAudioTransmitMode, &[AudioTransmitMode::Ctl as u8])
                     .await
                     .unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
