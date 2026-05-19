@@ -13,8 +13,8 @@ use link::ctl::flash::FlashPhase;
 use link::ctl::{MonitorEvent, escape_non_ascii};
 use link::protocol_config::timeouts;
 use link::{
-    AdjDirection, AudioTransmitMode, CtlToMgmt, Pin, PinValue, UiAudioReceivedPath,
-    UiLoopbackMode, UiToCtl,
+    AdjDirection, AudioTransmitMode, CtlToMgmt, Pin, PinValue, UiAudioReceivedPath, UiLoopbackMode,
+    UiToCtl,
 };
 use std::io::Write;
 use std::sync::mpsc;
