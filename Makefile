@@ -40,6 +40,8 @@ $(MGMT_BIN): FORCE
 $(MGMT_DFU_BIN): FORCE
 	cd mgmt-dfu && cargo objcopy --release -- -O binary target/thumbv6m-none-eabi/release/mgmt-dfu.bin
 
+mgmt-dfu: $(MGMT_DFU_BIN)
+
 $(NET_BIN): FORCE
 	cd net && cargo build
 
