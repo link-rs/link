@@ -31,6 +31,8 @@ use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, usb};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_time::Timer;
 use embassy_usb::driver::{Endpoint, EndpointIn, EndpointOut};
 use embassy_usb::{Builder, Config};
@@ -94,6 +96,22 @@ fn request_bootloader_reset() -> ! {
     cortex_m::peripheral::SCB::sys_reset();
 }
 
+/// Signaled by the DFU detach handler. A separate task waits on this,
+/// gives the in-flight control transfer's status stage time to land,
+/// and then triggers the reset.
+///
+/// Without the delay, `sys_reset` runs inside the USB control handler
+/// before the status stage completes. dfu-util tolerates this, but
+/// Chrome's WebUSB reports the `controlTransferOut` as failed.
+static RESET_REQUEST: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+#[embassy_executor::task]
+async fn reset_task() {
+    RESET_REQUEST.wait().await;
+    Timer::after_millis(50).await;
+    request_bootloader_reset();
+}
+
 bind_interrupts!(struct Irqs {
     USB => usb::InterruptHandler<peripherals::USB>;
 });
@@ -139,6 +157,11 @@ async fn main(spawner: Spawner) {
         Output::new(p.PB4, Level::High, Speed::Low),
         Output::new(p.PB1, Level::Low, Speed::Low),
     ));
+
+    // Deferred-reset task: lets `DetachHandler::enter_dfu` defer the
+    // actual `sys_reset` until after the USB control-transfer's status
+    // stage completes.
+    spawner.must_spawn(reset_task());
 
     // USB peripheral on PA12 (D+) / PA11 (D-).
     let driver = Driver::new(p.USB, Irqs, p.PA12, p.PA11);
@@ -226,13 +249,15 @@ async fn blink(mut r: Output<'static>, mut g: Output<'static>, mut b: Output<'st
 
 /// `embassy_usb_dfu::application::Handler` impl: when the host issues
 /// `DFU_DETACH` on the runtime DFU descriptor, embassy invokes
-/// `enter_dfu` from the USB control transfer. We don't try to be polite
-/// about completing the response — `WILL_DETACH` means the host expects
-/// the device to disappear after the DETACH request, and our soft-reset
-/// path does exactly that.
+/// `enter_dfu` from inside the USB control-transfer handler. We must
+/// *not* `sys_reset` here directly — the status stage of the transfer
+/// hasn't completed yet, and stricter hosts (Chrome's WebUSB) fail the
+/// transfer with NetworkError if it doesn't terminate cleanly. Defer
+/// the reset by signaling `reset_task`, which delays a bit and then
+/// triggers the soft-DFU path.
 struct DetachHandler;
 impl Handler for DetachHandler {
     fn enter_dfu(&mut self) {
-        request_bootloader_reset();
+        RESET_REQUEST.signal(());
     }
 }
