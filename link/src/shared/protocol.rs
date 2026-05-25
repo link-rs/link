@@ -78,7 +78,7 @@ impl core::fmt::Display for UiLoopbackMode {
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
-pub enum AudioMode {
+pub enum AudioTransmitMode {
     /// Audio routed to/from NET chip (normal operation)
     #[default]
     Net = 0,
@@ -87,12 +87,39 @@ pub enum AudioMode {
     Both,
 }
 
-impl core::fmt::Display for AudioMode {
+impl core::fmt::Display for AudioTransmitMode {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            AudioMode::Net => write!(f, "net"),
-            AudioMode::Ctl => write!(f, "ctl"),
-            AudioMode::Both => write!(f, "both"),
+            AudioTransmitMode::Net => write!(f, "net"),
+            AudioTransmitMode::Ctl => write!(f, "ctl"),
+            AudioTransmitMode::Both => write!(f, "both"),
+        }
+    }
+}
+
+/// Output path for audio received by the UI chip from NET.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default, IntoPrimitive, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum UiAudioReceivedPath {
+    /// Drop received audio.
+    None = 0,
+    /// Play received audio through the UI headphones path.
+    #[default]
+    Headphones,
+    /// Forward received audio to CTL via MGMT.
+    Ctl,
+    /// Forward received audio to CTL and play it locally.
+    Both,
+}
+
+impl core::fmt::Display for UiAudioReceivedPath {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            UiAudioReceivedPath::None => write!(f, "none"),
+            UiAudioReceivedPath::Headphones => write!(f, "headphones"),
+            UiAudioReceivedPath::Ctl => write!(f, "ctl"),
+            UiAudioReceivedPath::Both => write!(f, "both"),
         }
     }
 }
@@ -228,10 +255,14 @@ pub enum CtlToUi {
     SetMicPreamp,
     /// Adjust microphone preamp level (2 bytes: AdjMicPreamp, amount)
     AdjMicPreamp,
-    /// Get audio routing mode (returns AudioMode)
-    GetAudioMode,
-    /// Set audio routing mode (1 byte: AudioMode - 0=Net, 1=Ctl)
-    SetAudioMode,
+    /// Get audio transmit mode (returns AudioTransmitMode)
+    GetAudioTransmitMode,
+    /// Set audio transmit mode (1 byte: AudioTransmitMode - 0=Net, 1=Ctl)
+    SetAudioTransmitMode,
+    /// Get received audio output path (returns UiAudioReceivedPath)
+    GetAudioReceivedPath,
+    /// Set received audio output path (1 byte: UiAudioReceivedPath)
+    SetAudioReceivedPath,
     /// Audio frame from CTL to play out (when audio-mode=ctl)
     AudioFrame,
     /// Audio stream start marker from CTL
@@ -261,8 +292,10 @@ pub enum UiToCtl {
     Volume,
     /// Microphone preamp level (1 byte: u8)
     MicPreamp,
-    /// Audio routing mode (1 byte: AudioMode - 0=Net, 1=Ctl)
-    AudioMode,
+    /// Audio transmit mode (1 byte: AudioTransmitMode - 0=Net, 1=Ctl)
+    AudioTransmitMode,
+    /// Received audio output path (1 byte: UiAudioReceivedPath)
+    AudioReceivedPath,
     /// Audio capture started (button pressed) - sent when audio-mode=ctl
     AudioStart,
     /// Audio capture ended (button released) - sent when audio-mode=ctl
@@ -270,6 +303,9 @@ pub enum UiToCtl {
     /// Audio frame from UI mic (when audio-mode=ctl)
     /// Format: [channel_id: u8][sframe_header][encrypted_chunk][auth_tag]
     AudioFrame,
+    /// Audio frame that has already been SFrame-decrypted by UI.
+    /// Format: [channel_id: u8][media_chunk]
+    AudioFrameUnprotected,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

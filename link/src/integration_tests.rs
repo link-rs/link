@@ -13,7 +13,7 @@ use crate::shared::mocks::{
     MockPin, TrackingPin, async_async_channel, ctl_async_channel, mock_i2c_with_eeprom,
     mock_led_pins,
 };
-use crate::{NetLoopbackMode, PinValue, UiLoopbackMode, mgmt, net, ui};
+use crate::{NetLoopbackMode, PinValue, UiAudioReceivedPath, UiLoopbackMode, mgmt, net, ui};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use std::sync::{Arc, Mutex};
@@ -481,6 +481,39 @@ async fn ui_loopback_set_sframe() {
         ctl.ui_set_loopback(UiLoopbackMode::Sframe).await.unwrap();
         let mode = ctl.ui_get_loopback().await.unwrap();
         assert_eq!(mode, UiLoopbackMode::Sframe);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn ui_audio_received_path_default_headphones() {
+    device_test(|mut ctl| async move {
+        let path = ctl.ui_get_audio_received_path().await.unwrap();
+        assert_eq!(path, UiAudioReceivedPath::Headphones);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn ui_audio_received_path_set_ctl() {
+    device_test(|mut ctl| async move {
+        ctl.ui_set_audio_received_path(UiAudioReceivedPath::Ctl)
+            .await
+            .unwrap();
+        let path = ctl.ui_get_audio_received_path().await.unwrap();
+        assert_eq!(path, UiAudioReceivedPath::Ctl);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn ui_audio_received_path_set_both() {
+    device_test(|mut ctl| async move {
+        ctl.ui_set_audio_received_path(UiAudioReceivedPath::Both)
+            .await
+            .unwrap();
+        let path = ctl.ui_get_audio_received_path().await.unwrap();
+        assert_eq!(path, UiAudioReceivedPath::Both);
     })
     .await;
 }

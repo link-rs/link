@@ -1,7 +1,7 @@
 //! Audio capture from UI chip.
 //!
 //! This module handles receiving audio frames from the UI chip,
-//! decrypting them with SFrame, decoding A-law, and outputting PCM samples.
+//! optionally decrypting them with SFrame, decoding A-law, and outputting PCM samples.
 
 use crate::shared::chunk;
 use crate::shared::sframe::{self, SFrameState};
@@ -34,7 +34,7 @@ impl CaptureSession {
         }
     }
 
-    /// Process an incoming audio frame from the UI chip.
+    /// Process an incoming protected audio frame from the UI chip.
     ///
     /// The frame format is: channel_id (1 byte) + encrypted chunk
     /// (SFrame header + encrypted data + auth tag).
@@ -73,11 +73,43 @@ impl CaptureSession {
             return Err(CaptureError::DecryptionFailedDetail(e, header_info));
         }
 
-        // Parse the chunk to extract audio data
-        let parsed = chunk::parse_chunk(&heapless_buf).ok_or(CaptureError::InvalidChunk)?;
+        self.process_decrypted_chunk(&heapless_buf, sink)
+    }
 
-        let alaw_data =
-            &heapless_buf[parsed.audio_offset..parsed.audio_offset + parsed.audio_length];
+    /// Process an incoming audio frame that has already been SFrame-decrypted.
+    ///
+    /// The frame format is: channel_id (1 byte) + media chunk.
+    pub fn process_unprotected_frame<S: AudioSink>(
+        &mut self,
+        frame_data: &[u8],
+        sink: &mut S,
+    ) -> Result<bool, CaptureError> {
+        // Frame format: channel_id (1 byte) + decrypted chunk
+        if frame_data.len() < 2 {
+            return Ok(false);
+        }
+
+        // Extract channel_id (unused for now, but could be used for routing)
+        let _channel_id = frame_data[0];
+        let chunk_data = &frame_data[1..];
+
+        let mut heapless_buf: heapless::Vec<u8, 256> = heapless::Vec::new();
+        heapless_buf
+            .extend_from_slice(chunk_data)
+            .map_err(|_| CaptureError::BufferTooSmall)?;
+
+        self.process_decrypted_chunk(&heapless_buf, sink)
+    }
+
+    fn process_decrypted_chunk<S: AudioSink>(
+        &self,
+        chunk_data: &[u8],
+        sink: &mut S,
+    ) -> Result<bool, CaptureError> {
+        // Parse the chunk to extract audio data
+        let parsed = chunk::parse_chunk(chunk_data).ok_or(CaptureError::InvalidChunk)?;
+
+        let alaw_data = &chunk_data[parsed.audio_offset..parsed.audio_offset + parsed.audio_length];
 
         // Decode A-law to PCM
         let mut pcm_samples = Vec::with_capacity(alaw_data.len());
@@ -242,6 +274,19 @@ mod tests {
         frame
     }
 
+    /// Helper to create a test frame that is already decrypted.
+    fn create_test_unprotected_frame(pcm_samples: &[i16], channel_id: u8) -> Vec<u8> {
+        let alaw_data: Vec<u8> = pcm_samples.iter().map(|&s| encode_alaw(s)).collect();
+
+        let mut chunk_buf: heapless::Vec<u8, 256> = heapless::Vec::new();
+        chunk_buf.extend_from_slice(&alaw_data).unwrap();
+        chunk::prepend_media_header(&mut chunk_buf, false).unwrap();
+
+        let mut frame = vec![channel_id];
+        frame.extend_from_slice(&chunk_buf);
+        frame
+    }
+
     #[test]
     fn test_capture_session_roundtrip() {
         let key = [0xAA; 16];
@@ -308,6 +353,47 @@ mod tests {
         assert!(matches!(
             result,
             Err(CaptureError::DecryptionFailedDetail(_, Some((0, 0))))
+        ));
+    }
+
+    #[test]
+    fn test_capture_session_unprotected_roundtrip() {
+        let key = [0xAA; 16];
+        let mut session = CaptureSession::new(&key);
+        let mut sink = MockSink::new();
+
+        let test_pcm: Vec<i16> = vec![1000, 2000, 3000, -1000, -2000, -3000];
+        let frame = create_test_unprotected_frame(&test_pcm, 0);
+
+        let result = session.process_unprotected_frame(&frame, &mut sink);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+        assert_eq!(sink.samples.len(), test_pcm.len());
+
+        for (i, (&expected, &actual)) in test_pcm.iter().zip(sink.samples.iter()).enumerate() {
+            let expected_decoded = decode_alaw(encode_alaw(expected));
+            assert_eq!(
+                actual, expected_decoded,
+                "Sample {} mismatch: expected {} (from {}), got {}",
+                i, expected_decoded, expected, actual
+            );
+        }
+    }
+
+    #[test]
+    fn test_capture_session_unprotected_invalid_frame() {
+        let key = [0xBB; 16];
+        let mut session = CaptureSession::new(&key);
+        let mut sink = MockSink::new();
+
+        assert_eq!(session.process_unprotected_frame(&[], &mut sink), Ok(false));
+        assert_eq!(
+            session.process_unprotected_frame(&[0x00], &mut sink),
+            Ok(false)
+        );
+        assert!(matches!(
+            session.process_unprotected_frame(&[0x00, 0x01], &mut sink),
+            Err(CaptureError::InvalidChunk)
         ));
     }
 }

@@ -223,11 +223,18 @@ enum UiAction {
     #[command(name = "clear-storage")]
     ClearStorage,
 
-    /// Get or set the audio routing mode (ctl or net)
-    #[command(name = "audio-mode")]
-    AudioMode {
+    /// Get or set the audio transmit mode (ctl or net)
+    #[command(name = "audio-transmit-mode")]
+    AudioTransmitMode {
         #[command(subcommand)]
-        action: Option<AudioModeAction>,
+        action: Option<AudioTransmitModeAction>,
+    },
+
+    /// Get or set where NET-received audio is routed
+    #[command(name = "audio-received-path")]
+    AudioReceivedPath {
+        #[command(subcommand)]
+        action: Option<AudioReceivedPathAction>,
     },
 }
 
@@ -393,14 +400,45 @@ enum LoopbackAction {
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
-enum AudioModeAction {
-    /// Get the current audio routing mode
+enum AudioTransmitModeAction {
+    /// Get the current audio transmit mode
     #[default]
     Get,
     /// Route audio to/from CTL for capture/playback testing
     Ctl,
     /// Route audio to/from NET (normal operation)
     Net,
+}
+
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+enum CaptureTransmitMode {
+    #[default]
+    Ctl,
+    Net,
+    Both,
+}
+
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+enum CaptureReceiveMode {
+    Ctl,
+    #[default]
+    Headphones,
+    Both,
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
+enum AudioReceivedPathAction {
+    /// Get the current received audio path
+    #[default]
+    Get,
+    /// Drop received audio
+    None,
+    /// Play received audio through headphones
+    Headphones,
+    /// Forward received audio to CTL
+    Ctl,
+    /// Forward received audio to CTL and play it locally
+    Both,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -420,10 +458,21 @@ enum AudioAction {
 #[derive(Debug, Clone, Subcommand)]
 enum CaptureMode {
     /// Play captured audio to computer speakers (8kHz mono)
-    Live,
+    Live {
+        #[arg(long, value_enum, default_value_t)]
+        transmit_mode: CaptureTransmitMode,
+        #[arg(long, value_enum, default_value_t)]
+        receive_mode: CaptureReceiveMode,
+    },
     /// Save captured audio to WAV files (8kHz mono 16-bit)
     /// Each PTT press creates a new file: basename_001.wav, basename_002.wav, etc.
-    Wav { basename: String },
+    Wav {
+        #[arg(long, value_enum, default_value_t)]
+        transmit_mode: CaptureTransmitMode,
+        #[arg(long, value_enum, default_value_t)]
+        receive_mode: CaptureReceiveMode,
+        basename: String,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
