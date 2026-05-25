@@ -177,6 +177,8 @@ where
     let handle_task = async {
         let mut ws_mode = WsMode::Normal;
         let mut loopback = NetLoopbackMode::Off;
+        let mut blaster_enabled = false;
+        let mut blaster_size = -1i16;
         let mut wifi_connected = false;
         let mut ws_connected = false;
         // Per-channel jitter buffers
@@ -196,6 +198,8 @@ where
                             &ws_cmd_tx,
                             &mut ws_mode,
                             &mut loopback,
+                            &mut blaster_enabled,
+                            &mut blaster_size,
                         )
                         .await
                     }
@@ -244,6 +248,8 @@ where
     let handle_task = async {
         let mut ws_mode = WsMode::Normal;
         let mut loopback = NetLoopbackMode::Off;
+        let mut blaster_enabled = false;
+        let mut blaster_size = -1i16;
         let mut wifi_connected = false;
         let mut ws_connected = false;
         info!("net: ready to handle events");
@@ -258,6 +264,8 @@ where
                         &ws_cmd_tx,
                         &mut ws_mode,
                         &mut loopback,
+                        &mut blaster_enabled,
+                        &mut blaster_size,
                     )
                     .await
                 }
@@ -293,6 +301,8 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
     ws_cmd_tx: &Sender<'a, RM, WsCommand, N>,
     _ws_mode: &mut WsMode,
     loopback: &mut NetLoopbackMode,
+    blaster_enabled: &mut bool,
+    blaster_size: &mut i16,
 ) where
     M: WriteTlv<NetToCtl>,
     U: WriteTlv<NetToUi>,
@@ -395,11 +405,44 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             *loopback = mode;
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
+        CtlToNet::BlasterSend => {
+            info!("net: blaster send ({} bytes)", tlv.value.len());
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
+        }
         CtlToNet::GetLoopback => {
             info!("net: get loopback = {}", *loopback);
             to_mgmt
                 .must_write_tlv(NetToCtl::Loopback, &[*loopback as u8])
                 .await;
+        }
+        CtlToNet::GetBlaster => {
+            info!(
+                "net: get blaster = {}, size = {}",
+                *blaster_enabled, *blaster_size
+            );
+            to_mgmt
+                .must_write_tlv(
+                    NetToCtl::Blaster,
+                    &[
+                        *blaster_enabled as u8,
+                        blaster_size.to_le_bytes()[0],
+                        blaster_size.to_le_bytes()[1],
+                    ],
+                )
+                .await;
+        }
+        CtlToNet::SetBlaster => {
+            *blaster_enabled = tlv.value.first().copied().unwrap_or(0) != 0;
+            if tlv.value.len() >= 3 {
+                *blaster_size = i16::from_le_bytes([tlv.value[1], tlv.value[2]]);
+            } else {
+                *blaster_size = -1;
+            }
+            info!(
+                "net: set blaster = {}, size = {}",
+                *blaster_enabled, *blaster_size
+            );
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
         CtlToNet::GetLogsEnabled => {
             info!("net: get logs enabled");
@@ -858,6 +901,8 @@ mod tests {
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
         let mut ws_mode = WsMode::Normal;
         let mut loopback = NetLoopbackMode::Off;
+        let mut blaster_enabled = false;
+        let mut blaster_size = -1i16;
 
         let tlv = Tlv {
             tlv_type: CtlToNet::Ping,
@@ -872,6 +917,8 @@ mod tests {
             &channel.sender(),
             &mut ws_mode,
             &mut loopback,
+            &mut blaster_enabled,
+            &mut blaster_size,
         )
         .await;
 
@@ -888,6 +935,8 @@ mod tests {
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
         let mut ws_mode = WsMode::Normal;
         let mut loopback = NetLoopbackMode::Off;
+        let mut blaster_enabled = false;
+        let mut blaster_size = -1i16;
 
         let tlv = Tlv {
             tlv_type: CtlToNet::SetRelayUrl,
@@ -902,6 +951,8 @@ mod tests {
             &channel.sender(),
             &mut ws_mode,
             &mut loopback,
+            &mut blaster_enabled,
+            &mut blaster_size,
         )
         .await;
 
@@ -930,6 +981,8 @@ mod tests {
         let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
         let mut ws_mode = WsMode::Normal;
         let mut loopback = NetLoopbackMode::Off;
+        let mut blaster_enabled = false;
+        let mut blaster_size = -1i16;
 
         let tlv = Tlv {
             tlv_type: CtlToNet::GetRelayUrl,
@@ -944,12 +997,97 @@ mod tests {
             &channel.sender(),
             &mut ws_mode,
             &mut loopback,
+            &mut blaster_enabled,
+            &mut blaster_size,
         )
         .await;
 
         assert_eq!(to_mgmt.written.len(), 1);
         assert_eq!(to_mgmt.written[0].0, NetToCtl::RelayUrl);
         assert_eq!(to_mgmt.written[0].1, b"wss://test.relay");
+    }
+
+    #[tokio::test]
+    async fn handle_mgmt_blaster_send_returns_ack() {
+        let mut to_mgmt = MockMgmtWriter::new();
+        let mut to_ui = MockUiWriter::new();
+        let mut storage = NetStorage::new(MockFlash::new(), 0);
+        let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
+        let mut ws_mode = WsMode::Normal;
+        let mut loopback = NetLoopbackMode::Off;
+        let mut blaster_enabled = false;
+        let mut blaster_size = -1i16;
+
+        let tlv = Tlv {
+            tlv_type: CtlToNet::BlasterSend,
+            value: heapless::Vec::from_slice(&[0x55; 16]).unwrap(),
+        };
+
+        handle_mgmt(
+            tlv,
+            &mut to_mgmt,
+            &mut to_ui,
+            &mut storage,
+            &channel.sender(),
+            &mut ws_mode,
+            &mut loopback,
+            &mut blaster_enabled,
+            &mut blaster_size,
+        )
+        .await;
+
+        assert_eq!(to_mgmt.written.len(), 1);
+        assert_eq!(to_mgmt.written[0].0, NetToCtl::Ack);
+    }
+
+    #[tokio::test]
+    async fn handle_mgmt_set_and_get_blaster() {
+        let mut to_mgmt = MockMgmtWriter::new();
+        let mut to_ui = MockUiWriter::new();
+        let mut storage = NetStorage::new(MockFlash::new(), 0);
+        let channel: Channel<CriticalSectionRawMutex, WsCommand, 4> = Channel::new();
+        let mut ws_mode = WsMode::Normal;
+        let mut loopback = NetLoopbackMode::Off;
+        let mut blaster_enabled = false;
+        let mut blaster_size = -1i16;
+
+        handle_mgmt(
+            Tlv {
+                tlv_type: CtlToNet::SetBlaster,
+                value: heapless::Vec::from_slice(&[1, 100, 0]).unwrap(),
+            },
+            &mut to_mgmt,
+            &mut to_ui,
+            &mut storage,
+            &channel.sender(),
+            &mut ws_mode,
+            &mut loopback,
+            &mut blaster_enabled,
+            &mut blaster_size,
+        )
+        .await;
+
+        handle_mgmt(
+            Tlv {
+                tlv_type: CtlToNet::GetBlaster,
+                value: heapless::Vec::new(),
+            },
+            &mut to_mgmt,
+            &mut to_ui,
+            &mut storage,
+            &channel.sender(),
+            &mut ws_mode,
+            &mut loopback,
+            &mut blaster_enabled,
+            &mut blaster_size,
+        )
+        .await;
+
+        assert_eq!(to_mgmt.written[0].0, NetToCtl::Ack);
+        assert_eq!(to_mgmt.written[1].0, NetToCtl::Blaster);
+        assert_eq!(to_mgmt.written[1].1, &[1, 100, 0]);
+        assert!(blaster_enabled);
+        assert_eq!(blaster_size, 100);
     }
 
     // ==================== WsCommand/WsEvent Construction Tests ====================

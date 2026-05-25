@@ -12,8 +12,9 @@ use crate::shared::protocol_config::retries::MAX_TLV_SKIP;
 use crate::shared::timing::reset::ESP32_RESET_HOLD_MS;
 use crate::shared::tlv::{buffer, tunnel};
 use crate::shared::{
-    AdjDirection, CtlToMgmt, CtlToNet, CtlToUi, HEADER_SIZE, MgmtToCtl, NetLoopbackMode, NetToCtl,
-    SYNC_WORD, StackInfo, Tlv, UiAudioReceivedPath, UiLoopbackMode, UiToCtl, WifiSsid,
+    AdjDirection, CtlToMgmt, CtlToNet, CtlToUi, HEADER_SIZE, MAX_VALUE_SIZE, MgmtToCtl,
+    NetLoopbackMode, NetToCtl, SYNC_WORD, StackInfo, Tlv, UiAudioReceivedPath, UiLoopbackMode,
+    UiToCtl, WifiSsid,
 };
 
 use super::port::CtlPort;
@@ -862,6 +863,27 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(UiLoopbackMode::try_from(mode_byte).unwrap_or(UiLoopbackMode::Off))
     }
 
+    /// Send a blaster payload to the UI chip and wait for an acknowledgment.
+    pub async fn ui_blaster_send(&mut self, payload: &[u8]) -> Result<(), CtlError> {
+        if payload.len() > MAX_VALUE_SIZE {
+            return Err(CtlError::TooLong);
+        }
+
+        self.write_tlv_ui(CtlToUi::BlasterSend, payload).await?;
+        let tlv = self.read_tlv_ui_skip_log().await?;
+        if tlv.tlv_type == UiToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != UiToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Get UI chip stack usage information.
     pub async fn ui_get_stack_info(&mut self) -> Result<StackInfo, CtlError> {
         self.write_tlv_ui(CtlToUi::GetStackInfo, &[]).await?;
@@ -1447,6 +1469,77 @@ impl<P: CtlPort> CtlCore<P> {
         }
         let mode_byte = tlv.value.first().copied().unwrap_or(0);
         Ok(NetLoopbackMode::try_from(mode_byte).unwrap_or(NetLoopbackMode::Off))
+    }
+
+    /// Send a blaster payload to the NET chip and wait for an acknowledgment.
+    pub async fn net_blaster_send(&mut self, payload: &[u8]) -> Result<(), CtlError> {
+        if payload.len() > MAX_VALUE_SIZE {
+            return Err(CtlError::TooLong);
+        }
+
+        self.write_tlv_net(CtlToNet::BlasterSend, payload).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get the NET blaster state.
+    pub async fn net_get_blaster(&mut self) -> Result<(bool, i16), CtlError> {
+        self.write_tlv_net(CtlToNet::GetBlaster, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Blaster {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Blaster",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+
+        if tlv.value.len() != 3 {
+            return Err(CtlError::InvalidLength {
+                expected: 3,
+                actual: tlv.value.len(),
+            });
+        }
+
+        let enabled = tlv.value[0] != 0;
+        let blaster_size = i16::from_le_bytes([tlv.value[1], tlv.value[2]]);
+        Ok((enabled, blaster_size))
+    }
+
+    /// Set the NET blaster state.
+    pub async fn net_set_blaster(
+        &mut self,
+        enabled: bool,
+        blaster_size: i16,
+    ) -> Result<(), CtlError> {
+        let size = blaster_size.to_le_bytes();
+        self.write_tlv_net(CtlToNet::SetBlaster, &[enabled as u8, size[0], size[1]])
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
     }
 
     /// Add a WiFi SSID and password pair to NET chip storage.
