@@ -538,6 +538,49 @@ async fn handle_mgmt<'a, M, U, F, RM: RawMutex, const N: usize>(
             }
             to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
         }
+        CtlToNet::GetUserId => {
+            info!("net: get user_id");
+            to_mgmt
+                .must_write_tlv(NetToCtl::UserId, &storage.get_user_id().to_le_bytes())
+                .await;
+        }
+        CtlToNet::SetUserId => {
+            if tlv.value.len() != 8 {
+                info!("net: invalid user_id length");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"length").await;
+                return;
+            }
+            let user_id = i64::from_le_bytes(tlv.value.as_slice().try_into().unwrap());
+            info!("net: set user_id = {}", user_id);
+            storage.set_user_id(user_id);
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
+                return;
+            }
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
+        }
+        CtlToNet::GetUserName => {
+            info!("net: get user_name");
+            to_mgmt
+                .must_write_tlv(NetToCtl::UserName, storage.get_user_name().as_bytes())
+                .await;
+        }
+        CtlToNet::SetUserName => {
+            let user_name = core::str::from_utf8(&tlv.value).unwrap_or("");
+            info!("net: set user_name");
+            if storage.set_user_name(user_name).is_err() {
+                info!("net: failed to set user_name (too long)");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"length").await;
+                return;
+            }
+            if storage.save().is_err() {
+                info!("net: failed to save storage");
+                to_mgmt.must_write_tlv(NetToCtl::Error, b"save").await;
+                return;
+            }
+            to_mgmt.must_write_tlv(NetToCtl::Ack, &[]).await;
+        }
         CtlToNet::BurnJtagEfuse => {
             info!("net: burn jtag efuse");
             // Stub: return error - actual implementation would burn efuse

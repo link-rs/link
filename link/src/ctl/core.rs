@@ -1759,6 +1759,75 @@ impl<P: CtlPort> CtlCore<P> {
         Ok(())
     }
 
+    /// Get NET chip user ID.
+    pub async fn net_get_user_id(&mut self) -> Result<i64, CtlError> {
+        self.write_tlv_net(CtlToNet::GetUserId, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type != NetToCtl::UserId {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "UserId",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        if tlv.value.len() != 8 {
+            return Err(CtlError::InvalidLength {
+                expected: 8,
+                actual: tlv.value.len(),
+            });
+        }
+        Ok(i64::from_le_bytes(tlv.value.as_slice().try_into().unwrap()))
+    }
+
+    /// Set NET chip user ID.
+    pub async fn net_set_user_id(&mut self, user_id: i64) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetUserId, &user_id.to_le_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
+    /// Get NET chip user name.
+    pub async fn net_get_user_name(&mut self) -> Result<String, CtlError> {
+        self.write_tlv_net(CtlToNet::GetUserName, &[]).await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type != NetToCtl::UserName {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "UserName",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        let user_name = core::str::from_utf8(&tlv.value).map_err(|_| CtlError::InvalidUtf8)?;
+        Ok(user_name.into())
+    }
+
+    /// Set NET chip user name.
+    pub async fn net_set_user_name(&mut self, user_name: &str) -> Result<(), CtlError> {
+        self.write_tlv_net(CtlToNet::SetUserName, user_name.as_bytes())
+            .await?;
+        let tlv = self.read_tlv_net().await?;
+        if tlv.tlv_type == NetToCtl::Error {
+            let msg = core::str::from_utf8(&tlv.value).unwrap_or("unknown error");
+            return Err(CtlError::DeviceError(msg.into()));
+        }
+        if tlv.tlv_type != NetToCtl::Ack {
+            return Err(CtlError::UnexpectedResponse {
+                expected: "Ack",
+                actual: format!("{:?}", tlv.tlv_type),
+            });
+        }
+        Ok(())
+    }
+
     /// Burn JTAG/USB disable efuse on NET chip (IRREVERSIBLE!).
     ///
     /// This permanently disables JTAG and USB debugging on the ESP32-S3.

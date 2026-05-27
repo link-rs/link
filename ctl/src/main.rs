@@ -336,6 +336,15 @@ enum GetSetU8 {
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
+enum GetSetI64 {
+    /// Get the current value
+    #[default]
+    Get,
+    /// Set a new value
+    Set { value: i64 },
+}
+
+#[derive(Debug, Clone, Default, Subcommand)]
 enum VolumeAction {
     /// Get the current value
     #[default]
@@ -596,6 +605,20 @@ enum NetAction {
     /// AI configuration (JSON object)
     #[command(name = "ai")]
     Ai {
+        #[command(subcommand)]
+        action: Option<GetSetString>,
+    },
+
+    /// User ID
+    #[command(name = "user-id")]
+    UserId {
+        #[command(subcommand)]
+        action: Option<GetSetI64>,
+    },
+
+    /// User name
+    #[command(name = "user-name")]
+    UserName {
         #[command(subcommand)]
         action: Option<GetSetString>,
     },
