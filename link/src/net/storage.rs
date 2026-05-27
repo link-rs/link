@@ -18,6 +18,8 @@ pub const MAX_LANGUAGE_LEN: usize = 16;
 pub const MAX_CHANNEL_LEN: usize = 256;
 /// Max length for AI config JSON
 pub const MAX_AI_LEN: usize = 512;
+/// Max length for user name
+pub const MAX_USER_NAME_LEN: usize = 64;
 
 /// Persistent storage data for the NET chip.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +31,8 @@ pub struct NetStorageData {
     pub language: String<MAX_LANGUAGE_LEN>,
     pub channel: String<MAX_CHANNEL_LEN>,
     pub ai: String<MAX_AI_LEN>,
+    pub user_id: i64,
+    pub user_name: String<MAX_USER_NAME_LEN>,
     pub logs_enabled: bool,
 }
 
@@ -43,8 +47,8 @@ pub struct NetStorage<F> {
 const MAGIC: [u8; 4] = *b"LNKS";
 
 /// Storage format version.
-/// V4 adds language, channel, ai, logs_enabled.
-const VERSION: u8 = 4;
+/// V5 adds user_id and user_name.
+const VERSION: u8 = 5;
 
 /// Header size: 4 bytes magic + 1 byte version + 2 bytes length.
 const HEADER_SIZE: usize = 7;
@@ -193,6 +197,27 @@ where
         Ok(())
     }
 
+    /// Get the user ID.
+    pub fn get_user_id(&self) -> i64 {
+        self.data.user_id
+    }
+
+    /// Set the user ID.
+    pub fn set_user_id(&mut self, user_id: i64) {
+        self.data.user_id = user_id;
+    }
+
+    /// Get the user name.
+    pub fn get_user_name(&self) -> &str {
+        &self.data.user_name
+    }
+
+    /// Set the user name.
+    pub fn set_user_name(&mut self, user_name: &str) -> Result<(), ()> {
+        self.data.user_name = String::try_from(user_name).map_err(|_| ())?;
+        Ok(())
+    }
+
     /// Get logs enabled state.
     pub fn get_logs_enabled(&self) -> bool {
         self.data.logs_enabled
@@ -253,6 +278,8 @@ mod tests {
         let storage = NetStorage::new(flash, 0);
         assert!(storage.get_wifi_ssids().is_empty());
         assert_eq!(storage.get_relay_url(), "");
+        assert_eq!(storage.get_user_id(), 0);
+        assert_eq!(storage.get_user_name(), "");
     }
 
     #[test]
@@ -313,6 +340,8 @@ mod tests {
             let mut storage = NetStorage::new(MockFlash::new(), 0);
             storage.add_wifi_ssid("TestSSID", "TestPass").unwrap();
             storage.set_relay_url("https://test.relay").unwrap();
+            storage.set_user_id(42);
+            storage.set_user_name("alice").unwrap();
             storage.save().unwrap();
 
             // Copy flash data
@@ -325,6 +354,8 @@ mod tests {
         assert_eq!(storage.get_wifi_ssids()[0].ssid.as_str(), "TestSSID");
         assert_eq!(storage.get_wifi_ssids()[0].password.as_str(), "TestPass");
         assert_eq!(storage.get_relay_url(), "https://test.relay");
+        assert_eq!(storage.get_user_id(), 42);
+        assert_eq!(storage.get_user_name(), "alice");
     }
 
     #[test]

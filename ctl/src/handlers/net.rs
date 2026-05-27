@@ -2,8 +2,8 @@
 
 use super::Core;
 use crate::{
-    BlasterPattern, GetSetString, LanguageAction, LogsAction, NetAction, NetBlasterAction,
-    NetLoopbackAction, PinAction, PinLevel, ResetAction, WifiAction,
+    BlasterPattern, GetSetI64, GetSetString, LanguageAction, LogsAction, NetAction,
+    NetBlasterAction, NetLoopbackAction, PinAction, PinLevel, ResetAction, WifiAction,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use link::ctl::ProgressCallbacks;
@@ -427,6 +427,30 @@ pub async fn handle_net(
             GetSetString::Set { value } => {
                 core.net_set_ai(&value).await?;
                 println!("AI config set");
+                Ok(())
+            }
+        },
+        NetAction::UserId { action } => match action.unwrap_or_default() {
+            GetSetI64::Get => {
+                let user_id = core.net_get_user_id().await?;
+                println!("{}", user_id);
+                Ok(())
+            }
+            GetSetI64::Set { value } => {
+                core.net_set_user_id(value).await?;
+                println!("User ID set to {}", value);
+                Ok(())
+            }
+        },
+        NetAction::UserName { action } => match action.unwrap_or_default() {
+            GetSetString::Get => {
+                let user_name = core.net_get_user_name().await?;
+                println!("{}", user_name);
+                Ok(())
+            }
+            GetSetString::Set { value } => {
+                core.net_set_user_name(&value).await?;
+                println!("User name set to {}", value);
                 Ok(())
             }
         },
