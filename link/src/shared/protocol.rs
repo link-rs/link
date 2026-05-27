@@ -350,6 +350,14 @@ pub enum CtlToNet {
     SetBlaster,
     /// Burn JTAG/USB disable efuse (IRREVERSIBLE!)
     BurnJtagEfuse,
+    /// Get user ID (returns UserId as i64 LE)
+    GetUserId,
+    /// Set user ID (8 bytes: i64 LE)
+    SetUserId,
+    /// Get user name (returns UserName as UTF-8 string)
+    GetUserName,
+    /// Set user name (UTF-8 string)
+    SetUserName,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]
@@ -373,6 +381,10 @@ pub enum NetToCtl {
     Ai,
     /// NET blaster state (3 bytes: enabled u8, blaster_size i16 LE)
     Blaster,
+    /// User ID (8 bytes: i64 LE)
+    UserId,
+    /// User name (UTF-8 string)
+    UserName,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

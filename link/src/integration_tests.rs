@@ -333,6 +333,21 @@ async fn set_and_get_relay_url() {
 }
 
 #[tokio::test]
+async fn set_and_get_user_id_and_user_name() {
+    device_test(|mut ctl| async move {
+        ctl.net_set_user_id(123456789).await.unwrap();
+        ctl.net_set_user_name("alice").await.unwrap();
+
+        let user_id = ctl.net_get_user_id().await.unwrap();
+        let user_name = ctl.net_get_user_name().await.unwrap();
+
+        assert_eq!(user_id, 123456789);
+        assert_eq!(user_name, "alice");
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn reset_ui_to_bootloader_gpio_sequence() {
     device_test_with_gpio_tracking(|mut ctl, gpio_ops| async move {
         ctl.reset_ui_to_bootloader(|_| async {}).await.unwrap();
