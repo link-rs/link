@@ -172,8 +172,8 @@ fn setup_common(
     UartRxWrapper<'static>,
     link::mgmt::UiResetPins<Output<'static>, Output<'static>, Output<'static>>,
 ) {
-    // MCO on PA8: Output 6 MHz clock for UI chip
-    let mco = Mco::new(mco, pa8, McoSource::PLL, McoPrescaler::DIV4);
+    // MCO on PA8: Output 12 MHz clock for UI chip
+    let mco = Mco::new(mco, pa8, McoSource::PLL, McoPrescaler::DIV2);
 
     let ctl_config = uart_config_to_stm32(link::uart_config::CTL_MGMT);
     let ui_config = uart_config_to_stm32(link::uart_config::MGMT_UI);
