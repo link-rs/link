@@ -1,10 +1,11 @@
-.PHONY: all preflight format flash-ui flash-mgmt flash-net flash-all clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl test-ctl
+.PHONY: all preflight format flash-ui flash-mgmt flash-mgmt-dfu flash-net flash-all clean web-ctl serve-web web-link serve-link export-web-ctl export-web-link export ctl test-ctl mgmt-dfu
 
-CRATES = ui mgmt net ctl link web-ctl web-link echo-server
+CRATES = ui mgmt net ctl link web-ctl web-link echo-server mgmt-dfu
 
 # Output paths (targets configured in each crate's .cargo/config.toml)
 UI_BIN = ui/target/thumbv7em-none-eabihf/debug/ui.bin
 MGMT_BIN = mgmt/target/thumbv6m-none-eabi/debug/mgmt.bin
+MGMT_DFU_BIN = mgmt-dfu/target/thumbv6m-none-eabi/release/mgmt-dfu.bin
 NET_BIN = net/target/xtensa-esp32s3-espidf/debug/net
 NET_PARTITIONS = net/partitions.csv
 
@@ -36,6 +37,11 @@ $(UI_BIN): FORCE
 $(MGMT_BIN): FORCE
 	cd mgmt && cargo objcopy -- -O binary target/thumbv6m-none-eabi/debug/mgmt.bin
 
+$(MGMT_DFU_BIN): FORCE
+	cd mgmt-dfu && cargo objcopy --release -- -O binary target/thumbv6m-none-eabi/release/mgmt-dfu.bin
+
+mgmt-dfu: $(MGMT_DFU_BIN)
+
 $(NET_BIN): FORCE
 	cd net && cargo build
 
@@ -49,6 +55,16 @@ flash-ui: $(UI_BIN)
 
 flash-mgmt: $(MGMT_BIN)
 	cd ctl && cargo run -- mgmt flash ../$(MGMT_BIN)
+
+# Self-update: ask the currently-running mgmt-dfu firmware to detach into
+# the ROM bootloader, then write a new image and tell the ROM to jump to
+# it. No BOOT0 toggling. Requires the device to already be running
+# mgmt-dfu (enumerated as c0de:cafb).
+flash-mgmt-dfu: $(MGMT_DFU_BIN)
+	dfu-util -d c0de:cafb -e
+	@echo "Waiting for ROM bootloader to enumerate..."
+	@sleep 2
+	dfu-util -d 0483:df11 --alt 0 --dfuse-address 0x08000000:mass-erase:force:leave -D $(MGMT_DFU_BIN)
 
 # Flash NET chip (ESP32-S3) - uses ESP-IDF based firmware
 # Uses partition table for proper 8MB flash layout with 4MB app partition
@@ -98,6 +114,7 @@ clean:
 	cd link && cargo clean
 	cd ui && cargo clean
 	cd mgmt && cargo clean
+	cd mgmt-dfu && cargo clean
 	cd net && cargo clean
 	cd ctl && cargo clean
 	cd web-ctl && cargo clean
