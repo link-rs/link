@@ -140,6 +140,27 @@ firmware.
 
 ## 6. Message Types
 
+### MGMT-originated battery reports (CtlToUi::BatteryLevel)
+
+| Value | Name | Payload | Trigger |
+|-------|------|---------|---------|
+| 0x3B | BatteryLevel | One `u8`, 0–100 percent | Every 5 seconds on EV17 |
+
+These unsolicited messages share the MGMT–UI UART with tunneled CTL commands.
+UI accepts valid reports and logs the percentage; no acknowledgment is sent.
+MGMT suppresses reports while UI is held in reset or configured for its ROM bootloader.
+EV16 has no battery reports because PB0 is an LED output on that board.
+
+On EV17, PB0 is ADC_IN8, connected to a divider with R1 = 10 kΩ from battery
+positive to PB0 and R2 = 15 kΩ from PB0 to ground. Thus PB0 sees 60% of battery voltage.
+MGMT averages 16 ADC readings and uses factory-calibrated VREFINT readings to
+compensate for analog supply variation. The percentage is calculated directly
+from PB0 voltage: `round((Vpb0_mV - 2220) / 3)`, clamped to 0–100, without
+scaling back to battery voltage. In particular, 2.22 V → 0%, 2.37 V → 50%,
+and 2.52 V → 100% (corresponding to battery voltages of 3.7 V, 3.95 V, and 4.2 V).
+Like the current implementation's other TLVs, this frame uses a little-endian
+type and length: `4C 49 4E 4B 3B 00 01 00 00 00 PP`, where `PP` is the percentage.
+
 Each communication direction has its own type enumeration. Types are assigned
 as `u16` values using the base offsets below, with sequential numbering from
 the base.

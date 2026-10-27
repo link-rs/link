@@ -271,6 +271,8 @@ pub enum CtlToUi {
     AudioEnd,
     /// Test payload for UART blasting (raw bytes, up to 640 bytes)
     BlasterSend,
+    /// Battery level from MGMT (one byte, 0..=100 percent), sent every five seconds on EV17.
+    BatteryLevel,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

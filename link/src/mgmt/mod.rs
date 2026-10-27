@@ -1,5 +1,7 @@
 //! MGMT (Management) chip - coordinates communication between all chips.
 
+pub mod battery;
+
 use crate::info;
 use crate::shared::{
     Color, CtlToMgmt, CtlToNet, CtlToUi, Led, MgmtToCtl, ReadTlv, StackMonitor, Tlv, Value,
@@ -172,7 +174,7 @@ enum BaudRateChange {
 pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot, NetRst, D, B>(
     to_ctl: W,
     mut from_ctl: R,
-    mut to_ui: W,
+    to_ui: W,
     from_ui: R,
     mut to_net: W,
     from_net: R,
@@ -182,6 +184,7 @@ pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot,
     mut net_reset_pins: NetResetPins<NetBoot, NetRst>,
     mut delay: D,
     board: B,
+    mut battery: impl battery::BatteryMonitor,
 ) -> !
 where
     W: Write + SetBaudRate,
@@ -223,6 +226,9 @@ where
 
     // Wrap to_ctl in a mutex since it's shared between tasks
     let to_ctl: Mutex<NoopRawMutex, _> = Mutex::new(to_ctl);
+    // Serialize locally generated reports with tunneled CTL traffic and pin/baud changes.
+    let to_ui: Mutex<NoopRawMutex, _> = Mutex::new(to_ui);
+    let battery_reports_enabled = core::cell::Cell::new(true);
 
     // Track pending UI RX baud rate changes with an atomic
     // (0 = no change pending, non-zero = new baud rate to apply)
@@ -303,11 +309,12 @@ where
 
             // Get mutable access to to_ctl for the handler
             let mut to_ctl_guard = to_ctl.lock().await;
+            let mut to_ui_guard = to_ui.lock().await;
 
             let baud_change = handle_ctl(
                 tlv,
                 &mut *to_ctl_guard,
-                &mut to_ui,
+                &mut *to_ui_guard,
                 &mut to_net,
                 &mut ui_reset_pins,
                 &mut net_reset_pins,
@@ -315,6 +322,12 @@ where
                 &board,
             )
             .await;
+
+            battery_reports_enabled.set(
+                ui_reset_pins.boot0.is_set_low().unwrap_or(false)
+                    && ui_reset_pins.rst.is_set_high().unwrap_or(false),
+            );
+            drop(to_ui_guard);
 
             // Apply any baud rate changes after releasing to_ctl lock
             drop(to_ctl_guard);
@@ -336,7 +349,22 @@ where
         }
     };
 
-    embassy_futures::join::join3(ctl_task, ui_task, net_task).await;
+    let battery_task = async {
+        loop {
+            let level = battery.next_level().await;
+            let mut to_ui = to_ui.lock().await;
+            // Do not inject TLVs while UI is held in reset or in its ROM bootloader.
+            if battery_reports_enabled.get() {
+                let _ = to_ui.write_tlv(CtlToUi::BatteryLevel, &[level]).await;
+            }
+        }
+    };
+
+    embassy_futures::join::join(
+        embassy_futures::join::join3(ctl_task, ui_task, net_task),
+        battery_task,
+    )
+    .await;
     unreachable!()
 }
 

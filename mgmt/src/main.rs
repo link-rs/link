@@ -4,6 +4,7 @@
 use cortex_m::singleton;
 use embassy_executor::Spawner;
 use embassy_stm32::{
+    adc::{self, Adc, SampleTime},
     bind_interrupts,
     gpio::{Level, Output, Speed},
     mode::Async,
@@ -13,7 +14,7 @@ use embassy_stm32::{
     usart,
     usart::{Config, DataBits, Parity, RingBufferedUartRx, StopBits, Uart, UartTx},
 };
-use embassy_time::Delay;
+use embassy_time::{Delay, Duration, Ticker};
 use embedded_io_async::{ErrorType, Read, Write};
 use link::{mgmt::Board, uart_config::SetBaudRate, StackMonitor};
 use {defmt_rtt as _, panic_probe as _};
@@ -47,6 +48,38 @@ impl embedded_hal::digital::StatefulOutputPin for NoopOutputPin {
 
 /// Board implementation for MGMT STM32.
 struct Stm32Board;
+
+struct BatteryMonitor {
+    adc: Adc<'static, peripherals::ADC1>,
+    pin: embassy_stm32::Peri<'static, peripherals::PB0>,
+    vref: adc::Vref,
+    ticker: Ticker,
+}
+
+impl link::mgmt::battery::BatteryMonitor for BatteryMonitor {
+    async fn next_level(&mut self) -> u8 {
+        loop {
+            self.ticker.next().await;
+            // Average several readings to reduce ADC noise. Use the factory VREFINT
+            // calibration to compensate for variations in the analog supply.
+            let mut battery_sum = 0u32;
+            let mut vref_sum = 0u32;
+            for _ in 0..16 {
+                battery_sum += u32::from(self.adc.read(&mut self.pin).await);
+                vref_sum += u32::from(self.adc.read(&mut self.vref).await);
+            }
+            // STM32F072 datasheet: VREFINT_CAL is a 16-bit factory value at 3.3 V.
+            let vref_cal = unsafe { core::ptr::read_volatile(0x1FFF_F7BA as *const u16) };
+            if let Some(mv) = link::mgmt::battery::millivolts(
+                (battery_sum / 16) as u16,
+                (vref_sum / 16) as u16,
+                vref_cal,
+            ) {
+                return link::mgmt::battery::percentage(mv);
+            }
+        }
+    }
+}
 
 impl StackMonitor for Stm32Board {
     fn stack(&self) -> core::ops::Range<*mut u32> {
@@ -135,6 +168,7 @@ impl<'d> SetBaudRate for UartRxWrapper<'d> {
 }
 
 bind_interrupts!(struct Irqs {
+    ADC1_COMP => adc::InterruptHandler<peripherals::ADC1>;
     USART1 => usart::InterruptHandler<peripherals::USART1>;
     USART2 => usart::InterruptHandler<peripherals::USART2>;
     USART3_4 => usart::InterruptHandler<peripherals::USART3>;
@@ -259,6 +293,7 @@ async fn run_ev16(p: embassy_stm32::Peripherals) -> ! {
         net_reset_pins,
         Delay,
         Stm32Board,
+        (),
     )
     .await;
 }
@@ -274,6 +309,17 @@ async fn run_ev17(p: embassy_stm32::Peripherals) -> ! {
     // - PB0 is BATTERY_MON (ADC input)
     // - PC14 is MGMT_DEBUG1 (output)
     // - PB15 is NC (floating)
+
+    let mut adc = Adc::new(p.ADC1, Irqs);
+    // Long acquisition time for the 6k divider source impedance and internal reference.
+    adc.set_sample_time(SampleTime::CYCLES239_5);
+    let vref = adc.enable_vref();
+    let battery = BatteryMonitor {
+        adc,
+        pin: p.PB0,
+        vref,
+        ticker: Ticker::every(Duration::from_secs(5)),
+    };
 
     // EV17 LED A: R=PB5, G=PB4, B=PB1
     let led_a = (
@@ -303,6 +349,7 @@ async fn run_ev17(p: embassy_stm32::Peripherals) -> ! {
         net_reset_pins,
         Delay,
         Stm32Board,
+        battery,
     )
     .await;
 }

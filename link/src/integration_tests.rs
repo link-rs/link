@@ -56,6 +56,7 @@ where
         net_reset_pins,
         MockAsyncDelay,
         NoOpBoard,
+        (),
     );
 
     // Create WS channels for NET app
@@ -142,6 +143,7 @@ where
         net_reset_pins,
         MockAsyncDelay,
         NoOpBoard,
+        (),
     );
 
     // Create WS channels for NET app

@@ -144,6 +144,11 @@ where
         loop {
             match channel.receive().await {
                 Event::Mgmt(tlv) => {
+                    if tlv.tlv_type == CtlToUi::BatteryLevel {
+                        if let [level @ 0..=100] = tlv.value.as_slice() {
+                            tlv_log!(log_sender, "battery {}%", level);
+                        }
+                    }
                     handle_mgmt(
                         tlv,
                         &mut to_mgmt,
@@ -485,6 +490,11 @@ async fn handle_mgmt<M, N, I, D, B, const PLAYBACK_N: usize>(
     B: Board,
 {
     match tlv.tlv_type {
+        CtlToUi::BatteryLevel => {
+            if let [level @ 0..=100] = tlv.value.as_slice() {
+                info!("ui: battery {}%", level);
+            }
+        }
         CtlToUi::Ping => {
             info!("ui: mgmt ping, sending pong");
             to_mgmt.must_write_tlv(UiToCtl::Pong, &tlv.value).await;
