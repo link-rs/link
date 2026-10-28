@@ -14,7 +14,7 @@ use embassy_stm32::{
     usart,
     usart::{Config, DataBits, Parity, RingBufferedUartRx, StopBits, Uart, UartTx},
 };
-use embassy_time::{Delay, Duration, Ticker};
+use embassy_time::{Delay, Duration, Ticker, Timer};
 use embedded_io_async::{ErrorType, Read, Write};
 use link::{mgmt::Board, uart_config::SetBaudRate, StackMonitor};
 use {defmt_rtt as _, panic_probe as _};
@@ -53,13 +53,20 @@ struct BatteryMonitor {
     adc: Adc<'static, peripherals::ADC1>,
     pin: embassy_stm32::Peri<'static, peripherals::PB0>,
     vref: adc::Vref,
-    ticker: Ticker,
+    ticker: Option<Ticker>,
 }
 
 impl link::mgmt::battery::BatteryMonitor for BatteryMonitor {
     async fn next_level(&mut self) -> u8 {
         loop {
-            self.ticker.next().await;
+            if let Some(ticker) = &mut self.ticker {
+                ticker.next().await;
+            } else {
+                // MGMT has just released UI from reset. Give its UART time to
+                // initialize, then report without waiting the full five seconds.
+                Timer::after_millis(100).await;
+                self.ticker = Some(Ticker::every(Duration::from_secs(5)));
+            }
             // Average several readings to reduce ADC noise. Use the factory VREFINT
             // calibration to compensate for variations in the analog supply.
             let mut battery_sum = 0u32;
@@ -318,7 +325,7 @@ async fn run_ev17(p: embassy_stm32::Peripherals) -> ! {
         adc,
         pin: p.PB0,
         vref,
-        ticker: Ticker::every(Duration::from_secs(5)),
+        ticker: None,
     };
 
     // EV17 LED A: R=PB5, G=PB4, B=PB1

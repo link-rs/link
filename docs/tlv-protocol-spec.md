@@ -144,7 +144,7 @@ firmware.
 
 | Value | Name | Payload | Trigger |
 |-------|------|---------|---------|
-| 0x3B | BatteryLevel | One `u8`, 0–100 percent | Every 5 seconds on EV17 |
+| 0x3B | BatteryLevel | One `u8`, 0–100 percent | After a 500 ms UI boot delay, then every 5 seconds on EV17 |
 
 These unsolicited messages share the MGMT–UI UART with tunneled CTL commands.
 UI accepts valid reports and logs the percentage; no acknowledgment is sent.
