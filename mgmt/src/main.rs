@@ -49,15 +49,49 @@ impl embedded_hal::digital::StatefulOutputPin for NoopOutputPin {
 /// Board implementation for MGMT STM32.
 struct Stm32Board;
 
-struct BatteryMonitor {
+struct AdcMonitor {
     adc: Adc<'static, peripherals::ADC1>,
-    pin: embassy_stm32::Peri<'static, peripherals::PB0>,
+    battery_pin: embassy_stm32::Peri<'static, peripherals::PB0>,
+    cc1_pin: embassy_stm32::Peri<'static, peripherals::PA6>,
+    cc2_pin: embassy_stm32::Peri<'static, peripherals::PA7>,
     vref: adc::Vref,
     ticker: Option<Ticker>,
+    ticks_until_battery: u8,
+    usb: link::mgmt::monitor::UsbCcDetector,
+    pending_report: Option<link::mgmt::monitor::Report>,
+    battery_after_detach: bool,
 }
 
-impl link::mgmt::battery::BatteryMonitor for BatteryMonitor {
-    async fn next_level(&mut self) -> u8 {
+impl link::mgmt::monitor::DeviceMonitor for AdcMonitor {
+    async fn next_report(&mut self) -> link::mgmt::monitor::Report {
+        use link::mgmt::monitor::Report;
+
+        if let Some(report) = self.pending_report.take() {
+            return report;
+        }
+        if self.battery_after_detach {
+            // Let the battery voltage settle after USB power is removed, then
+            // take fresh readings rather than reporting the last periodic sample.
+            Timer::after_millis(50).await;
+            self.battery_after_detach = false;
+            let mut battery_sum = 0u32;
+            let mut vref_sum = 0u32;
+            for _ in 0..16 {
+                battery_sum += u32::from(self.adc.read(&mut self.battery_pin).await);
+                vref_sum += u32::from(self.adc.read(&mut self.vref).await);
+            }
+            // STM32F072 factory VREFINT calibration at VDDA = 3.3 V.
+            let vref_cal = unsafe { core::ptr::read_volatile(0x1FFF_F7BA as *const u16) };
+            if let Some(mv) = link::mgmt::battery::millivolts(
+                (battery_sum / 16) as u16,
+                (vref_sum / 16) as u16,
+                vref_cal,
+            ) {
+                return Report::BatteryLevel(link::mgmt::battery::percentage(mv));
+            }
+            // Retry on the next ADC polling tick if the reference read was invalid.
+            self.ticks_until_battery = 0;
+        }
         loop {
             if let Some(ticker) = &mut self.ticker {
                 ticker.next().await;
@@ -65,24 +99,51 @@ impl link::mgmt::battery::BatteryMonitor for BatteryMonitor {
                 // MGMT has just released UI from reset. Give its UART time to
                 // initialize, then report without waiting the full five seconds.
                 Timer::after_millis(100).await;
-                self.ticker = Some(Ticker::every(Duration::from_secs(5)));
+                self.ticker = Some(Ticker::every(Duration::from_millis(100)));
             }
+            self.ticks_until_battery = self.ticks_until_battery.saturating_sub(1);
+            let battery_due = self.ticks_until_battery == 0;
             // Average several readings to reduce ADC noise. Use the factory VREFINT
             // calibration to compensate for variations in the analog supply.
             let mut battery_sum = 0u32;
+            let mut cc1_sum = 0u32;
+            let mut cc2_sum = 0u32;
             let mut vref_sum = 0u32;
             for _ in 0..16 {
-                battery_sum += u32::from(self.adc.read(&mut self.pin).await);
+                if battery_due {
+                    battery_sum += u32::from(self.adc.read(&mut self.battery_pin).await);
+                }
+                cc1_sum += u32::from(self.adc.read(&mut self.cc1_pin).await);
+                cc2_sum += u32::from(self.adc.read(&mut self.cc2_pin).await);
                 vref_sum += u32::from(self.adc.read(&mut self.vref).await);
             }
             // STM32F072 datasheet: VREFINT_CAL is a 16-bit factory value at 3.3 V.
             let vref_cal = unsafe { core::ptr::read_volatile(0x1FFF_F7BA as *const u16) };
-            if let Some(mv) = link::mgmt::battery::millivolts(
-                (battery_sum / 16) as u16,
-                (vref_sum / 16) as u16,
-                vref_cal,
-            ) {
-                return link::mgmt::battery::percentage(mv);
+            let voltage = |sum| {
+                link::mgmt::battery::millivolts((sum / 16) as u16, (vref_sum / 16) as u16, vref_cal)
+            };
+            let (Some(cc1_mv), Some(cc2_mv)) = (voltage(cc1_sum), voltage(cc2_sum)) else {
+                continue;
+            };
+            let was_connected = self.usb.state() == Some(true);
+            let usb_change = self.usb.update(cc1_mv, cc2_mv);
+            if was_connected && usb_change == Some(false) {
+                self.battery_after_detach = true;
+                // Send disconnection first; the next call samples battery after 50 ms.
+                return Report::UsbConnected(false);
+            }
+            if battery_due {
+                if let Some(mv) = voltage(battery_sum) {
+                    // Fifty 100 ms ticks preserve the five-second battery cadence.
+                    self.ticks_until_battery = 50;
+                    // Refresh USB state with each battery report as well as on changes,
+                    // so UI recovers its current status after a reset or firmware update.
+                    self.pending_report = self.usb.state().map(Report::UsbConnected);
+                    return Report::BatteryLevel(link::mgmt::battery::percentage(mv));
+                }
+            }
+            if let Some(connected) = usb_change {
+                return Report::UsbConnected(connected);
             }
         }
     }
@@ -321,11 +382,17 @@ async fn run_ev17(p: embassy_stm32::Peripherals) -> ! {
     // Long acquisition time for the 6k divider source impedance and internal reference.
     adc.set_sample_time(SampleTime::CYCLES239_5);
     let vref = adc.enable_vref();
-    let battery = BatteryMonitor {
+    let monitor = AdcMonitor {
         adc,
-        pin: p.PB0,
+        battery_pin: p.PB0,
+        cc1_pin: p.PA6,
+        cc2_pin: p.PA7,
         vref,
         ticker: None,
+        ticks_until_battery: 0,
+        usb: link::mgmt::monitor::UsbCcDetector::default(),
+        pending_report: None,
+        battery_after_detach: false,
     };
 
     // EV17 LED A: R=PB5, G=PB4, B=PB1
@@ -356,7 +423,7 @@ async fn run_ev17(p: embassy_stm32::Peripherals) -> ! {
         net_reset_pins,
         Delay,
         Stm32Board,
-        battery,
+        monitor,
     )
     .await;
 }

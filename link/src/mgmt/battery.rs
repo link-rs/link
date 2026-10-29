@@ -1,25 +1,12 @@
 //! Battery measurement abstraction and EV17 ADC voltage conversion.
 
-/// Supplies periodic battery percentages. The implementation controls the sampling interval.
-#[allow(async_fn_in_trait)]
-pub trait BatteryMonitor {
-    async fn next_level(&mut self) -> u8;
-}
-
-/// Boards without a battery monitor never produce a report.
-impl BatteryMonitor for () {
-    async fn next_level(&mut self) -> u8 {
-        core::future::pending().await
-    }
-}
-
 /// Convert PB0 millivolts directly to a rounded, clamped percentage.
 /// With the 10k/15k divider, 2.22 V = 0%, 2.52 V = 100%.
 pub fn percentage(millivolts: u32) -> u8 {
     ((millivolts.clamp(2220, 2520) - 2220 + 1) / 3) as u8
 }
 
-/// Convert 12-bit ADC readings to PB0 millivolts using factory VREFINT calibration
+/// Convert 12-bit ADC readings to input millivolts using factory VREFINT calibration
 /// (measured at VDDA = 3.3 V), without scaling back to battery voltage.
 pub fn millivolts(sample: u16, vref: u16, vref_cal: u16) -> Option<u32> {
     if vref == 0 {
@@ -62,15 +49,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reports_share_ui_uart_with_tunneled_commands() {
+    async fn status_reports_share_ui_uart_with_tunneled_commands() {
+        use crate::mgmt::monitor::{DeviceMonitor, Report};
         use crate::mgmt::{NetResetPins, UiResetPins};
         use crate::shared::mocks::{MockAsyncDelay, MockPin, async_async_channel, mock_led_pins};
         use crate::shared::{CtlToMgmt, CtlToUi, MgmtToCtl, NoOpBoard, ReadTlv, Tlv, WriteTlv};
 
         // A channel-backed monitor lets the test trigger each sample independently.
-        struct Monitor(tokio::sync::mpsc::UnboundedReceiver<u8>);
-        impl BatteryMonitor for Monitor {
-            async fn next_level(&mut self) -> u8 {
+        struct Monitor(tokio::sync::mpsc::UnboundedReceiver<Report>);
+        impl DeviceMonitor for Monitor {
+            async fn next_report(&mut self) -> Report {
                 self.0.recv().await.unwrap()
             }
         }
@@ -98,10 +86,17 @@ mod tests {
         tokio::select! {
             _ = task => unreachable!(),
             _ = async {
-                samples.send(50).unwrap();
+                samples.send(Report::BatteryLevel(50)).unwrap();
                 let report: Tlv<CtlToUi> = ui_rx.read_tlv().await.unwrap().unwrap();
                 assert_eq!(report.tlv_type, CtlToUi::BatteryLevel);
                 assert_eq!(report.value.as_slice(), &[50]);
+
+                for connected in [true, false] {
+                    samples.send(Report::UsbConnected(connected)).unwrap();
+                    let report: Tlv<CtlToUi> = ui_rx.read_tlv().await.unwrap().unwrap();
+                    assert_eq!(report.tlv_type, CtlToUi::UsbConnected);
+                    assert_eq!(report.value.as_slice(), &[u8::from(connected)]);
+                }
 
                 // A CTL command still arrives intact on the same UART.
                 let mut frame = std::vec::Vec::from(crate::shared::tlv::SYNC_WORD);
@@ -115,14 +110,15 @@ mod tests {
                 ctl_tx.write_tlv(CtlToMgmt::SetPin, &[crate::Pin::UiRst as u8, 0]).await.unwrap();
                 let ack: Tlv<MgmtToCtl> = ctl_rx.read_tlv().await.unwrap().unwrap();
                 assert_eq!(ack.tlv_type, MgmtToCtl::Ack);
-                samples.send(25).unwrap();
+                samples.send(Report::BatteryLevel(25)).unwrap();
+                samples.send(Report::UsbConnected(true)).unwrap();
                 assert!(tokio::time::timeout(
                     std::time::Duration::from_millis(10),
                     <_ as ReadTlv<CtlToUi>>::read_tlv(&mut ui_rx),
                 ).await.is_err());
                 ctl_tx.write_tlv(CtlToMgmt::SetPin, &[crate::Pin::UiRst as u8, 1]).await.unwrap();
                 let _: Tlv<MgmtToCtl> = ctl_rx.read_tlv().await.unwrap().unwrap();
-                samples.send(75).unwrap();
+                samples.send(Report::BatteryLevel(75)).unwrap();
                 let report: Tlv<CtlToUi> = ui_rx.read_tlv().await.unwrap().unwrap();
                 assert_eq!(report.value.as_slice(), &[75]);
             } => {},

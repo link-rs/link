@@ -273,6 +273,8 @@ pub enum CtlToUi {
     BlasterSend,
     /// Battery level from MGMT (one byte, 0..=100 percent), sent every five seconds on EV17.
     BatteryLevel,
+    /// USB-C source detected by MGMT (one byte: 0=disconnected, 1=connected).
+    UsbConnected,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, IntoPrimitive, TryFromPrimitive)]

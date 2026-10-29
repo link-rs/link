@@ -149,6 +149,11 @@ where
                             tlv_log!(log_sender, "battery {}%", level);
                         }
                     }
+                    if tlv.tlv_type == CtlToUi::UsbConnected {
+                        if let [connected @ 0..=1] = tlv.value.as_slice() {
+                            tlv_log!(log_sender, "USB connected {}", connected);
+                        }
+                    }
                     handle_mgmt(
                         tlv,
                         &mut to_mgmt,
@@ -493,6 +498,11 @@ async fn handle_mgmt<M, N, I, D, B, const PLAYBACK_N: usize>(
         CtlToUi::BatteryLevel => {
             if let [level @ 0..=100] = tlv.value.as_slice() {
                 info!("ui: battery {}%", level);
+            }
+        }
+        CtlToUi::UsbConnected => {
+            if let [connected @ 0..=1] = tlv.value.as_slice() {
+                info!("ui: USB connected {}", connected);
             }
         }
         CtlToUi::Ping => {

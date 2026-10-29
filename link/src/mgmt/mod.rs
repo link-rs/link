@@ -1,6 +1,7 @@
 //! MGMT (Management) chip - coordinates communication between all chips.
 
 pub mod battery;
+pub mod monitor;
 
 use crate::info;
 use crate::shared::{
@@ -184,7 +185,7 @@ pub async fn run<W, R, RA, GA, BA, RB, GB, BB, UiBoot0, UiBoot1, UiRst, NetBoot,
     mut net_reset_pins: NetResetPins<NetBoot, NetRst>,
     mut delay: D,
     board: B,
-    mut battery: impl battery::BatteryMonitor,
+    mut monitor: impl monitor::DeviceMonitor,
 ) -> !
 where
     W: Write + SetBaudRate,
@@ -228,7 +229,7 @@ where
     let to_ctl: Mutex<NoopRawMutex, _> = Mutex::new(to_ctl);
     // Serialize locally generated reports with tunneled CTL traffic and pin/baud changes.
     let to_ui: Mutex<NoopRawMutex, _> = Mutex::new(to_ui);
-    let battery_reports_enabled = core::cell::Cell::new(true);
+    let status_reports_enabled = core::cell::Cell::new(true);
 
     // Track pending UI RX baud rate changes with an atomic
     // (0 = no change pending, non-zero = new baud rate to apply)
@@ -323,7 +324,7 @@ where
             )
             .await;
 
-            battery_reports_enabled.set(
+            status_reports_enabled.set(
                 ui_reset_pins.boot0.is_set_low().unwrap_or(false)
                     && ui_reset_pins.rst.is_set_high().unwrap_or(false),
             );
@@ -349,20 +350,20 @@ where
         }
     };
 
-    let battery_task = async {
+    let monitor_task = async {
         loop {
-            let level = battery.next_level().await;
+            let (packet, value) = monitor.next_report().await.packet();
             let mut to_ui = to_ui.lock().await;
             // Do not inject TLVs while UI is held in reset or in its ROM bootloader.
-            if battery_reports_enabled.get() {
-                let _ = to_ui.write_tlv(CtlToUi::BatteryLevel, &[level]).await;
+            if status_reports_enabled.get() {
+                let _ = to_ui.write_tlv(packet, &[value]).await;
             }
         }
     };
 
     embassy_futures::join::join(
         embassy_futures::join::join3(ctl_task, ui_task, net_task),
-        battery_task,
+        monitor_task,
     )
     .await;
     unreachable!()

@@ -144,7 +144,7 @@ firmware.
 
 | Value | Name | Payload | Trigger |
 |-------|------|---------|---------|
-| 0x3B | BatteryLevel | One `u8`, 0–100 percent | After a 500 ms UI boot delay, then every 5 seconds on EV17 |
+| 0x3B | BatteryLevel | One `u8`, 0–100 percent | After a 100 ms UI boot delay, then every 5 seconds on EV17 |
 
 These unsolicited messages share the MGMT–UI UART with tunneled CTL commands.
 UI accepts valid reports and logs the percentage; no acknowledgment is sent.
@@ -160,6 +160,41 @@ scaling back to battery voltage. In particular, 2.22 V → 0%, 2.37 V → 50%,
 and 2.52 V → 100% (corresponding to battery voltages of 3.7 V, 3.95 V, and 4.2 V).
 Like the current implementation's other TLVs, this frame uses a little-endian
 type and length: `4C 49 4E 4B 3B 00 01 00 00 00 PP`, where `PP` is the percentage.
+
+### MGMT-originated USB reports (CtlToUi::UsbConnected)
+
+| Value | Name | Payload | Trigger |
+|-------|------|---------|---------|
+| 0x3C | UsbConnected | One `u8`: 1=connected, 0=disconnected | Initial debounced state, connection changes, and every 5 seconds on EV17 |
+
+MGMT samples USB_CC1_DETECT on PA6 (ADC_IN6) and USB_CC2_DETECT on PA7
+(ADC_IN7) every 100 ms, averaging 16 readings per channel and compensating with
+VREFINT. The battery and CC channels share the same ADC driver.
+
+Detection assumes a USB-C **sink** with standard external 5.1 kΩ Rd pull-downs
+and direct CC voltage sensing (no additional divider). The attached voltage
+ranges are 0.25–0.61 V (default current), 0.70–1.16 V (1.5 A), and 1.31–2.04 V
+(3 A), as documented in the [TI TUSB320LAI datasheet, section 6.5](https://www.ti.com/document-viewer/TUSB320LAI/datasheet/specifications#SLLSEP22936).
+
+Either CC input in 0.20–2.10 V indicates connected. Once connected, the accepted
+range widens to 0.15–2.15 V for hysteresis. Two consecutive matching samples
+are required for the initial report and each state change, giving approximately
+100–200 ms detection latency. Both inputs must be outside the accepted range
+to report disconnected. This indicates CC attachment to a source, not USB data
+enumeration or a measurement of VBUS.
+
+On a confirmed connected-to-disconnected transition, MGMT sends `UsbConnected=0`,
+waits 50 ms for battery voltage to settle, then averages 16 fresh battery and
+VREFINT readings and sends `BatteryLevel`. The 50 ms delay starts after the
+existing CC sampling/debounce confirms detachment, rather than at physical
+unplugging. This extra battery report does not reset the periodic battery schedule.
+
+UI validates and logs the binary payload, without sending an ACK. Reports are
+suppressed during UI reset/bootloader operation and refreshed every 5 seconds
+so UI can recover the current state after restarting. EV16 retains its PA6/PA7
+LED outputs and sends no USB reports.
+
+Example connected frame: `4C 49 4E 4B 3C 00 01 00 00 00 01`.
 
 Each communication direction has its own type enumeration. Types are assigned
 as `u16` values using the base offsets below, with sequential numbering from
